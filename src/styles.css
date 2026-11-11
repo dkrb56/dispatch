@@ -266,6 +266,46 @@ body:has(#panes:not(.no-side)) #toggle-side {
   cursor: default;
 }
 
+/* The bar below the top bar in the mode "Use a host": the host is not reachable, or it refused the
+   window. It takes one line, as the status bar does; a long text is cut with "…". */
+#host-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  box-sizing: border-box;
+  height: calc(28px * var(--text-scale));
+  padding: 0 10px;
+  overflow: hidden;
+  border-bottom: 1px solid var(--wait-line);
+  background: var(--wait-bg);
+  color: var(--wait);
+  font-size: calc(12px * var(--text-scale));
+  white-space: nowrap;
+}
+
+#host-bar-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#host-bar button {
+  flex: none;
+  height: calc(22px * var(--text-scale));
+  padding: 0 10px;
+  border: 1px solid var(--wait-line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--wait);
+  font: inherit;
+  cursor: pointer;
+}
+
+#host-bar button:hover {
+  background: var(--wait-glow);
+}
+
 [hidden] {
   display: none !important;
 }
@@ -1650,6 +1690,26 @@ button.task-head:hover {
   background: var(--bg);
   color: var(--text);
   font: inherit;
+}
+
+/* The host address, the port and the key of the section "Where the work runs". */
+#options input[type="text"],
+#options input[type="password"],
+#options input[type="number"] {
+  box-sizing: border-box;
+  width: 60%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+#options label.options-list input:disabled {
+  color: var(--muted);
+  opacity: 0.6;
 }
 
 #setup details {

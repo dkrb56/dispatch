@@ -20,6 +20,21 @@ test("all three values come from the answer of status_info", () => {
   assert.ok(!parts.account.title.includes(EMAIL));
 });
 
+test("in the mode Use a host the Dispatch part warns when the window and the host differ", () => {
+  const found = info({ state: "found", version: "9.9.9" }, { state: "signed-in", email: EMAIL });
+  const same = statusParts(found, { window: "1.2.3", host: "1.2.3" });
+  assert.equal(same.dispatch.text, "Dispatch 1.2.3");
+  assert.equal(same.dispatch.missing, false);
+  assert.match(same.dispatch.title, /host runs the same version/);
+  const differ = statusParts(found, { window: "1.2.4", host: "1.2.3" });
+  assert.equal(differ.dispatch.text, "Dispatch 1.2.4 · host 1.2.3");
+  assert.equal(differ.dispatch.missing, true);
+  assert.match(differ.dispatch.title, /This window runs Dispatch 1\.2\.4, the host runs Dispatch 1\.2\.3/);
+  // Without the versions, as in the mode "This PC does the work", nothing changes.
+  assert.deepEqual(statusParts(found, null), statusParts(found));
+  assert.equal(statusParts(found).dispatch.text, "Dispatch 1.2.3");
+});
+
 test("signed out: said in words and marked missing", () => {
   const parts = statusParts(info({ state: "found", version: "9.9.9" }, { state: "signed-out", email: null }));
   assert.equal(parts.account.text, "Not signed in to Claude Code");

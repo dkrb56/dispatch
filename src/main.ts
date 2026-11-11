@@ -1,4 +1,5 @@
-import { call, onEvent } from "./backend";
+import { call, type HostSettings, hostSettings, initBackend, onEvent } from "./backend";
+import { initHostMode, titleBase } from "./hostmode";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -71,6 +72,8 @@ interface SavedState {
   night?: boolean;
   /** The triage chat of each project, by project key. Missing in the files of builds before this field. */
   triage?: Record<string, TriageRecord>;
+  /** Where the work runs, and the id of this window (remote-client-mode). Missing in older files. */
+  host?: HostSettings;
 }
 
 /** The triage chat that the app continues for a project, and the mark of the role file with which it started. */
@@ -123,6 +126,8 @@ interface Pane extends SavedPane {
   sequence?: boolean;
   /** Called at the next prompt of the shell. */
   promptWaiters: (() => void)[];
+  /** The arguments of its `pty_spawn` without the size: a reconnect to the host calls it again (remote-client-mode). */
+  spawnArgs?: Record<string, unknown>;
 }
 
 /** The reply of the `pane_info` command. */
@@ -3344,7 +3349,7 @@ function updateWorkerAlert(): void {
 
   const appWindow = getCurrentWindow();
   const failed = (error: unknown) => console.error("worker alert failed", error);
-  appWindow.setTitle(names.length > 0 ? `Dispatch · ${text}` : "Dispatch").catch(failed);
+  appWindow.setTitle(names.length > 0 ? `${titleBase()} · ${text}` : titleBase()).catch(failed);
 }
 
 // The alerts when a task starts to wait for the user (alerts-options): a system notification, a
@@ -3993,7 +3998,7 @@ function saveState(): Promise<void> {
     focus: tab.focus,
   }));
   return call("state_save", {
-    state: { tabs: list, active: activeId, night: nightOn, triage: Object.fromEntries(triageRecords) },
+    state: { tabs: list, active: activeId, night: nightOn, triage: Object.fromEntries(triageRecords), host: hostSettings() },
     paneIds: [...panes.keys()],
   });
 }
@@ -4486,11 +4491,36 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
     void call("pty_resize", { id, cols, rows });
   });
 
+  pane.spawnArgs = { id, shell, cwd: pane.cwd, ...start };
   try {
     await call("pty_spawn", { id, shell, cwd: pane.cwd, cols: term.cols, rows: term.rows, ...start });
   } catch (error) {
     term.write(`\r\n\x1b[31mCould not start ${shell}: ${error}\x1b[0m\r\n`);
   }
+}
+
+/**
+ * After a reconnect to the host (remote-client-mode): each pane whose terminal still runs on the
+ * host calls `pty_spawn` again, and the host attaches it and sends the output that the window
+ * missed. A pane that the host does not list starts a new shell after `restartAfterMs`, when it
+ * is still open then: a terminal that ended while the window was away closes its pane through
+ * its `pty-exit` first, and a host that was restarted knows no terminal.
+ */
+function reattach(alive: string[], restartAfterMs: number): void {
+  const spawn = async (pane: Pane) => {
+    if (!pane.spawnArgs || panes.get(pane.id) !== pane) return;
+    try {
+      await call("pty_spawn", { ...pane.spawnArgs, cwd: pane.cwd, cols: pane.term.cols, rows: pane.term.rows });
+    } catch (error) {
+      pane.term.write(`\r\n\x1b[31mCould not start ${pane.shell}: ${error}\x1b[0m\r\n`);
+    }
+  };
+  const later: Pane[] = [];
+  for (const pane of panes.values()) {
+    if (alive.includes(pane.id)) void spawn(pane);
+    else later.push(pane);
+  }
+  if (later.length > 0) setTimeout(() => later.forEach((pane) => void spawn(pane)), restartAfterMs);
 }
 
 function newTab(shell: Shell, cwd: string | null = null): Promise<void> {
@@ -5869,6 +5899,8 @@ function tickRunTimes(): void {
 }
 
 async function start(): Promise<void> {
+  // The mode comes first: in the mode "Use a host" every call after this goes to the host.
+  await initBackend();
   await onEvent<{ id: string; data: string }>("pty-output", (payload) => {
     const pane = panes.get(payload.id);
     if (!pane) return;
@@ -5961,7 +5993,11 @@ async function start(): Promise<void> {
     () => focusedPane()?.term.focus(),
   );
   initHelp(() => focusedPane()?.term.focus());
-  initOptions(() => focusedPane()?.term.focus());
+  initOptions(
+    () => focusedPane()?.term.focus(),
+    () => void saveState().catch((error) => console.error("host settings save failed", error)),
+  );
+  initHostMode(reattach);
   initStatusBar();
   initDecisions();
   void pollSide();
@@ -6065,6 +6101,8 @@ async function start(): Promise<void> {
   }
   await setView(savedView(mode));
   showFirstHelp();
+  // The title names the host from the start, before the first worker read.
+  updateWorkerAlert();
 }
 
 void start();

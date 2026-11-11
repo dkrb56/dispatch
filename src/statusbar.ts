@@ -6,8 +6,8 @@
 // The email and the usage numbers stay in the bar only: they go into no storage, no console line
 // and no file. The usage numbers stand in the tooltip of their part too.
 
-import { call } from "./backend";
-import { type StatusInfo, type StatusPart, type UsageInfo, statusParts, usageParts } from "./status";
+import { call, hostInfo } from "./backend";
+import { type HostVersions, type StatusInfo, type StatusPart, type UsageInfo, statusParts, usageParts } from "./status";
 
 /** How often the bar reads the values again: a new login or an update of Claude Code shows within this time. */
 const STATUS_REFRESH_MS = 60_000;
@@ -27,8 +27,14 @@ function show(el: HTMLElement, part: StatusPart): void {
   el.hidden = part.text === "";
 }
 
+/** The versions of the window and the host after the first hello reply; `null` in the mode "This PC does the work". */
+function hostVersions(): HostVersions | null {
+  const host = hostInfo();
+  return host?.host ? { window: host.window, host: host.host } : null;
+}
+
 function draw(info: StatusInfo | null): void {
-  const parts = statusParts(info);
+  const parts = statusParts(info, hostVersions());
   show(document.querySelector<HTMLElement>("#status-account")!, parts.account);
   show(document.querySelector<HTMLElement>("#status-claude")!, parts.claude);
   show(document.querySelector<HTMLElement>("#status-dispatch")!, parts.dispatch);

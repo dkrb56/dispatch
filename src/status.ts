@@ -27,8 +27,30 @@ function part(text: string, title: string, missing = false): StatusPart {
   return { text, title, missing };
 }
 
-/** The three parts of the bar for a reply, or "…" in each part before the first reply. */
-export function statusParts(info: StatusInfo | null): { account: StatusPart; claude: StatusPart; dispatch: StatusPart } {
+/** The versions of Dispatch in this window and on the host, in the mode "Use a host" (remote-client-mode). */
+export interface HostVersions {
+  window: string;
+  host: string;
+}
+
+/** The Dispatch part: in the mode "Use a host" it warns when the window and the host run different versions. */
+function dispatchPart(version: string, host: HostVersions | null | undefined): StatusPart {
+  if (!host) return part(`Dispatch ${version}`, DISPATCH_TITLE);
+  if (host.window !== host.host) {
+    return part(
+      `Dispatch ${host.window} · host ${host.host}`,
+      `This window runs Dispatch ${host.window}, the host runs Dispatch ${host.host}. Update both to the same version.`,
+      true,
+    );
+  }
+  return part(`Dispatch ${version}`, `${DISPATCH_TITLE}. The host runs the same version.`);
+}
+
+/**
+ * The three parts of the bar for a reply, or "…" in each part before the first reply. `host`
+ * gives the two versions in the mode "Use a host".
+ */
+export function statusParts(info: StatusInfo | null, host?: HostVersions | null): { account: StatusPart; claude: StatusPart; dispatch: StatusPart } {
   if (!info) {
     return { account: part(WAITING, ACCOUNT_TITLE), claude: part(WAITING, CLAUDE_TITLE), dispatch: part(WAITING, DISPATCH_TITLE) };
   }
@@ -46,7 +68,7 @@ export function statusParts(info: StatusInfo | null): { account: StatusPart; cla
       : info.claude.state === "missing"
         ? part("Claude Code not found", CLAUDE_TITLE, true)
         : part("Claude Code, version not known", CLAUDE_TITLE);
-  return { account, claude, dispatch: part(`Dispatch ${info.dispatch}`, DISPATCH_TITLE) };
+  return { account, claude, dispatch: dispatchPart(info.dispatch, host) };
 }
 
 /** One weekly line of `/usage` of Claude Code: its name as Claude Code writes it ("all models", "Fable"), the percent used and the reset text. */
