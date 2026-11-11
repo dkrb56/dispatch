@@ -1,0 +1,4653 @@
+/* The stylesheet of xterm.js hides its helper elements. An @import works only before every other
+   rule: below the tokens it was dropped (0.1.22), and the input box and a row of measuring letters
+   showed at the top of each terminal. */
+@import "@xterm/xterm/css/xterm.css";
+
+/* The calm look "Slate" (design: Claude Design canvas "Dispatch Focus Mode", 2026-11-08).
+   This block is the Slate set of colour tokens. src/theme.ts holds the same values and the other
+   themes; the theme list in the bar writes a set on :root (tests/theme.test.ts keeps both equal). */
+:root {
+  --bg: #13161a;
+  --surface: #171b20;
+  --card: #1c2127;
+  --hairline: #22282f;
+  --line: #2b323a;
+  /* The frame of a group of buttons in the top bar. */
+  --group-line: #5d6570;
+  --text: #dfe3e8;
+  --text-2: #a8b0ba;
+  --muted: #7c8591;
+  --faint: #5d6570;
+  --accent: #8fb3d9;
+  --accent-bg: #1f2b38;
+  --accent-line: #34495f;
+  /* The text on an accent-filled button. */
+  --on-accent: #13161a;
+  --work: #8cc0a0;
+  --work-bg: #1d2a23;
+  --wait: #d8b06a;
+  --wait-bg: #33291a;
+  --wait-line: #5c4a2c;
+  --wait-glow: rgba(216, 176, 106, 0.14);
+  --work-line: #3d5a48;
+  --work-glow: rgba(140, 192, 160, 0.18);
+  --danger: #d99a9a;
+  --danger-bg: #352225;
+  --switch-on: #3fae6a;
+  /* The colours of a shell command in a code block of the chat. */
+  --code-cmd: #8fb3d9;
+  --code-arg: #a6cfa0;
+  --code-flag: #9fc7d1;
+  --code-str: #d8b06a;
+  --code-var: #c3a6e0;
+  --code-op: #7c8591;
+  /* The colours that main.ts gives each terminal (xterm.js). */
+  --term-bg: #13161a;
+  --term-fg: #c9d0d8;
+  --term-cursor: #dfe3e8;
+  --term-selection: #2a3a4c;
+  /* The fourth colour of question options. */
+  --rose: #d6a3c0;
+}
+
+/* The size of the text as a factor of the normal size. The list in the top bar sets it.
+   It has its own name: `--text` is the colour of the main text above. With one name for both,
+   the factor won and every colour made from `--text` was dropped (question-button-styles). */
+:root {
+  --text-scale: 1;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text-2);
+  font: calc(13px * var(--text-scale)) "Segoe UI Variable Text", "Segoe UI", sans-serif;
+}
+
+/* Thin dark scrollbars for the lists, the panels and the terminals. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 5px;
+  background: var(--hairline) content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--line);
+}
+
+/* The keyboard focus shows as a ring in the accent color. */
+button:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+#bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+  user-select: none;
+}
+
+#tabs {
+  display: flex;
+  gap: 4px;
+  min-width: 0;
+  margin-left: 6px;
+  overflow: hidden;
+}
+
+.tab {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 56px;
+  height: 30px;
+  padding: 0 4px 0 12px;
+  border-radius: 6px;
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* In a narrow window, a tab name becomes shorter. The close button stays. */
+.tab span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab.active {
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* A dot in the accent color marks the tab that shows. */
+.tab.active::before {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: 2px;
+  border-radius: 50%;
+  background: var(--accent-bg);
+  content: "";
+}
+
+#bar button {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+#bar button:hover {
+  background: var(--card);
+  color: var(--text);
+}
+
+/* The list for the size of the text. */
+#bar select {
+  flex: none;
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+}
+
+/* The button that closes a tab. */
+#bar .tab button {
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--muted);
+}
+
+/* The buttons with an outline open a panel or a popup. */
+#bar #toggle-chats,
+#bar #select-project,
+#bar #show-rules,
+#bar #setup-pipeline,
+#bar #show-options,
+#bar #show-help {
+  border: 1px solid var(--hairline);
+  color: var(--text);
+}
+
+#bar #show-options,
+#bar #show-help {
+  justify-content: center;
+  width: 30px;
+  padding: 0;
+}
+
+/* A toggle button is raised while its panel shows. */
+body:has(#chats:not([hidden])) #toggle-chats,
+body:has(#panes:not(.no-side)) #toggle-side {
+  background: var(--card);
+  color: var(--text);
+}
+
+/* The commands for the panes, as one group of icon buttons at the right. */
+#pane-tools {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+  padding: 2px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+
+#bar #pane-tools button {
+  justify-content: center;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border-radius: 5px;
+}
+
+/* Shows when a worker waits for the user. A click opens that worker. */
+#bar #worker-alert {
+  display: block;
+  max-width: 320px;
+  padding: 0 12px;
+  overflow: hidden;
+  background: var(--wait);
+  color: var(--wait-bg);
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+#bar #worker-alert:hover {
+  background: var(--wait);
+}
+
+/* Shows when the repository has a new version. A click starts the installer. */
+#bar #update-alert {
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+}
+
+#bar #update-alert:disabled {
+  border-color: var(--hairline);
+  color: var(--muted);
+  cursor: default;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+#main {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* The bar at the bottom of the window: the Claude account, the version of Claude Code and the
+   version of Dispatch. It takes its own line below the views, so it covers nothing, and it has a
+   fixed height: a long email is cut with "…" and never makes a second line. */
+#status-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 16px;
+  box-sizing: border-box;
+  height: calc(22px * var(--text-scale));
+  padding: 0 10px;
+  overflow: hidden;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: calc(11.5px * var(--text-scale));
+  white-space: nowrap;
+  user-select: none;
+}
+
+/* In a narrow window the email gives way first (its large shrink factor), then the two versions;
+   the two usage values keep their width. */
+#status-account {
+  flex: 0 1000 auto;
+  min-width: 0;
+  margin-right: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#status-week,
+#status-week-model {
+  flex: none;
+}
+
+#status-claude,
+#status-dispatch {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#status-bar .missing {
+  color: var(--wait);
+}
+
+#panes {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+/* The list of the Claude Code chats, on the left of the terminals. */
+#chats {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  box-sizing: border-box;
+  width: 264px;
+  border-right: 1px solid var(--hairline);
+  background: var(--surface);
+}
+
+#chat-search {
+  height: 32px;
+  margin: 10px 8px 0;
+  padding: 0 10px;
+  box-sizing: border-box;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  outline: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+#chat-search:focus {
+  border-color: var(--accent-line);
+}
+
+#chat-scope {
+  display: flex;
+  gap: 2px;
+  margin: 10px 8px;
+  padding: 2px;
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+#chat-scope button {
+  flex: 1;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+#chat-scope button.active {
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text);
+  font-weight: 600;
+}
+
+#chat-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  padding: 0 8px 10px;
+  overflow-y: auto;
+}
+
+/* The heading of one project in the list of all chats. A click opens or closes the group. */
+.chat-group {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat-group:hover {
+  background: var(--card);
+}
+
+.chat-group::before {
+  width: 10px;
+  color: var(--muted);
+  font-weight: 400;
+  content: "\25b8";
+}
+
+.chat-group.open::before {
+  content: "\25be";
+}
+
+.chat-group .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-group .count,
+.chat-note {
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+/* The number of chats of a group, as a chip. */
+.chat-group .count {
+  padding: 0 7px;
+  border-radius: 9px;
+  background: var(--card);
+  color: var(--text-2);
+  font-weight: 400;
+}
+
+.chat-note {
+  flex: none;
+  margin: 0;
+  padding: 6px 10px;
+}
+
+button.chat-note {
+  width: 100%;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.chat:hover {
+  background: var(--card);
+}
+
+/* The eye of a row that opens a plan, a report or a run. */
+.row-eye {
+  flex: none;
+  width: calc(13px * var(--text-scale));
+  height: calc(13px * var(--text-scale));
+  margin-right: 5px;
+  vertical-align: -2px;
+  color: var(--text-2);
+}
+
+.chat:hover .row-eye {
+  color: var(--accent);
+}
+
+.chat span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat .when {
+  color: var(--text-2);
+  font-size: calc(12px * var(--text-scale));
+}
+
+/* "earlier triage" after the title of a triage chat that Dispatch replaced with a new one. */
+.chat .chat-mark {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
+/* A chat that a Claude Code process has open. */
+.chat.running .when::before {
+  content: "\25cf  ";
+  color: var(--work);
+}
+
+/* A task of the pipeline: a box with a header (name, time, state) that opens and closes its rows:
+   its runs, its plan and its report. A waiting task has an orange edge, a working one a green edge. */
+.task {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  margin-bottom: 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+}
+
+.task.waits {
+  border-color: var(--wait-line);
+}
+
+.task.working {
+  border-color: var(--work-line);
+}
+
+/* A temporary card of a message to triage (pending-task-card): a dashed edge and muted text, so it
+   does not read as a task. The real task card takes its place when the plan run starts. */
+.task.pending {
+  border-style: dashed;
+  border-color: var(--line);
+}
+
+.task.pending .task-title,
+.task.pending .task-status {
+  color: var(--muted);
+}
+
+/* The whole message as typed (pending-card-width): it wraps over the width of the card, keeps its
+   line breaks, and a very long message stops after 6 lines with "…"; the tooltip has all of it. */
+.task.pending .task-title {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+/* The time after the state word looks like the state word. */
+.task.pending .task-status .task-time {
+  color: inherit;
+  font-size: inherit;
+}
+
+/* A planned entry (overview-backlog): a message that waits for triage. The dashed edge and the
+   whole message of the temporary card, a grip at the left to drag it, and ▲ ▼ × at the right,
+   which show on hover and on keyboard focus. */
+.task.planned {
+  border-style: dashed;
+  border-color: var(--line);
+}
+
+.task.planned .task-title,
+.task.planned .task-status {
+  color: var(--muted);
+}
+
+.task.planned .task-title {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.task.planned .task-status .task-time {
+  color: inherit;
+  font-size: inherit;
+}
+
+.task.planned .task-top {
+  align-items: flex-start;
+}
+
+.task.planned .task-dot {
+  margin-top: 6px;
+}
+
+/* The grip stands where a task has its chevron. */
+.entry-grip {
+  flex: none;
+  width: 12px;
+  color: var(--faint);
+  text-align: center;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.entry-grip:hover {
+  color: var(--text-2);
+}
+
+.task.planned.dragging {
+  opacity: 0.6;
+}
+
+.task.planned.dragging .entry-grip {
+  cursor: grabbing;
+}
+
+/* Where the card lands: a line above the card under the pointer, or below the last one. */
+.task.planned.drag-over {
+  box-shadow: 0 -2px 0 var(--accent);
+}
+
+.task.planned.drag-after {
+  box-shadow: 0 2px 0 var(--accent);
+}
+
+.entry-tools {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  opacity: 0;
+}
+
+.task.planned:hover .entry-tools,
+.entry-tools:focus-within {
+  opacity: 1;
+}
+
+.entry-tools button {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: calc(11px * var(--text-scale));
+  cursor: pointer;
+}
+
+.entry-tools button:hover:not(:disabled) {
+  background: var(--card);
+  color: var(--text);
+}
+
+.entry-tools button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.task-head {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 7px 10px 7px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+
+button.task-head {
+  cursor: pointer;
+}
+
+button.task-head:hover {
+  background: var(--card);
+}
+
+.task-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.task-chevron {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 12px;
+  color: var(--muted);
+  transition: transform 0.12s;
+}
+
+.task.open .task-chevron {
+  transform: rotate(90deg);
+}
+
+.task-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 4px;
+  background: var(--faint);
+}
+
+.task.waits .task-dot {
+  background: var(--wait);
+}
+
+.task.working .task-dot {
+  background: var(--work);
+}
+
+.task.failed .task-dot {
+  background: var(--danger);
+}
+
+.task-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-time {
+  flex: none;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+/* The state under the name, in line with the name. */
+.task-status {
+  padding-left: 33px;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: calc(12px * var(--text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The two short lines under the state: what the task is about, what it did or does. One row
+   each, cut with "…" at the width of the panel; the tooltip has them in full. */
+.task-tldr {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-left: 33px;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.task-tldr span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task.waits .task-status {
+  color: var(--wait);
+}
+
+.task.working .task-status {
+  color: var(--work);
+}
+
+.task.failed .task-status {
+  color: var(--danger);
+}
+
+/* The rows of an open task: compact, on a guide line under the dot.
+   The name of a row is as wide as its text and at least as wide as "Work run" with its eye, so the
+   states stand in one column. The eye sits inside the name and counts for its width. A fixed width
+   cut "Plan run" and "Work run" to "…" (task-row-names); now the state and its details give way first. */
+.task-body {
+  display: flex;
+  flex-direction: column;
+  margin: 0 8px 6px 23px;
+  padding-left: 4px;
+  border-left: 1px solid var(--hairline);
+}
+
+.task .chat {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 8px;
+}
+
+.task .chat > span:first-child {
+  flex: none;
+  min-width: calc(72px * var(--text-scale));
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-2);
+  white-space: nowrap;
+  font-size: calc(12px * var(--text-scale));
+}
+
+.task .chat .when {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The card of a task that waits for the user: a plan to approve, or a question to answer. */
+.task-card {
+  margin: 2px 10px 6px 18px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.task-card .card-title {
+  margin-bottom: 6px;
+  color: var(--wait);
+  font-weight: 600;
+}
+
+/* The Summary section of a plan, as the planner wrote it. */
+.task-card .card-summary {
+  margin-bottom: 6px;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.task-card .card-question {
+  margin: 6px 0 4px;
+  color: var(--text);
+}
+
+.task-card .actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* The chosen option of a question of a worker: the colours of a selected decision option. */
+.task-card .actions button.selected {
+  border-color: var(--work-line);
+  background: var(--work-bg);
+  color: var(--work);
+}
+
+.task-card button {
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: calc(12px * var(--text-scale));
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-card button.primary {
+  border-color: var(--accent-line);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.task-card button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.task-card textarea {
+  display: block;
+  width: 100%;
+  min-height: 48px;
+  margin: 6px 0;
+  padding: 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: calc(12px * var(--text-scale));
+  resize: vertical;
+}
+
+/* Why Approve is grey, or why a click failed. */
+.task-card .card-reason {
+  margin-top: 6px;
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+
+/* The Stop row of a running task: on the guide line under its runs. The first click arms it. */
+.task-stop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+}
+
+.task-stop .task-stop-text {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.task-stop button {
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: calc(12px * var(--text-scale));
+  cursor: pointer;
+}
+
+.task-stop button.danger {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.task-stop button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* A refused stop: its reason under the buttons. */
+.task-stop .card-reason {
+  flex-basis: 100%;
+  color: var(--danger);
+  font-size: calc(12px * var(--text-scale));
+  white-space: pre-wrap;
+}
+
+/* The headings "Tasks" and "Chats" in the list. */
+#chat-list h2 {
+  flex: none;
+  margin: 12px 8px 4px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 600;
+}
+
+/* A worker is a background session of Claude Code. Its second line shows its state as a chip. */
+.worker .when {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chip {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--text-2);
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.chip.working {
+  background: var(--work-bg);
+  color: var(--work);
+}
+
+.chip.blocked,
+.chip.needs-decision {
+  background: var(--wait-bg);
+  color: var(--wait);
+}
+
+.chip.failed,
+.chip.stopped {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+/* A worker that waits for the user stands out in the list. */
+.worker.blocked {
+  background: var(--card);
+}
+
+/* A chat that runs in a terminal of this app. */
+.chat.open {
+  background: var(--accent-bg);
+}
+
+/* Each pane has a side panel with the data of its terminal. */
+.side {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  width: 340px;
+  padding: 12px;
+  box-sizing: border-box;
+  overflow-y: auto;
+  border-left: 1px solid var(--hairline);
+  background: var(--surface);
+}
+
+/* The Panel button hides all side panels. */
+.no-side .side {
+  display: none;
+}
+
+/* A narrow pane has no space for its side panel. */
+@container (max-width: 600px) {
+  .side {
+    display: none;
+  }
+}
+
+.side h2 {
+  margin: 14px 0 8px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 600;
+}
+
+.side h2:first-child {
+  margin-top: 0;
+}
+
+.info {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 7px 12px;
+  margin: 0;
+}
+
+.info dt {
+  color: var(--text-2);
+}
+
+.info dd {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thumbs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.card:hover {
+  border-color: var(--accent-line);
+}
+
+.card .preview {
+  height: 90px;
+  border-radius: 5px;
+  background: var(--card);
+  overflow: hidden;
+  color: var(--muted);
+  font: 7px/1.3 Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.card .preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.card span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The popup of the Rules button: the rules of the project, in groups. */
+#rules,
+#help,
+#options {
+  width: min(92vw, 900px);
+  height: 86vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 50%);
+  color: var(--text);
+}
+
+#rules[open],
+#help[open],
+#options[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#rules::backdrop,
+#help::backdrop,
+#options::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+#rules header,
+#help header,
+#options header {
+  display: flex;
+  align-items: center;
+  padding-left: 20px;
+}
+
+#rules h2,
+#help h2,
+#options h2 {
+  flex: 1;
+  margin: 0;
+  font-size: calc(16px * var(--text-scale));
+  font-weight: 600;
+}
+
+#rules-close,
+#help-close,
+#options-close {
+  width: 32px;
+  height: 32px;
+  margin: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: calc(18px * var(--text-scale));
+  cursor: pointer;
+}
+
+#rules-close:hover,
+#help-close:hover,
+#options-close:hover {
+  background: var(--card);
+}
+
+/* Copies all the rules as text. */
+#rules-copy,
+#rules-analyse {
+  height: 28px;
+  margin: 8px 0;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+#rules-analyse {
+  margin-right: 8px;
+}
+
+/* The time limit, the model and the effort of Analyse rules, left of the button. */
+#rules .rules-option {
+  height: 28px;
+  margin: 8px 6px 8px 0;
+  padding: 0 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+#rules-copy:disabled,
+#rules-analyse:disabled {
+  border-color: var(--hairline);
+  color: var(--muted);
+  cursor: default;
+}
+
+#rules-project {
+  margin: 0;
+  padding: 0 20px 10px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--muted);
+  word-break: break-all;
+}
+
+/* The version of the app and the result of the update check, with the button that checks now. */
+#help-version-row {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+#help-version {
+  flex: 1;
+  margin: 0;
+  color: var(--text-2);
+  font-size: calc(13px * var(--text-scale));
+}
+
+#update-check {
+  flex: none;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: inherit;
+  font: inherit;
+  font-size: calc(13px * var(--text-scale));
+  cursor: pointer;
+}
+
+#update-check:hover:not(:disabled) {
+  border-color: var(--accent-line);
+}
+
+#update-check:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+#rules-body,
+#help-body {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 20px 20px;
+  overflow-y: auto;
+}
+
+#rules h3,
+#help h3 {
+  margin: 18px 0 0;
+  color: var(--accent);
+  font-size: calc(14px * var(--text-scale));
+  font-weight: 600;
+}
+
+#rules .file {
+  margin: 2px 0 6px;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  word-break: break-all;
+}
+
+#rules details {
+  margin-top: 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+#rules summary {
+  padding: 9px 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#rules .markdown code {
+  border-radius: 4px;
+  background: var(--card);
+  font-size: calc(12px * var(--text-scale));
+}
+
+#rules .markdown {
+  padding: 0 14px 6px;
+  font-size: calc(13px * var(--text-scale));
+  line-height: 1.5;
+}
+
+/* The row of one rule: the text, then the buttons Off/On and Remove. */
+#rules .rule {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+#rules .rule .markdown {
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 0;
+}
+
+#rules .rule.off .markdown {
+  color: var(--faint);
+  text-decoration: line-through;
+}
+
+#rules .rule-buttons {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  padding: 5px 10px 0 0;
+}
+
+#rules .rule-buttons button {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--card);
+  color: var(--text-2);
+  font: inherit;
+  font-size: calc(11px * var(--text-scale));
+  cursor: pointer;
+}
+
+#rules .rule-buttons button:hover {
+  color: var(--text);
+}
+
+#rules .rule-buttons button:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+/* The result of the check of the rules (ticket rules-check): in the Rules popup above the groups,
+   and in the Setup pipeline window above the steps. One look in both. */
+#rules-findings {
+  flex: none;
+  max-height: 42vh;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--hairline);
+}
+
+#rules-findings:empty {
+  display: none;
+}
+
+#rules-findings > .findings-state,
+#rules-findings > .remove-all,
+#rules-findings > .finding {
+  margin-right: 20px;
+  margin-left: 20px;
+}
+
+.findings-state {
+  margin: 8px 0;
+  color: var(--text-2);
+  font-size: calc(13px * var(--text-scale));
+  word-break: normal;
+}
+
+.finding {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.finding:last-child {
+  margin-bottom: 12px;
+}
+
+.finding p {
+  margin: 4px 0;
+  word-break: normal;
+}
+
+/* `#setup p` gives every paragraph of the Setup window the muted colour; these win over it. */
+.finding .verdict,
+#setup .finding .verdict {
+  color: var(--wait);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.finding.conflict .verdict,
+#setup .finding.conflict .verdict {
+  color: var(--danger);
+}
+
+.finding .where,
+.finding .update-title {
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.finding .reason,
+#setup .finding .reason {
+  color: var(--text-2);
+}
+
+.finding .markdown,
+#rules .finding .markdown {
+  padding: 0;
+}
+
+.finding .update,
+#rules .finding .update {
+  padding: 4px 8px;
+  border-left: 2px solid var(--work-line);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+}
+
+.finding .warning,
+#setup .finding .warning {
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: var(--wait-bg);
+  color: var(--wait);
+}
+
+.finding .rule-buttons {
+  padding: 4px 0 0;
+}
+
+.finding .rule-buttons button,
+.remove-all {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--card);
+  color: var(--text-2);
+  font: inherit;
+  font-size: calc(11px * var(--text-scale));
+  cursor: pointer;
+}
+
+.finding .rule-buttons button:hover,
+.remove-all:hover {
+  color: var(--text);
+}
+
+.finding .rule-buttons button:disabled,
+.remove-all:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+#rules details > .markdown:last-child,
+#rules .rule:last-child {
+  padding-bottom: 8px;
+}
+
+#rules .markdown ul,
+#rules .markdown ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+#rules .markdown li {
+  margin: 5px 0;
+}
+
+#rules .markdown p {
+  margin: 6px 0;
+}
+
+/* The popup of the help button. It has the frame of the Rules popup. */
+#help header {
+  border-bottom: 1px solid var(--hairline);
+}
+
+#help-body {
+  font-size: calc(13px * var(--text-scale));
+  line-height: 1.55;
+}
+
+#help-body p {
+  margin: 8px 0;
+}
+
+#help-body ol,
+#help-body ul {
+  margin: 6px 0;
+  padding-left: 22px;
+}
+
+#help-body li {
+  margin: 7px 0;
+}
+
+/* What a click does, below the instruction of a step. */
+#help-body .does {
+  display: block;
+  color: var(--text-2);
+}
+
+#help-body code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--card);
+  font-size: calc(12px * var(--text-scale));
+}
+
+#help-body table {
+  width: 100%;
+  margin: 8px 0;
+  border-collapse: collapse;
+}
+
+#help-body th,
+#help-body td {
+  padding: 7px 10px;
+  border: 1px solid var(--hairline);
+  text-align: left;
+  vertical-align: top;
+}
+
+#help-body th {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 600;
+}
+
+/* The dialog of the Setup pipeline button. */
+#setup {
+  width: min(90vw, 760px);
+  max-height: 85vh;
+  padding: 16px 20px;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 50%);
+  color: var(--text);
+}
+
+#setup::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+#setup h2 {
+  margin: 0 0 4px;
+  font-size: calc(16px * var(--text-scale));
+  font-weight: 600;
+}
+
+#setup p {
+  margin: 4px 0;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+/* The settings of the project, above the steps. */
+#setup-options,
+#options fieldset {
+  margin: 10px 0 0;
+  padding: 6px 12px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+
+#setup-options legend,
+#options legend {
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 600;
+}
+
+#setup-options label,
+#options label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 6px 0;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+#setup-options input,
+#options input {
+  flex: none;
+  accent-color: var(--accent);
+}
+
+#setup-options p,
+#options p {
+  margin-top: 8px;
+  word-break: normal;
+}
+
+/* The Options window: the frame of the Help window, as high as its content. */
+#options {
+  width: min(92vw, 560px);
+  height: fit-content;
+  max-height: 86vh;
+}
+
+#options header {
+  border-bottom: 1px solid var(--hairline);
+}
+
+#options-body {
+  padding: 4px 20px 20px;
+  overflow-y: auto;
+  font-size: calc(13px * var(--text-scale));
+}
+
+#options label.options-list {
+  align-items: center;
+  justify-content: space-between;
+}
+
+#options select {
+  height: 30px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+#setup details {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+#setup summary {
+  color: var(--wait);
+  cursor: pointer;
+}
+
+#setup details.done summary {
+  color: var(--work);
+}
+
+/* The checkboxes of the working rules, below the heading of the step. */
+#setup .setup-rules label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 4px 8px;
+  font: calc(12px * var(--text-scale))/1.5 "Cascadia Mono", Consolas, monospace;
+  cursor: pointer;
+}
+
+#setup .setup-rules input {
+  flex: none;
+  accent-color: var(--accent);
+}
+
+#setup pre {
+  margin: 4px 0 0;
+  padding: 8px;
+  overflow-x: auto;
+  background: var(--bg);
+  font: calc(12px * var(--text-scale))/1.5 "Cascadia Mono", Consolas, monospace;
+  white-space: pre-wrap;
+}
+
+/* The conflicts of the rules with the pipeline, above the steps. */
+#setup-rules-check {
+  margin-top: 10px;
+  padding: 6px 12px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+
+#setup-rules-check h3 {
+  margin: 0;
+  color: var(--accent);
+  font-size: calc(13px * var(--text-scale));
+  font-weight: 600;
+}
+
+#setup-rules-check:has(#setup-rules-state:empty) {
+  display: none;
+}
+
+#setup-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+#setup-buttons button {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+/* The filled button does the next action: the steps, then the commit. */
+#setup-buttons #setup-apply:not(:disabled),
+#setup-buttons #setup-commit:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+#setup-buttons button:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+/* The viewer shows one file on top of the terminals. */
+#viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  background: rgb(0 0 0 / 88%);
+}
+
+#viewer header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-left: 12px;
+  background: var(--surface);
+}
+
+#viewer-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#viewer-close {
+  padding: 7px 14px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+#viewer-close:hover {
+  background: var(--card);
+  color: var(--text);
+}
+
+#viewer-body {
+  display: flex;
+  flex: 1;
+  justify-content: center;
+  min-height: 0;
+  padding: 16px;
+  overflow: auto;
+}
+
+#viewer-body > img {
+  max-width: 100%;
+  max-height: 100%;
+  margin: auto;
+  object-fit: contain;
+}
+
+#viewer-body > pre,
+#viewer-body > .markdown {
+  width: min(100%, 900px);
+  height: max-content;
+  min-height: 100%;
+  margin: 0;
+  padding: 16px 24px;
+  box-sizing: border-box;
+  background: var(--surface);
+  color: var(--text);
+}
+
+#viewer-body > pre {
+  font: calc(13px * var(--text-scale))/1.5 "Cascadia Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.markdown {
+  font-size: calc(14px * var(--text-scale));
+  line-height: 1.6;
+}
+
+.markdown a {
+  color: var(--accent);
+}
+
+.markdown code,
+.markdown pre {
+  background: var(--bg);
+  font: calc(13px * var(--text-scale))/1.5 "Cascadia Mono", Consolas, monospace;
+}
+
+.markdown code {
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.markdown pre {
+  padding: 12px;
+  overflow-x: auto;
+}
+
+.markdown pre code {
+  padding: 0;
+}
+
+.markdown table {
+  border-collapse: collapse;
+}
+
+.markdown th,
+.markdown td {
+  padding: 4px 10px;
+  border: 1px solid var(--hairline);
+}
+
+.markdown img {
+  max-width: 100%;
+}
+
+/* One view per tab. It holds one pane, or a tree of splits with panes. */
+.view {
+  position: absolute;
+  inset: 6px;
+  display: none;
+}
+
+.view.active {
+  display: flex;
+}
+
+/* The gap between the children is the handle for a resize. */
+.split {
+  display: flex;
+  gap: 6px;
+  cursor: col-resize;
+}
+
+.split.column {
+  flex-direction: column;
+  cursor: row-resize;
+}
+
+.split,
+.pane {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+}
+
+.pane {
+  display: flex;
+  overflow: hidden;
+  cursor: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  /* The side panel reads the width of the pane. */
+  container-type: inline-size;
+}
+
+/* Holds the bar of a workspace pane and the terminal below it. */
+.term-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+/* The bar above the terminal of a workspace pane, with the model and effort selectors. */
+.pane-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+  font-size: calc(12px * var(--text-scale));
+  white-space: nowrap;
+}
+
+/* The number of agents that the workers of the project started. */
+.pane-bar .agent-count {
+  color: var(--text-2);
+}
+
+/* The name of a run of the workers before its selectors: "plan" or "work". */
+.pane-bar .run {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
+/* The name of the pane: "Triage" or "Workers". */
+.pane-bar > span:first-child {
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.pane-bar.triage > span:first-child {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.pane-bar select {
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.pane-bar .hint {
+  overflow: hidden;
+  color: var(--wait);
+  text-overflow: ellipsis;
+}
+
+/* The lists of a pane bar and their hint: one group at the right edge, also after a wrap. */
+.pane-bar .pane-bar-lists {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+  margin-left: auto;
+}
+
+/* The terminal of a pane. */
+.term {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  padding: 6px 0 0 10px;
+}
+
+/* The switch between the chat view and the terminal of a triage pane. */
+.view-switch {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.view-switch button {
+  height: 20px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.view-switch button.active {
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* The chat view of a triage pane. It covers the terminal. */
+.chat-view {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.chat-messages {
+  flex: 1;
+  min-height: 0;
+  padding: 14px 16px 4px;
+  overflow-y: auto;
+  outline: 0;
+}
+
+.chat-messages:empty::before {
+  content: "No messages yet.";
+  color: var(--muted);
+}
+
+/* A frame around the messages of one task that follow each other (chat-task-sections). */
+.chat-section {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  transition: opacity 0.15s;
+}
+
+.chat-section > .msg:last-child {
+  margin-bottom: 0;
+}
+
+/* The ticket id of the frame, small and grey at its top. */
+.chat-section-label {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font: calc(11px * var(--text-scale))/1.4 "Cascadia Mono", Consolas, monospace;
+}
+
+.chat-section-label[hidden] {
+  display: none;
+}
+
+/* Each frame but the newest is dimmed, border and content. The mouse over it, the keyboard focus
+   in it, or an open question in it show the regular colours. Opacity changes no size. */
+.chat-section:not(.current):not(:hover):not(:focus-within):not(:has(.msg.question.open)) {
+  opacity: 0.45;
+}
+
+.msg {
+  margin-bottom: 12px;
+  word-break: break-word;
+}
+
+.msg.markdown > :first-child {
+  margin-top: 0;
+}
+
+.msg.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.msg.markdown code,
+.msg.markdown pre {
+  background: var(--card);
+}
+
+/* A message of the user is a bubble at the right side. */
+.msg.user {
+  width: fit-content;
+  max-width: 85%;
+  margin-left: auto;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--card);
+  font-size: calc(14px * var(--text-scale));
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+/* The message is sent, and the chat file does not have it yet. */
+.msg.user.pending {
+  opacity: 0.6;
+}
+
+/* One line for each tool call of Claude Code. */
+.msg.tool {
+  margin-bottom: 4px;
+  overflow: hidden;
+  color: var(--muted);
+  font: calc(12px * var(--text-scale))/1.5 "Cascadia Mono", Consolas, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.msg.tool + .msg:not(.tool) {
+  margin-top: 12px;
+}
+
+.msg.note {
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  text-align: center;
+}
+
+/* A question of Claude Code with its options as buttons. */
+.msg.question {
+  padding: 12px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: calc(14px * var(--text-scale));
+  line-height: 1.5;
+}
+
+.msg.question.open {
+  border-color: var(--wait-line);
+}
+
+.question-part + .question-part {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+}
+
+.question-text {
+  font-weight: 600;
+  white-space: pre-wrap;
+}
+
+.question-header {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: calc(12px * var(--text-scale));
+  font-weight: 500;
+}
+
+.question-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.msg.question button {
+  min-height: 28px;
+  padding: 2px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.msg.question > .submit {
+  border-color: var(--wait-line);
+}
+
+/* Each option has a colour of its own, as a soft fill and a border; Yes and No are green and red. */
+.msg.question button.tone-0 {
+  --tone: var(--accent);
+}
+
+.msg.question button.tone-1,
+.msg.question button.yes {
+  --tone: var(--work);
+}
+
+.msg.question button.tone-2 {
+  --tone: var(--code-var);
+}
+
+.msg.question button.tone-3 {
+  --tone: var(--rose);
+}
+
+.msg.question button.no {
+  --tone: var(--danger);
+}
+
+.msg.question .question-options button:not(.other) {
+  border-color: color-mix(in srgb, var(--tone) 55%, transparent);
+  background: color-mix(in srgb, var(--tone) 20%, var(--surface));
+  color: color-mix(in srgb, var(--tone) 45%, var(--text));
+}
+
+.msg.question .question-options button:not(.other):hover:not(:disabled) {
+  border-color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 32%, var(--surface));
+}
+
+/* The full-colour fill with dark text marks the option that counts: before the answer the one that
+   Claude Code recommends (with a small tag), after the answer the chosen one (rules further down). */
+.msg.question .question-options button.recommended {
+  border-color: var(--tone);
+  background: var(--tone);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.msg.question .question-options button.recommended:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--tone) 85%, var(--text));
+}
+
+.msg.question .question-options button.recommended .option-tag {
+  background: color-mix(in srgb, var(--on-accent) 22%, transparent);
+  color: var(--on-accent);
+}
+
+.option-tag {
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--tone) 30%, transparent);
+  color: var(--tone);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 500;
+}
+
+.msg.question button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.msg.question .question-options button:disabled:not(.chosen) {
+  opacity: 0.5;
+}
+
+.msg.question .question-options .other:disabled {
+  border-color: var(--hairline);
+}
+
+/* Cancel stops triage: it stands at the right end of the row, apart from the answers. */
+.msg.question .question-options .cancel {
+  margin-left: auto;
+}
+
+.msg.question > .cancel {
+  margin-left: 8px;
+}
+
+/* After the answer the chosen option takes the full fill with dark text. */
+.msg.question .question-options button.chosen:not(.other) {
+  border-color: var(--tone);
+  background: var(--tone);
+  color: var(--on-accent);
+}
+
+.msg.question .question-options button.chosen .option-tag {
+  background: color-mix(in srgb, var(--on-accent) 22%, transparent);
+  color: var(--on-accent);
+}
+
+/* A recommended option that is off and not chosen turns soft like the others, so a dimmed full
+   block never looks stronger than the chosen button. The weight stays, so its width stays. */
+.msg.question .question-options button.recommended:disabled:not(.chosen) {
+  border-color: color-mix(in srgb, var(--tone) 55%, transparent);
+  background: color-mix(in srgb, var(--tone) 20%, var(--surface));
+  color: color-mix(in srgb, var(--tone) 45%, var(--text));
+}
+
+.msg.question .question-options button.recommended:disabled:not(.chosen) .option-tag {
+  background: color-mix(in srgb, var(--tone) 30%, transparent);
+  color: var(--tone);
+}
+
+.msg.question button.chosen,
+.msg.question button.chosen:disabled {
+  border-color: var(--tone, var(--wait-line));
+}
+
+.msg.question > .submit,
+.msg.question > .other {
+  margin-top: 10px;
+}
+
+.question-hint {
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.msg.question.answered .question-hint {
+  display: none;
+}
+
+/* The state of the triage session, above the message box. */
+.chat-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 16px 0;
+  color: var(--text-2);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.chat-state button {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chat-box {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+  margin: 8px 12px 12px;
+  padding: 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.chat-box:focus-within {
+  border-color: var(--line);
+}
+
+.chat-box textarea {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 4px;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: var(--text);
+  font: calc(14px * var(--text-scale))/1.5 "Segoe UI Variable Text", "Segoe UI", sans-serif;
+  overflow-y: hidden;
+  resize: none;
+}
+
+.chat-box textarea::placeholder {
+  color: var(--muted);
+}
+
+.chat-box .send {
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chat-box .send:disabled {
+  border-color: var(--hairline);
+  color: var(--muted);
+  cursor: default;
+}
+
+/* The images that go with the next message. */
+.chat-images {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.chat-image {
+  position: relative;
+}
+
+.chat-image img {
+  display: block;
+  width: 56px;
+  height: 56px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.chat-image button {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--card);
+  color: var(--text);
+  font-size: calc(12px * var(--text-scale));
+  line-height: 1;
+  cursor: pointer;
+}
+
+.split > .pane.focused {
+  border-color: var(--accent-line);
+}
+
+/* The Decisions window of a plan: every decision with its options, and Other for an own answer. It has the frame of the help. */
+#decisions {
+  width: min(92vw, 820px);
+  max-height: 86vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 50%);
+  color: var(--text);
+  font-size: calc(13px * var(--text-scale));
+}
+
+#decisions[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#decisions::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+#decisions header {
+  display: flex;
+  align-items: center;
+  padding-left: 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+#decisions h2 {
+  flex: 1;
+  margin: 0;
+  font-size: calc(16px * var(--text-scale));
+  font-weight: 600;
+}
+
+#decisions-close {
+  width: 32px;
+  height: 32px;
+  margin: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: calc(18px * var(--text-scale));
+  cursor: pointer;
+}
+
+#decisions-close:hover {
+  background: var(--card);
+}
+
+#decisions-intro {
+  flex: none;
+  margin: 0;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+#decisions-body {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 20px 12px;
+  overflow-y: auto;
+}
+
+/* The text the decisions come from: the user's words and the Goal of the plan. It scrolls in its
+   own box, so a long brief cannot push decision 1 out of reach (ticket decisions-context). */
+.decisions-context {
+  max-height: 30vh;
+  padding: 10px 0 12px;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--card);
+}
+
+.decisions-context-label {
+  margin: 4px 0 2px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 600;
+}
+
+.decisions-context-text {
+  color: var(--text-2);
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.decision {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--card);
+}
+
+.decision-title {
+  margin-bottom: 8px;
+  line-height: 1.45;
+}
+
+.decision-title .badge {
+  margin-right: 6px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  background: var(--wait-bg);
+  color: var(--wait);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 600;
+}
+
+.decision-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.decision-options button {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.decision-options button.selected {
+  border-color: var(--work-line);
+  background: var(--work-bg);
+  color: var(--work);
+}
+
+.decision-options button .recommended {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
+.decision-reason {
+  margin: 6px 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.decision-other {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.decision-other:focus {
+  border-color: var(--accent-line);
+  outline: none;
+}
+
+#decisions-footer {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--hairline);
+}
+
+#decisions-reason {
+  flex: 1 1 100%;
+  color: var(--wait);
+  white-space: pre-wrap;
+}
+
+#decisions-reason:empty {
+  display: none;
+}
+
+#decisions-footer button {
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+#decisions-footer button.primary {
+  border-color: var(--work-line);
+  background: var(--work-bg);
+  color: var(--work);
+}
+
+#decisions-footer button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The Context section of the side panel: the table of /context of the session, as a bar and rows. */
+.context-head {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.context-head span:last-child {
+  color: var(--muted);
+}
+
+.context-bar {
+  display: flex;
+  height: 6px;
+  margin-bottom: 10px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--card);
+}
+
+.context-bar span {
+  flex: none;
+  height: 100%;
+}
+
+.context-rows {
+  display: grid;
+  grid-template-columns: 10px 1fr auto 46px;
+  gap: 5px 8px;
+  align-items: center;
+}
+
+.context-row {
+  display: contents;
+  color: var(--text);
+}
+
+.context-row.dim {
+  color: var(--muted);
+}
+
+.context-row .swatch {
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+
+.context-row span:nth-child(3),
+.context-row span:nth-child(4) {
+  text-align: right;
+}
+
+.context-row .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-note {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  word-break: break-word;
+}
+
+/* The switch between focus mode and the tabs, at the left of the bar. */
+#view-mode {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+#view-mode button {
+  padding: 4px 11px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+#view-mode button.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Focus mode hides the tools of the tabs and the chat list. */
+body.focus-mode #toggle-chats,
+body.focus-mode #tabs,
+body.focus-mode #pane-tools,
+body.focus-mode #select-project,
+body.focus-mode #chats {
+  display: none;
+}
+
+#focus-projects {
+  display: flex;
+  flex: 1;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+#focus-projects[hidden],
+#focus-add[hidden] {
+  display: none;
+}
+
+.focus-pill {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.focus-pill .name {
+  font-weight: 600;
+}
+
+.focus-pill .count {
+  padding: 0 7px;
+  border-radius: 9px;
+  background: var(--card);
+  color: var(--text-2);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.focus-pill .count.working {
+  color: var(--work);
+}
+
+.focus-pill .count.waits {
+  color: var(--wait);
+}
+
+#focus-add {
+  flex: none;
+  padding: 4px 11px;
+  border: 1px dashed var(--line);
+  border-radius: 16px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.focus-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--muted);
+}
+
+.focus-dot.working {
+  background: var(--work);
+}
+
+.focus-dot.waits {
+  background: var(--wait);
+}
+
+/* The columns: one per project. From the fourth one on the row scrolls sideways. */
+#focus {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+#focus[hidden] {
+  display: none;
+}
+
+/* Each column takes its share (flex-grow, set by a drag) of the width; below 360px the row scrolls. */
+.focus-col {
+  position: relative;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 360px;
+  border-right: 1px solid var(--hairline);
+}
+
+/* The drag handles: on the right edge of a column (not the last), and between the left panel and the chat. */
+.col-resize {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  bottom: 0;
+  z-index: 5;
+  width: 7px;
+  cursor: col-resize;
+}
+
+.focus-col:last-child > .col-resize {
+  display: none;
+}
+
+.side-resize {
+  flex: none;
+  width: 5px;
+  margin: 0 -2px;
+  z-index: 4;
+  cursor: col-resize;
+}
+
+.col-resize:hover,
+.col-resize.dragging,
+.side-resize:hover,
+.side-resize.dragging {
+  background: color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+/* While a handle moves, the terminals and texts under the pointer do not take it. */
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+body.resizing .focus-body > :not(.side-resize) {
+  pointer-events: none;
+}
+
+/* The handle of the chat panel in Tabs: the same drag, for the chat list and the terminals. */
+body.resizing #main > #chats,
+body.resizing #main > #panes {
+  pointer-events: none;
+}
+
+/* The handle shows only with the chat panel: not when the panel is hidden, in focus mode or on the Map. */
+#chats[hidden] + .chats-resize,
+body.focus-mode .chats-resize,
+body.map-mode .chats-resize {
+  display: none;
+}
+
+/* The width that the user dragged in Tabs is also the usual width of the left panels in focus mode.
+   A left panel that the user dragged keeps its own width (an inline style). */
+body.chats-sized .focus-side {
+  width: var(--chats-width);
+}
+
+.focus-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 9px;
+  height: 42px;
+  padding: 0 10px 0 14px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--bg);
+}
+
+.focus-name {
+  font-size: calc(14px * var(--text-scale));
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.focus-path {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-workers-button,
+.focus-start {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.focus-workers-button.open {
+  border-color: var(--accent-line);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.focus-close {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: calc(16px * var(--text-scale));
+  cursor: pointer;
+}
+
+.focus-close:hover {
+  background: var(--card);
+}
+
+.focus-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* The left column of a project: its triage chat and its tasks, like the chat panel. */
+.focus-side {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  box-sizing: border-box;
+  width: calc(248px * var(--text-scale));
+  padding: 4px 8px 12px;
+  overflow-y: auto;
+  border-right: 1px solid var(--hairline);
+  background: var(--bg);
+}
+
+.focus-side h2 {
+  margin: 12px 6px 6px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 600;
+}
+
+.focus-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 6px;
+}
+
+.focus-triage,
+.focus-agents {
+  display: flex;
+  min-height: 0;
+}
+
+.focus-triage {
+  flex: 1;
+}
+
+/* The agent view needs about 20 rows: in a shorter terminal every update of it leaves a copy of
+   itself above (2026-11-08: 20 copies in a drawer of 9 rows). */
+.focus-agents {
+  flex: 0 0 52%;
+  min-height: calc(420px * var(--text-scale));
+}
+
+.focus-agents[hidden] {
+  display: none;
+}
+
+.focus-triage .side,
+.focus-agents .side {
+  display: none;
+}
+
+.focus-start {
+  margin: auto;
+}
+
+.focus-empty {
+  margin: auto;
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------------------------------------
+   The calm layer (Slate, 2026-11-08): space and soft surfaces instead of borders, one accent,
+   status as small dots, labels in normal case. Focus mode first.
+   --------------------------------------------------------------------------------------------- */
+
+body {
+  line-height: 1.45;
+}
+
+#bar {
+  gap: 12px;
+  padding: 4px 14px;
+  background: var(--bg);
+}
+
+#bar button {
+  color: var(--muted);
+}
+
+#bar button:hover {
+  background: var(--card);
+  color: var(--text);
+}
+
+/* The view modes: one framed group, like the pane buttons. The active mode is raised. */
+#view-mode {
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--group-line);
+  border-radius: 8px;
+  background: none;
+}
+
+#view-mode button,
+#bar #view-mode button {
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+}
+
+#view-mode button.active,
+#bar #view-mode button.active {
+  background: var(--card);
+  color: var(--text);
+  font-weight: 500;
+}
+
+#bar #view-mode button:hover {
+  background: var(--card);
+  color: var(--text);
+}
+
+/* The projects in the bar: a dot, the name, a quiet status. */
+#focus-projects {
+  flex: 0 1 auto;
+  gap: 2px;
+}
+
+.focus-pill,
+#bar .focus-pill {
+  gap: 8px;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--text);
+}
+
+.focus-pill .name {
+  font-weight: 500;
+}
+
+.focus-pill .count,
+.focus-pill .count.working,
+.focus-pill .count.waits {
+  padding: 0;
+  background: none;
+  color: var(--muted);
+  font-size: calc(12.5px * var(--text-scale));
+}
+
+#focus-add,
+#bar #focus-add {
+  justify-content: center;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: var(--muted);
+}
+
+#bar #focus-add:hover {
+  color: var(--text);
+}
+
+/* The projects and the setup buttons: framed groups, like the pane buttons. */
+#bar-projects,
+#bar-setup {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  padding: 2px;
+  border: 1px solid var(--group-line);
+  border-radius: 8px;
+}
+
+/* The pane buttons take the same visible frame as the other groups. */
+#pane-tools {
+  border-color: var(--group-line);
+}
+
+.focus-dot {
+  width: 7px;
+  height: 7px;
+}
+
+/* The columns: one hairline between them, no frames inside. */
+.focus-col {
+  border-right: 0;
+  border-left: 1px solid var(--hairline);
+}
+
+.focus-col:first-child {
+  border-left: 0;
+}
+
+/* With two or more projects, each project has a thin grey frame, and the project in focus (the one
+   clicked or typed in last, class `in-focus`, src/focusmark.ts) a blue one of 2 pixels
+   (focus-project-highlight). The frame is an overlay on the column: it takes no room, so no chat
+   and no terminal changes its size when the focus moves, and it lets the pointer through. It lies
+   above the terminal (xterm up to 11) and the Chat view (10). */
+.focus-col:not(:only-child)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  border: 1px solid var(--line);
+  pointer-events: none;
+}
+
+.focus-col.in-focus::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  border: 2px solid var(--accent);
+  pointer-events: none;
+}
+
+/* The view is a layer of its own: the frame stays below the file viewer (fixed, z-index 10). */
+#focus {
+  isolation: isolate;
+}
+
+.focus-head {
+  gap: 10px;
+  height: 54px;
+  padding: 0 14px 0 22px;
+  border-bottom: 0;
+  background: none;
+}
+
+.focus-name {
+  color: var(--text);
+  font-size: calc(15px * var(--text-scale));
+}
+
+/* The folder shows as the tooltip of the name. */
+.focus-path {
+  display: none;
+}
+
+.focus-workers-button,
+.focus-start {
+  border: 0;
+  background: none;
+  color: var(--muted);
+}
+
+.focus-workers-button:hover,
+.focus-start:hover {
+  background: var(--card);
+  color: var(--text);
+}
+
+.focus-workers-button.open {
+  border: 0;
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.focus-close {
+  color: var(--faint);
+}
+
+.focus-side {
+  gap: 4px;
+  padding: 2px 14px 20px 20px;
+  border-right: 0;
+  background: none;
+}
+
+.focus-side h2 {
+  margin: 18px 4px 6px;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  font-weight: 400;
+}
+
+.focus-side h2:first-child {
+  margin-top: 4px;
+}
+
+.focus-main {
+  gap: 10px;
+  padding: 0 14px 14px 4px;
+}
+
+.focus-triage .pane,
+.focus-agents .pane {
+  border: 0;
+  border-radius: 12px;
+}
+
+.focus-triage .pane-bar,
+.focus-agents .pane-bar {
+  border-bottom: 0;
+  background: var(--surface);
+}
+
+/* Cards: a soft surface, no frame; the title with a small dot instead of a colour. */
+.task-card {
+  padding: 14px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--card);
+}
+
+.task-card .card-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.task-card .card-title::before {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 4px;
+  background: var(--wait);
+  content: "";
+}
+
+.task-card .card-summary {
+  color: var(--text-2);
+  line-height: 1.55;
+}
+
+.task-card button {
+  border-color: var(--hairline);
+  background: none;
+  color: var(--text-2);
+}
+
+.task-card button.primary {
+  border-color: transparent;
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+/* Status chips become quiet coloured words. */
+.chip,
+.chip.working,
+.chip.blocked,
+.chip.needs-decision,
+.chip.failed,
+.chip.stopped {
+  padding: 0;
+  background: none;
+  font-weight: 500;
+}
+
+.task-title {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* The card of a waiting task sits inside the task's box. */
+.task > .task-card {
+  margin: 2px 8px 8px;
+}
+
+/* The pane frames in Tabs: a hairline, the focused one in the accent line. */
+.pane {
+  border-color: var(--hairline);
+  border-radius: 10px;
+}
+
+/* The bar buttons of the calm look: no frames, quiet text until hovered. */
+#bar #toggle-chats,
+#bar #select-project,
+#bar #show-rules,
+#bar #setup-pipeline,
+#bar #show-options,
+#bar #show-help {
+  border: 0;
+  color: var(--muted);
+}
+
+#bar #toggle-chats:hover,
+#bar #select-project:hover,
+#bar #show-rules:hover,
+#bar #setup-pipeline:hover,
+#bar #show-options:hover,
+#bar #show-help:hover {
+  color: var(--text);
+}
+
+/* The setup buttons inside their frame take the size of the pane buttons. */
+#bar #bar-setup button {
+  height: 26px;
+  border-radius: 5px;
+}
+
+#bar select {
+  border-color: transparent;
+  background: none;
+  color: var(--muted);
+}
+
+/* The triage row of a column: the soft accent surface of the design. */
+.focus-side .focus-triage-row {
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--accent-bg);
+  color: var(--text);
+}
+
+.focus-side .focus-triage-row .when {
+  color: var(--muted);
+}
+
+/* The context of the triage chat on its card: a thin bar, the numbers, and a note when a new chat is due. */
+.focus-side .focus-triage-row .triage-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
+.triage-context-bar {
+  flex: 0 0 56px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--card);
+}
+
+.triage-context-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+.triage-context.due .triage-context-bar span {
+  background: var(--wait);
+}
+
+.focus-side .focus-triage-row .triage-context.switching,
+.triage-context-note {
+  color: var(--wait);
+}
+
+/* Night mode: a switch in the bar, green while it is on. */
+#bar #night-mode {
+  gap: 8px;
+  color: var(--muted);
+}
+
+#night-mode .switch {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--line);
+  transition: background 0.15s;
+}
+
+#night-mode .knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 7px;
+  background: var(--text);
+  transition: left 0.15s;
+}
+
+#bar #night-mode[aria-checked="true"] {
+  color: var(--text);
+}
+
+#night-mode[aria-checked="true"] .switch {
+  background: var(--switch-on);
+}
+
+#night-mode[aria-checked="true"] .knob {
+  left: 17px;
+  background: var(--text);
+}
+
+/* The Nightmode switch stands right before the pane buttons and takes their push to the right. */
+#bar #night-mode {
+  margin-left: auto;
+  margin-right: 6px;
+}
+
+#night-mode + #pane-tools {
+  margin-left: 0;
+}
+
+/* A code block of a chat message, with its buttons at the top right: ▶ runs a one-line shell
+   command in the Commands terminal of the project, the other copies the text. */
+.code-block {
+  position: relative;
+  margin: 8px 0;
+}
+
+.code-block pre {
+  margin: 0;
+  padding-right: 72px;
+  border-radius: 8px;
+}
+
+.code-tools {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 2px;
+}
+
+.code-tools button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.code-tools button:hover {
+  background: var(--hairline);
+  color: var(--text);
+}
+
+.code-tools svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linejoin: round;
+}
+
+.code-tools .code-run svg {
+  fill: currentColor;
+  stroke: none;
+}
+
+.code-tools .code-run:hover {
+  color: var(--work);
+}
+
+.code-tools .code-copy.done {
+  color: var(--work);
+}
+
+.sh-cmd {
+  color: var(--code-cmd);
+}
+
+.sh-arg {
+  color: var(--code-arg);
+}
+
+.sh-flag {
+  color: var(--code-flag);
+}
+
+.sh-str {
+  color: var(--code-str);
+}
+
+.sh-var {
+  color: var(--code-var);
+}
+
+.sh-op {
+  color: var(--code-op);
+}
+
+.sh-hole {
+  color: var(--code-str);
+  font-style: italic;
+}
+
+/* The bar of a Commands terminal: its name and a close button. */
+.pane-bar.commands .commands-close {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  font-size: calc(15px * var(--text-scale));
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pane-bar.commands .commands-close:hover {
+  background: var(--card);
+  color: var(--text);
+}
+
+/* The × in the bar of the Workers pane: it hides the pane in focus mode, as the Workers button does. */
+.pane-bar .workers-hide {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  font-size: calc(15px * var(--text-scale));
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pane-bar .workers-hide:hover {
+  background: var(--card);
+  color: var(--text);
+}
+
+/* In Tabs the Workers pane is a pane of its tab: no ×. */
+body:not(.focus-mode) .pane-bar .workers-hide {
+  display: none;
+}
+
+/* Focus mode: the Commands terminals of a project, below its chat. */
+.focus-commands {
+  display: flex;
+  flex: 0 0 34%;
+  gap: 10px;
+  min-height: calc(160px * var(--text-scale));
+}
+
+.focus-commands[hidden] {
+  display: none;
+}
+
+.focus-commands .pane {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  border-radius: 12px;
+}
+
+.focus-commands .pane-bar {
+  border-bottom: 0;
+}
+
+.focus-commands .side {
+  display: none;
+}
+
+/* The images of a message of the user: thumbnails above its text. A click opens the image. */
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.msg-images + .msg-text {
+  margin-top: 6px;
+}
+
+.msg-image {
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.msg-image:hover {
+  border-color: var(--accent-line);
+}
+
+.msg-image img {
+  display: block;
+  max-width: 220px;
+  max-height: 140px;
+  object-fit: contain;
+}
+
+.msg-image.missing {
+  padding: 4px 8px;
+  color: var(--muted);
+  font: inherit;
+  cursor: default;
+}
+
+/* A block of several commands: each line has its own ▶ in a gutter at the left. */
+.code-block pre.lines {
+  padding-left: 36px;
+}
+
+.code-line {
+  position: relative;
+  display: block;
+  min-height: 1.5em;
+}
+
+.line-run {
+  position: absolute;
+  top: 50%;
+  left: -30px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--faint);
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.line-run:hover,
+.code-line:hover .line-run {
+  color: var(--work);
+}
+
+.line-run:hover {
+  background: var(--hairline);
+}
+
+.line-run svg {
+  width: 12px;
+  height: 12px;
+  fill: currentColor;
+}
+
+/* ------------------------------------------------------------------------------------------------
+   The Map: each project as a graph of you, triage, its tasks with their runs, and the agents. */
+
+body.map-mode #toggle-chats,
+body.map-mode #tabs,
+body.map-mode #pane-tools,
+body.map-mode #select-project,
+body.map-mode #chats {
+  display: none;
+}
+
+#map {
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  padding: 8px 32px 40px;
+}
+
+#map[hidden] {
+  display: none;
+}
+
+.map-project {
+  max-width: 1500px;
+  margin: 0 auto 36px;
+}
+
+.map-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 18px 0 14px;
+}
+
+.map-head b {
+  font-size: calc(17px * var(--text-scale));
+  font-weight: 600;
+}
+
+.map-head .focus-dot {
+  align-self: center;
+}
+
+.map-muted {
+  color: var(--muted);
+  font-size: calc(13px * var(--text-scale));
+}
+
+.map-none {
+  align-self: center;
+  margin: 8px 0;
+}
+
+/* Without room beside the graph, the card of the selected task goes below it. */
+.map-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+/* The graph: you, triage, plan run, work run, agents; one row per task. The wires lie behind it.
+   It never gets narrower than its columns; in a narrow window the Map scrolls sideways. */
+.map-graph {
+  position: relative;
+  flex: 1 1 0;
+  display: grid;
+  grid-template-columns: minmax(130px, 160px) minmax(150px, 190px) minmax(190px, 240px) minmax(190px, 240px) minmax(110px, 150px);
+  align-items: center;
+  column-gap: 64px;
+  row-gap: 16px;
+  padding: 8px 0;
+}
+
+.map-graph > :not(svg) {
+  position: relative;
+  z-index: 1;
+}
+
+.map-node {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  font-size: calc(14px * var(--text-scale));
+  text-align: left;
+}
+
+button.map-node {
+  cursor: pointer;
+}
+
+button.map-node:hover {
+  border-color: var(--line);
+}
+
+.map-node b {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-line {
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: calc(13px * var(--text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The third line of a task node: what the task is about. */
+.map-about {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.map-node.triage {
+  border-color: var(--accent-line);
+  background: var(--accent-bg);
+}
+
+/* With many rows, You and Triage stand at the top, beside the first task. */
+.map-node.top {
+  align-self: start;
+}
+
+.map-node.triage b {
+  color: var(--accent);
+}
+
+.map-node.work {
+  border-color: var(--work-line);
+  background: var(--work-bg);
+}
+
+.map-node.work .map-line {
+  color: var(--work);
+}
+
+.map-node.wait {
+  border-color: var(--wait);
+  background: var(--wait-bg);
+  box-shadow: 0 0 0 4px var(--wait-glow);
+}
+
+.map-node.wait .map-line {
+  color: var(--wait);
+}
+
+.map-node.failed {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.map-node.failed .map-line {
+  color: var(--danger);
+}
+
+.map-node.later {
+  border-style: dashed;
+  border-color: var(--line);
+  background: none;
+}
+
+.map-node.later b,
+.map-node.done b {
+  color: var(--text-2);
+}
+
+/* The node of a temporary card (pending-task-card): the dashed look of `later`, a muted title. */
+.map-node.pending b {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  color: var(--muted);
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.map-node.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.map-node.agents {
+  padding: 9px 12px;
+}
+
+.map-more {
+  justify-self: start;
+  padding: 6px 4px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: calc(13px * var(--text-scale));
+  cursor: pointer;
+}
+
+.map-more:hover {
+  color: var(--text-2);
+}
+
+/* The card of the selected task: the same card as in the Tasks list. */
+.map-selected {
+  position: relative;
+  flex: 1 1 320px;
+  max-width: 420px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.map-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font-size: calc(16px * var(--text-scale));
+  cursor: pointer;
+}
+
+.map-close:hover {
+  background: var(--card);
+  color: var(--text);
+}
+
+/* The wires. */
+svg.links {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.link {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1.6;
+}
+
+.link-head {
+  fill: var(--line);
+}
+
+.link.work {
+  stroke: var(--work);
+}
+
+.link-head.work {
+  fill: var(--work);
+}
+
+.link.active {
+  stroke: var(--accent);
+}
+
+.link-head.active {
+  fill: var(--accent);
+}
+
+.link.wait {
+  stroke: var(--wait);
+}
+
+.link-head.wait {
+  fill: var(--wait);
+}
+
+.link.later {
+  stroke-dasharray: 5 5;
+}
+
+.link-label {
+  fill: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.link-label.work {
+  fill: var(--work);
+}
+
+.link-label.wait {
+  fill: var(--wait);
+}
+
+/* ------------------------------------------------------------------------------------------------
+   The worker view: one session with its agents, tool calls, tokens and timeline. */
+
+.flow {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  max-width: 1500px;
+  margin: 0 auto;
+  padding-top: 12px;
+}
+
+.flow-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.flow-back,
+.flow-tools button {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: calc(13px * var(--text-scale));
+  cursor: pointer;
+}
+
+.flow-back {
+  border: 0;
+  background: var(--card);
+  color: var(--text);
+}
+
+.flow-back::before {
+  content: "‹ ";
+}
+
+.flow-back:hover,
+.flow-tools button:hover {
+  border-color: var(--accent-line);
+}
+
+.flow-tools {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.flow-sep {
+  color: var(--faint);
+}
+
+.flow-project {
+  color: var(--text-2);
+}
+
+.flow-state {
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text-2);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.flow-state.working {
+  background: var(--work-bg);
+  color: var(--work);
+}
+
+.flow-state.blocked {
+  background: var(--wait-bg);
+  color: var(--wait);
+}
+
+.flow-state.failed {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.flow-muted {
+  color: var(--muted);
+  font-size: calc(13px * var(--text-scale));
+}
+
+.flow-empty,
+.flow-error {
+  margin: 8px 0;
+}
+
+.flow-error {
+  color: var(--danger);
+}
+
+/* In a narrow window the side panel goes below the graph. */
+.flow-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 24px 32px;
+}
+
+/* The graph: the worker, its agents, the last tool calls of each. The columns shrink. */
+.flow-graph {
+  position: relative;
+  flex: 999 1 620px;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 200px) minmax(0, 200px) minmax(180px, 1fr);
+  align-items: center;
+  column-gap: 48px;
+  row-gap: 22px;
+}
+
+.flow-graph > :not(svg) {
+  position: relative;
+  z-index: 1;
+}
+
+.flow-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.flow-node {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: var(--card);
+}
+
+.flow-node b {
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-node-state {
+  color: var(--text-2);
+  font-size: calc(13px * var(--text-scale));
+}
+
+.flow-node-tokens {
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.flow-node.working {
+  border-color: var(--work-line);
+  background: var(--work-bg);
+}
+
+.flow-node.working .flow-node-state {
+  color: var(--work);
+}
+
+.flow-node.blocked {
+  border-color: var(--wait);
+  background: var(--wait-bg);
+}
+
+.flow-node.failed {
+  border-color: var(--danger);
+}
+
+.flow-says {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: calc(13px * var(--text-scale));
+  line-height: 1.5;
+}
+
+.flow-says span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+/* Under the run box: what the task is about and what it did or does, one row each. */
+.flow-about {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: calc(13px * var(--text-scale));
+  line-height: 1.5;
+}
+
+.flow-about span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-calls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.flow-call {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text-2);
+  font: calc(12px * var(--text-scale)) / 1.3 "Cascadia Mono", Consolas, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.flow-call b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flow-call b {
+  font-weight: 600;
+}
+
+.flow-detail {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flow-when {
+  color: var(--muted);
+}
+
+.flow-call.running {
+  border-color: var(--accent-line);
+  background: var(--accent-bg);
+  color: var(--text);
+}
+
+.flow-call.running .flow-when {
+  color: var(--accent);
+}
+
+.flow-call.failed .flow-when {
+  color: var(--danger);
+}
+
+/* The colour of a tool, on its name, its bar and its timeline mark. */
+.read {
+  --tool: var(--accent);
+}
+
+.write {
+  --tool: var(--work);
+}
+
+.shell {
+  --tool: var(--code-flag);
+}
+
+.search {
+  --tool: var(--code-var);
+}
+
+.agent {
+  --tool: var(--text-2);
+}
+
+.other {
+  --tool: var(--muted);
+}
+
+.flow-call b,
+.flow-tool {
+  color: var(--tool);
+}
+
+/* The side panel: tokens, tool calls, files. */
+.flow-side {
+  display: flex;
+  flex: 1 1 240px;
+  max-width: 300px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  background: var(--surface);
+  font-size: calc(13px * var(--text-scale));
+}
+
+.flow-side h3 {
+  margin: 12px 0 2px;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  font-weight: 400;
+}
+
+.flow-total b {
+  font-size: calc(22px * var(--text-scale));
+  font-weight: 600;
+}
+
+.flow-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--text-2);
+}
+
+.flow-row > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.flow-row.bar > span:first-child {
+  flex: 0 0 90px;
+}
+
+.flow-num {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.flow-meter {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--hairline);
+}
+
+.flow-meter span {
+  display: block;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--tool);
+}
+
+.flow-tool,
+.flow-file,
+.flow-diff {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+}
+
+.flow-diff {
+  color: var(--work);
+}
+
+/* The timeline: one mark per tool call, the newest at the right. */
+.flow-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px;
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.flow-timeline-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  font-size: calc(13px * var(--text-scale));
+}
+
+.flow-live {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.flow-live::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--muted);
+}
+
+.flow-live.on {
+  color: var(--work);
+}
+
+.flow-live.on::before {
+  background: var(--work);
+  box-shadow: 0 0 0 3px var(--work-glow);
+}
+
+.flow-clock {
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.flow-key {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.flow-key::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--tool);
+}
+
+.flow-timeline-bar button {
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.flow-marks {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 18px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.flow-mark {
+  flex: none;
+  width: 14px;
+  height: 8px;
+  border-radius: 3px;
+  background: var(--tool);
+  opacity: 0.75;
+}
+
+.flow-mark.agent {
+  width: 4px;
+  height: 14px;
+}
+
+.flow-mark.running {
+  opacity: 1;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 3px var(--tool);
+}
+
+.flow-mark.failed {
+  background: var(--danger);
+}
+
+/* ---------------------------------------------------------------------------------------------
+   The Overview (overview-mode): one card per project with only its tasks in work and the message
+   box of its triage chat. The box is the Chat view of the triage pane, moved into the card; these
+   rules show it in the flow of the card and hide every message of it but an open question.
+   --------------------------------------------------------------------------------------------- */
+
+body.overview-mode #bar-projects,
+body.overview-mode #toggle-chats,
+body.overview-mode #tabs,
+body.overview-mode #pane-tools,
+body.overview-mode #select-project,
+body.overview-mode #chats,
+body.overview-mode .chats-resize {
+  display: none;
+}
+
+/* A free canvas (overview-drag-cards): each card stands at its place, the page scrolls down and right.
+   The dots (overview-dot-grid) stand on the slots of the 50px grid: the tile moves by the card margin
+   minus half a slot, so a card on the grid has its corner on a dot; `local` scrolls them with the cards. */
+#overview {
+  display: block;
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  padding: 0 0 32px;
+  overflow: auto;
+  background-image: radial-gradient(circle, var(--line) 1px, transparent 1.5px);
+  background-size: 50px 50px;
+  background-position: -5px -9px;
+  background-attachment: local;
+}
+
+/* The empty text keeps the space that the canvas gives to the cards. */
+#overview > .map-none {
+  margin: 16px 20px;
+}
+
+#overview[hidden] {
+  display: none;
+}
+
+/* 400px = 8 slots of the 50px grid; the margin is the old space of the canvas, so slot 0/0 stays. */
+.overview-card {
+  display: flex;
+  position: absolute;
+  flex-direction: column;
+  width: 400px;
+  min-width: 0;
+  margin: 16px 0 0 20px;
+  padding-top: 12px;
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.overview-card.dragging {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  cursor: grabbing;
+}
+
+.overview-card.dragging .overview-head {
+  cursor: grabbing;
+}
+
+/* The head is the handle of a card drag; the project name keeps its click. */
+.overview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 16px 10px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.overview-name {
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.overview-name:hover {
+  text-decoration: underline;
+}
+
+.overview-count {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.overview-count.working {
+  color: var(--work);
+}
+
+.overview-count.waits {
+  color: var(--wait);
+}
+
+.overview-tasks {
+  display: flex;
+  flex-direction: column;
+  padding: 0 12px;
+}
+
+.overview-none {
+  margin: 0 4px 4px;
+  color: var(--muted);
+  font-size: calc(13px * var(--text-scale));
+}
+
+/* The heading of each part of a card (overview-backlog): In work, Done, Planned. */
+.overview-part {
+  margin: 12px 4px 6px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 600;
+}
+
+.overview-part:first-child {
+  margin-top: 0;
+}
+
+/* "Nothing planned yet" stands in an empty dashed card, where the planned cards would stand. */
+.overview-none.overview-empty {
+  margin: 0 0 6px;
+  padding: 9px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+}
+
+.overview-card > .focus-start {
+  align-self: flex-start;
+  margin: 4px 12px 12px;
+}
+
+/* The Chat view stands in the flow of the card instead of covering a terminal. */
+#overview .chat-view {
+  position: static;
+  z-index: auto;
+  background: none;
+}
+
+#overview .chat-messages {
+  flex: none;
+  padding: 0;
+  overflow: visible;
+}
+
+#overview .chat-messages:empty::before {
+  content: none;
+}
+
+/* No chat history: every message of a task frame is off the page, and the frame shows nothing of
+   its own. Only an open question of triage comes back, with its buttons. */
+#overview .chat-section {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 1;
+}
+
+#overview .chat-section > * {
+  display: none;
+}
+
+#overview .chat-messages > :not(.chat-section) {
+  display: none;
+}
+
+#overview .chat-section > .msg.question.open {
+  display: block;
+  margin: 4px 12px 0;
+}
