@@ -2673,7 +2673,8 @@ button.task-head:hover {
 }
 
 /* The Decisions window of a plan: every decision with its options, and Other for an own answer. It has the frame of the help. */
-#decisions {
+#decisions,
+#questions {
   width: min(92vw, 820px);
   max-height: 86vh;
   padding: 0;
@@ -2685,30 +2686,35 @@ button.task-head:hover {
   font-size: calc(13px * var(--text-scale));
 }
 
-#decisions[open] {
+#decisions[open],
+#questions[open] {
   display: flex;
   flex-direction: column;
 }
 
-#decisions::backdrop {
+#decisions::backdrop,
+#questions::backdrop {
   background: rgb(0 0 0 / 60%);
 }
 
-#decisions header {
+#decisions header,
+#questions header {
   display: flex;
   align-items: center;
   padding-left: 20px;
   border-bottom: 1px solid var(--hairline);
 }
 
-#decisions h2 {
+#decisions h2,
+#questions h2 {
   flex: 1;
   margin: 0;
   font-size: calc(16px * var(--text-scale));
   font-weight: 600;
 }
 
-#decisions-close {
+#decisions-close,
+#questions-close {
   width: 32px;
   height: 32px;
   margin: 8px;
@@ -2722,11 +2728,13 @@ button.task-head:hover {
   cursor: pointer;
 }
 
-#decisions-close:hover {
+#decisions-close:hover,
+#questions-close:hover {
   background: var(--card);
 }
 
-#decisions-intro {
+#decisions-intro,
+#questions-intro {
   flex: none;
   margin: 0;
   padding: 10px 20px;
@@ -2735,7 +2743,8 @@ button.task-head:hover {
   line-height: 1.5;
 }
 
-#decisions-body {
+#decisions-body,
+#questions-body {
   flex: 1;
   min-height: 0;
   padding: 4px 20px 12px;
@@ -2835,7 +2844,8 @@ button.task-head:hover {
   outline: none;
 }
 
-#decisions-footer {
+#decisions-footer,
+#questions-footer {
   display: flex;
   flex: none;
   flex-wrap: wrap;
@@ -2845,17 +2855,21 @@ button.task-head:hover {
   border-top: 1px solid var(--hairline);
 }
 
-#decisions-reason {
+#decisions-reason,
+#questions-reason {
   flex: 1 1 100%;
   color: var(--wait);
   white-space: pre-wrap;
 }
 
-#decisions-reason:empty {
+#decisions-reason:empty,
+#questions-reason:empty {
   display: none;
 }
 
-#decisions-footer button {
+#decisions-footer button,
+#questions-footer button,
+#questions-body .questions-report {
   padding: 5px 12px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -2865,13 +2879,15 @@ button.task-head:hover {
   cursor: pointer;
 }
 
-#decisions-footer button.primary {
+#decisions-footer button.primary,
+#questions-footer button.primary {
   border-color: var(--work-line);
   background: var(--work-bg);
   color: var(--work);
 }
 
-#decisions-footer button:disabled {
+#decisions-footer button:disabled,
+#questions-footer button:disabled {
   opacity: 0.5;
   cursor: default;
 }

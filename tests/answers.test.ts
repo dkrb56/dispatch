@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { answeredLine, chosenCount, replyText } from "../src/answers.ts";
+import { answeredLine, chosenCount, questionWaitToOpen, replyText, windowChoices, windowTitle } from "../src/answers.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
@@ -50,5 +50,43 @@ test("the Help says that the answers of several questions go together", () => {
   const item = HTML.slice(start, HTML.indexOf("</li>", start));
   assert.match(item, /each click is a choice/);
   assert.match(item, /go to the worker together/);
-  assert.match(item, /not behind a Decisions button/);
+  assert.match(item, /Answer in a window/);
+  assert.match(item, /Send the answers/);
+});
+
+test("the window selects the recommended option of each question", () => {
+  assert.deepEqual([...windowChoices(TWO, new Map())], [[1, "Keep the map"], [2, "answers"]]);
+  assert.deepEqual([...windowChoices(ONE, new Map())], [[1, "Yes"]]);
+});
+
+test("the window keeps a choice of the card, and drops one that is no option", () => {
+  assert.deepEqual([...windowChoices(TWO, new Map([[2, "choices"]]))], [[1, "Keep the map"], [2, "choices"]]);
+  assert.deepEqual([...windowChoices(TWO, new Map([[1, "Gone"]]))], [[1, "Keep the map"], [2, "answers"]]);
+});
+
+test("a question without options gets no choice, so no reply goes", () => {
+  const empty = [{ number: 1, text: "Why?", options: [] }];
+  assert.equal(windowChoices(empty, new Map()).size, 0);
+  assert.equal(replyText(empty, windowChoices(empty, new Map())), null);
+});
+
+test("the reply of the window with the recommended options is the reply of the card", () => {
+  assert.equal(replyText(TWO, windowChoices(TWO, new Map())), "Answer to question 1: Keep the map Answer to question 2: answers");
+});
+
+test("the title of the window counts the questions", () => {
+  assert.equal(windowTitle("T-1", ONE), "Question of T-1");
+  assert.equal(windowTitle("T-1", TWO), "2 questions of T-1");
+});
+
+test("a new question wait opens the window, other waits and an open window do not", () => {
+  const found = [
+    { kind: "plan", key: "p|a" },
+    { kind: "question", key: "p|b" },
+    { kind: "question", key: "p|c" },
+  ];
+  assert.equal(questionWaitToOpen(found, false), "p|b");
+  assert.equal(questionWaitToOpen(found, true), null);
+  assert.equal(questionWaitToOpen([{ kind: "permission", key: "p|d" }], false), null);
+  assert.equal(questionWaitToOpen([], false), null);
 });

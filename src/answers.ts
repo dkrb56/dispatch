@@ -46,3 +46,40 @@ export function chosenCount(questions: AnswerQuestion[], choices: ReadonlyMap<nu
   const chosen = questions.filter((question) => choices.has(question.number)).length;
   return `${chosen} of ${questions.length} chosen`;
 }
+
+// The Questions window (ticket question-window): it shows the questions of one report with their
+// options, like the Decisions window of a plan, and sends all answers in one reply.
+
+/**
+ * The choices of the window when it opens: for each question the choice that the card kept, else
+ * the recommended option (the first one). A question without options gets no choice.
+ */
+export function windowChoices(questions: AnswerQuestion[], saved: ReadonlyMap<number, string>): Map<number, string> {
+  const choices = new Map<number, string>();
+  for (const question of questions) {
+    const kept = saved.get(question.number);
+    if (kept !== undefined && question.options.includes(kept)) choices.set(question.number, kept);
+    else if (question.options.length > 0) choices.set(question.number, question.options[0]);
+  }
+  return choices;
+}
+
+/** The title of the window: `Question of <task>` for one question, `<N> questions of <task>` for several. */
+export function windowTitle(task: string, questions: AnswerQuestion[]): string {
+  return questions.length === 1 ? `Question of ${task}` : `${questions.length} questions of ${task}`;
+}
+
+/** A wait that alerted, as far as the window needs it: its kind and its key. */
+export interface WaitRef {
+  kind: string;
+  key: string;
+}
+
+/**
+ * The wait whose window opens by itself: the key of the first new wait of the kind `question`, or
+ * null. Null also while a window of the app is open, so the window never covers another one.
+ */
+export function questionWaitToOpen(found: WaitRef[], dialogOpen: boolean): string | null {
+  if (dialogOpen) return null;
+  return found.find((wait) => wait.kind === "question")?.key ?? null;
+}

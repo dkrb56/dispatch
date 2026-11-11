@@ -31,7 +31,7 @@ import { initStatusBar } from "./statusbar";
 import { terminalTheme, themeName, themeTokens } from "./theme";
 import { nightAtStart, nightLines, nightSyncLines } from "./night";
 import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
-import { answeredLine, chosenCount, replyText } from "./answers";
+import { answeredLine, chosenCount, questionWaitToOpen, replyText, windowChoices, windowTitle } from "./answers";
 
 type Shell = "powershell" | "cmd";
 
@@ -2954,25 +2954,197 @@ function questionCard(task: Task, questions: Question[]): HTMLElement {
       button.disabled = busyTasks.has(task.name);
       button.addEventListener("click", () => {
         choices.set(question.number, option);
-        const reply = replyText(questions, choices);
         // A question without a choice: the click only marks the choice.
-        if (reply === null) return renderChats();
-        const line = answeredLine(task.name, questions, choices);
-        // One reply with every answer resumes the worker. A failed send keeps the choices.
-        void taskAction(task, "task_reply", { id: task.name, text: reply }, line).then((sent) => {
-          if (!sent) return;
-          answeredReports.set(task.name, modified);
-          questionChoices.delete(task.name);
-          renderChats();
-        });
+        if (replyText(questions, choices) === null) return renderChats();
+        void sendAnswers(task, questions, choices, modified);
       });
       actions.append(button);
     });
     card.append(text, actions);
   }
+  // The same questions in a window, like the Decisions window of a plan (ticket question-window).
+  const more = document.createElement("div");
+  more.className = "actions";
+  const open = document.createElement("button");
+  open.textContent = "Answer in a window";
+  open.title = "Show every question with its options in a window; the recommended options are selected";
+  open.disabled = busyTasks.has(task.name);
+  open.addEventListener("click", () => openQuestionWindow(task));
+  more.append(open);
+  card.append(more);
   const error = actionError(task);
   if (error) card.append(error);
   return card;
+}
+
+/**
+ * Sends the answers of a report to the worker in one reply, from the card or from the window: one
+ * `Answer to question N: <option>` per question and one line for triage. It marks the report as
+ * answered and drops the kept choices. A failed send keeps them; the card shows the error. True
+ * when the reply went.
+ */
+async function sendAnswers(task: Task, questions: Question[], choices: ReadonlyMap<number, string>, modified: number): Promise<boolean> {
+  const reply = replyText(questions, choices);
+  if (reply === null) return false;
+  const line = answeredLine(task.name, questions, choices);
+  const sent = await taskAction(task, "task_reply", { id: task.name, text: reply }, line);
+  if (!sent) return false;
+  answeredReports.set(task.name, modified);
+  questionChoices.delete(task.name);
+  renderChats();
+  return true;
+}
+
+const questionsDialog = document.querySelector<HTMLDialogElement>("#questions")!;
+/** The task whose questions the window shows, and the time of its report then. */
+let questionsTask: Task | null = null;
+let questionsModified = 0;
+
+/** The current state of a task of the window: from the last task list of its project, else as it was. */
+function currentTask(task: Task): Task {
+  const project = projectTasks.get(projectKey(task.project?.cwd ?? tasksCwd));
+  return (project && projectTaskList(project).find((known) => known.name === task.name)) ?? task;
+}
+
+/**
+ * Opens the Questions window of a task: the questions of its report, each with its options as
+ * buttons, the recommended option marked. The choice that the card kept is selected, else the
+ * recommended option. A click moves the mark and keeps the choice for the card too.
+ */
+function openQuestionWindow(task: Task): void {
+  const questions = openQuestions(task);
+  if (questions.length === 0) return;
+  const modified = task.info?.report?.modified ?? 0;
+  questionsTask = task;
+  questionsModified = modified;
+  let saved = questionChoices.get(task.name);
+  if (!saved || saved.modified !== modified) {
+    saved = { modified, choices: new Map() };
+    questionChoices.set(task.name, saved);
+  }
+  const kept = saved.choices;
+  const choices = windowChoices(questions, kept);
+  document.querySelector("#questions-title")!.textContent = windowTitle(task.name, questions);
+  const body = document.querySelector<HTMLElement>("#questions-body")!;
+  // What the questions come from: the user's words of the brief and the first line of the report.
+  const context = document.createElement("section");
+  context.className = "decisions-context";
+  for (const [label, lines] of [["Your words", task.info?.words ?? []], ["The worker wrote", task.info?.did ? [task.info.did] : []]] as const) {
+    if (lines.length === 0) continue;
+    const head = document.createElement("div");
+    head.className = "decisions-context-label";
+    head.textContent = label;
+    const text = document.createElement("div");
+    text.className = "decisions-context-text";
+    text.textContent = lines.join("\n");
+    context.append(head, text);
+  }
+  const pane = focusedPane();
+  const report = task.info?.report;
+  if (pane && report) {
+    const read = document.createElement("button");
+    read.className = "questions-report";
+    read.textContent = "Open the report";
+    read.title = "Close the window and show the report with the details of the questions";
+    read.addEventListener("click", () => {
+      questionsDialog.close();
+      openFile(pane, report);
+    });
+    context.append(read);
+  }
+  body.replaceChildren(
+    ...(context.childElementCount > 0 ? [context] : []),
+    ...questions.map((question) => {
+      const block = document.createElement("section");
+      block.className = "decision";
+      block.dataset.number = String(question.number);
+      const title = document.createElement("div");
+      title.className = "decision-title";
+      title.textContent = `${question.number}. ${question.text}`;
+      const options = document.createElement("div");
+      options.className = "decision-options";
+      const reason = document.createElement("div");
+      reason.className = "decision-reason";
+      const select = (index: number) => {
+        [...options.children].forEach((button, at) => button.classList.toggle("selected", at === index));
+        reason.textContent = index === 0 ? "The option that the worker recommends." : "Your choice goes to the worker word for word.";
+      };
+      question.options.forEach((option, index) => {
+        const button = document.createElement("button");
+        button.dataset.option = option;
+        button.textContent = option;
+        if (index === 0) {
+          const mark = document.createElement("span");
+          mark.className = "recommended";
+          mark.textContent = "recommended";
+          button.append(mark);
+        }
+        button.addEventListener("click", () => {
+          select(index);
+          kept.set(question.number, option);
+          renderChats();
+        });
+        options.append(button);
+      });
+      if (question.options.length === 0) reason.textContent = "The report lists no options for this question. Answer it in the report's chat.";
+      else select(Math.max(0, question.options.indexOf(choices.get(question.number) ?? "")));
+      block.append(title, options, reason);
+      return block;
+    }),
+  );
+  questionsDialog.showModal();
+  updateQuestionsWindow();
+  body.scrollTop = 0;
+}
+
+/** The answers of the window: the selected option of each question, by question number. */
+function questionAnswers(): Map<number, string> {
+  const answers = new Map<number, string>();
+  for (const block of questionsDialog.querySelectorAll<HTMLElement>(".decision[data-number]")) {
+    const option = block.querySelector<HTMLButtonElement>(".decision-options button.selected")?.dataset.option;
+    if (option !== undefined) answers.set(Number(block.dataset.number), option);
+  }
+  return answers;
+}
+
+/**
+ * Keeps the window in step with the task: it closes when the report has no open question any more
+ * (answered in the card, a new report, a running worker), greys Send during a click of the task,
+ * and shows the last error. It runs at the open and after each render.
+ */
+function updateQuestionsWindow(): void {
+  if (!questionsTask || !questionsDialog.open) return;
+  const task = currentTask(questionsTask);
+  if (openQuestions(task).length === 0 || (task.info?.report?.modified ?? 0) !== questionsModified) {
+    questionsDialog.close();
+    return;
+  }
+  const busy = busyTasks.has(task.name);
+  const error = actionErrors.get(task.name) ?? "";
+  document.querySelector("#questions-reason")!.textContent = [busy ? "A click of this task is still running." : "", error].filter(Boolean).join("\n");
+  document.querySelector<HTMLButtonElement>("#questions-send")!.disabled = busy;
+}
+
+function initQuestions(): void {
+  document.querySelector("#questions-close")!.addEventListener("click", () => questionsDialog.close());
+  questionsDialog.addEventListener("click", (event) => {
+    if (event.target === questionsDialog) questionsDialog.close();
+  });
+  document.querySelector("#questions-send")!.addEventListener("click", () => {
+    if (!questionsTask) return;
+    const task = currentTask(questionsTask);
+    if (busyTasks.has(task.name)) return updateQuestionsWindow();
+    const questions = openQuestions(task);
+    const answers = questionAnswers();
+    if (replyText(questions, answers) === null) {
+      document.querySelector("#questions-reason")!.textContent = "A question has no selected option. Answer it in the report's chat.";
+      return;
+    }
+    void sendAnswers(task, questions, answers, questionsModified).then((sent) => {
+      if (sent) questionsDialog.close();
+      else updateQuestionsWindow();
+    });
+  });
 }
 
 /** The card of a report that needs a permission: the user changes the rule, then Continue resumes the worker. */
@@ -3495,10 +3667,14 @@ async function notify(waits: Wait[]): Promise<void> {
   if (granted) sendNotification(notificationText(waits));
 }
 
+/** The tasks of the question waits of the last `currentWaits`, by wait key: the window opens for one of them. */
+let questionWaitTasks = new Map<string, Task>();
+
 /** The tasks and workers that wait for the user now, and the read groups they come from. */
 function currentWaits(): { waits: Wait[]; scopes: string[] } {
   const waits: Wait[] = [];
   const scopes: string[] = [];
+  questionWaitTasks = new Map();
   for (const project of projectTasks.values()) {
     const key = projectKey(project.cwd);
     const scope = `tasks|${key}`;
@@ -3510,6 +3686,7 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
         waits.push({ ...base, kind: info.hold ? "hold" : "plan", stamp: String(info.plan.modified) });
       } else if (openQuestions(task).length > 0 && info?.report) {
         waits.push({ ...base, kind: "question", stamp: String(info.report.modified) });
+        questionWaitTasks.set(base.key, task);
       } else if (permissionWaits(task) && info?.report) {
         waits.push({ ...base, kind: "permission", stamp: String(info.report.modified) });
       }
@@ -3543,6 +3720,11 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
 function updateAlerts(): void {
   const { waits, scopes } = currentWaits();
   const found = newWaits(waits, scopes, alertMarks, nightOn);
+  // A new question opens its window by itself, like a decision of a plan (ticket question-window).
+  // `newWaits` leaves out the first read and night mode; an open window of the app stays on top.
+  const opens = questionWaitToOpen(found, document.querySelector("dialog[open]") !== null);
+  const asked = opens === null ? undefined : questionWaitTasks.get(opens);
+  if (asked) openQuestionWindow(asked);
   const act = alertActions(alertOptions(), found.length > 0);
   const failed = (error: unknown) => console.error("alert failed", error);
   if (act.notify) notify(found).catch(failed);
@@ -3772,6 +3954,7 @@ function renderChats(): void {
   if (entryDragging) return;
   // The Decisions window shows why Approve waits; a refresh of the tasks can change that.
   updateDecisionsFooter();
+  updateQuestionsWindow();
   // Focus mode shows the tasks of each project in its column.
   renderFocus();
   renderMap();
@@ -6097,6 +6280,7 @@ async function start(): Promise<void> {
   });
   initStatusBar();
   initDecisions();
+  initQuestions();
   void pollSide();
   // A click on the alert opens the first worker that waits.
   workerAlertEl.addEventListener("click", () => {
