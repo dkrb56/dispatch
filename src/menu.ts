@@ -155,6 +155,22 @@ export function parseMenu(screen: string[]): Question[] | null {
   ];
 }
 
+/** At most this many lines of the scrollback above the screen go to the read of a menu. */
+export const MENU_ABOVE_LINES = 100;
+
+/**
+ * The lines in which `parseMenu` looks for a menu (ticket chat-question-unseen). A menu that is
+ * taller than the terminal (four options with long descriptions, a short pane) has its question and
+ * its first options above the screen, in the scrollback: the screen alone then shows the footer of a
+ * menu and gives no menu. Only then the lines `above` the screen come first. A menu that fits the
+ * screen reads as before, so an old option row in the scrollback cannot change it.
+ */
+export function menuScreen(screen: string[], above: string[]): string[] {
+  if (parseMenu(screen) !== null) return screen;
+  if (!screen.some((line) => MENU_END.test(menuText(line)))) return screen;
+  return [...above, ...screen];
+}
+
 /** The box before an option of a question with several answers. */
 const CHECKBOX = /^\[[ ×√xX✓✔]\]\s*/;
 

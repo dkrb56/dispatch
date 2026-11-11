@@ -14,7 +14,7 @@ import { markedProject, showMark, watchArea } from "./focusmark";
 import { chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, runStarting, savedView, snapPlace, type ViewMode } from "./overview";
 import { type Entry, goesStraight, movedIds, nextEntry, orderedEntries } from "./backlog";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
-import { parseMenu, parseReview, SUBMIT_QUESTION } from "./menu";
+import { MENU_ABOVE_LINES, menuScreen, parseMenu, parseReview, SUBMIT_QUESTION } from "./menu";
 import { type FileEntry, initViewer, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
 import { agentsText, rowParts } from "./workerrow";
@@ -272,6 +272,9 @@ function fitTab(tabId: string): void {
 
 /** Below this size in pixels a terminal keeps its size: the element is hidden, collapsed or minimized. */
 const MIN_FIT_PX = 80;
+/** The size of a terminal that starts while its pane is hidden, in place of the 80 x 24 of xterm. */
+const HIDDEN_COLS = 120;
+const HIDDEN_ROWS = 40;
 
 /**
  * Fits a terminal to its element. A minimized window or a collapsed slot would make it one or two
@@ -1277,7 +1280,7 @@ function checkSwitch(pane: Pane, session: NonNullable<PaneInfo["session"]>, stat
         ? "Triage runs a command in the background; the new chat starts after it ends."
         : session.status !== "idle"
           ? "Triage waits for you in the terminal."
-          : parseMenu(terminalLines(pane.term)) !== null
+          : parseMenu(menuLines(pane.term)) !== null
             ? "A question or a prompt of triage is open."
             : !pane.chat?.visible()
               ? "The pane shows the Terminal view; Dispatch cannot see what you type there."
@@ -1995,7 +1998,7 @@ async function dispatchEntries(): Promise<void> {
       if (!entry) continue;
       if (switchRuns(key) || triageQueue.some((line) => projectKey(line.project) === key)) continue;
       if (!triageFree(await triageStatus(pane).catch(() => null))) continue;
-      if (parseMenu(terminalLines(pane.term)) !== null) continue;
+      if (parseMenu(menuLines(pane.term)) !== null) continue;
       const known = projectTaskList(record).map((task) => task.name);
       const card = pendingCard(key, entry.text, known, Date.now(), entry.id);
       sentEntries.add(`${key}\n${entry.id}`);
@@ -2075,6 +2078,24 @@ function terminalLines(term: Terminal): string[] {
   return lines;
 }
 
+/** The `count` rows of the scrollback right above the screen of a terminal, joined as in `terminalLines`. */
+function scrollbackLines(term: Terminal, count: number): string[] {
+  const buffer = term.buffer.active;
+  const lines: string[] = [];
+  for (let row = Math.max(0, buffer.baseY - count); row < buffer.baseY; row++) {
+    const line = buffer.getLine(row);
+    const text = line?.translateToString(true) ?? "";
+    if (line?.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
+    else lines.push(text);
+  }
+  return lines;
+}
+
+/** The lines in which a question menu is read: the screen, and the scrollback above it for a menu taller than the screen. */
+function menuLines(term: Terminal): string[] {
+  return menuScreen(terminalLines(term), scrollbackLines(term, MENU_ABOVE_LINES));
+}
+
 /**
  * The question menu that each triage chat shows on its screen, by project key, in localStorage
  * `open-questions`. Claude Code writes a question into its session file only after the answer
@@ -2089,7 +2110,7 @@ function recordOpenQuestions(): void {
   const open: Record<string, string> = {};
   for (const pane of panes.values()) {
     if (pane.role !== "triage" || !pane.project) continue;
-    const screen = terminalLines(pane.term);
+    const screen = menuLines(pane.term);
     const menu = parseMenu(screen);
     if (!menu || menu.length === 0) continue;
     open[projectKey(pane.project)] = lostQuestionLine(menu, screen);
@@ -2292,7 +2313,7 @@ function triagePane(project: string): Pane | null {
 async function triageReady(pane: Pane): Promise<boolean> {
   const info = await call<PaneInfo>("pane_info", { id: pane.id, cwd: pane.cwd });
   if (!info.session || info.session.status === "waiting") return false;
-  return parseMenu(terminalLines(pane.term)) === null;
+  return parseMenu(menuLines(pane.term)) === null;
 }
 
 let flushingTriage = false;
@@ -4594,7 +4615,7 @@ function createPane(tabId: string, saved: SavedPane): Pane {
       },
       paste: (text) => term.paste(text),
       write: (data) => call("pty_write", { id: pane.id, data }),
-      screen: () => terminalLines(term),
+      screen: () => menuLines(term),
       saveImage: (image) => saveImage(pane, image),
       openLink: (href) => void openLink(pane, href),
       run: (lines) => {
@@ -4662,6 +4683,11 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
 
   term.open(pane.termEl);
   fitPane(pane);
+  // A pane that is hidden now (a project added in the Overview or the Map) cannot be fitted, and xterm
+  // would start the shell at 80 x 24: Claude Code then draws a question menu taller than the screen
+  // (ticket chat-question-unseen). The first fit in Focus or Tabs gives the real size. No `pty_resize`
+  // goes out here: the resize handler below comes later, and `pty_spawn` takes this size.
+  if (pane.termEl.clientWidth < MIN_FIT_PX || pane.termEl.clientHeight < MIN_FIT_PX) term.resize(HIDDEN_COLS, HIDDEN_ROWS);
   term.textarea?.addEventListener("focus", () => {
     focusPane(pane);
     // The chat view covers the terminal. The keys must go to its message box.
