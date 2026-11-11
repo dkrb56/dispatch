@@ -1,4 +1,5 @@
-import { call, type HostSettings, hostSettings, initBackend, onEvent } from "./backend";
+import { call, type HostSettings, hostInfo, hostSettings, initBackend, onEvent } from "./backend";
+import { chooseFolder } from "./folderchooser";
 import { initHostMode, titleBase } from "./hostmode";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -989,17 +990,23 @@ async function setupProject(root: string): Promise<boolean> {
 }
 
 /**
+ * Asks the user for a folder: the native dialog in the mode "This PC does the work", the folder
+ * chooser of the page in the mode "Use a host", which lists the host's folders (remote-folder-chooser).
+ */
+async function askFolder(title: string, start?: string): Promise<string | null> {
+  if (hostInfo()) return chooseFolder(title, start, (path) => call("dir_list", { path }));
+  const folder = await openDialog({ directory: true, defaultPath: start, title });
+  return !folder || Array.isArray(folder) ? null : folder;
+}
+
+/**
  * Asks the user for a project folder and opens its workspace: triage and the agent view. A
  * project that is not set up shows the Setup pipeline window first; a close without Apply adds
  * nothing. A project with a workspace shows it and starts what does not run.
  */
 async function selectProject(): Promise<void> {
-  const folder = await openDialog({
-    directory: true,
-    defaultPath: focusedPane()?.cwd ?? undefined,
-    title: "Select the project folder",
-  });
-  if (!folder || Array.isArray(folder)) return;
+  const folder = await askFolder("Select the project folder", focusedPane()?.cwd ?? undefined);
+  if (!folder) return;
   const { root } = await call<ProjectRoot>("project_root", { cwd: folder });
   if (!hasWorkspace(root) && !(await setupProject(root))) return;
   await openWorkspace(root);
@@ -5200,8 +5207,8 @@ async function refreshFocusTasks(): Promise<void> {
 }
 
 async function addFocusProject(): Promise<void> {
-  const folder = await openDialog({ directory: true, title: "Select a project folder for focus mode" });
-  if (!folder || Array.isArray(folder)) return;
+  const folder = await askFolder("Select a project folder for focus mode");
+  if (!folder) return;
   const { root } = await call<ProjectRoot>("project_root", { cwd: folder });
   // A project that is not set up shows the Setup pipeline window first; a close without Apply adds nothing.
   if (!hasWorkspace(root) && !(await setupProject(root))) return;

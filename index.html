@@ -415,6 +415,28 @@
         </fieldset>
       </div>
     </dialog>
+    <dialog id="folder-chooser">
+      <header>
+        <h2 id="folder-chooser-title">Select a folder</h2>
+        <button id="folder-chooser-close" title="Close (Esc)">&times;</button>
+      </header>
+      <div id="folder-chooser-body">
+        <form id="folder-chooser-go-form">
+          <input type="text" id="folder-chooser-path" spellcheck="false" autocomplete="off" title="A folder on the host; Enter or Go shows it" />
+          <button type="submit" id="folder-chooser-go" title="Show the typed folder">Go</button>
+        </form>
+        <div id="folder-chooser-nav">
+          <button id="folder-chooser-up" title="The folder above">Up</button>
+          <div id="folder-chooser-roots"></div>
+        </div>
+        <p id="folder-chooser-error" hidden></p>
+        <ul id="folder-chooser-list"></ul>
+      </div>
+      <footer id="folder-chooser-footer">
+        <button id="folder-chooser-cancel" title="Close without a folder (Esc)">Cancel</button>
+        <button id="folder-chooser-choose" class="primary" title="Take the folder in the path line">Choose</button>
+      </footer>
+    </dialog>
     <div id="viewer" hidden>
       <header>
         <span id="viewer-path"></span>
