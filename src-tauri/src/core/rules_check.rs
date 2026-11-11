@@ -15,11 +15,11 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
 
-use crate::info::{claude_command, NoWindow};
-use crate::pipeline::Project;
-use crate::rules::{instruction_rules, is_one_rule, RuleItem};
+use crate::core::info::{claude_command, NoWindow};
+use crate::core::pipeline::Project;
+use crate::core::Core;
+use crate::core::rules::{instruction_rules, is_one_rule, RuleItem};
 
 /// The shortest and the longest time limit that a check accepts, in seconds. The user picks the
 /// limit in the Rules popup (ticket rules-check-options).
@@ -73,7 +73,7 @@ impl Options {
         if !(LIMIT_MIN..=LIMIT_MAX).contains(&limit) {
             return Err(format!("The time limit of the check must be between {} and {} minutes.", LIMIT_MIN / 60, LIMIT_MAX / 60));
         }
-        let args = crate::session_flags(Some(model), Some(effort))?.split_whitespace().map(str::to_string).collect();
+        let args = crate::core::pty::session_flags(Some(model), Some(effort))?.split_whitespace().map(str::to_string).collect();
         Ok(Options { limit: Duration::from_secs(limit), model: model.to_string(), args })
     }
 }
@@ -251,9 +251,9 @@ fn end_tree(pid: u32) {
 /// Ends a process and its children: `claude` can start programs of its own.
 #[cfg(not(windows))]
 fn end_tree(pid: u32) {
-    let parents = crate::info::parent_pids();
+    let parents = crate::core::info::parent_pids();
     let mut pids: Vec<String> =
-        parents.keys().filter(|&&other| crate::info::is_descendant(&parents, other, pid)).map(u32::to_string).collect();
+        parents.keys().filter(|&&other| crate::core::info::is_descendant(&parents, other, pid)).map(u32::to_string).collect();
     if !pids.iter().any(|other| *other == pid.to_string()) {
         pids.push(pid.to_string());
     }
@@ -316,16 +316,15 @@ fn run_claude(dir: Option<&std::path::Path>, prompt: &str, options: &Options, se
 /// seconds; `model` and `effort` are empty for the default of Claude Code (user decision
 /// 2026-11-11: the choice of the Rules popup alone, not the model of the plan run). It changes no
 /// file.
-#[tauri::command(async)]
-pub fn check_rules(app: AppHandle, cwd: String, scope: String, limit: u64, model: String, effort: String) -> Result<RulesCheck, String> {
+pub fn check_rules(core: &Core, cwd: String, scope: String, limit: u64, model: String, effort: String) -> Result<RulesCheck, String> {
     let scope = Scope::parse(&scope)?;
     let options = Options::new(limit, &model, &effort)?;
     let project = Project::find(&cwd)?;
-    let items = instruction_rules(&app, &project)?;
+    let items = instruction_rules(core, &project)?;
     // A settings file that turns the hooks off, as `usage_info` does. It holds no value.
     let settings = std::env::temp_dir().join("dispatch-rules-check-settings.json");
     std::fs::write(&settings, "{\"disableAllHooks\":true}").map_err(|e| e.to_string())?;
-    let home = app.path().home_dir().ok();
+    let home = core.home_dir().ok();
     check_with(items, &project.pipeline_description(), scope, options.model.clone(), |prompt| {
         run_claude(home.as_deref(), prompt, &options, &settings.to_string_lossy())
     })

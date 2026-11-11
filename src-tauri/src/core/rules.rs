@@ -9,10 +9,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
-
-use crate::err;
-use crate::pipeline::{write_file, Project};
+use crate::core::{err, Core};
+use crate::core::pipeline::{write_file, Project};
 
 /// One part of a group: text between the rules, or one rule with its state.
 #[derive(Serialize, Clone)]
@@ -46,21 +44,21 @@ struct OffRule {
 /// The rules that are off, by the path of their file.
 type OffStore = BTreeMap<String, Vec<OffRule>>;
 
-fn store_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app.path().app_data_dir().map_err(err)?.join("rules-off.json"))
+fn store_path(core: &Core) -> Result<PathBuf, String> {
+    Ok(core.app_data_dir()?.join("rules-off.json"))
 }
 
-fn read_store(app: &AppHandle) -> Result<OffStore, String> {
-    let path = store_path(app)?;
+fn read_store(core: &Core) -> Result<OffStore, String> {
+    let path = store_path(core)?;
     let Ok(text) = fs::read_to_string(&path) else {
         return Ok(OffStore::new());
     };
     serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-fn write_store(app: &AppHandle, store: &OffStore) -> Result<(), String> {
+fn write_store(core: &Core, store: &OffStore) -> Result<(), String> {
     let text = serde_json::to_string_pretty(store).map_err(err)?;
-    write_file(&store_path(app)?, &format!("{text}\n"))
+    write_file(&store_path(core)?, &format!("{text}\n"))
 }
 
 /// A list item at the top level: `- `, `* ` or `1. `.
@@ -424,7 +422,7 @@ type InstructionFile = (&'static str, PathBuf, Option<&'static str>);
 
 /// The instruction files of a project in the order of the popup, and then the file of the user
 /// for all projects.
-fn instruction_files(app: &AppHandle, project: &Project) -> Vec<InstructionFile> {
+fn instruction_files(core: &Core, project: &Project) -> Vec<InstructionFile> {
     let root = &project.root;
     let claude = root.join(".claude");
     let mut files = vec![
@@ -441,7 +439,7 @@ fn instruction_files(app: &AppHandle, project: &Project) -> Vec<InstructionFile>
     // The file of the mistakes has a list of rules, and then the story of each mistake.
     files.push(("Rules from mistakes", claude.join("mistakes.md"), Some("Rules")));
     files.push(("Triage role", project.triage_prompt(), None));
-    if let Ok(home) = app.path().home_dir() {
+    if let Ok(home) = core.home_dir() {
         files.push((USER_FILE, home.join(".claude").join("CLAUDE.md"), None));
     }
     files
@@ -464,10 +462,10 @@ pub(crate) struct RuleItem {
 
 /// The rules that are on in the instruction files of a project, in the order of the popup. The
 /// file of the user for all projects comes last.
-pub(crate) fn instruction_rules(app: &AppHandle, project: &Project) -> Result<Vec<RuleItem>, String> {
-    let store = read_store(app)?;
+pub(crate) fn instruction_rules(core: &Core, project: &Project) -> Result<Vec<RuleItem>, String> {
+    let store = read_store(core)?;
     let mut items = Vec::new();
-    for (title, path, only) in instruction_files(app, project) {
+    for (title, path, only) in instruction_files(core, project) {
         let file = path.to_string_lossy().into_owned();
         let off = store.get(&file).map(Vec::as_slice).unwrap_or(&[]);
         let Some(source) = instruction_source(title, &path, only, off) else { continue };
@@ -482,15 +480,14 @@ pub(crate) fn instruction_rules(app: &AppHandle, project: &Project) -> Result<Ve
 }
 
 /// Collects the rules that a Claude Code session gets in the project of a folder.
-#[tauri::command(async)]
-pub fn project_rules(app: AppHandle, cwd: String) -> Result<Rules, String> {
+pub fn project_rules(core: &Core, cwd: String) -> Result<Rules, String> {
     let project = Project::find(&cwd)?;
     let root = &project.root;
     let claude = root.join(".claude");
-    let store = read_store(&app)?;
+    let store = read_store(core)?;
     let mut sources = Vec::new();
 
-    let files = instruction_files(&app, &project);
+    let files = instruction_files(core, &project);
     let (project_files, user_file) = files.split_at(files.iter().position(|file| file.0 == USER_FILE).unwrap_or(files.len()));
     let source = |(title, path, only): &InstructionFile| {
         let off = store.get(path.to_string_lossy().as_ref()).map(Vec::as_slice).unwrap_or(&[]);
@@ -519,15 +516,14 @@ pub fn project_rules(app: AppHandle, cwd: String) -> Result<Rules, String> {
 /// Switches one rule of an instruction file of the project off (`state` "off": the rule goes
 /// from the file to the store), on again ("on": back into its group), or removes it ("removed").
 /// `text` gives the lines of the rule, as `project_rules` shows them. The reply is the new list.
-#[tauri::command(async)]
-pub fn set_rule(app: AppHandle, cwd: String, file: String, group: String, text: String, state: String) -> Result<Rules, String> {
+pub fn set_rule(core: &Core, cwd: String, file: String, group: String, text: String, state: String) -> Result<Rules, String> {
     let project = Project::find(&cwd)?;
-    let path = instruction_files(&app, &project)
+    let path = instruction_files(core, &project)
         .into_iter()
         .map(|(_, path, _)| path)
         .find(|path| path.to_string_lossy() == file)
         .ok_or_else(|| format!("not an instruction file of the project: {file}"))?;
-    let mut store = read_store(&app)?;
+    let mut store = read_store(core)?;
     let rule = OffRule { group: group.clone(), text: text.clone() };
     let off = store.entry(file.clone()).or_default();
     let was_off = off.contains(&rule);
@@ -554,18 +550,17 @@ pub fn set_rule(app: AppHandle, cwd: String, file: String, group: String, text: 
         other => return Err(format!("unknown rule state: {other}")),
     }
     store.retain(|_, rules| !rules.is_empty());
-    write_store(&app, &store)?;
-    project_rules(app, cwd)
+    write_store(core, &store)?;
+    project_rules(core, cwd)
 }
 
 /// Writes `new_text` in place of the rule `text` of an instruction file of the project: the Update
 /// button of the check of the rules. The old text goes to the store as a rule that is off, so On
 /// in the Rules popup puts it back. A file outside the folder of the project is refused. The reply
 /// is the new list.
-#[tauri::command(async)]
-pub fn update_rule(app: AppHandle, cwd: String, file: String, group: String, text: String, new_text: String) -> Result<Rules, String> {
+pub fn update_rule(core: &Core, cwd: String, file: String, group: String, text: String, new_text: String) -> Result<Rules, String> {
     let project = Project::find(&cwd)?;
-    let path = instruction_files(&app, &project)
+    let path = instruction_files(core, &project)
         .into_iter()
         .map(|(_, path, _)| path)
         .find(|path| path.to_string_lossy() == file)
@@ -581,12 +576,12 @@ pub fn update_rule(app: AppHandle, cwd: String, file: String, group: String, tex
         return Err("the new text is the same as the rule".to_string());
     }
     replace_item(&path, &group, &text, &new_text)?;
-    let mut store = read_store(&app)?;
+    let mut store = read_store(core)?;
     let rule = OffRule { group, text };
     let off = store.entry(file).or_default();
     if !off.contains(&rule) {
         off.push(rule);
     }
-    write_store(&app, &store)?;
-    project_rules(app, cwd)
+    write_store(core, &store)?;
+    project_rules(core, cwd)
 }

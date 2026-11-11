@@ -9,7 +9,7 @@ use std::process::Stdio;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::info::{claude_command, NoWindow};
+use crate::core::info::{claude_command, NoWindow};
 
 #[derive(Serialize, PartialEq, Debug)]
 pub struct Category {
@@ -72,7 +72,6 @@ fn parse_context(text: &str) -> ContextUsage {
 
 /// Runs `/context` for a session in the folder of its terminal. `model` is the model of the
 /// session; without it, Claude Code counts for its default model.
-#[tauri::command(async)]
 pub fn context_usage(cwd: String, session: String, model: Option<String>) -> Result<ContextUsage, String> {
     let plain = |text: &str, extra: &[char]| !text.is_empty() && text.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || extra.contains(&c));
     if !plain(&session, &[]) {

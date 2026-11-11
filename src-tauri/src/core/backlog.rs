@@ -12,8 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::info::{file_entry, FileEntry, NoWindow};
-use crate::pipeline::{write_file, Project};
+use crate::core::info::{file_entry, FileEntry, NoWindow};
+use crate::core::pipeline::{write_file, Project};
 
 /// The folder of the entries, relative to the top folder of the repository, as git takes a path.
 const BACKLOG_PATH: &str = ".dispatch/backlog";
@@ -243,7 +243,6 @@ fn commit_logged(project: &Project) {
 }
 
 /// Writes a planned entry for the message of the user, commits it and gives it.
-#[tauri::command(async)]
 pub fn backlog_add(cwd: String, text: String) -> Result<Entry, String> {
     let project = Project::find(&cwd)?;
     let entry = add(&project, &text, now())?;
@@ -252,7 +251,6 @@ pub fn backlog_add(cwd: String, text: String) -> Result<Entry, String> {
 }
 
 /// Removes a planned entry and commits that: the × of its card, or triage took it.
-#[tauri::command(async)]
 pub fn backlog_remove(cwd: String, id: String) -> Result<(), String> {
     let project = Project::find(&cwd)?;
     remove(&project, &id)?;
@@ -261,7 +259,6 @@ pub fn backlog_remove(cwd: String, id: String) -> Result<(), String> {
 }
 
 /// Saves the order of the planned entries that the user set, and commits it.
-#[tauri::command(async)]
 pub fn backlog_reorder(cwd: String, ids: Vec<String>) -> Result<(), String> {
     let project = Project::find(&cwd)?;
     reorder(&project, &ids)?;

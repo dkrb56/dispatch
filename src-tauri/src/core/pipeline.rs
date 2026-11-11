@@ -11,8 +11,8 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-use crate::info::{file_entry, git, FileEntry, NoWindow};
-use crate::{err, session_flags};
+use crate::core::info::{file_entry, git, FileEntry, NoWindow};
+use crate::core::{err, pty::session_flags};
 
 /// The start of the heading of the section that the setup adds to `CLAUDE.md`.
 const SECTION_HEADING: &str = "## Background workers";
@@ -1113,20 +1113,17 @@ fn read_worker_flags(project: &Project) -> WorkerFlags {
 
 /// Reads the options of the plan run and of the work run, and the agent limit, from the files
 /// that the script reads.
-#[tauri::command(async)]
 pub fn worker_flags(cwd: String) -> Result<WorkerFlags, String> {
     Ok(read_worker_flags(&Project::find(&cwd)?))
 }
 
 /// Writes the options of the plan run and of the work run, and the agent limit, to the files
 /// that the script reads.
-#[tauri::command(async)]
 pub fn set_worker_flags(cwd: String, plan: Choice, work: Choice, agents: String) -> Result<(), String> {
     write_worker_flags(&Project::find(&cwd)?, &plan, &work, &agents)
 }
 
 /// The folder of the project of a folder: the top folder of the git repository, or the folder.
-#[tauri::command(async)]
 pub fn project_root(cwd: String) -> Result<ProjectRoot, String> {
     let project = Project::find(&cwd)?;
     Ok(ProjectRoot {
@@ -1497,7 +1494,6 @@ fn with_user_decisions(plan: &str, body: &str) -> String {
 /// Writes the decisions of the user into the plan of a task, before Approve starts its work run:
 /// the work run reads the plan, so it takes them. Gives the new change time of the plan file in
 /// milliseconds, so an automatic approval does not take the written plan for a new one.
-#[tauri::command(async)]
 pub fn task_decide(cwd: String, id: String, text: String) -> Result<u64, String> {
     check_ticket(&id)?;
     let project = Project::find(&cwd)?;
@@ -1554,7 +1550,7 @@ pub struct TaskList {
     /// list folds the chats from before it.
     setup: Option<u64>,
     /// The planned entries of the project in their order (ticket overview-backlog).
-    backlog: Vec<crate::backlog::Entry>,
+    backlog: Vec<crate::core::backlog::Entry>,
 }
 
 /// The files with an extension in a folder: the name without the extension, the path, the entry.
@@ -1591,7 +1587,6 @@ fn setup_time(project: &Project) -> Option<u64> {
 
 /// The tasks of the project of a folder: every ticket with a state file, a plan or a report.
 /// The briefs and the options files are not tasks.
-#[tauri::command(async)]
 pub fn task_list(cwd: String) -> Result<TaskList, String> {
     let project = Project::find(&cwd)?;
     let mut tasks: Vec<TaskInfo> = Vec::new();
@@ -1671,7 +1666,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
         Vec::new()
     };
     let setup = setup_time(&project);
-    let backlog = crate::backlog::list(&project);
+    let backlog = crate::core::backlog::list(&project);
     Ok(TaskList { tasks, dirty, auto_approve: project.options().auto_approve, setup, backlog })
 }
 
@@ -1765,7 +1760,6 @@ Read a file only when its task comes up. Start, approve or answer nothing becaus
 /// The hand-off text for a new triage chat of the project of a folder. The frontend gives the
 /// ticket names whose worker runs (`live`) and whose approval waits for the project (`queued`):
 /// only it knows them.
-#[tauri::command(async)]
 pub fn triage_handoff(cwd: String, live: Vec<String>, queued: Vec<String>, tokens: u64) -> Result<String, String> {
     let project = Project::find(&cwd)?;
     let list = task_list(cwd)?;
@@ -1805,14 +1799,12 @@ fn run_script(project: &Project, args: &[&str]) -> Result<String, String> {
 
 /// Starts the work run of a task: the Approve button of the task card. The script refuses a dirty
 /// tree, a running worker and a stopped task.
-#[tauri::command(async)]
 pub fn task_approve(cwd: String, id: String) -> Result<String, String> {
     check_ticket(&id)?;
     run_script(&Project::find(&cwd)?, &["approve", &id])
 }
 
 /// Sends the plan run back with the reason of the user: the Reject button of the task card.
-#[tauri::command(async)]
 pub fn task_reject(cwd: String, id: String, reason: String) -> Result<String, String> {
     check_ticket(&id)?;
     let reason = reason.trim();
@@ -1825,7 +1817,6 @@ pub fn task_reject(cwd: String, id: String, reason: String) -> Result<String, St
 }
 
 /// Sends the words of the user to a worker: the answer to a question of its report.
-#[tauri::command(async)]
 pub fn task_reply(cwd: String, id: String, text: String) -> Result<String, String> {
     check_ticket(&id)?;
     if text.trim().is_empty() {
@@ -1836,14 +1827,12 @@ pub fn task_reply(cwd: String, id: String, text: String) -> Result<String, Strin
 
 /// Stops the worker of a task: the Stop button of the task card. The script stops the newest
 /// worker of the task and writes the state `stopped`; a stopped task cannot be resumed.
-#[tauri::command(async)]
 pub fn task_stop(cwd: String, id: String) -> Result<String, String> {
     check_ticket(&id)?;
     run_script(&Project::find(&cwd)?, &["stop", &id])
 }
 
 /// Gives the steps of the setup for the project of a folder. It changes nothing.
-#[tauri::command(async)]
 pub fn pipeline_plan(cwd: String) -> Result<Plan, String> {
     plan(&Project::find(&cwd)?)
 }
@@ -1886,7 +1875,6 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
 
 /// Does the steps that are not done. It makes no commit. `rules` gives the positions in `RULES`
 /// of the checked working rules.
-#[tauri::command(async)]
 pub fn pipeline_apply(cwd: String, rules: Vec<usize>) -> Result<Plan, String> {
     let project = Project::find(&cwd)?;
     apply(&project, &rules)?;
@@ -1965,13 +1953,11 @@ fn keep_tasks_committed(project: &Project) -> Result<usize, String> {
 }
 
 /// Commits the setup files of the project of a folder on the current branch. It makes no push.
-#[tauri::command(async)]
 pub fn pipeline_commit(cwd: String) -> Result<String, String> {
     commit_setup(&Project::find(&cwd)?)
 }
 
 /// Saves the settings of the project of a folder. The steps then show what Apply must change.
-#[tauri::command(async)]
 pub fn set_project_options(cwd: String, options: Options) -> Result<Plan, String> {
     let project = Project::find(&cwd)?;
     let text = serde_json::to_string_pretty(&options).map_err(err)?;

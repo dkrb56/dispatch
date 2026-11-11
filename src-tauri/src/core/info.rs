@@ -11,8 +11,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::ipc::{InvokeBody, Request, Response};
-use tauri::{AppHandle, Manager, State};
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
 #[cfg(windows)]
@@ -20,7 +18,7 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
 
-use crate::{data_dir, err, Sessions};
+use crate::core::{err, Core};
 
 const MAX_VIEW_BYTES: u64 = 50 * 1024 * 1024;
 #[cfg(windows)]
@@ -562,30 +560,22 @@ impl Transcript {
     }
 }
 
-#[tauri::command(async)]
-pub fn pane_info(
-    app: AppHandle,
-    sessions: State<Sessions>,
-    transcripts: State<Transcripts>,
-    git_cache: State<GitCache>,
-    id: String,
-    cwd: Option<String>,
-) -> PaneInfo {
+pub fn pane_info(core: &Core, id: String, cwd: Option<String>) -> PaneInfo {
     let git = cwd
         .as_deref()
         .filter(|dir| Path::new(dir).is_dir())
-        .and_then(|dir| git_cache.get(dir));
+        .and_then(|dir| core.git_cache.get(dir));
     let mut info = PaneInfo { git, session: None, outputs: Vec::new() };
 
-    let shell_pid = sessions.0.lock().unwrap().get(&id).and_then(|session| session.pid);
-    let (Some(shell_pid), Ok(home)) = (shell_pid, app.path().home_dir()) else {
+    let shell_pid = core.sessions.0.lock().unwrap().get(&id).and_then(|session| session.pid);
+    let (Some(shell_pid), Ok(home)) = (shell_pid, core.home_dir()) else {
         return info;
     };
     let claude = home.join(".claude");
     let Some(session) = find_claude_session(&claude, shell_pid) else {
         return info;
     };
-    let mut transcripts = transcripts.0.lock().unwrap();
+    let mut transcripts = core.transcripts.0.lock().unwrap();
     let transcript = transcripts.entry(session.session_id.clone()).or_default();
     transcript.update(&claude, &session.session_id);
     info.outputs = transcript.outputs.iter().filter_map(|path| file_entry(Path::new(path))).collect();
@@ -602,9 +592,8 @@ pub fn pane_info(
 }
 
 /// Tells if a program runs in a terminal: the shell of the terminal has a process below it.
-#[tauri::command]
-pub fn pane_busy(sessions: State<Sessions>, id: String) -> bool {
-    let shell_pid = sessions.0.lock().unwrap().get(&id).and_then(|session| session.pid);
+pub fn pane_busy(core: &Core, id: String) -> bool {
+    let shell_pid = core.sessions.0.lock().unwrap().get(&id).and_then(|session| session.pid);
     let Some(shell_pid) = shell_pid else {
         return false;
     };
@@ -613,7 +602,6 @@ pub fn pane_busy(sessions: State<Sessions>, id: String) -> bool {
 }
 
 /// Checks a path from the terminal text. `base` is the folder of the terminal.
-#[tauri::command]
 pub fn file_stat(base: Option<String>, path: String) -> Option<FileEntry> {
     let path = PathBuf::from(path);
     let full = if path.is_absolute() { path } else { PathBuf::from(base?).join(path) };
@@ -625,7 +613,6 @@ const NIGHT_DIR: [&str; 3] = [".claude", "state", "night"];
 
 /// The newest morning list of night mode in a project (`morning-<date>.md`, written by the
 /// `nightmode` skill), or none.
-#[tauri::command]
 pub fn night_morning(root: String) -> Option<FileEntry> {
     let dir = NIGHT_DIR.iter().fold(PathBuf::from(root), |path, part| path.join(part));
     fs::read_dir(dir)
@@ -642,30 +629,25 @@ pub fn night_morning(root: String) -> Option<FileEntry> {
 /// The state of the triage chat's night mode in a project: the field `on` of `night-mode.json`
 /// (written by the `nightmode` skill), or none when the file is missing or broken. Dispatch only
 /// reads the file; the skill stays its only writer.
-#[tauri::command]
 pub fn night_state(root: String) -> Option<bool> {
     let dir = NIGHT_DIR.iter().fold(PathBuf::from(root), |path, part| path.join(part));
     let bytes = fs::read(dir.join("night-mode.json")).ok()?;
     serde_json::from_slice::<serde_json::Value>(&bytes).ok()?.get("on")?.as_bool()
 }
 
-#[tauri::command(async)]
-pub fn file_read(path: String) -> Result<Response, String> {
+/// The bytes of a file for the viewer, up to `MAX_VIEW_BYTES`.
+pub fn file_read(path: String) -> Result<Vec<u8>, String> {
     let size = fs::metadata(&path).map_err(err)?.len();
     if size > MAX_VIEW_BYTES {
         return Err(format!("the file is larger than {} MB", MAX_VIEW_BYTES / 1024 / 1024));
     }
-    fs::read(&path).map(Response::new).map_err(err)
+    fs::read(&path).map_err(err)
 }
 
-/// Saves an image from the clipboard. The body of the request is the image file.
-#[tauri::command]
-pub fn image_save(app: AppHandle, request: Request<'_>) -> Result<String, String> {
-    let InvokeBody::Raw(bytes) = request.body() else {
-        return Err("the request has no image bytes".into());
-    };
+/// Saves an image from the clipboard. `bytes` is the image file.
+pub fn image_save(core: &Core, bytes: &[u8]) -> Result<String, String> {
     let extension = if bytes.starts_with(&[0xFF, 0xD8]) { "jpg" } else { "png" };
-    let dir = data_dir(&app)?.join("pasted");
+    let dir = core.data_dir()?.join("pasted");
     fs::create_dir_all(&dir).map_err(err)?;
     let millis = SystemTime::now().duration_since(UNIX_EPOCH).map_err(err)?.as_millis();
     let path = dir.join(format!("paste-{millis}.{extension}"));

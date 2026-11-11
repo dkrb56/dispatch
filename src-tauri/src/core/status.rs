@@ -17,9 +17,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
 
-use crate::info::{claude_command, NoWindow};
+use crate::core::info::{claude_command, NoWindow};
+use crate::core::Core;
 
 /// The reply of the `status_info` command. It has only what the bar shows.
 #[derive(Serialize, Debug, PartialEq)]
@@ -113,10 +113,9 @@ fn run_claude(dir: Option<&Path>, args: &[&str]) -> Run {
 }
 
 /// The values of the bar. It never fails: a problem is a state in the reply.
-#[tauri::command(async)]
-pub fn status_info(app: AppHandle) -> StatusInfo {
-    let home = app.path().home_dir().ok();
-    status_from(|args| run_claude(home.as_deref(), args), app.package_info().version.to_string())
+pub fn status_info(core: &Core) -> StatusInfo {
+    let home = core.home_dir().ok();
+    status_from(|args| run_claude(home.as_deref(), args), core.version())
 }
 
 /// The reply of the `usage_info` command: only the weekly lines of `/usage`.
@@ -216,9 +215,8 @@ fn usage_from(run: impl Fn(&[&str]) -> Run, settings: &str, model_asked: &Atomic
 static USAGE_MODEL_ASKED: AtomicBool = AtomicBool::new(false);
 
 /// The weekly usage of the bar. It never fails: a problem is a state in the reply.
-#[tauri::command(async)]
-pub fn usage_info(app: AppHandle) -> UsageInfo {
-    let home = app.path().home_dir().ok();
+pub fn usage_info(core: &Core) -> UsageInfo {
+    let home = core.home_dir().ok();
     // A settings file that turns the hooks off, as `context_usage` does. It holds no value.
     let settings = std::env::temp_dir().join("dispatch-usage-settings.json");
     if std::fs::write(&settings, "{\"disableAllHooks\":true}").is_err() {

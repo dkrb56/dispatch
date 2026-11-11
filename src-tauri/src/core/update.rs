@@ -6,10 +6,8 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
-
-use crate::err;
-use crate::info::NoWindow;
+use crate::core::{err, Core};
+use crate::core::info::NoWindow;
 
 /// The repository of the app. A public repository answers without a login, through the web API
 /// with `curl` (part of Windows 10 and 11, and of macOS). A private one answers only through the
@@ -131,18 +129,17 @@ fn installer<'a>(release: &'a Release, end: &str) -> Option<&'a Asset> {
         .find(|asset| asset.name.ends_with(end) && Path::new(&asset.name).file_name().is_some_and(|file| file == asset.name.as_str()))
 }
 
-fn is_newer(app: &AppHandle, release: &Release) -> bool {
-    installer(release, installer_end()).is_some() && numbers(&release.tag_name) > numbers(&app.package_info().version.to_string())
+fn is_newer(core: &Core, release: &Release) -> bool {
+    installer(release, installer_end()).is_some() && numbers(&release.tag_name) > numbers(&core.version())
 }
 
 /// The version of this app and the latest release. A failed check gives the version and the error.
-#[tauri::command(async)]
-pub fn update_check(app: AppHandle) -> Update {
-    let current = app.package_info().version.to_string();
+pub fn update_check(core: &Core) -> Update {
+    let current = core.version();
     match latest() {
         Ok(release) => Update {
             current,
-            newer: release.as_ref().is_some_and(|release| is_newer(&app, release)),
+            newer: release.as_ref().is_some_and(|release| is_newer(core, release)),
             latest: release.map(|release| release.tag_name.trim_start_matches('v').to_string()),
             error: None,
         },
@@ -153,10 +150,9 @@ pub fn update_check(app: AppHandle) -> Update {
 /// Downloads the installer of the latest release and starts it. Gives the version of the installer.
 /// On Windows the installer closes the app and installs in one step. On macOS the disk image opens
 /// in the Finder; the user drags Dispatch to Applications and starts it again.
-#[tauri::command(async)]
-pub fn update_install(app: AppHandle) -> Result<String, String> {
+pub fn update_install(core: &Core) -> Result<String, String> {
     let release = latest()?.ok_or("the repository has no release")?;
-    if !is_newer(&app, &release) {
+    if !is_newer(core, &release) {
         return Err("there is no new version".into());
     }
     let asset = installer(&release, installer_end()).ok_or("the release has no installer")?;
@@ -197,7 +193,6 @@ const INSTALLER_ARGS: [&str; 3] = ["/P", "/UPDATE", "/R"];
 static INSTALLER: Mutex<Option<Child>> = Mutex::new(None);
 
 /// Whether the installer that the app started is still open.
-#[tauri::command]
 pub fn update_installer_open() -> bool {
     let Ok(mut installer) = INSTALLER.lock() else { return false };
     let open = installer.as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(None)));

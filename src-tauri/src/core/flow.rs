@@ -10,9 +10,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
 
-use crate::err;
+use crate::core::Core;
 
 /// The key of the transcript of the session itself. An agent has its id as its key.
 const MAIN_KEY: &str = "main";
@@ -300,9 +299,8 @@ fn flow_of(projects: &Path, session: &str, from: &HashMap<String, u64>) -> Resul
 
 /// What a session and its agents did since the last read: the worker view of the Map asks
 /// again and again with the positions it got.
-#[tauri::command(async)]
-pub fn session_flow(app: AppHandle, session: String, from: HashMap<String, u64>) -> Result<Vec<FlowFile>, String> {
-    let projects = app.path().home_dir().map_err(err)?.join(".claude").join("projects");
+pub fn session_flow(core: &Core, session: String, from: HashMap<String, u64>) -> Result<Vec<FlowFile>, String> {
+    let projects = core.home_dir()?.join(".claude").join("projects");
     flow_of(&projects, &session, &from)
 }
 

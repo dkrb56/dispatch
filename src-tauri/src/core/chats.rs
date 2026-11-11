@@ -10,10 +10,9 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Manager, State};
 
-use crate::info::{claude_command, find_claude_session, is_descendant, parent_pids, running_sessions, NoWindow};
-use crate::{err, Sessions};
+use crate::core::info::{claude_command, find_claude_session, is_descendant, parent_pids, running_sessions, NoWindow};
+use crate::core::{err, Core};
 
 /// The list reads only this many bytes from the start and from the end of a transcript.
 /// A transcript can have many megabytes.
@@ -217,8 +216,7 @@ fn worker_end(claude: &Path, id: &str) -> Option<(String, Option<String>)> {
 }
 
 /// The background sessions of Claude Code on this computer, also the ones that ended.
-#[tauri::command(async)]
-pub fn worker_list(app: AppHandle) -> Result<Vec<Worker>, String> {
+pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
     let output = claude_command()
         .args(["agents", "--json", "--all"])
         .stdin(Stdio::null())
@@ -235,7 +233,7 @@ pub fn worker_list(app: AppHandle) -> Result<Vec<Worker>, String> {
         .filter(|session| session.get("kind").is_some_and(|kind| kind != "interactive"))
         .filter_map(|session| serde_json::from_value(session).ok())
         .collect();
-    let claude: Option<PathBuf> = app.path().home_dir().ok().map(|home| home.join(".claude"));
+    let claude: Option<PathBuf> = core.home_dir().ok().map(|home| home.join(".claude"));
     let projects: Vec<PathBuf> = claude
         .as_ref()
         .and_then(|claude| fs::read_dir(claude.join("projects")).ok())
@@ -254,7 +252,7 @@ pub fn worker_list(app: AppHandle) -> Result<Vec<Worker>, String> {
             worker.ended_at = end.map(|(at, _)| at);
             // The report check runs git; only a failed worker whose last step is blocked needs it.
             if worker.state.as_deref() == Some("failed") && last_state.as_deref() == Some("blocked") {
-                let has_report = crate::pipeline::Project::has_report(worker.cwd.as_deref(), worker.name.as_deref());
+                let has_report = crate::core::pipeline::Project::has_report(worker.cwd.as_deref(), worker.name.as_deref());
                 worker.settle_late_crash(last_state.as_deref(), has_report);
             }
         }
@@ -343,15 +341,15 @@ mod worker_tests {
     }
 }
 
-#[tauri::command(async)]
-pub fn chat_list(app: AppHandle, sessions: State<Sessions>, cache: State<ChatCache>) -> Vec<Chat> {
-    let Ok(home) = app.path().home_dir() else {
+pub fn chat_list(core: &Core) -> Vec<Chat> {
+    let Ok(home) = core.home_dir() else {
         return Vec::new();
     };
     let claude = home.join(".claude");
 
     // The chats that run, and the terminal of this app that holds each one.
-    let shells: Vec<(String, u32)> = sessions
+    let shells: Vec<(String, u32)> = core
+        .sessions
         .0
         .lock()
         .unwrap()
@@ -370,7 +368,7 @@ pub fn chat_list(app: AppHandle, sessions: State<Sessions>, cache: State<ChatCac
         })
         .collect();
 
-    let mut cache = cache.0.lock().unwrap();
+    let mut cache = core.chat_cache.0.lock().unwrap();
     let mut chats = Vec::new();
     let projects = fs::read_dir(claude.join("projects")).into_iter().flatten().flatten();
     for path in projects.flat_map(|dir| fs::read_dir(dir.path()).into_iter().flatten().flatten()).map(|file| file.path()) {
@@ -651,17 +649,15 @@ fn read_chat(path: &Path, from: Option<u64>) -> Option<(Vec<ChatItem>, u64, bool
 
 /// The messages of the chat of a triage pane, for its chat view. `shown` and `from` are the chat
 /// and the position of the last reply. `fallback` is the chat to show when no session runs.
-#[tauri::command(async)]
 pub fn chat_view(
-    app: AppHandle,
-    sessions: State<Sessions>,
+    core: &Core,
     pane: String,
     shown: Option<String>,
     from: Option<u64>,
     fallback: Option<String>,
 ) -> Result<ChatView, String> {
-    let claude = app.path().home_dir().map_err(err)?.join(".claude");
-    let shell_pid = sessions.0.lock().unwrap().get(&pane).and_then(|session| session.pid);
+    let claude = core.home_dir()?.join(".claude");
+    let shell_pid = core.sessions.0.lock().unwrap().get(&pane).and_then(|session| session.pid);
     let session = shell_pid.and_then(|pid| find_claude_session(&claude, pid));
     let running = session.is_some();
     let (chat, status) = match session {
