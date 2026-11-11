@@ -1,7 +1,7 @@
 // The chat view of a triage pane: the messages of the chat as formatted text, and a box
 // for a new message. Claude Code runs in the terminal of the pane, behind this view.
 
-import { invoke } from "@tauri-apps/api/core";
+import { call } from "./backend";
 import { waitingText } from "./backlog";
 import { statusLine, triageFree } from "./pending";
 import DOMPurify from "dompurify";
@@ -1042,7 +1042,7 @@ export function createChatView(options: ChatViewOptions): ChatView {
     if (reading) return;
     reading = true;
     try {
-      const reply = await invoke<ChatReply>("chat_view", {
+      const reply = await call<ChatReply>("chat_view", {
         pane: options.pane,
         shown,
         from: next,

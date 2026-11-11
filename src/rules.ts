@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { call } from "./backend";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import {
@@ -91,7 +91,7 @@ async function ruleElement(file: string, group: string, part: RulePart): Promise
   buttons.className = "rule-buttons";
   const set = (state: RuleState) => {
     for (const button of buttons.querySelectorAll("button")) button.disabled = true;
-    invoke<Rules>("set_rule", { cwd: folder, file, group, text: part.markdown, state })
+    call<Rules>("set_rule", { cwd: folder, file, group, text: part.markdown, state })
       .then(show)
       .catch((error) => (projectEl.textContent = `The change failed: ${error}`));
   };
@@ -198,12 +198,12 @@ function stateLine(text: string): HTMLElement {
 
 /** Takes a finding out of its file as a rule that is off, and shows the new list of rules. */
 async function removeFinding(finding: Finding): Promise<void> {
-  await show(await invoke<Rules>("set_rule", { cwd: folder, file: finding.file, group: finding.group, text: finding.text, state: "off" }));
+  await show(await call<Rules>("set_rule", { cwd: folder, file: finding.file, group: finding.group, text: finding.text, state: "off" }));
 }
 
 /** Writes the recommended text of a finding in place of the rule, and shows the new list. */
 async function updateFinding(finding: Finding): Promise<void> {
-  await show(await invoke<Rules>("update_rule", { cwd: folder, file: finding.file, group: finding.group, text: finding.text, newText: finding.update }));
+  await show(await call<Rules>("update_rule", { cwd: folder, file: finding.file, group: finding.group, text: finding.text, newText: finding.update }));
 }
 
 /** Shows the result of the check above the groups. */
@@ -266,7 +266,7 @@ export function initRules(currentFolder: () => string | null | undefined, onClos
     analyseEl.disabled = !folder;
     dialog.showModal();
     if (!folder) return;
-    invoke<Rules>("project_rules", { cwd: folder })
+    call<Rules>("project_rules", { cwd: folder })
       .then(show)
       .catch((error) => (bodyEl.textContent = String(error)));
   });
@@ -279,7 +279,7 @@ export function initRules(currentFolder: () => string | null | undefined, onClos
     const state = stateLine("");
     findingsEl.replaceChildren(state);
     const stop = tick(options, (progress) => (state.textContent = `Analysing the rules of the project with ${optionsText(options)}: ${progress}`));
-    invoke<RulesCheck>("check_rules", { cwd: folder, scope: "all", ...options })
+    call<RulesCheck>("check_rules", { cwd: folder, scope: "all", ...options })
       .then((check) => (run === checkRun ? showFindings(check) : undefined))
       .catch((error) => {
         if (run === checkRun) findingsEl.replaceChildren(stateLine(`The check failed: ${error}`));

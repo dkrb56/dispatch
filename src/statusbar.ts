@@ -6,7 +6,7 @@
 // The email and the usage numbers stay in the bar only: they go into no storage, no console line
 // and no file. The usage numbers stand in the tooltip of their part too.
 
-import { invoke } from "@tauri-apps/api/core";
+import { call } from "./backend";
 import { type StatusInfo, type StatusPart, type UsageInfo, statusParts, usageParts } from "./status";
 
 /** How often the bar reads the values again: a new login or an update of Claude Code shows within this time. */
@@ -43,7 +43,7 @@ function drawUsage(): void {
 /** Reads the values and draws them, then again after a minute. A failed read keeps the bar as it is. */
 async function poll(): Promise<void> {
   try {
-    lastInfo = await invoke<StatusInfo>("status_info");
+    lastInfo = await call<StatusInfo>("status_info");
     draw(lastInfo);
     drawUsage();
   } catch {
@@ -56,7 +56,7 @@ async function poll(): Promise<void> {
 /** Reads the weekly usage and draws it, then again after 5 minutes. A failed read keeps the values that the bar shows. */
 async function pollUsage(): Promise<void> {
   try {
-    const usage = await invoke<UsageInfo>("usage_info");
+    const usage = await call<UsageInfo>("usage_info");
     if (usage.state !== "unknown" || !lastUsage || lastUsage.state === "unknown") {
       lastUsage = usage;
       usageReadAt = new Date();

@@ -1,6 +1,6 @@
 // The gallery of thumbnails in the side panel, and the viewer for one file.
 
-import { invoke } from "@tauri-apps/api/core";
+import { call } from "./backend";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
@@ -40,11 +40,11 @@ function folderOf(path: string): string {
 }
 
 export function statFile(base: string | null, path: string): Promise<FileEntry | null> {
-  return invoke<FileEntry | null>("file_stat", { base, path });
+  return call<FileEntry | null>("file_stat", { base, path });
 }
 
 function readFile(path: string): Promise<ArrayBuffer> {
-  return invoke<ArrayBuffer>("file_read", { path });
+  return call<ArrayBuffer>("file_read", { path });
 }
 
 /** Reads an image file and gives an address for an `img` element. */

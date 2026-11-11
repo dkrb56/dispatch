@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { call } from "./backend";
 import { checkText, type Finding, findingElement, optionsText, type RulesCheck, removeAllButton, savedOptions, tick } from "./rulecheck";
 
 /** One change that the setup makes in a project. */
@@ -61,7 +61,7 @@ let checkRun = 0;
 
 /** Takes a rule out of its file as a rule that is off; On in the Rules popup puts it back. */
 async function removeFinding(finding: Finding): Promise<void> {
-  await invoke("set_rule", { cwd: folder, file: finding.file, group: finding.group, text: finding.text, state: "off" });
+  await call("set_rule", { cwd: folder, file: finding.file, group: finding.group, text: finding.text, state: "off" });
 }
 
 /** Shows the conflicts of the rules with the pipeline, with Remove and Remove all. */
@@ -94,7 +94,7 @@ function checkRules(target: string): void {
     if (run !== checkRun) return;
     checkStateEl.textContent = `Checking the rules of the project with ${optionsText(options)}: ${progress}. Apply works meanwhile; the lists in the Rules popup change the values.`;
   });
-  invoke<RulesCheck>("check_rules", { cwd: target, scope: "pipeline", ...options })
+  call<RulesCheck>("check_rules", { cwd: target, scope: "pipeline", ...options })
     .then((check) => {
       stop();
       return run === checkRun ? showConflicts(check) : undefined;
@@ -160,7 +160,7 @@ async function run(command: "pipeline_plan" | "pipeline_apply" | "set_project_op
   // The positions of the checked working rules. Apply adds these.
   const rules = [...stepsEl.querySelectorAll<HTMLInputElement>(".setup-rules input:checked")].map((box) => Number(box.dataset.rule));
   try {
-    show(await invoke<Plan>(command, { cwd: folder, options, rules }));
+    show(await call<Plan>(command, { cwd: folder, options, rules }));
   } catch (error) {
     messageEl.textContent = String(error);
   }
@@ -198,7 +198,7 @@ export function initPipeline(
     commitEl.disabled = true;
     try {
       // The button stays off after a commit: the setup files are committed.
-      messageEl.textContent = await invoke<string>("pipeline_commit", { cwd: folder });
+      messageEl.textContent = await call<string>("pipeline_commit", { cwd: folder });
     } catch (error) {
       messageEl.textContent = String(error);
       commitEl.disabled = false;
@@ -236,7 +236,7 @@ function open(target: string | null): void {
 
 /** Whether a project has a step of the setup that is not done. It changes no file. */
 export async function setupNeeded(root: string): Promise<boolean> {
-  const plan = await invoke<Plan>("pipeline_plan", { cwd: root, rules: [] });
+  const plan = await call<Plan>("pipeline_plan", { cwd: root, rules: [] });
   return plan.steps.some((step) => !step.done);
 }
 

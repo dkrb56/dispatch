@@ -1,5 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { call, onEvent } from "./backend";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -391,7 +390,7 @@ function refreshContext(pane: Pane): void {
     usage: state?.session === session.id ? state.usage : undefined,
   };
   pane.context = next;
-  invoke<ContextUsage>("context_usage", { cwd: pane.cwd, session: session.id, model: session.model })
+  call<ContextUsage>("context_usage", { cwd: pane.cwd, session: session.id, model: session.model })
     .then((usage) => {
       next.usage = usage;
       next.error = undefined;
@@ -563,7 +562,7 @@ async function pollSide(): Promise<void> {
     // A change of the folder during the request sets `sideDue` to 0 again.
     pane.sideDue = Date.now() + SIDE_REFRESH_MS;
     try {
-      const info = await invoke<PaneInfo>("pane_info", { id: pane.id, cwd: pane.cwd });
+      const info = await call<PaneInfo>("pane_info", { id: pane.id, cwd: pane.cwd });
       pane.info = info;
       // Keep the files of a session after the session stops.
       if (info.session) pane.outputs = info.outputs;
@@ -666,7 +665,7 @@ function loadTriageRecords(saved: unknown): void {
  * It runs before the setup changes the role file.
  */
 async function recordTriageRole(cwd: string): Promise<void> {
-  const { root, triageStamp } = await invoke<ProjectRoot>("project_root", { cwd });
+  const { root, triageStamp } = await call<ProjectRoot>("project_root", { cwd });
   const record = triageRecords.get(projectKey(root));
   if (record && record.role === null) rememberTriage(root, { ...record, role: triageStamp });
 }
@@ -679,7 +678,7 @@ async function recordTriageRole(cwd: string): Promise<void> {
 async function triageChat(project: string, stamp: string): Promise<Chat | undefined> {
   const key = projectKey(project);
   const workerChats = new Set(workerList.map((worker) => worker.sessionId));
-  const chats = (await invoke<Chat[]>("chat_list")).filter((chat) => {
+  const chats = (await call<Chat[]>("chat_list")).filter((chat) => {
     const folder = projectKey(chat.cwd);
     return (folder === key || folder.startsWith(`${key}\\`)) && !workerChats.has(chat.id);
   });
@@ -933,7 +932,7 @@ function fillPaneBar(pane: Pane): void {
   // The script that triage runs reads the options of both runs from two files.
   const failed = (error: unknown) => (hint.textContent = String(error));
   const load = async () => {
-    const flags = await invoke<WorkerFlags>("worker_flags", { cwd: project });
+    const flags = await call<WorkerFlags>("worker_flags", { cwd: project });
     const values = [
       [model, flags.plan.model],
       [effort, flags.plan.effort],
@@ -957,7 +956,7 @@ function fillPaneBar(pane: Pane): void {
   const changed = () => {
     const plan = { model: model.value, effort: effort.value };
     const work = { model: workModel.value, effort: workEffort.value };
-    saving = saving.then(() => invoke("set_worker_flags", { cwd: project, plan, work, agents: agents.value })).catch(failed);
+    saving = saving.then(() => call("set_worker_flags", { cwd: project, plan, work, agents: agents.value })).catch(failed);
     pane.term.focus();
   };
   for (const select of [model, effort, workModel, workEffort, agents]) select.addEventListener("change", changed);
@@ -996,7 +995,7 @@ async function selectProject(): Promise<void> {
     title: "Select the project folder",
   });
   if (!folder || Array.isArray(folder)) return;
-  const { root } = await invoke<ProjectRoot>("project_root", { cwd: folder });
+  const { root } = await call<ProjectRoot>("project_root", { cwd: folder });
   if (!hasWorkspace(root) && !(await setupProject(root))) return;
   await openWorkspace(root);
 }
@@ -1014,7 +1013,7 @@ interface WorkspaceStart {
 }
 
 async function workspaceStart(cwd: string): Promise<WorkspaceStart> {
-  const info = await invoke<ProjectRoot>("project_root", { cwd });
+  const info = await call<ProjectRoot>("project_root", { cwd });
   const choice = triageChoice(info.root);
   const chat = await triageChat(info.root, info.triageStamp);
   const triage: StartCommand = {
@@ -1078,12 +1077,12 @@ async function openWorkspace(cwd = focusedPane()?.cwd): Promise<void> {
   if (known) {
     activate(known.tabId);
     for (const pane of tabPanes(known.tabId)) {
-      if (!pane.role || (await invoke<boolean>("pane_busy", { id: pane.id }))) continue;
+      if (!pane.role || (await call<boolean>("pane_busy", { id: pane.id }))) continue;
       const triage = triageCommand(info, flags, chat);
       // The agent view shows only the background sessions of the project.
       const folder = pane.shell === "cmd" ? `"${project}"` : `'${project.replace(/'/g, "''")}'`;
       const command = pane.role === "agents" ? `claude agents --cwd ${folder}` : triage;
-      await invoke("pty_write", { id: pane.id, data: `${command}\r` });
+      await call("pty_write", { id: pane.id, data: `${command}\r` });
       if (pane.role === "triage") {
         pane.startedWith = flags;
         pane.barEl.querySelector(".hint")!.textContent = "";
@@ -1120,11 +1119,11 @@ async function pollTriage(): Promise<void> {
   for (const pane of panes.values()) {
     if (pane.role !== "triage" || !pane.project) continue;
     try {
-      const info = await invoke<PaneInfo>("pane_info", { id: pane.id, cwd: pane.cwd });
+      const info = await call<PaneInfo>("pane_info", { id: pane.id, cwd: pane.cwd });
       const remembered = rememberedTriage(pane.project);
       if (info.session && remembered !== info.session.id) {
         // A new chat started. Record the role that it got.
-        const { triageStamp } = await invoke<ProjectRoot>("project_root", { cwd: pane.project });
+        const { triageStamp } = await call<ProjectRoot>("project_root", { cwd: pane.project });
         rememberTriage(pane.project, { chat: info.session.id, role: triageStamp });
         // The chat before it stays in the chat list, marked as an earlier triage chat. A switch ends here.
         if (remembered) addEarlierTriage(pane.project, remembered);
@@ -1292,7 +1291,7 @@ async function programEnded(pane: Pane, ms: number): Promise<boolean> {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     await new Promise((done) => setTimeout(done, 500));
-    if (!(await invoke<boolean>("pane_busy", { id: pane.id }))) return true;
+    if (!(await call<boolean>("pane_busy", { id: pane.id }))) return true;
   }
   return false;
 }
@@ -1332,7 +1331,7 @@ async function switchTriage(pane: Pane, state: TriageContext): Promise<void> {
       .filter((worker) => inProject(worker, key) && (worker.state === "working" || worker.state === "blocked"))
       .map(workerTask);
     const queued = [...queuedApprovals.keys()].filter((entry) => entry.startsWith(`${key}\n`)).map((entry) => entry.slice(key.length + 1));
-    const text = await invoke<string>("triage_handoff", { cwd: project, live, queued, tokens: state.tokens ?? 0 });
+    const text = await call<string>("triage_handoff", { cwd: project, live, queued, tokens: state.tokens ?? 0 });
     handoff = { project: key, text, since: Date.now() };
     triageQueue.unshift(handoff);
     saveTriageQueue();
@@ -1341,7 +1340,7 @@ async function switchTriage(pane: Pane, state: TriageContext): Promise<void> {
     if (!(await programEnded(pane, TRIAGE_EXIT_WAIT_MS))) throw new Error("Claude Code did not end after /exit");
     // The remembered chat is marked as closed: the start command makes a new chat.
     const { info, flags, chat } = await workspaceStart(project);
-    await invoke("pty_write", { id: pane.id, data: `${triageCommand(info, flags, chat)}\r` });
+    await call("pty_write", { id: pane.id, data: `${triageCommand(info, flags, chat)}\r` });
     pane.startedWith = flags;
     const hint = pane.barEl.querySelector(".hint");
     if (hint) hint.textContent = "";
@@ -1632,7 +1631,7 @@ async function refreshTasks(): Promise<void> {
   let reply: TaskListReply = { tasks: [], dirty: [], autoApprove: false, setup: null, backlog: [] };
   if (cwd) {
     try {
-      reply = await invoke<TaskListReply>("task_list", { cwd });
+      reply = await call<TaskListReply>("task_list", { cwd });
       taskReadTimes.set(projectKey(cwd), Date.now());
     } catch {
       // A folder that is no project has no tasks.
@@ -1798,7 +1797,7 @@ function setNight(on: boolean): void {
  */
 async function syncNight(root: string): Promise<void> {
   try {
-    const file = await invoke<boolean | null>("night_state", { root });
+    const file = await call<boolean | null>("night_state", { root });
     const project = projectKey(root);
     // The start check and the new-chat check can meet: a line that already waits is not queued twice.
     const lines = nightSyncLines(nightOn, file ?? null);
@@ -1884,7 +1883,7 @@ function loadPending(): void {
 
 /** Reads the task list of one project again, with its planned entries. */
 async function readProjectTasks(cwd: string): Promise<void> {
-  const reply = await invoke<TaskListReply>("task_list", { cwd });
+  const reply = await call<TaskListReply>("task_list", { cwd });
   projectTasks.set(projectKey(cwd), tasksRecord(cwd, reply));
   taskReadTimes.set(projectKey(cwd), Date.now());
 }
@@ -1896,7 +1895,7 @@ async function readProjectTasks(cwd: string): Promise<void> {
  */
 async function addEntry(project: string, message: string): Promise<boolean> {
   if (project === "" || goesStraight(message)) return false;
-  await invoke<Entry>("backlog_add", { cwd: project, text: message });
+  await call<Entry>("backlog_add", { cwd: project, text: message });
   await readProjectTasks(project).catch((error) => console.warn("task list read failed", error));
   renderChats();
   void dispatchEntries();
@@ -1914,7 +1913,7 @@ async function removeEntry(project: string, entry: string): Promise<boolean> {
   // True only when the list was read after the removal: an old list still holds the entry.
   let removed = false;
   try {
-    await invoke("backlog_remove", { cwd, id: entry });
+    await call("backlog_remove", { cwd, id: entry });
     await readProjectTasks(cwd);
     removed = true;
   } catch (error) {
@@ -1929,7 +1928,7 @@ async function removeEntry(project: string, entry: string): Promise<boolean> {
 async function moveEntries(project: string, ids: string[]): Promise<void> {
   const cwd = projectCwd(projectKey(project));
   try {
-    await invoke("backlog_reorder", { cwd, ids });
+    await call("backlog_reorder", { cwd, ids });
     await readProjectTasks(cwd);
   } catch (error) {
     console.error("planned entries not moved", error);
@@ -1939,7 +1938,7 @@ async function moveEntries(project: string, ids: string[]): Promise<void> {
 
 /** The status of the session of a triage pane from its session file (`idle`, `shell`, `busy`, `waiting`), or null. */
 async function triageStatus(pane: Pane): Promise<string | null> {
-  const info = await invoke<PaneInfo>("pane_info", { id: pane.id, cwd: pane.cwd });
+  const info = await call<PaneInfo>("pane_info", { id: pane.id, cwd: pane.cwd });
   return info.session?.status ?? null;
 }
 
@@ -2202,7 +2201,7 @@ function triagePane(project: string): Pane | null {
  * option. A busy session queues typed input, so a line may go to it.
  */
 async function triageReady(pane: Pane): Promise<boolean> {
-  const info = await invoke<PaneInfo>("pane_info", { id: pane.id, cwd: pane.cwd });
+  const info = await call<PaneInfo>("pane_info", { id: pane.id, cwd: pane.cwd });
   if (!info.session || info.session.status === "waiting") return false;
   return parseMenu(terminalLines(pane.term)) === null;
 }
@@ -2464,7 +2463,7 @@ async function taskAction(task: Task, command: string, args: Record<string, stri
   let done = false;
   try {
     const cwd = task.project?.cwd ?? tasksCwd;
-    await invoke(command, { cwd, ...args });
+    await call(command, { cwd, ...args });
     done = true;
     tellTriage(projectFor(cwd), line);
   } catch (error) {
@@ -2636,7 +2635,7 @@ async function writeDecisions(task: Task, choices: DecisionAnswer[]): Promise<nu
     ...decisionLines(choices),
   ].join("\n");
   try {
-    const written = await invoke<number>("task_decide", { cwd: task.project?.cwd ?? tasksCwd, id: task.name, text });
+    const written = await call<number>("task_decide", { cwd: task.project?.cwd ?? tasksCwd, id: task.name, text });
     // The written plan is the same plan: an automatic approval tries it once, not again.
     autoApproved.set(task.name, written);
     return written;
@@ -3315,7 +3314,7 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
 /** Reads the worker list and shows it in the chat panel. */
 async function refreshWorkers(): Promise<void> {
   // The alert must show also when the chat panel is hidden. Thus this runs always.
-  const workers = await invoke<Worker[]>("worker_list");
+  const workers = await call<Worker[]>("worker_list");
   const shown = JSON.stringify(workers);
   if (shown === workersShown) return;
   workersShown = shown;
@@ -3499,7 +3498,7 @@ async function checkUpdate(): Promise<void> {
   updateCheckEl.textContent = "Checking…";
   const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   try {
-    const update = await invoke<Update>("update_check");
+    const update = await call<Update>("update_check");
     showVersion(`${versionText(update)} Checked at ${time}.`);
     document.querySelector<HTMLElement>("#show-help")!.title = `Help · Dispatch ${update.current}`;
     updateNewer = update.newer;
@@ -3537,7 +3536,7 @@ async function installUpdate(): Promise<void> {
     recordOpenQuestions();
     await saveScreens();
     await saveState();
-    const version = await invoke<string>("update_install");
+    const version = await call<string>("update_install");
     updateAlertEl.textContent = `Installer ${version} started`;
     updateCheckEl.textContent = updateAlertEl.textContent;
     updateCheckEl.disabled = true;
@@ -3545,7 +3544,7 @@ async function installUpdate(): Promise<void> {
     await getCurrentWindow().close();
     // An installer that ends while the app still runs was cancelled or failed: the buttons work
     // again, and a new check shows the latest version (it can be newer than this installer's).
-    while (await invoke<boolean>("update_installer_open").catch(() => false)) await new Promise((done) => setTimeout(done, INSTALLER_POLL_MS));
+    while (await call<boolean>("update_installer_open").catch(() => false)) await new Promise((done) => setTimeout(done, INSTALLER_POLL_MS));
     updateAlertEl.disabled = false;
     updateAlertEl.title = `The installer of version ${version} closed without updating.`;
     await checkUpdate();
@@ -3621,7 +3620,7 @@ function projectFor(cwd: string | null | undefined): string {
   if (known === undefined) {
     // Ask one time for each folder, and show the chats again when the reply comes.
     projectRoots.set(folder, "pending");
-    invoke<ProjectRoot>("project_root", { cwd })
+    call<ProjectRoot>("project_root", { cwd })
       .catch((): ProjectRoot => ({ root: cwd, git: false, triagePrompt: false, triageStamp: "", triageName: false }))
       .then((project) => {
         projectRoots.set(folder, project);
@@ -3832,7 +3831,7 @@ function renderChats(): void {
 /** Reads the chat list and shows it in the chat panel. */
 async function refreshChats(): Promise<void> {
   if (chatsEl.hidden) return;
-  const chats = await invoke<Chat[]>("chat_list");
+  const chats = await call<Chat[]>("chat_list");
   const shown = JSON.stringify(chats);
   if (shown === chatsShown) return;
   chatsShown = shown;
@@ -3893,7 +3892,7 @@ async function openLink(pane: Pane, uri: string): Promise<void> {
 
 /** Saves an image from the clipboard, adds it to the gallery of the pane, and gives the path of the file. */
 async function saveImage(pane: Pane, image: File): Promise<string> {
-  const path = await invoke<string>("image_save", new Uint8Array(await image.arrayBuffer()));
+  const path = await call<string>("image_save", new Uint8Array(await image.arrayBuffer()));
   const entry = await statFile(null, path);
   if (entry) {
     pane.extra.push(entry);
@@ -3993,7 +3992,7 @@ function saveState(): Promise<void> {
     layout: saveNode(tab.view.firstElementChild!),
     focus: tab.focus,
   }));
-  return invoke("state_save", {
+  return call("state_save", {
     state: { tabs: list, active: activeId, night: nightOn, triage: Object.fromEntries(triageRecords) },
     paneIds: [...panes.keys()],
   });
@@ -4009,7 +4008,7 @@ async function saveScreens(): Promise<void> {
       excludeAltBuffer: true,
       excludeModes: true,
     });
-    await invoke("screen_save", { id: pane.id, data });
+    await call("screen_save", { id: pane.id, data });
   }
 }
 
@@ -4096,7 +4095,7 @@ async function runCommands(project: string, lines: RunLine[]): Promise<void> {
   for (const pane of commandPanes(project)) {
     // A cmdlet like Start-Sleep runs inside the shell, without a process of its own: the
     // terminal is busy from its line until its next prompt.
-    if (!pane.lineOpen && !pane.sequence && !(await invoke<boolean>("pane_busy", { id: pane.id }))) {
+    if (!pane.lineOpen && !pane.sequence && !(await call<boolean>("pane_busy", { id: pane.id }))) {
       target = pane;
       break;
     }
@@ -4120,7 +4119,7 @@ async function runCommands(project: string, lines: RunLine[]): Promise<void> {
       // The prompt after this line: it is set up before the write, which a quick command can outrun.
       const done = new Promise<void>((resolve) => pane.promptWaiters.push(resolve));
       pane.lineOpen = true;
-      await invoke("pty_write", { id: pane.id, data: enter ? `${command}\r` : command });
+      await call("pty_write", { id: pane.id, data: enter ? `${command}\r` : command });
       if (!enter || index === lines.length - 1) break;
       await done;
       // The user closed the terminal: the other lines do not run.
@@ -4183,7 +4182,7 @@ async function closePane(id: string): Promise<void> {
   }
   fitTab(tab.id);
   if (activeId === tab.id) panes.get(tab.focus ?? "")?.term.focus();
-  await invoke("pty_kill", { id });
+  await call("pty_kill", { id });
   await saveState();
 }
 
@@ -4202,7 +4201,7 @@ async function closeTab(id: string): Promise<void> {
   tab.view.remove();
   tab.button.remove();
   for (const pane of closed) {
-    await invoke("pty_kill", { id: pane.id });
+    await call("pty_kill", { id: pane.id });
   }
 
   if (tabs.size === 0) {
@@ -4317,7 +4316,7 @@ function createPane(tabId: string, saved: SavedPane): Pane {
         }
       },
       paste: (text) => term.paste(text),
-      write: (data) => invoke("pty_write", { id: pane.id, data }),
+      write: (data) => call("pty_write", { id: pane.id, data }),
       screen: () => terminalLines(term),
       saveImage: (image) => saveImage(pane, image),
       openLink: (href) => void openLink(pane, href),
@@ -4333,7 +4332,7 @@ function createPane(tabId: string, saved: SavedPane): Pane {
       viewDefaults: {
         find: () => {
           const root = pane.project ?? pane.cwd;
-          return root ? invoke<FileEntry | null>("night_morning", { root }) : Promise.resolve(null);
+          return root ? call<FileEntry | null>("night_morning", { root }) : Promise.resolve(null);
         },
         open: (file) => void openViewer(file),
       },
@@ -4381,7 +4380,7 @@ function buildNode(tabId: string, node: SavedNode, created: Pane[]): HTMLDivElem
 async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Promise<void> {
   const { id, shell, term } = pane;
   // The agent view draws itself again at its start: its old screen would only be old frames.
-  const screen = restore && pane.role !== "agents" ? await invoke<string | null>("screen_load", { id }) : null;
+  const screen = restore && pane.role !== "agents" ? await call<string | null>("screen_load", { id }) : null;
   if (!panes.has(id)) return;
 
   term.open(pane.termEl);
@@ -4476,7 +4475,7 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
     return true;
   });
 
-  term.onData((data) => void invoke("pty_write", { id, data }));
+  term.onData((data) => void call("pty_write", { id, data }));
   term.onResize(({ cols, rows }) => {
     // The agent view prints a new frame at each size and leaves the old ones above it. Before it
     // draws again, the screen and the scrollback of its pane are empty, and the cursor is at the top.
@@ -4484,11 +4483,11 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
       term.clear();
       term.write("\x1b[H\x1b[2J");
     }
-    void invoke("pty_resize", { id, cols, rows });
+    void call("pty_resize", { id, cols, rows });
   });
 
   try {
-    await invoke("pty_spawn", { id, shell, cwd: pane.cwd, cols: term.cols, rows: term.rows, ...start });
+    await call("pty_spawn", { id, shell, cwd: pane.cwd, cols: term.cols, rows: term.rows, ...start });
   } catch (error) {
     term.write(`\r\n\x1b[31mCould not start ${shell}: ${error}\x1b[0m\r\n`);
   }
@@ -4937,7 +4936,7 @@ async function refreshMorning(column: FocusColumn): Promise<void> {
   column.morningChecked = now;
   let morning: FileEntry | null = null;
   try {
-    morning = await invoke<FileEntry | null>("night_morning", { root: column.root });
+    morning = await call<FileEntry | null>("night_morning", { root: column.root });
   } catch (error) {
     console.error("morning list check failed", error);
   }
@@ -5152,7 +5151,7 @@ async function refreshFocusTasks(): Promise<void> {
   await Promise.all(
     [...roots.values()].map(async (root) => {
       try {
-        const reply = await invoke<TaskListReply>("task_list", { cwd: root });
+        const reply = await call<TaskListReply>("task_list", { cwd: root });
         projectTasks.set(projectKey(root), tasksRecord(root, reply));
         taskReadTimes.set(projectKey(root), Date.now());
       } catch {
@@ -5172,7 +5171,7 @@ async function refreshFocusTasks(): Promise<void> {
 async function addFocusProject(): Promise<void> {
   const folder = await openDialog({ directory: true, title: "Select a project folder for focus mode" });
   if (!folder || Array.isArray(folder)) return;
-  const { root } = await invoke<ProjectRoot>("project_root", { cwd: folder });
+  const { root } = await call<ProjectRoot>("project_root", { cwd: folder });
   // A project that is not set up shows the Setup pipeline window first; a close without Apply adds nothing.
   if (!hasWorkspace(root) && !(await setupProject(root))) return;
   if (!focusProjects.some((known) => projectKey(known) === projectKey(root))) focusProjects.push(root);
@@ -5870,13 +5869,13 @@ function tickRunTimes(): void {
 }
 
 async function start(): Promise<void> {
-  await listen<{ id: string; data: string }>("pty-output", ({ payload }) => {
+  await onEvent<{ id: string; data: string }>("pty-output", (payload) => {
     const pane = panes.get(payload.id);
     if (!pane) return;
     pane.term.write(payload.data);
     pane.dirty = true;
   });
-  await listen<string>("pty-exit", ({ payload }) => void closePane(payload));
+  await onEvent<string>("pty-exit", (payload) => void closePane(payload));
 
   await getCurrentWindow().onCloseRequested(async () => {
     try {
@@ -6011,7 +6010,7 @@ async function start(): Promise<void> {
   });
   void pollUpdate();
 
-  const loaded = await invoke<SavedState | null>("state_load");
+  const loaded = await call<SavedState | null>("state_load");
   // Night mode: the switch comes from state.json, before the tabs open, so the first task reads
   // see it. The old browser value counts once, while state.json has no night field yet.
   let legacyNight: string | null = null;

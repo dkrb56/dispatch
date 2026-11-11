@@ -362,7 +362,7 @@ test("the Overview meets the page", () => {
   assert.match(block, /\.restore\(\)/);
   // Each Chat view still writes to the terminal of its own pane.
   assert.match(MAIN, /paste: \(text\) => term\.paste\(text\),/);
-  assert.match(MAIN, /write: \(data\) => invoke\("pty_write", \{ id: pane\.id, data \}\),/);
+  assert.match(MAIN, /write: \(data\) => call\("pty_write", \{ id: pane\.id, data \}\),/);
   assert.match(MAIN, /savedView\(/);
 });
 
