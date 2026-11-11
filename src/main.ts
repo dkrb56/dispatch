@@ -17,7 +17,7 @@ import { type FileEntry, initViewer, openViewer, showGallery, statFile } from ".
 import { durationText, runTime } from "./duration";
 import { agentsText, rowParts } from "./workerrow";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
-import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards } from "./pending";
+import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards, triageFree } from "./pending";
 import { type FlowView, openFlow } from "./flow";
 import { drawLinks, type Link } from "./links";
 import { initPipeline, openSetup, setupNeeded } from "./pipeline";
@@ -1260,17 +1260,20 @@ function checkSwitch(pane: Pane, session: NonNullable<PaneInfo["session"]>, stat
     ? "Night mode is on; the new chat starts after it ends."
     : session.status === "busy"
       ? "Triage works."
-      : session.status !== "idle"
-        ? "Triage waits for you in the terminal."
-        : parseMenu(terminalLines(pane.term)) !== null
-          ? "A question or a prompt of triage is open."
-          : !pane.chat?.visible()
-            ? "The pane shows the Terminal view; Dispatch cannot see what you type there."
-            : !pane.chat.quiet()
-              ? "Your message box holds text, or a message or a question is open."
-              : triageQueue.some((line) => line.project === key)
-                ? "A line of Dispatch waits for triage."
-                : "";
+      : session.status === "shell"
+        // `/exit` of the switch would end the command that triage runs in the background.
+        ? "Triage runs a command in the background; the new chat starts after it ends."
+        : session.status !== "idle"
+          ? "Triage waits for you in the terminal."
+          : parseMenu(terminalLines(pane.term)) !== null
+            ? "A question or a prompt of triage is open."
+            : !pane.chat?.visible()
+              ? "The pane shows the Terminal view; Dispatch cannot see what you type there."
+              : !pane.chat.quiet()
+                ? "Your message box holds text, or a message or a question is open."
+                : triageQueue.some((line) => line.project === key)
+                  ? "A line of Dispatch waits for triage."
+                  : "";
   if (reason) return hold(reason);
   if (state.quietSince === 0 || state.quietTokens !== tokens) {
     state.quietSince = Date.now();
@@ -1827,8 +1830,8 @@ async function pollTasks(): Promise<void> {
 
 // The planned entries and the temporary task cards (overview-backlog, pending-task-card): a message
 // of the user to triage is a planned entry first, a file in `.dispatch/backlog/` of the project.
-// Dispatch sends the first entry of a project to triage when triage is idle, one at a time; from then
-// on a temporary card stands for it in the task list. A new task in the list takes its place; the
+// Dispatch sends the first entry of a project to triage when triage is free (`triageFree`: idle, or
+// shell with only a background command), one at a time; from then on a temporary card stands for it in the task list. A new task in the list takes its place; the
 // end of the turn of triage without a new task, or the time limit, removes it, and its file goes.
 // The cards are in localStorage `pending-cards` too, so a restart keeps them (pending-card-persist).
 
@@ -1934,7 +1937,7 @@ async function moveEntries(project: string, ids: string[]): Promise<void> {
   renderChats();
 }
 
-/** The status of the session of a triage pane from its session file (`idle`, `busy`, `waiting`), or null. */
+/** The status of the session of a triage pane from its session file (`idle`, `shell`, `busy`, `waiting`), or null. */
 async function triageStatus(pane: Pane): Promise<string | null> {
   const info = await invoke<PaneInfo>("pane_info", { id: pane.id, cwd: pane.cwd });
   return info.session?.status ?? null;
@@ -1946,9 +1949,9 @@ let dispatching = false;
 const ENTRY_TICK_MS = 2000;
 
 /**
- * Sends the first planned entry of each project to its triage chat, verbatim, when triage is idle,
- * shows no question or menu, no switch to a new chat runs and no line of Dispatch waits for it. One
- * entry of a project at a time: its temporary card stands until its task comes. It also notes busy
+ * Sends the first planned entry of each project to its triage chat, verbatim, when triage is free
+ * (`triageFree`: idle, or shell with only a background command), shows no question or menu, no
+ * switch to a new chat runs and no line of Dispatch waits for it. One entry of a project at a time: its temporary card stands until its task comes. It also notes busy
  * and idle of triage for the cards in flight, in every view, so the end of a turn without a task
  * frees the next entry.
  */
@@ -1973,7 +1976,7 @@ async function dispatchEntries(): Promise<void> {
       const entry = nextEntry(record.backlog.filter((one) => !entryGone(key, one.id)), []);
       if (!entry) continue;
       if (switchRuns(key) || triageQueue.some((line) => projectKey(line.project) === key)) continue;
-      if ((await triageStatus(pane).catch(() => null)) !== "idle") continue;
+      if (!triageFree(await triageStatus(pane).catch(() => null))) continue;
       if (parseMenu(terminalLines(pane.term)) !== null) continue;
       const known = projectTaskList(record).map((task) => task.name);
       const card = pendingCard(key, entry.text, known, Date.now(), entry.id);

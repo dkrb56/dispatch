@@ -28,6 +28,26 @@ export interface PendingCard {
 /** A card goes at the latest after this time (decision 1 of the plan: 10 minutes). */
 export const PENDING_MAX_MS = 10 * 60_000;
 
+/**
+ * Triage is free for a message of the user (ticket shell-status-free): its turn ended (`idle`), or
+ * its turn ended and only a command that it started in the background runs (`shell`). `busy`, a
+ * status at a prompt (`waiting`), an unknown status and no session are not free.
+ */
+export function triageFree(status: string | null): boolean {
+  return status === "idle" || status === "shell";
+}
+
+/**
+ * The line above the message box for a session that runs and has no open question: nothing while
+ * triage is free or without a status, "Triage works…" during a turn, and for a status at a prompt
+ * that triage waits in the terminal.
+ */
+export function statusLine(status: string | null): string {
+  if (!status || triageFree(status)) return "";
+  if (status === "busy") return "Triage works…";
+  return `Triage waits for you in the terminal (${status}).`;
+}
+
 /** A path of a pasted image at the start of a message, with or without quotes. */
 const IMAGE_PATH = /^\s*(?:"[^"]*\.(?:png|jpe?g|gif|webp|bmp)"|\S+\.(?:png|jpe?g|gif|webp|bmp))(?=\s|$)/i;
 
@@ -65,7 +85,8 @@ export function pendingState(card: PendingCard): string {
 
 /**
  * Notes the status of the triage session of a project for its cards: busy marks a card as read,
- * idle after busy ends its turn, busy again opens the turn again. Gives true when a card changed.
+ * idle or shell after busy ends its turn, busy again opens the turn again. Gives true when a card
+ * changed.
  */
 export function noteStatus(cards: PendingCard[], project: string, status: string | null, now: number): boolean {
   let changed = false;
@@ -75,7 +96,7 @@ export function noteStatus(cards: PendingCard[], project: string, status: string
       if (!card.busySeen || card.endedAt !== null) changed = true;
       card.busySeen = true;
       card.endedAt = null;
-    } else if (status === "idle" && card.busySeen && card.endedAt === null) {
+    } else if (triageFree(status) && card.busySeen && card.endedAt === null) {
       card.endedAt = now;
       changed = true;
     }

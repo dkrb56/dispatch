@@ -1,8 +1,8 @@
 // The planned entries of a project (ticket overview-backlog): a message of the user that triage has
 // not taken yet. Each is a Markdown file in `.dispatch/backlog/` of the project; `task_list` gives
-// them with the tasks. Dispatch sends the first one to triage when triage is idle, one at a time per
-// project. No imports and no access to the page, so a test can load this file with Node
-// (tests/backlog.test.ts).
+// them with the tasks. Dispatch sends the first one to triage when triage is free (idle, or with only
+// a background command), one at a time per project. No imports and no access to the page, so a test
+// can load this file with Node (tests/backlog.test.ts).
 
 /** One planned entry, as `task_list` gives it (`backlog::Entry` in Rust). */
 export interface Entry {
@@ -51,8 +51,9 @@ export function goesStraight(text: string): boolean {
 
 /**
  * What the triage chat says above its message box while planned entries wait: how many messages of
- * the user wait, and when they go. Triage takes an entry only when it is idle, so a message can wait
- * for a long command of triage. No entry gives an empty text.
+ * the user wait, and when they go. Triage takes an entry only when it is free (idle, or with only a
+ * background command), so a message can wait for a long command inside a turn of triage. No entry
+ * gives an empty text.
  */
 export function waitingText(count: number): string {
   if (count <= 0) return "";

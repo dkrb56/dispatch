@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { noteStatus, PENDING_MAX_MS, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards } from "../src/pending.ts";
+import { noteStatus, PENDING_MAX_MS, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards, statusLine, triageFree } from "../src/pending.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const MAIN = read("../src/main.ts");
@@ -231,4 +231,43 @@ test("the window keeps the cards in localStorage and reads them at the start", (
   const start = MAIN.slice(MAIN.indexOf("async function start()"));
   assert.ok(start.indexOf("loadPending()") >= 0 && start.indexOf("loadPending()") < start.indexOf("void pollTasks()"));
   assert.match(HTML, /close and open Dispatch/);
+});
+
+// Ticket shell-status-free: triage that ended its turn and runs only a command in the background
+// has the status `shell` in its session file. It is free for a message of the user.
+test("triage is free when idle or shell, not when busy, at a prompt, unknown or without a session", () => {
+  assert.equal(triageFree("idle"), true);
+  assert.equal(triageFree("shell"), true);
+  for (const status of ["busy", "waiting", "something-new", "", null]) assert.equal(triageFree(status), false, String(status));
+});
+
+test("the line above the message box says nothing for shell; busy and a prompt keep their text", () => {
+  assert.equal(statusLine("shell"), "");
+  assert.equal(statusLine("idle"), "");
+  assert.equal(statusLine(null), "");
+  assert.equal(statusLine("busy"), "Triage works…");
+  assert.equal(statusLine("waiting"), "Triage waits for you in the terminal (waiting).");
+});
+
+test("shell after busy ends the turn of a card like idle; shell before busy changes nothing", () => {
+  const before = [pendingCard(P, "a task", [], T0)];
+  assert.equal(noteStatus(before, P, "shell", T0 + 500), false, "shell before busy is the state before the message");
+  assert.equal(before[0].endedAt, null);
+  const cards = [pendingCard(P, "a task", [], T0)];
+  noteStatus(cards, P, "busy", T0 + 1000);
+  assert.equal(noteStatus(cards, P, "shell", T0 + 2000), true);
+  assert.equal(cards[0].endedAt, T0 + 2000);
+  assert.deepEqual(settleCards(cards, P, [], T0 + 3000, T0 + 3000), []);
+});
+
+test("the rule meets the page: the dispatcher, the chat view, the switch and the Help", () => {
+  assert.match(MAIN, /import \{[^}]*\btriageFree\b[^}]*\} from "\.\/pending"/);
+  const dispatcher = MAIN.slice(MAIN.indexOf("async function dispatchEntries("), MAIN.indexOf("function settlePending("));
+  assert.match(dispatcher, /triageFree\(/);
+  assert.doesNotMatch(dispatcher, /!== "idle"/);
+  assert.match(MAIN, /"Triage runs a command in the background; the new chat starts after it ends\."/);
+  assert.match(CHAT, /statusLine\(reply\.status\)/);
+  assert.match(CHAT, /triageFree\(reply\.status\)/);
+  const planned = HTML.slice(HTML.indexOf("<b>Planned messages.</b>"));
+  assert.match(planned.slice(0, planned.indexOf("</li>")), /background/);
 });

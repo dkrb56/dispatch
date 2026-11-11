@@ -3,6 +3,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { waitingText } from "./backlog";
+import { statusLine, triageFree } from "./pending";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { atEnd as listAtEnd, endKeeper } from "./chatend";
@@ -1016,19 +1017,18 @@ export function createChatView(options: ChatViewOptions): ChatView {
       text = "Triage does not run in this pane.";
     } else if (asking) {
       text = "Triage waits for your answer.";
-    } else if (reply.status === "busy") {
-      text = "Triage works…";
-    } else if (reply.status && reply.status !== "idle") {
-      text = `Triage waits for you in the terminal (${reply.status}).`;
+    } else {
+      text = statusLine(reply.status);
     }
-    // A message of the user is a planned entry until triage is idle: the line says that it waits.
+    // A message of the user is a planned entry until triage is free (idle, or shell with a
+    // background command): the line says that it waits.
     const waits = waitingText(options.waiting?.() ?? 0);
     if (waits !== "") text = text === "" ? waits : `${text} ${waits}`;
     stateText.textContent = text;
     startEl.hidden = running;
     stateEl.hidden = text === "";
     // A question of Claude Code at its start, and a permission prompt, show only in the terminal.
-    terminalEl.hidden = running && (reply.status === "busy" || reply.status === "idle" || !reply.status) && !asking;
+    terminalEl.hidden = running && (reply.status === "busy" || triageFree(reply.status) || !reply.status) && !asking;
     // A text would go to the menu of the question. The box waits for the answer.
     const hadFocus = document.activeElement === inputEl;
     inputEl.disabled = !running || asking;
