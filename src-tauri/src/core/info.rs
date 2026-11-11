@@ -655,6 +655,50 @@ pub fn image_save(core: &Core, bytes: &[u8]) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// The reply of `dir_list`: a folder, its parent, its sub folders and the roots of this computer.
+#[derive(Serialize, Debug, PartialEq)]
+pub struct DirList {
+    path: String,
+    /// `None` at a root.
+    parent: Option<String>,
+    /// The names of the sub folders without a leading `.`, sorted without case.
+    folders: Vec<String>,
+    /// The drive roots on Windows (`C:\`), `/` elsewhere.
+    roots: Vec<String>,
+}
+
+/// Lists the folders of `path`, or of the home folder without a path. The folder chooser of a
+/// window that uses a host reads the folders of the host's computer with it.
+pub fn dir_list(core: &Core, path: Option<String>) -> Result<DirList, String> {
+    let dir = match path.filter(|path| !path.is_empty()) {
+        Some(path) => PathBuf::from(path),
+        None => core.home_dir()?,
+    };
+    list_dir(&dir)
+}
+
+fn list_dir(dir: &Path) -> Result<DirList, String> {
+    let mut folders: Vec<String> = fs::read_dir(dir)
+        .map_err(err)?
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| !name.starts_with('.'))
+        .collect();
+    folders.sort_by_key(|name| name.to_lowercase());
+    #[cfg(windows)]
+    let roots: Vec<String> =
+        (b'A'..=b'Z').map(|letter| format!("{}:\\", letter as char)).filter(|root| Path::new(root).is_dir()).collect();
+    #[cfg(not(windows))]
+    let roots = vec!["/".to_string()];
+    Ok(DirList {
+        path: dir.to_string_lossy().into_owned(),
+        parent: dir.parent().map(|parent| parent.to_string_lossy().into_owned()),
+        folders,
+        roots,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,6 +733,21 @@ mod tests {
         assert_eq!(state(), Some(false), "off");
         fs::write(dir.join("night-mode.json"), "{ broken").unwrap();
         assert_eq!(state(), None, "broken file");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_folders_of_a_folder() {
+        let root = std::env::temp_dir().join(format!("dispatch-dir-list-{}", std::process::id()));
+        for name in ["b", "A", ".hidden", "c"] {
+            fs::create_dir_all(root.join(name)).unwrap();
+        }
+        fs::write(root.join("file.txt"), "f").unwrap();
+        let list = list_dir(&root).unwrap();
+        assert_eq!(list.folders, ["A", "b", "c"], "folders only, no hidden one, sorted without case");
+        assert_eq!(list.parent.as_deref(), root.parent().and_then(|parent| parent.to_str()));
+        assert!(!list.roots.is_empty());
+        assert!(list_dir(&root.join("missing")).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 }

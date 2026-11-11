@@ -6,6 +6,8 @@ authors = ["dkrb56"]
 license = "Apache-2.0"
 repository = "https://github.com/dkrb56/dispatch"
 edition = "2024"
+# Two binaries: `cargo run` (and `tauri dev`) start the window.
+default-run = "dispatch"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -15,6 +17,11 @@ edition = "2024"
 # This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
 name = "dispatch_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# The headless host of docs/remote-client.md: the same core, a WebSocket in place of the window.
+[[bin]]
+name = "dispatch-host"
+path = "src/host/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -29,6 +36,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 portable-pty = "0.9"
 base64 = "0.22"
+# The host only: the WebSocket service, the folders without Tauri, the key, the stop with Ctrl+C.
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+dirs = "7"
+getrandom = "0.3"
+ctrlc = "3"
 
 # Windows only: the registry (saved variables) and the process tools (ToolHelp, TerminateProcess).
 [target.'cfg(windows)'.dependencies]
