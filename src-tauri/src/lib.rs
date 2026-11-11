@@ -24,10 +24,12 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 /// The cmd prompt reports the current folder with OSC 9;9 before the usual `path>` text.
+#[cfg_attr(not(windows), allow(dead_code))]
 const CMD_PROMPT: &str = "$E]9;9;$P$E\\$P$G";
 
 /// Wraps the PowerShell prompt (the profile can define one) so that it reports the
 /// current folder with OSC 9;9.
+#[cfg_attr(not(windows), allow(dead_code))]
 const POWERSHELL_INIT: &str = r#"
 $global:__dispatch_prompt = $function:prompt
 function global:prompt {
@@ -61,6 +63,91 @@ fn err(e: impl std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// The start files of zsh in the folder `zsh` of the app data folder. Each one reads the file of the
+/// same name of the user: in the home folder, or in the folder that the user's `.zshenv` names as
+/// `ZDOTDIR`. `.zshrc` gives zsh back that folder (for `.zlogin` and for the shells of programs),
+/// reports the current folder with OSC 9;9 before each prompt, and runs the start command of the
+/// terminal once.
+#[cfg(not(windows))]
+const ZSH_FILES: [(&str, &str); 3] = [
+    (
+        ".zshenv",
+        r#"__dispatch_zdotdir=$ZDOTDIR
+ZDOTDIR=$HOME
+[[ -f "$HOME/.zshenv" ]] && source "$HOME/.zshenv"
+__dispatch_user=${ZDOTDIR:-$HOME}
+ZDOTDIR=$__dispatch_zdotdir
+"#,
+    ),
+    (".zprofile", "[[ -f \"$__dispatch_user/.zprofile\" ]] && source \"$__dispatch_user/.zprofile\"\n"),
+    (
+        ".zshrc",
+        r#"if [[ "$__dispatch_user" == "$HOME" ]]; then unset ZDOTDIR; else ZDOTDIR=$__dispatch_user; fi
+[[ -f "$__dispatch_user/.zshrc" ]] && source "$__dispatch_user/.zshrc"
+__dispatch_osc() { printf '\e]9;9;%s\e\\' "$PWD"; }
+autoload -Uz add-zsh-hook
+add-zsh-hook precmd __dispatch_osc
+if [[ -n "$DISPATCH_START" ]]; then
+  __dispatch_start=$DISPATCH_START
+  unset DISPATCH_START
+  eval "$__dispatch_start"
+  unset __dispatch_start
+fi
+"#,
+    ),
+];
+
+/// The login shell of the user for a terminal, with the start command of the terminal. zsh (the
+/// default of macOS) gets the start files of `ZSH_FILES`; another shell runs the start command
+/// first and then itself, and reports no folder.
+#[cfg(not(windows))]
+fn login_shell(app: &AppHandle, start: &str) -> Result<CommandBuilder, String> {
+    let shell = std::env::var("SHELL").ok().filter(|shell| !shell.is_empty()).unwrap_or_else(|| "/bin/zsh".to_string());
+    let mut cmd = CommandBuilder::new(&shell);
+    if Path::new(&shell).file_name().is_some_and(|name| name == "zsh") {
+        let dir = data_dir(app)?.join("zsh");
+        fs::create_dir_all(&dir).map_err(err)?;
+        for (name, text) in ZSH_FILES {
+            fs::write(dir.join(name), text).map_err(err)?;
+        }
+        cmd.arg("-l");
+        cmd.env("ZDOTDIR", &dir);
+        if !start.is_empty() {
+            cmd.env("DISPATCH_START", start);
+        }
+    } else if start.is_empty() {
+        cmd.arg("-l");
+    } else {
+        cmd.args(["-l", "-c", &format!("{start}; exec {shell} -l")]);
+    }
+    // An app from the Finder has no terminal type; the terminal of the app is xterm.js.
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    Ok(cmd)
+}
+
+/// An app that the Finder starts has only the system folders in its `PATH`. The login shell of
+/// the user knows the folders of `claude`, `gh` and `git`; the app takes its `PATH` once at start.
+#[cfg(not(windows))]
+fn take_login_path() {
+    let shell = std::env::var("SHELL").ok().filter(|shell| !shell.is_empty()).unwrap_or_else(|| "/bin/zsh".to_string());
+    let Ok(output) = std::process::Command::new(&shell)
+        .args(["-l", "-c", "echo $PATH"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return;
+    };
+    // The last line: a profile can print text before it.
+    let text = String::from_utf8_lossy(&output.stdout);
+    if let Some(path) = text.lines().map(str::trim).filter(|line| !line.is_empty()).last() {
+        // SAFETY: no other thread runs at this time.
+        unsafe { std::env::set_var("PATH", path) };
+    }
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
 fn powershell_exe() -> &'static str {
     let has_pwsh = std::env::var_os("PATH")
         .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("pwsh.exe").is_file()));
@@ -72,6 +159,7 @@ fn powershell_exe() -> &'static str {
 }
 
 /// `-EncodedCommand` takes base64 of UTF-16LE text. It needs no quoting and no execution policy.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn encode_powershell(script: &str) -> String {
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -186,6 +274,13 @@ fn pty_spawn(
             start.push_str(&format!(" --cwd {quoted}"));
         }
     }
+    // Outside Windows both shell names of the frontend start the login shell of the user.
+    #[cfg(not(windows))]
+    let mut cmd = match shell.as_str() {
+        "cmd" | "powershell" => login_shell(&app, &start)?,
+        other => return Err(format!("unknown shell: {other}")),
+    };
+    #[cfg(windows)]
     let mut cmd = match shell.as_str() {
         "cmd" => {
             let mut cmd = CommandBuilder::new("cmd.exe");
@@ -347,7 +442,6 @@ fn screen_load(app: AppHandle, id: String) -> Result<Option<String>, String> {
 /// runs as a child session: it saves no transcript and shows no colors.
 /// A variable that the user saved in Windows is not in the list.
 fn session_variables() -> Vec<String> {
-    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
     let names: Vec<String> = std::env::vars_os().filter_map(|(name, _)| name.into_string().ok()).collect();
     // Only a Claude session sets these two variables.
     let from_session = |name: &String| {
@@ -356,14 +450,11 @@ fn session_variables() -> Vec<String> {
     if !names.iter().any(from_session) {
         return Vec::new();
     }
-    let saved: Vec<String> = [
-        (HKEY_CURRENT_USER, "Environment"),
-        (HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
-    ]
-    .into_iter()
-    .filter_map(|(root, path)| winreg::RegKey::predef(root).open_subkey(path).ok())
-    .flat_map(|key| key.enum_values().flatten().map(|(name, _)| name.to_ascii_uppercase()).collect::<Vec<_>>())
-    .collect();
+    // Other systems have no saved variables of the user to keep.
+    #[cfg(not(windows))]
+    let saved: Vec<String> = Vec::new();
+    #[cfg(windows)]
+    let saved: Vec<String> = saved_variables();
     names
         .into_iter()
         .filter(|name| {
@@ -373,12 +464,28 @@ fn session_variables() -> Vec<String> {
         .collect()
 }
 
+/// The names of the variables that the user saved in Windows (registry), in upper case.
+#[cfg(windows)]
+fn saved_variables() -> Vec<String> {
+    use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    [
+        (HKEY_CURRENT_USER, "Environment"),
+        (HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+    ]
+    .into_iter()
+    .filter_map(|(root, path)| winreg::RegKey::predef(root).open_subkey(path).ok())
+    .flat_map(|key| key.enum_values().flatten().map(|(name, _)| name.to_ascii_uppercase()).collect::<Vec<_>>())
+    .collect()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     for name in session_variables() {
         // SAFETY: no other thread runs at this time.
         unsafe { std::env::remove_var(name) };
     }
+    #[cfg(not(windows))]
+    take_login_path();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

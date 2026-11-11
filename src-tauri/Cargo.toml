@@ -29,6 +29,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 portable-pty = "0.9"
 base64 = "0.22"
+
+# Windows only: the registry (saved variables) and the process tools (ToolHelp, TerminateProcess).
+[target.'cfg(windows)'.dependencies]
 winreg = "0.56"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
 

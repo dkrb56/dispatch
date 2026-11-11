@@ -4,7 +4,6 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -14,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, Manager, State};
+#[cfg(windows)]
 use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+#[cfg(windows)]
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
@@ -22,7 +23,42 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 use crate::{data_dir, err, Sessions};
 
 const MAX_VIEW_BYTES: u64 = 50 * 1024 * 1024;
+#[cfg(windows)]
 pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Starts a command without a console window. On Windows a console program started from the app
+/// would open a window; other systems open none, and the call changes nothing there.
+pub(crate) trait NoWindow {
+    fn no_window(&mut self) -> &mut Self;
+}
+
+impl NoWindow for Command {
+    #[cfg(windows)]
+    fn no_window(&mut self) -> &mut Self {
+        use std::os::windows::process::CommandExt;
+        self.creation_flags(CREATE_NO_WINDOW)
+    }
+
+    #[cfg(not(windows))]
+    fn no_window(&mut self) -> &mut Self {
+        self
+    }
+}
+
+/// A command that starts Claude Code. `claude` is a command file on Windows, so `cmd` must start
+/// it there; on other systems `claude` is a program on the `PATH`.
+pub(crate) fn claude_command() -> Command {
+    #[cfg(windows)]
+    {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "claude"]);
+        command
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new("claude")
+    }
+}
 /// Shorter than the refresh time of a side panel. Thus each refresh round runs git one time.
 const GIT_CACHE_TIME: Duration = Duration::from_secs(4);
 
@@ -104,7 +140,7 @@ pub(crate) fn git(cwd: &Path, args: &[&str]) -> Option<String> {
         .arg("-C")
         .arg(cwd)
         .args(args)
-        .creation_flags(CREATE_NO_WINDOW)
+        .no_window()
         .output()
         .ok()?;
     output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
@@ -151,7 +187,31 @@ impl GitCache {
     }
 }
 
+/// Maps each process id to the id of its parent process: from `ps` on systems that are not Windows.
+#[cfg(not(windows))]
+pub(crate) fn parent_pids() -> HashMap<u32, u32> {
+    let Ok(output) = Command::new("ps").args(["-axo", "pid=,ppid="]).stdin(std::process::Stdio::null()).output() else {
+        return HashMap::new();
+    };
+    parse_ps(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Reads the lines of `ps -o pid=,ppid=`: two numbers per line, with spaces before and between.
+#[cfg_attr(windows, allow(dead_code))]
+fn parse_ps(text: &str) -> HashMap<u32, u32> {
+    text.lines()
+        .filter_map(|line| {
+            let mut numbers = line.split_whitespace().map(|part| part.parse::<u32>());
+            match (numbers.next(), numbers.next()) {
+                (Some(Ok(pid)), Some(Ok(parent))) => Some((pid, parent)),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 /// Maps each process id to the id of its parent process.
+#[cfg(windows)]
 pub(crate) fn parent_pids() -> HashMap<u32, u32> {
     let mut parents = HashMap::new();
     // SAFETY: `entry` has the size that the API needs, and the snapshot handle is closed.
@@ -173,7 +233,16 @@ pub(crate) fn parent_pids() -> HashMap<u32, u32> {
 }
 
 /// Ends the console hosts (`conhost.exe`) that this process started: the hosts of its pseudo
+/// consoles that are still there at the exit. Gives how many it ended. A pseudo terminal on other
+/// systems has no host process, so there it ends nothing.
+#[cfg(not(windows))]
+pub(crate) fn end_own_console_hosts() -> usize {
+    0
+}
+
+/// Ends the console hosts (`conhost.exe`) that this process started: the hosts of its pseudo
 /// consoles that are still there at the exit. Gives how many it ended.
+#[cfg(windows)]
 pub(crate) fn end_own_console_hosts() -> usize {
     use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
     let own = std::process::id();
@@ -432,7 +501,11 @@ impl Transcript {
                 _ => continue,
             };
             for path in paths {
+                // Windows takes both separators; the gallery compares paths with `\`.
+                #[cfg(windows)]
                 let mut path = PathBuf::from(path.replace('/', "\\"));
+                #[cfg(not(windows))]
+                let mut path = PathBuf::from(path);
                 if path.is_relative() {
                     let Some(cwd) = &entry.cwd else { continue };
                     path = Path::new(cwd).join(path);

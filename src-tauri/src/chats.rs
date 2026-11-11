@@ -3,9 +3,8 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -13,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager, State};
 
-use crate::info::{find_claude_session, is_descendant, parent_pids, running_sessions, CREATE_NO_WINDOW};
+use crate::info::{claude_command, find_claude_session, is_descendant, parent_pids, running_sessions, NoWindow};
 use crate::{err, Sessions};
 
 /// The list reads only this many bytes from the start and from the end of a transcript.
@@ -220,11 +219,10 @@ fn worker_end(claude: &Path, id: &str) -> Option<(String, Option<String>)> {
 /// The background sessions of Claude Code on this computer, also the ones that ended.
 #[tauri::command(async)]
 pub fn worker_list(app: AppHandle) -> Result<Vec<Worker>, String> {
-    // `claude` is a command file on Windows. Thus `cmd` must start it.
-    let output = Command::new("cmd")
-        .args(["/C", "claude", "agents", "--json", "--all"])
+    let output = claude_command()
+        .args(["agents", "--json", "--all"])
         .stdin(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
+        .no_window()
         .output()
         .map_err(err)?;
     if !output.status.success() {

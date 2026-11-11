@@ -1,0 +1,93 @@
+# Builds the Windows installer and the macOS disk image of Dispatch and attaches both to the
+# GitHub release of the tag. The version bump stays a local commit: the tag must be
+# v<version of src-tauri/tauri.conf.json>. A run by hand (Actions > Release > Run workflow) builds
+# the version of the chosen branch and uploads to the release v<version>, which it makes when it
+# does not exist. No secret but the token of the run; the files are not signed.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Windows installer
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Rust
+        run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: npm ci
+      - name: Build the NSIS installer
+        run: npm run tauri build -- --bundles nsis
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
+
+  macos:
+    name: macOS disk image
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Rust for Apple silicon and Intel
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - run: npm ci
+      - name: Build the universal disk image
+        run: npm run tauri build -- --target universal-apple-darwin --bundles dmg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  release:
+    name: Attach both files to the release
+    needs: [windows, macos]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: files
+          merge-multiple: true
+      - name: Upload to the release of the tag
+        run: |
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          tag="v$version"
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "$tag" ]; then
+            echo "The tag $GITHUB_REF_NAME does not match the version $version in src-tauri/tauri.conf.json." >&2
+            exit 1
+          fi
+          ls -l files
+          if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            cat > notes.md <<'EOF'
+          Windows: download `Dispatch_<version>_x64-setup.exe` and run it. It installs for the current user. The installer is not signed: Windows SmartScreen shows "Windows protected your PC"; click **More info**, then **Run anyway**.
+
+          macOS (11 or newer, Apple silicon and Intel): download `Dispatch_<version>_universal.dmg`, open it and drag Dispatch to Applications. The app is not signed, so macOS says it is damaged. Before the first start, run this once in Terminal:
+
+              xattr -cr /Applications/Dispatch.app
+          EOF
+            sed -i "s/<version>/$version/g" notes.md
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Dispatch $version" --notes-file notes.md
+          fi
+          gh release upload "$tag" files/*-setup.exe files/*.dmg --repo "$GITHUB_REPOSITORY" --clobber

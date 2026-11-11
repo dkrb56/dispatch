@@ -11,16 +11,15 @@
 //! the last hours, tips). `read_usage` takes only the weekly lines: their name, the percent used
 //! and the reset text. The rest is dropped in the same function.
 
-use std::os::windows::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
-use crate::info::CREATE_NO_WINDOW;
+use crate::info::{claude_command, NoWindow};
 
 /// The reply of the `status_info` command. It has only what the bar shows.
 #[derive(Serialize, Debug, PartialEq)]
@@ -103,9 +102,8 @@ fn status_from(run: impl Fn(&[&str]) -> Run, dispatch: String) -> StatusInfo {
 
 /// Runs `claude` with the given arguments, in `dir`, without a window and without input.
 fn run_claude(dir: Option<&Path>, args: &[&str]) -> Run {
-    // `claude` is a command file on Windows. Thus `cmd` must start it.
-    let mut command = Command::new("cmd");
-    command.arg("/C").arg("claude").args(args).stdin(Stdio::null()).stderr(Stdio::null()).creation_flags(CREATE_NO_WINDOW);
+    let mut command = claude_command();
+    command.args(args).stdin(Stdio::null()).stderr(Stdio::null()).no_window();
     // The user folder: no setting of a project changes the answer.
     if let Some(dir) = dir {
         command.current_dir(dir);

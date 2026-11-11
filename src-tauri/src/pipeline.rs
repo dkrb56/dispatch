@@ -5,14 +5,13 @@
 //! of `plan-flags.txt`, and after the user's yes the work run on the options of `work-flags.txt`.
 
 use std::fs;
-use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-use crate::info::{file_entry, git, FileEntry, CREATE_NO_WINDOW};
+use crate::info::{file_entry, git, FileEntry, NoWindow};
 use crate::{err, session_flags};
 
 /// The start of the heading of the section that the setup adds to `CLAUDE.md`.
@@ -91,8 +90,12 @@ fn script_command(reports: &str) -> String {
     format!("powershell -ExecutionPolicy Bypass -File {reports}/{SCRIPT_NAME}")
 }
 
-/// A folder with `/` as a permission rule writes it: `D:/folder` is `//d/folder`.
+/// A folder with `/` as a permission rule writes it: `D:/folder` is `//d/folder`. The worker
+/// script is PowerShell and the rules need a drive, so the pipeline stops here on other systems.
 fn rule_form(path: &str) -> Result<String, String> {
+    if cfg!(not(windows)) {
+        return Err("the worker pipeline runs on Windows only in this version".to_string());
+    }
     match path.split_once(":/") {
         Some((drive, rest)) if drive.len() == 1 => Ok(format!("//{}/{rest}", drive.to_ascii_lowercase())),
         _ => Err(format!("the project is not on a drive: {path}")),
@@ -1786,7 +1789,7 @@ fn run_script(project: &Project, args: &[&str]) -> Result<String, String> {
         .arg(project.script())
         .args(args)
         .stdin(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
+        .no_window()
         .output()
         .map_err(err)?;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -1901,7 +1904,7 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
         .arg(cwd)
         .args(args)
         .stdin(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
+        .no_window()
         .output()
         .map_err(|e| format!("git did not start: {e}"))?;
     if output.status.success() {

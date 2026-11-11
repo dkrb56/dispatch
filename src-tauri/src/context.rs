@@ -4,13 +4,12 @@
 //! changes and no server starts. The MCP tools are thus not in the table; the side panel shows
 //! them with the rest as the difference to the real total of the session.
 
-use std::os::windows::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::info::CREATE_NO_WINDOW;
+use crate::info::{claude_command, NoWindow};
 
 #[derive(Serialize, PartialEq, Debug)]
 pub struct Category {
@@ -79,11 +78,12 @@ pub fn context_usage(cwd: String, session: String, model: Option<String>) -> Res
     if !plain(&session, &[]) {
         return Err(format!("invalid session id: {session}"));
     }
-    // A settings file that turns the hooks off; a JSON text as argument would pass through cmd.exe.
+    // A settings file that turns the hooks off; a JSON text as argument would pass through cmd.exe
+    // on Windows.
     let settings = std::env::temp_dir().join("dispatch-context-settings.json");
     std::fs::write(&settings, "{\"disableAllHooks\":true}").map_err(|error| error.to_string())?;
-    let mut command = Command::new("cmd");
-    command.args(["/C", "claude", "-p", "/context", "--resume", &session]);
+    let mut command = claude_command();
+    command.args(["-p", "/context", "--resume", &session]);
     command.args(["--fork-session", "--no-session-persistence", "--strict-mcp-config", "--output-format", "json"]);
     command.arg("--settings").arg(&settings);
     if let Some(model) = model.filter(|model| plain(model, &['.', '[', ']'])) {
@@ -92,7 +92,7 @@ pub fn context_usage(cwd: String, session: String, model: Option<String>) -> Res
     let output = command
         .current_dir(&cwd)
         .stdin(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
+        .no_window()
         .output()
         .map_err(|error| error.to_string())?;
     let reply: Value = serde_json::from_slice(&output.stdout)

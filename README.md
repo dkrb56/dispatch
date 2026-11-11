@@ -1,6 +1,6 @@
 # Dispatch
 
-Run [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) like a small team, from one window on Windows.
+Run [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) like a small team, from one window on Windows and macOS.
 
 You type tasks into one chat, **triage**. Triage writes a brief for each task and starts a **worker** in the background. The worker reads the code and writes a plan; you approve it with one click, with the recommended decisions or your own. Then the worker does the work, with its own agents if it needs them, and reports back. Dispatch tells triage when a worker is done, blocked or failed.
 
@@ -18,7 +18,7 @@ You never sit in a terminal answering prompts: questions, permissions and plans 
 
 ## Requirements
 
-- Windows 10 or 11.
+- Windows 10 or 11, or macOS 11 or newer (Apple silicon or Intel). The Mac build is new: GitHub builds it, and it was not yet run on a Mac by the project. On a Mac the worker pipeline (Setup pipeline and the tasks) does not run yet; the terminals, chats, side panel and update check do.
 - [Claude Code](https://docs.claude.com/en/docs/claude-code/setup) on the `PATH` as `claude`, with a login. Dispatch was built against Claude Code 2.1.x: it uses `claude agents`, background sessions and the session files in `%USERPROFILE%\.claude\projects`.
 - Git, for the projects.
 
@@ -27,6 +27,12 @@ You never sit in a terminal answering prompts: questions, permissions and plans 
 Download `Dispatch_<version>_x64-setup.exe` from [Releases](https://github.com/dkrb56/dispatch/releases) and run it. It installs for the current user.
 
 The installer is not signed. Windows SmartScreen shows "Windows protected your PC"; click **More info** → **Run anyway**.
+
+On a Mac, download `Dispatch_<version>_universal.dmg`, open it and drag Dispatch to Applications. The app is not signed, so macOS says that it is damaged. Run this once in Terminal before the first start:
+
+```bash
+xattr -cr /Applications/Dispatch.app
+```
 
 Dispatch looks for a new release once an hour (**?** → **Check for update** checks now) and offers **Update to …** in the top bar.
 
@@ -62,7 +68,7 @@ npm run tauri dev
 npm run tauri build
 ```
 
-The installer lands in `src-tauri/target/release/bundle/nsis/`. Run the Rust tests with `cargo test --lib` in `src-tauri`.
+The installer lands in `src-tauri/target/release/bundle/nsis/`; on a Mac, `npm run tauri build -- --bundles dmg` puts the disk image in `src-tauri/target/release/bundle/dmg/`. A tag `v<version>` makes GitHub Actions build both and attach them to the release (`.github/workflows/release.yml`). Run the Rust tests with `cargo test --lib` in `src-tauri`.
 
 ## Privacy
 

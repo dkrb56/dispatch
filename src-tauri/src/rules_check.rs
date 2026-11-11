@@ -10,7 +10,6 @@
 //! must not be able to start a command. It has no saved chat, no MCP server and no hook.
 
 use std::io::{Read, Write};
-use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -18,7 +17,7 @@ use serde::Serialize;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
-use crate::info::CREATE_NO_WINDOW;
+use crate::info::{claude_command, NoWindow};
 use crate::pipeline::Project;
 use crate::rules::{instruction_rules, is_one_rule, RuleItem};
 
@@ -238,23 +237,36 @@ fn check_with(items: Vec<RuleItem>, description: &str, scope: Scope, model: Stri
 }
 
 /// Ends a process and its children: `cmd` starts `claude`, and a kill of `cmd` alone leaves it.
+#[cfg(windows)]
 fn end_tree(pid: u32) {
     let _ = Command::new("taskkill")
         .args(["/T", "/F", "/PID", &pid.to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
+        .no_window()
         .status();
+}
+
+/// Ends a process and its children: `claude` can start programs of its own.
+#[cfg(not(windows))]
+fn end_tree(pid: u32) {
+    let parents = crate::info::parent_pids();
+    let mut pids: Vec<String> =
+        parents.keys().filter(|&&other| crate::info::is_descendant(&parents, other, pid)).map(u32::to_string).collect();
+    if !pids.iter().any(|other| *other == pid.to_string()) {
+        pids.push(pid.to_string());
+    }
+    let _ = Command::new("kill").arg("-9").args(&pids).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status();
 }
 
 /// Runs `claude -p` in `dir` with the prompt on its input, and gives its output. After the limit
 /// of the options the run ends and the reply is an error.
 fn run_claude(dir: Option<&std::path::Path>, prompt: &str, options: &Options, settings: &str) -> Result<String, String> {
-    // `claude` is a command file on Windows. Thus `cmd` must start it. The prompt goes through the
-    // input: a long text with quotes does not pass `cmd` safely as an argument.
-    let mut command = Command::new("cmd");
-    command.args(["/C", "claude", "-p", "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--tools", ""]);
+    // The prompt goes through the input: a long text with quotes does not pass `cmd` (Windows)
+    // safely as an argument.
+    let mut command = claude_command();
+    command.args(["-p", "--output-format", "json", "--no-session-persistence", "--strict-mcp-config", "--tools", ""]);
     command.args(["--settings", settings]);
     command.args(&options.args);
     if let Some(dir) = dir {
@@ -264,7 +276,7 @@ fn run_claude(dir: Option<&std::path::Path>, prompt: &str, options: &Options, se
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
+        .no_window()
         .spawn()
         .map_err(|e| format!("Claude Code did not start: {e}"))?;
     let mut input = child.stdin.take().ok_or("no input to Claude Code")?;

@@ -6,14 +6,13 @@
 // 2026-11-11): a clone has the entries, and the project stays clean for Approve.
 
 use std::fs;
-use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::info::{file_entry, FileEntry, CREATE_NO_WINDOW};
+use crate::info::{file_entry, FileEntry, NoWindow};
 use crate::pipeline::{write_file, Project};
 
 /// The folder of the entries, relative to the top folder of the repository, as git takes a path.
@@ -206,7 +205,7 @@ fn git(project: &Project, args: &[&str]) -> Result<String, String> {
         .arg(&project.root)
         .args(args)
         .stdin(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
+        .no_window()
         .output()
         .map_err(|e| format!("git did not start: {e}"))?;
     if output.status.success() {
