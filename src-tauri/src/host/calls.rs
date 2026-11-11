@@ -21,8 +21,8 @@ pub enum Reply {
 
 /// The commands of the page that stay with the window (docs/remote-client.md, "What stays with
 /// the window").
-const WINDOW_ONLY: [&str; 7] =
-    ["state_load", "state_save", "screen_save", "screen_load", "update_check", "update_install", "update_installer_open"];
+const WINDOW_ONLY: [&str; 8] =
+    ["state_load", "state_save", "screen_save", "screen_load", "menu_record_save", "update_check", "update_install", "update_installer_open"];
 
 struct Args<'a>(&'a Map<String, Value>);
 

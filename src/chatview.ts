@@ -9,6 +9,7 @@ import { marked } from "marked";
 import { atEnd as listAtEnd, endKeeper } from "./chatend";
 import { type FileEntry, imageFileUrl } from "./files";
 import { type MenuReads, NO_READS, parseMenu, type Question, settleMenu } from "./menu";
+import { type MenuRecord, type OpenRecord, recordName, recordRead, type ScreenRow, wantsRead } from "./menurecord";
 import { cancelButton, NO_DEFAULTS, openDefaults, type QuestionButton, sameQuestion, sendCancel, viewDefaultsButton } from "./question";
 import { type Named, namedTasks, sections } from "./sections";
 
@@ -129,6 +130,10 @@ export interface ChatViewOptions {
   write: (data: string) => Promise<void>;
   /** The lines of the terminal screen. */
   screen: () => string[];
+  /** The rows of the visible terminal screen with the wrap mark of each, and the width of the terminal. */
+  screenRows: () => { cols: number; rows: ScreenRow[] };
+  /** Writes the record of the menu reads as the file `name` (ticket menu-read-recorder). */
+  saveRecord: (name: string, record: MenuRecord) => Promise<void>;
   /** Saves an image from the clipboard and gives the path of the file. */
   saveImage: (image: File) => Promise<string>;
   openLink: (href: string) => void;
@@ -509,6 +514,8 @@ export function createChatView(options: ChatViewOptions): ChatView {
   let closedText: string | null = null;
   /** The menu reads of the screen: a menu counts only after two reads that give it. */
   let reads: MenuReads = NO_READS;
+  /** The reads of a menu that the gate did not count yet; a counted or gone menu writes them to a file. */
+  let menuRecord: OpenRecord = null;
   /**
    * The questions of the session from the screen that closed before the chat file named them. The
    * view can look between the answer and the write of the chat file: the menu is gone, the file
@@ -896,8 +903,13 @@ export function createChatView(options: ChatViewOptions): ChatView {
         // A read while Claude Code draws a menu sees a part of it: the paragraph above the first
         // option is then not the question, and options are missing (ticket chat-question-doubled).
         // A menu counts only after two reads that agree.
-        reads = settleMenu(reads, parseMenu(options.screen()), Date.now());
+        const screen = options.screen();
+        const read = parseMenu(screen);
+        const readAt = Date.now();
+        const settledBefore = reads.settled;
+        reads = settleMenu(reads, read, readAt);
         const menu = reads.settled;
+        let madeCard = false;
         if (!menu) closedText = null;
         // A question read from the screen ends when its menu goes, and also when the screen shows
         // another question: a form with several questions (tabs "Default 1", "Default 2", Submit)
@@ -908,6 +920,18 @@ export function createChatView(options: ChatViewOptions): ChatView {
           const asked = menu.map((one) => one.question).join("\n");
           record(questionElement({ kind: "question", text: "", questions: menu }, true), false, "question", asked);
           added = true;
+          madeCard = true;
+        }
+        // The record of the reads (ticket menu-read-recorder): only while a menu waits for the gate
+        // or a record is open. It shows nothing; the file is evidence for a wrong card.
+        if (wantsRead(menuRecord, read, settledBefore)) {
+          const { cols, rows } = options.screenRows();
+          const pane = options.pane;
+          const result = recordRead(menuRecord, { pane, now: readAt, lines: screen, menu: read, cols, rows, settledBefore, settledAfter: menu, madeCard });
+          menuRecord = result.open;
+          if (result.done) {
+            void options.saveRecord(recordName(readAt, pane), result.done).catch((error) => console.warn("menu record not written", error));
+          }
         }
       }
       layout();

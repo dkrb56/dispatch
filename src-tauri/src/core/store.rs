@@ -63,6 +63,47 @@ pub fn screen_load(core: &Core, id: String) -> Result<Option<String>, String> {
     Ok(fs::read_to_string(screen_path(&dir, &id)?).ok())
 }
 
+/// The folder of the records of the menu reads of the Chat view (ticket menu-read-recorder).
+pub const MENU_RECORDS_DIR: &str = "menu-reads";
+/// Each write keeps the newest records up to this number and removes the older ones.
+pub const MENU_RECORDS_KEPT: usize = 50;
+
+/// A record name: `menu-` and letters, digits and `-`, then `.json`. The page makes it from the time
+/// and the pane id, so the order of the names is the order of the times.
+fn menu_record_name(name: &str) -> Result<&str, String> {
+    let stem = name.strip_prefix("menu-").and_then(|rest| rest.strip_suffix(".json"));
+    match stem {
+        Some(stem) if !stem.is_empty() && stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') => Ok(name),
+        _ => Err(format!("invalid menu record name: {name}")),
+    }
+}
+
+/// Writes the record `name` into `menu-reads` of the folder `dir`, then removes the oldest records
+/// until `MENU_RECORDS_KEPT` remain. Other files in the folder stay.
+fn save_menu_record_in(dir: &Path, name: &str, data: &str) -> Result<(), String> {
+    let name = menu_record_name(name)?;
+    let folder = dir.join(MENU_RECORDS_DIR);
+    fs::create_dir_all(&folder).map_err(err)?;
+    write_atomic(&folder.join(name), data.as_bytes())?;
+    let mut records: Vec<String> = fs::read_dir(&folder)
+        .map_err(err)?
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|file| menu_record_name(file).is_ok())
+        .collect();
+    records.sort();
+    let extra = records.len().saturating_sub(MENU_RECORDS_KEPT);
+    for old in &records[..extra] {
+        let _ = fs::remove_file(folder.join(old));
+    }
+    Ok(())
+}
+
+/// Writes a record of the menu reads of the Chat view into the data folder of the window.
+pub fn menu_record_save(core: &Core, name: String, data: String) -> Result<(), String> {
+    save_menu_record_in(&core.data_dir()?, &name, &data)
+}
+
 const SHARED_FILE: &str = "shared.json";
 /// Two windows can change `shared.json` at the same time (the host runs each call on its own
 /// thread): a read and its write happen under this lock, so no change is lost.
@@ -176,6 +217,39 @@ mod tests {
         let shared = set_in(&dir, Some(false), records(json!({ "a": null, "c": { "role": "no chat" } }))).unwrap();
         assert_eq!(shared, json!({ "night": false, "triage": { "b": { "chat": "2", "role": "m" } } }));
         assert_eq!(load_in(&dir).unwrap(), shared);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_menu_record_name_must_be_menu_letters_digits_dashes_json() {
+        let dir = scratch("record-names");
+        for bad in ["menu-../x.json", "menu-a/b.json", "menu-a\\b.json", "menu-a.b.json", "menu-.json", "other-1.json", "menu-1.txt", "menu-1.json.tmp"] {
+            assert!(save_menu_record_in(&dir, bad, "{}").is_err(), "{bad} is refused");
+        }
+        assert!(!dir.join(MENU_RECORDS_DIR).join("x.json").exists());
+        save_menu_record_in(&dir, "menu-20261112-001705-042-0f3c9a2e-1b2c.json", "{\"reads\":[]}").unwrap();
+        let written = fs::read_to_string(dir.join(MENU_RECORDS_DIR).join("menu-20261112-001705-042-0f3c9a2e-1b2c.json")).unwrap();
+        assert_eq!(written, "{\"reads\":[]}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_menu_record_write_keeps_the_newest_fifty_and_other_files() {
+        let dir = scratch("record-keep");
+        fs::create_dir_all(dir.join(MENU_RECORDS_DIR)).unwrap();
+        fs::write(dir.join(MENU_RECORDS_DIR).join("notes.txt"), "mine").unwrap();
+        for index in 0..MENU_RECORDS_KEPT + 2 {
+            save_menu_record_in(&dir, &format!("menu-20261112-0000{index:02}-000-p.json"), "{}").unwrap();
+        }
+        let mut names: Vec<String> =
+            fs::read_dir(dir.join(MENU_RECORDS_DIR)).unwrap().flatten().map(|entry| entry.file_name().into_string().unwrap()).collect();
+        names.sort();
+        assert_eq!(names.len(), MENU_RECORDS_KEPT + 1, "50 records and notes.txt");
+        assert!(names.contains(&"notes.txt".to_string()));
+        assert!(!names.contains(&"menu-20261112-000000-000-p.json".to_string()), "the oldest record is gone");
+        assert!(!names.contains(&"menu-20261112-000001-000-p.json".to_string()), "the second oldest record is gone");
+        assert!(names.contains(&"menu-20261112-000002-000-p.json".to_string()));
+        assert!(names.contains(&format!("menu-20261112-0000{:02}-000-p.json", MENU_RECORDS_KEPT + 1)));
         fs::remove_dir_all(&dir).unwrap();
     }
 }

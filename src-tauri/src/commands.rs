@@ -76,6 +76,11 @@ pub fn screen_load(core: State<Core>, id: String) -> Result<Option<String>, Stri
 }
 
 #[tauri::command]
+pub fn menu_record_save(core: State<Core>, name: String, data: String) -> Result<(), String> {
+    store::menu_record_save(&core, name, data)
+}
+
+#[tauri::command]
 pub fn shared_load(core: State<Core>) -> Result<Value, String> {
     store::shared_load(&core)
 }

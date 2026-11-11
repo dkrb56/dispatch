@@ -15,6 +15,8 @@ import { chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, typ
 import { type Entry, goesStraight, movedIds, nextEntry, orderedEntries } from "./backlog";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { MENU_ABOVE_LINES, menuScreen, parseMenu, parseReview, SUBMIT_QUESTION } from "./menu";
+import { type MenuRecord, type ScreenRow } from "./menurecord";
+import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, initViewer, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
 import { agentsText, rowParts } from "./workerrow";
@@ -2079,6 +2081,27 @@ function terminalLines(term: Terminal): string[] {
     else lines.push(text);
   }
   return lines;
+}
+
+/** The rows of the screen of a terminal with the wrap mark of each, unjoined, and its width: the record of the menu reads keeps them. */
+function terminalRows(term: Terminal): { cols: number; rows: ScreenRow[] } {
+  const buffer = term.buffer.active;
+  const rows: ScreenRow[] = [];
+  for (let row = 0; row < term.rows; row++) {
+    const line = buffer.getLine(buffer.baseY + row);
+    rows.push({ text: line?.translateToString(true) ?? "", wrapped: Boolean(line?.isWrapped) });
+  }
+  return { cols: term.cols, rows };
+}
+
+/** The version of the app for the record of the menu reads, read once. */
+let recordVersion: Promise<string> | null = null;
+
+/** Writes a record of the menu reads into the folder `menu-reads` of the data folder of this window. */
+async function saveMenuRecord(pane: Pane, name: string, record: MenuRecord): Promise<void> {
+  recordVersion ??= getVersion().catch(() => "");
+  const full: MenuRecord = { ...record, version: await recordVersion, project: pane.project ?? pane.cwd ?? null };
+  await call("menu_record_save", { name, data: JSON.stringify(full, null, 2) });
 }
 
 /** The `count` rows of the scrollback right above the screen of a terminal, joined as in `terminalLines`. */
@@ -4628,6 +4651,8 @@ function createPane(tabId: string, saved: SavedPane): Pane {
       paste: (text) => term.paste(text),
       write: (data) => call("pty_write", { id: pane.id, data }),
       screen: () => menuLines(term),
+      screenRows: () => terminalRows(term),
+      saveRecord: (name, record) => saveMenuRecord(pane, name, record),
       saveImage: (image) => saveImage(pane, image),
       openLink: (href) => void openLink(pane, href),
       run: (lines) => {

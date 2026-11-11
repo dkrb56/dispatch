@@ -41,6 +41,8 @@ const LOCAL_COMMANDS = new Set([
   "state_save",
   "screen_save",
   "screen_load",
+  // The record of the menu reads (ticket menu-read-recorder): the screen is in this window.
+  "menu_record_save",
   "update_check",
   "update_install",
   "update_installer_open",

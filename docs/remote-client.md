@@ -41,6 +41,7 @@ The work moves into a new headless program, the **host** (working name `dispatch
 |---|---|
 | The page, xterm.js, the chat view, the file viewer, the Options screen | Unchanged. |
 | The layout of tabs and panes and the saved terminal screens (`state_load`, `state_save`, `screen_save`, `screen_load`, without the two shared fields) | User decision 3: each window keeps its own panes. |
+| The record of the menu reads of the chat view (`menu_record_save`, folder `menu-reads`) | Ticket menu-read-recorder: the screen is in the xterm.js of the window. |
 | localStorage: theme, text size, triage view, alert switches, view mode, focus projects, chat scope, side panel | Per window, as today. |
 | The notification, the chime, the taskbar blink, the window title | They reach the person at that window. |
 | The window-state plugin, the opener for `http` and `mailto` links | Unchanged. |
