@@ -19,6 +19,7 @@ import { type FileEntry, initViewer, openViewer, showGallery, statFile } from ".
 import { durationText, runTime } from "./duration";
 import { agentsText, rowParts } from "./workerrow";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
+import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
 import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards, triageFree } from "./pending";
 import { type FlowView, openFlow } from "./flow";
 import { drawLinks, type Link } from "./links";
@@ -1495,6 +1496,8 @@ interface TaskInfo {
   words: string[];
   /** The lines of the section "Goal" of the plan, for the Decisions window. */
   goal: string[];
+  /** The lines of the section "TL;DR" of the plan, in plain words, for the Decisions window. Empty without it. */
+  tldr: string[];
 }
 
 /** A decision of a plan, with its options; the recommended one is first. */
@@ -2823,18 +2826,27 @@ function openDecisions(task: Task): void {
   // has no class `decision`, so `decisionAnswers` does not see it; a long text scrolls in its box.
   const context = document.createElement("section");
   context.className = "decisions-context";
-  for (const [label, lines] of [["Your words", task.info?.words ?? []], ["Goal of the plan", task.info?.goal ?? []]] as const) {
-    if (lines.length === 0) continue;
+  const contextText = (block: ContextBlock): HTMLElement[] => {
     const head = document.createElement("div");
     head.className = "decisions-context-label";
-    head.textContent = label;
+    head.textContent = block.label;
     const text = document.createElement("div");
     text.className = "decisions-context-text";
-    text.textContent = lines.join("\n");
-    context.append(head, text);
+    text.textContent = block.lines.join("\n");
+    return [head, text];
+  };
+  for (const block of contextBlocks(task.info)) context.append(...contextText(block));
+  // The TL;DR of the plan in plain words (ticket decisions-tldr) stands in its own block under the
+  // box, so a long Goal cannot scroll it out of view. A plan without the section gives no block.
+  const tldr = tldrBlock(task.info);
+  const tldrSection = tldr ? document.createElement("section") : null;
+  if (tldr && tldrSection) {
+    tldrSection.className = "decisions-tldr";
+    tldrSection.append(...contextText(tldr));
   }
   body.replaceChildren(
     ...(context.childElementCount > 0 ? [context] : []),
+    ...(tldrSection ? [tldrSection] : []),
     ...decisions.map((decision) => {
       const block = document.createElement("section");
       block.className = `decision${decision.hold ? " hold" : ""}`;

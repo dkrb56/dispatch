@@ -373,7 +373,7 @@ impl Project {
             "- A task is two runs of one worker session. The plan run reads the code and writes a plan. The work run executes the approved plan. Triage starts and resumes a worker only with the script `{reports}/{SCRIPT_NAME}`, never with `claude --bg` or `claude --resume` directly. A worker works in the main checkout (`worktree.bgIsolation` is `none`).
 - Triage writes each brief to `{reports}/briefs/<ticket-id>.md`: the user's words, the constraints, and the command that proves the work. The brief says nothing about the approach; the plan run decides that.
 - `{script} plan <ticket-id>` starts the plan run on the options in `{reports}/plan-flags.txt`: without the Edit tool, without the Agent tool and without a prompt; its Write tool may write only into `{reports}/plans/`. The plan run writes the plan to `{reports}/plans/<ticket-id>.md`, changes nothing else, and ends its turn.
-- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; the word HOLD stands in no other line of this section); Do not touch; Size (files). No code in a plan.
+- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; the word HOLD stands in no other line of this section); Do not touch; Size (files). No code in a plan.
 - When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which resumes the same session on the options in `{reports}/work-flags.txt`, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when the working tree has uncommitted changes outside `{reports}/` (after Setup pipeline, the user commits the setup files first; Dispatch commits the files of `{reports}/` itself), when the worker still runs, or when the task was stopped.
 - The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It never pushes or merges. The user decides the push.
 - A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then: what it did, what it verified and how, open questions, where the work is.
@@ -1533,6 +1533,9 @@ pub struct TaskInfo {
     words: Vec<String>,
     /// The lines of the section "Goal" of the plan, for the Decisions window. Empty without it.
     goal: Vec<String>,
+    /// The lines of the section "TL;DR" of the plan, in plain words, for the Decisions window.
+    /// Empty without it (a plan from before the rule).
+    tldr: Vec<String>,
 }
 
 /// The reply of the `task_list` command.
@@ -1610,6 +1613,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
             did: String::new(),
             words: Vec::new(),
             goal: Vec::new(),
+            tldr: Vec::new(),
         });
         tasks.len() - 1
     }
@@ -1627,6 +1631,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
         tasks[at].hold = hold;
         tasks[at].decisions = parse_decisions(&text);
         tasks[at].goal = section_lines(&text, "Goal");
+        tasks[at].tldr = section_lines(&text, "TL;DR");
         tasks[at].plan = Some(entry);
     }
     for (name, path, entry) in files_with(&project.reports, "md") {
@@ -2390,6 +2395,29 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_gives_its_tldr_for_the_decisions_window() {
+        let project = scratch("tldr");
+        apply(&project, &[]).unwrap();
+        let plan = "# Plan t-a: with a TL;DR\n\n## Summary\n- One line.\n\n## Goal\nThe goal.\n\n## TL;DR\n- The window gets a short text.\nYou decide faster.\n\n## Decisions\n1. A.\n   - Default: x. Recommended: y.\n   - Other: z. Not recommended: w.\n";
+        write_file(&project.plans().join("t-a.md"), plan).unwrap();
+        // A plan from before the rule: no TL;DR section.
+        write_file(&project.plans().join("t-b.md"), &plan.replace("## TL;DR\n- The window gets a short text.\nYou decide faster.\n\n", "")).unwrap();
+
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        let task = |name: &str| list.tasks.iter().find(|task| task.name == name).unwrap();
+        let (a, b) = (task("t-a"), task("t-b"));
+        assert_eq!(a.tldr, vec!["The window gets a short text.".to_string(), "You decide faster.".to_string()]);
+        assert!(b.tldr.is_empty());
+        // The other parts of the plan read as before.
+        for t in [a, b] {
+            assert_eq!(t.goal, vec!["The goal.".to_string()]);
+            assert_eq!(t.summary, vec!["One line.".to_string()]);
+            assert_eq!(t.decisions.len(), 1);
+        }
+        clean(&project);
+    }
+
+    #[test]
     fn the_handoff_names_the_open_tasks_and_the_folders() {
         let project = scratch("handoff");
         let file = project.root.join("plan.md");
@@ -2411,6 +2439,7 @@ mod tests {
             did: String::new(),
             words: Vec::new(),
             goal: Vec::new(),
+            tldr: Vec::new(),
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };

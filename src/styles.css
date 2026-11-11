@@ -2773,6 +2773,17 @@ button.task-head:hover {
   white-space: pre-wrap;
 }
 
+/* The TL;DR of the plan in plain words, under the box of the words and the Goal. It has no maximum
+   height, so a long Goal cannot push it out of view (ticket decisions-tldr). */
+.decisions-tldr {
+  padding: 10px 0 12px;
+  border-bottom: 1px solid var(--card);
+}
+
+.decisions-tldr .decisions-context-text {
+  color: var(--text);
+}
+
 .decision {
   padding: 12px 0;
   border-bottom: 1px solid var(--card);
