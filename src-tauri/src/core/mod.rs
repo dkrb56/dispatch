@@ -9,6 +9,7 @@ pub mod backlog;
 pub mod chats;
 pub mod context;
 pub mod flow;
+pub mod hostrun;
 pub mod info;
 pub mod pipeline;
 pub mod pty;

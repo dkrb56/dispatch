@@ -1712,6 +1712,46 @@ button.task-head:hover {
   opacity: 0.6;
 }
 
+/* The section "Run the host on this PC": the key, the three buttons and the error line. */
+#options #host-run-key {
+  width: 80%;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+}
+
+#host-run .buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+#host-run .buttons button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: inherit;
+  font: inherit;
+  font-size: calc(13px * var(--text-scale));
+  cursor: pointer;
+}
+
+#host-run .buttons button:hover:not(:disabled) {
+  border-color: var(--accent-line);
+}
+
+#host-run .buttons button:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+#options #host-run-error {
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+
 #setup details {
   margin-top: 8px;
   padding: 8px 12px;

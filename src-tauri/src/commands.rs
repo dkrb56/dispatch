@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use serde_json::Value;
 use tauri::ipc::{InvokeBody, Request, Response};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::core::backlog::{self, Entry};
 use crate::core::chats::{self, Chat, ChatView, Worker};
@@ -18,6 +18,7 @@ use crate::core::rules::{self, Rules};
 use crate::core::rules_check::{self, RulesCheck};
 use crate::core::status::{self, StatusInfo, UsageInfo};
 use crate::core::update::{self, Update};
+use crate::core::hostrun::{self, HostRun};
 use crate::core::{pty, store, Core};
 
 #[tauri::command]
@@ -272,4 +273,35 @@ pub fn update_install(core: State<Core>) -> Result<String, String> {
 #[tauri::command]
 pub fn update_installer_open() -> bool {
     update::update_installer_open()
+}
+
+#[tauri::command(async)]
+pub fn host_run_status(core: State<Core>) -> HostRun {
+    hostrun::host_run_status(&core)
+}
+
+#[tauri::command(async)]
+pub fn host_run_start(core: State<Core>, port: Option<u16>) -> Result<HostRun, String> {
+    hostrun::host_run_start(&core, port)
+}
+
+#[tauri::command(async)]
+pub fn host_run_stop(core: State<Core>) -> Result<HostRun, String> {
+    hostrun::host_run_stop(&core)
+}
+
+#[tauri::command(async)]
+pub fn host_run_new_key(core: State<Core>, port: Option<u16>) -> Result<HostRun, String> {
+    hostrun::host_run_new_key(&core, port)
+}
+
+#[tauri::command(async)]
+pub fn host_run_autostart(core: State<Core>, on: bool, port: Option<u16>) -> Result<HostRun, String> {
+    hostrun::host_run_autostart(&core, on, port)
+}
+
+/// Ends the app the usual way (the terminals close, the window state is saved) and starts it again.
+#[tauri::command]
+pub fn app_restart(app: AppHandle) {
+    app.request_restart();
 }

@@ -2,7 +2,7 @@
 //! the same core as the app and serves it to the Dispatch windows over a WebSocket on the
 //! Tailscale address of this computer and on `127.0.0.1`. It never listens on all addresses.
 //!
-//! dispatch-host [--port <port>] [--address <ip>] [--data-dir <folder>]
+//! dispatch-host [--port <port>] [--address <ip>] [--data-dir <folder>] [--wait-address <seconds>]
 
 mod calls;
 mod clients;
@@ -14,8 +14,9 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use dispatch_lib::core::{pty, Core, EventSink};
+use dispatch_lib::core::{hostrun, pty, Core, EventSink};
 
 use clients::Clients;
 use server::Host;
@@ -25,22 +26,27 @@ const DEFAULT_PORT: u16 = 7470;
 /// rules switches and the pasted images are the same in both modes.
 const IDENTIFIER: &str = "com.dkrb56.dispatch";
 const KEY_FILE: &str = "host-key.txt";
-const USAGE: &str = "dispatch-host [--port <port>] [--address <ip>] [--data-dir <folder>]";
+const USAGE: &str = "dispatch-host [--port <port>] [--address <ip>] [--data-dir <folder>] [--wait-address <seconds>]";
 
 struct Flags {
     port: u16,
     address: Option<IpAddr>,
     data_dir: Option<PathBuf>,
+    /// How long the start waits for the Tailscale address (the sign-in start of the app).
+    wait_address: u64,
 }
 
 fn parse_flags(mut args: impl Iterator<Item = String>) -> Result<Flags, String> {
-    let mut flags = Flags { port: DEFAULT_PORT, address: None, data_dir: None };
+    let mut flags = Flags { port: DEFAULT_PORT, address: None, data_dir: None, wait_address: 0 };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or(format!("{flag} needs a value"));
         match flag.as_str() {
             "--port" => flags.port = value()?.parse().map_err(|_| "--port needs a number from 1 to 65535".to_string())?,
             "--address" => flags.address = Some(value()?.parse().map_err(|_| "--address needs an IP address".to_string())?),
             "--data-dir" => flags.data_dir = Some(PathBuf::from(value()?)),
+            "--wait-address" => {
+                flags.wait_address = value()?.parse().map_err(|_| "--wait-address needs a number of seconds".to_string())?
+            }
             other => return Err(format!("unknown flag: {other}")),
         }
     }
@@ -58,6 +64,21 @@ fn tailscale_address() -> Option<IpAddr> {
     }
     let output = command.output().ok().filter(|output| output.status.success())?;
     String::from_utf8_lossy(&output.stdout).lines().find_map(|line| line.trim().parse::<Ipv4Addr>().ok()).map(IpAddr::V4)
+}
+
+/// The Tailscale address, tried every 2 s for up to `wait` seconds: at a Windows sign-in the
+/// Tailscale service can come up after the host.
+fn wait_for_tailscale(wait: u64) -> Option<IpAddr> {
+    let end = Instant::now() + Duration::from_secs(wait);
+    loop {
+        if let Some(address) = tailscale_address() {
+            return Some(address);
+        }
+        if Instant::now() >= end {
+            return None;
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
 }
 
 /// Reads the pairing key, or makes one at the first start: 32 random bytes as 64 hex characters.
@@ -99,9 +120,13 @@ fn main() {
         .or_else(|| dirs::data_dir().map(|dir| dir.join(IDENTIFIER)))
         .unwrap_or_else(|| fail("no data folder of the user; name one with --data-dir"));
     fs::create_dir_all(&data_dir).unwrap_or_else(|e| fail(&format!("cannot make {}: {e}", data_dir.display())));
+    // One host per data folder: the window starts and stops it through host.json.
+    if let Some(pid) = hostrun::running_host(&data_dir).filter(|&pid| pid != std::process::id()) {
+        fail(&format!("a host already runs (process {pid}); stop it first"));
+    }
     let key = pairing_key(&data_dir).unwrap_or_else(|e| fail(&e));
 
-    let tailnet = flags.address.or_else(tailscale_address).unwrap_or_else(|| {
+    let tailnet = flags.address.or_else(|| wait_for_tailscale(flags.wait_address)).unwrap_or_else(|| {
         fail("`tailscale ip -4` gave no address; start Tailscale or name the address with --address <ip>")
     });
     // User decision 1 (remote-host): the window on this computer reaches the host on 127.0.0.1.
@@ -118,8 +143,10 @@ fn main() {
     let core = Arc::new(Core::new(Ok(data_dir.clone()), home, version.clone(), sink));
 
     let at_stop = core.clone();
+    let dir_at_stop = data_dir.clone();
     ctrlc::set_handler(move || {
         println!("stopping: the terminals end");
+        hostrun::remove_host_file(&dir_at_stop);
         pty::close_terminals(&at_stop);
         std::process::exit(0);
     })
@@ -137,6 +164,10 @@ fn main() {
                 Ok(listener) => listeners.push(listener),
                 Err(e) => fail(&format!("cannot listen on {address}: {e}")),
             }
+        }
+        let listening: Vec<String> = addresses.iter().map(|address| address.to_string()).collect();
+        if let Err(e) = hostrun::write_host_file(&data_dir, flags.port, &listening, &version) {
+            fail(&format!("cannot write {}: {e}", data_dir.join(hostrun::HOST_FILE).display()));
         }
         println!("dispatch-host {version}");
         for address in &addresses {
@@ -162,9 +193,12 @@ mod tests {
 
     #[test]
     fn the_flags() {
-        let parsed = flags(&["--port", "7471", "--address", "100.64.0.1", "--data-dir", "x"]).unwrap();
+        let parsed = flags(&["--port", "7471", "--address", "100.64.0.1", "--data-dir", "x", "--wait-address", "60"]).unwrap();
         assert_eq!((parsed.port, parsed.address, parsed.data_dir), (7471, Some("100.64.0.1".parse().unwrap()), Some("x".into())));
+        assert_eq!(parsed.wait_address, 60);
         assert_eq!(flags(&[]).unwrap().port, DEFAULT_PORT);
+        assert_eq!(flags(&[]).unwrap().wait_address, 0);
+        assert!(flags(&["--wait-address", "soon"]).is_err());
         assert!(flags(&["--port"]).is_err());
         assert!(flags(&["--port", "high"]).is_err());
         assert!(flags(&["--other"]).is_err());

@@ -3537,7 +3537,8 @@ async function installUpdate(): Promise<void> {
   updateAlertEl.textContent = "Downloading…";
   try {
     // The installer closes the app and starts the new version, which restores the tabs and screens
-    // and asks triage again what was open on its screen: all of it is saved first.
+    // and asks triage again what was open on its screen: all of it is saved first. A host of this
+    // PC stops first and starts again with the new version (update_install, hostrun.rs).
     recordOpenQuestions();
     await saveScreens();
     await saveState();
@@ -5995,7 +5996,7 @@ async function start(): Promise<void> {
   initHelp(() => focusedPane()?.term.focus());
   initOptions(
     () => focusedPane()?.term.focus(),
-    () => void saveState().catch((error) => console.error("host settings save failed", error)),
+    () => saveState().catch((error) => console.error("host settings save failed", error)),
   );
   initHostMode(reattach);
   initStatusBar();

@@ -119,6 +119,18 @@ test("the Options dialog holds the three switches and both lists; the top bar ho
   assert.ok(dialog.includes('id="theme"') && dialog.includes('id="text-size"'), "both lists are in the dialog");
 });
 
+test("the Options dialog holds the section Run the host on this PC; the Help does not name it yet (task 8)", () => {
+  const start = HTML.indexOf('<dialog id="options">');
+  const dialog = HTML.slice(start, HTML.indexOf("</dialog>", start));
+  assert.match(dialog, /<legend>Run the host on this PC<\/legend>/);
+  for (const id of ["host-run-start", "host-run-stop", "host-run-newkey"]) assert.match(dialog, new RegExp(`<button id="${id}"`), id);
+  assert.match(dialog, /type="checkbox" id="host-run-autostart"/);
+  assert.match(dialog, /id="host-run-key" readonly/);
+  const helpStart = HTML.indexOf('<dialog id="help">');
+  const help = HTML.slice(helpStart, HTML.indexOf("</dialog>", helpStart));
+  assert.ok(!help.includes("Run the host on this PC"), "the Help text changes in task 8");
+});
+
 test("the Help says where the theme and the text size are and what the alerts do", () => {
   const start = HTML.indexOf("<h3>Other buttons</h3>");
   const section = HTML.slice(start, HTML.indexOf("</ul>", start));

@@ -44,6 +44,13 @@ const LOCAL_COMMANDS = new Set([
   "update_check",
   "update_install",
   "update_installer_open",
+  // "Run the host on this PC" (ticket remote-host-install) acts on the PC of the window.
+  "host_run_status",
+  "host_run_start",
+  "host_run_stop",
+  "host_run_new_key",
+  "host_run_autostart",
+  "app_restart",
 ]);
 /** The version of the frames of protocol.rs. */
 const PROTOCOL = 1;

@@ -6,7 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use crate::core::{err, Core};
+use crate::core::{err, hostrun, Core};
 use crate::core::info::NoWindow;
 
 /// The repository of the app. A public repository answers without a login, through the web API
@@ -172,6 +172,9 @@ pub fn update_install(core: &Core) -> Result<String, String> {
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
+    // A host of this computer stops first: the installer cannot replace a running program. The
+    // next start of the app starts it again (`hostrun::resume_after_update`).
+    hostrun::stop_for_update(core)?;
     // One step, no questions (Tauri's NSIS installer): `/P` shows only the progress bar and closes
     // the running app itself, `/UPDATE` skips the page that offers to uninstall the old version
     // first, `/R` starts the new version when it is done.

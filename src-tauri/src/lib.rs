@@ -80,7 +80,13 @@ pub fn run() {
             commands::usage_info,
             commands::update_check,
             commands::update_install,
-            commands::update_installer_open
+            commands::update_installer_open,
+            commands::host_run_status,
+            commands::host_run_start,
+            commands::host_run_stop,
+            commands::host_run_new_key,
+            commands::host_run_autostart,
+            commands::app_restart
         ])
         .setup(|app| {
             let core = Core::new(
@@ -90,6 +96,10 @@ pub fn run() {
                 Arc::new(WindowSink(app.handle().clone())),
             );
             app.manage(core);
+            // A host that the update stopped starts again with the new version.
+            if let Err(error) = core::hostrun::resume_after_update(&app.state::<Core>()) {
+                eprintln!("the host did not start again after the update: {error}");
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

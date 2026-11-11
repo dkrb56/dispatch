@@ -355,6 +355,25 @@
           </label>
           <p>A change here takes effect at the next start of Dispatch.</p>
         </fieldset>
+        <fieldset id="host-run">
+          <legend>Run the host on this PC</legend>
+          <p id="host-run-state">The host is not running.</p>
+          <label class="options-list">
+            <span>Key</span>
+            <input type="text" id="host-run-key" readonly spellcheck="false" autocomplete="off" title="The key of the host on this PC; another window needs it in the mode Use a host" />
+          </label>
+          <div class="buttons">
+            <button id="host-run-start" title="Start dispatch-host on this PC and use it in this window">Start the host</button>
+            <button id="host-run-stop" title="Stop dispatch-host and its terminals" disabled>Stop the host</button>
+            <button id="host-run-newkey" title="Start the host again with a new key" disabled>New key</button>
+          </div>
+          <label id="host-run-autostart-row" hidden>
+            <input type="checkbox" id="host-run-autostart" />
+            <span>Start the host at each Windows sign-in</span>
+          </label>
+          <p id="host-run-error" hidden></p>
+          <p>Start runs dispatch-host from the folder of Dispatch, switches this window to Use a host on 127.0.0.1 and restarts Dispatch; the terminals of this window end. Stop ends the host and its terminals. New key restarts the host with a new key; every other window needs the new key.</p>
+        </fieldset>
         <fieldset>
           <legend>Alerts when a task waits for you</legend>
           <label>
