@@ -663,7 +663,7 @@ pub struct DirList {
     parent: Option<String>,
     /// The names of the sub folders without a leading `.`, sorted without case.
     folders: Vec<String>,
-    /// The drive roots on Windows (`C:\`), `/` elsewhere.
+    /// The drive roots on Windows (`C:\`) without the network drives, `/` elsewhere.
     roots: Vec<String>,
 }
 
@@ -687,8 +687,7 @@ fn list_dir(dir: &Path) -> Result<DirList, String> {
         .collect();
     folders.sort_by_key(|name| name.to_lowercase());
     #[cfg(windows)]
-    let roots: Vec<String> =
-        (b'A'..=b'Z').map(|letter| format!("{}:\\", letter as char)).filter(|root| Path::new(root).is_dir()).collect();
+    let roots = drive_roots();
     #[cfg(not(windows))]
     let roots = vec!["/".to_string()];
     Ok(DirList {
@@ -697,6 +696,29 @@ fn list_dir(dir: &Path) -> Result<DirList, String> {
         folders,
         roots,
     })
+}
+
+/// The roots of the drives of this computer that are not network drives, as `X:\`, sorted by
+/// letter. The letters come from the drive table of Windows and the type from `GetDriveTypeW`;
+/// both read local data and do not connect to a server. Network drives are left out without a
+/// test: a folder test of a mapped drive whose server does not answer waits about 20 seconds.
+/// The other drives keep the folder test, so a card reader without a card falls out.
+#[cfg(windows)]
+fn drive_roots() -> Vec<String> {
+    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, GetLogicalDrives};
+    use windows_sys::Win32::System::WindowsProgramming::{DRIVE_NO_ROOT_DIR, DRIVE_REMOTE, DRIVE_UNKNOWN};
+    // SAFETY: no arguments; the result is a bit mask with bit 0 for `A`.
+    let mask = unsafe { GetLogicalDrives() };
+    (0..26u8)
+        .filter(|bit| mask & (1 << bit) != 0)
+        .map(|bit| format!("{}:\\", (b'A' + bit) as char))
+        .filter(|root| {
+            let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+            // SAFETY: `wide` is a NUL-terminated UTF-16 string that lives during the call.
+            let kind = unsafe { GetDriveTypeW(wide.as_ptr()) };
+            !matches!(kind, DRIVE_REMOTE | DRIVE_NO_ROOT_DIR | DRIVE_UNKNOWN) && Path::new(root).is_dir()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -747,6 +769,15 @@ mod tests {
         assert_eq!(list.folders, ["A", "b", "c"], "folders only, no hidden one, sorted without case");
         assert_eq!(list.parent.as_deref(), root.parent().and_then(|parent| parent.to_str()));
         assert!(!list.roots.is_empty());
+        #[cfg(windows)]
+        {
+            for drive in &list.roots {
+                let bytes = drive.as_bytes();
+                assert!(bytes.len() == 3 && bytes[0].is_ascii_uppercase() && &bytes[1..] == b":\\", "root {drive}");
+            }
+            let temp = std::env::temp_dir().to_string_lossy()[..3].to_uppercase();
+            assert!(list.roots.contains(&temp), "the drive of the temp folder {temp} in {:?}", list.roots);
+        }
         assert!(list_dir(&root.join("missing")).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
