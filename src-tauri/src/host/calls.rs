@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use dispatch_lib::core::{backlog, chats, context, flow, info, pipeline, pty, rules, rules_check, status, Core};
+use dispatch_lib::core::{backlog, chats, context, flow, info, pipeline, pty, rules, rules_check, status, store, Core};
 
 use crate::clients::{Clients, Spawn};
 
@@ -169,6 +169,10 @@ pub fn run(
         "status_info" => json(status::status_info(core)),
         "usage_info" => json(status::usage_info(core)),
         "dir_list" => json(info::dir_list(core, a.opt("path")?)?),
+        // The Nightmode switch and the triage chats that all windows share (remote-shared-state).
+        "shared_load" => json(store::shared_load(core)?),
+        "shared_set" => json(store::shared_set(core, a.opt("night")?, a.opt("triage")?)?),
+        "driver_state" => json(serde_json::json!({ "driver": clients.driver_state(window, a.opt("active")?.unwrap_or(false)) })),
         other if WINDOW_ONLY.contains(&other) => Err("this command runs in the window, not on the host".into()),
         other => Err(format!("unknown command: {other}")),
     }

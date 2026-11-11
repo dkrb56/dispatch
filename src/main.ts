@@ -1,4 +1,4 @@
-import { call, type HostSettings, hostInfo, hostSettings, initBackend, onEvent } from "./backend";
+import { call, type HostSettings, hostInfo, hostSettings, initBackend, onConnection, onEvent } from "./backend";
 import { chooseFolder } from "./folderchooser";
 import { initHostMode, titleBase } from "./hostmode";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
@@ -30,6 +30,7 @@ import { initRules } from "./rules";
 import { initStatusBar } from "./statusbar";
 import { terminalTheme, themeName, themeTokens } from "./theme";
 import { nightAtStart, nightLines, nightSyncLines } from "./night";
+import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
 import { answeredLine, chosenCount, replyText } from "./answers";
 
 type Shell = "powershell" | "cmd";
@@ -69,9 +70,11 @@ interface SavedState {
   /** A tab without `layout` is in the format before split view: one terminal per tab. */
   tabs: (SavedTab | SavedPane)[];
   active: string | null;
-  /** The Nightmode switch. Missing in the files of builds before nightmode-switch-sync. */
+  /**
+   * The Nightmode switch and the triage chat of each project, by project key: in the files of builds
+   * before remote-shared-state. Only the first `shared_load` reads them, to make `shared.json`.
+   */
   night?: boolean;
-  /** The triage chat of each project, by project key. Missing in the files of builds before this field. */
   triage?: Record<string, TriageRecord>;
   /** Where the work runs, and the id of this window (remote-client-mode). Missing in older files. */
   host?: HostSettings;
@@ -615,35 +618,32 @@ function roleKey(project: string): string {
 }
 
 /**
- * The triage chat of each project, by project key. It is in state.json (`triage`), so each copy
- * of Dispatch on this computer continues the same chat. The browser store of a copy keeps a
- * second record, for a state.json that does not have the project (a file of an older build).
+ * The triage chat of each project, by project key. It is in `shared.json` of the program that does
+ * the work (remote-shared-state), so every window of this PC or of the host continues the same chat.
+ * The browser store of a window keeps a second record, for a project that the shared file does not have.
  */
 const triageRecords = new Map<string, TriageRecord>();
-/** The saved tabs are open: a save of the state then has all of them. */
-let tabsRestored = false;
 
 /** The id of the triage chat that the app remembers for a project, or null. */
 function rememberedTriage(project: string | null | undefined): string | null {
   return triageRecords.get(projectKey(project))?.chat ?? null;
 }
 
-/** Records the triage chat of a project and its role mark, in state.json and in the browser store. */
+/** Records the triage chat of a project and its role mark, in the shared file and in the browser store. */
 function rememberTriage(project: string, record: TriageRecord): void {
   triageRecords.set(projectKey(project), record);
   try {
     localStorage.setItem(triageKey(project), record.chat);
     if (record.role !== null) localStorage.setItem(roleKey(project), record.role);
   } catch {
-    // state.json has the record.
+    // The shared file has the record.
   }
-  // Before the saved tabs are open, the save at the end of the start writes the record.
-  if (tabsRestored) void saveState().catch((error) => console.error("state save failed", error));
+  void call("shared_set", { triage: { [projectKey(project)]: record } }).catch((error) => console.error("save of the triage chat failed", error));
 }
 
 /**
- * Reads the triage chats at a start: the records of state.json, then the browser store of this
- * copy for each project that state.json does not have.
+ * Reads the triage chats at a start: the records of the shared file, then the browser store of this
+ * window for each project that the shared file does not have.
  */
 function loadTriageRecords(saved: unknown): void {
   if (saved && typeof saved === "object") {
@@ -1670,6 +1670,8 @@ async function refreshTasks(): Promise<void> {
  * plan per call: the first approval starts a work run, which holds the others until it ends.
  */
 function approvePlans(): void {
+  // Only the window that drives approves by itself (remote-shared-state).
+  if (!driver) return;
   for (const project of projectTasks.values()) {
     const tasks = projectTaskList(project);
     if (nightOn) nightDefaults(project, tasks);
@@ -1732,7 +1734,7 @@ function nextQueued(project: ProjectTasks, tasks: Task[]): Task | undefined {
 // and at each start and each new triage chat Dispatch compares it with the chat's night file and
 // sends the skill command when the chat is behind. The texts and rules are in src/night.ts.
 
-/** Night mode is on. In state.json, field `night`. */
+/** Night mode is on. In the shared file (`shared.json`), field `night`. */
 let nightOn = false;
 /** The questions and held points that night mode handled, by task and report or plan time. */
 const nightDone = new Set<string>();
@@ -1791,8 +1793,8 @@ function setNight(on: boolean): void {
   if (on === nightOn) return;
   nightOn = on;
   showNight();
-  // The switch is kept in state.json next to the tabs (nightmode-switch-sync).
-  void saveState().catch((error) => console.error("save of the night switch failed", error));
+  // The switch is kept in the shared file, so every window shows it (remote-shared-state).
+  void call("shared_set", { night: on }).catch((error) => console.error("save of the night switch failed", error));
   for (const project of nightProjects()) {
     // Triage knows only its rule "only the Approve click of the user starts a work run" (2026-11-09:
     // it told the user that nothing gets built overnight). The line after the skill command says
@@ -1808,6 +1810,8 @@ function setNight(on: boolean): void {
  * Dispatch never writes that file. A failed read sends nothing.
  */
 async function syncNight(root: string): Promise<void> {
+  // Only the window that drives brings the triage chats in step (remote-shared-state).
+  if (!driver) return;
   try {
     const file = await call<boolean | null>("night_state", { root });
     const project = projectKey(root);
@@ -1975,6 +1979,8 @@ async function dispatchEntries(): Promise<void> {
       // A failed removal stays in the list: the next tick tries again, and the entry is not sent.
       if (await removeEntry(drop.project, drop.entry)) entriesToDrop.splice(entriesToDrop.indexOf(drop), 1);
     }
+    // Only the window that drives sends the planned entries (remote-shared-state).
+    if (!driver) return;
     for (const [key, record] of projectTasks) {
       const pane = triagePane(key);
       if (!pane?.chat) continue;
@@ -2142,6 +2148,76 @@ function askLostQuestions(): void {
   setInterval(recordOpenQuestions, OPEN_QUESTIONS_MS);
 }
 
+// ---------------------------------------------------------------------------------------------
+// The driver lease (remote-shared-state): in the mode "Use a host" one window at a time writes the
+// lines of Dispatch into the triage chats, approves plans by itself and sends the planned entries.
+// The host gives the lease to the window that the user used last (`driver_state`). In the mode
+// "This PC does the work" the one window always drives. The alerts are not part of the lease.
+
+/** This window drives the automatic actions. The start sets it: always on in the mode "This PC does the work". */
+let driver = false;
+/** A key or a click came since the last report to the host. */
+let usedSinceReport = false;
+/** The time of the last claim of the lease after a key or a click. */
+let lastClaim = 0;
+
+/** Takes the reply of the host. A window that gets the lease runs what waited for it. */
+function setDriver(now: boolean): void {
+  const gained = now && !driver;
+  driver = now;
+  if (!gained) return;
+  approvePlans();
+  void flushTriageQueue();
+}
+
+/** Reports to the host; `active` says that the user used this window since the last report. */
+async function reportDriver(active: boolean): Promise<void> {
+  const reply = await call<{ driver?: unknown } | null>("driver_state", { active });
+  setDriver(reply?.driver === true);
+}
+
+/** A key or a click in this window: it takes the lease, at most once per `DRIVER_CLAIM_MS`. */
+function claimDriver(): void {
+  if (!hostInfo()) return;
+  usedSinceReport = true;
+  const now = Date.now();
+  if (driver || now - lastClaim < DRIVER_CLAIM_MS) return;
+  lastClaim = now;
+  void reportDriver(true).catch((error) => console.warn("claim of the lease failed", error));
+}
+
+/**
+ * The shared state that another window may have changed: the switch shows its new state without a
+ * line for triage (the window of the click sends the lines), and each triage chat of the shared
+ * file replaces the one of this window.
+ */
+function applyShared(state: SharedState): void {
+  if (state.night !== nightOn) {
+    nightOn = state.night;
+    showNight();
+  }
+  for (const [key, record] of Object.entries(state.triage)) triageRecords.set(key, record);
+}
+
+/** In the mode "Use a host", at each worker poll: reads the shared state, then reports for the lease. */
+async function pollShared(): Promise<void> {
+  if (!hostInfo()) return;
+  try {
+    applyShared(parseShared(await call("shared_load")));
+  } catch (error) {
+    console.warn("shared state read failed", error);
+  }
+  const active = usedSinceReport;
+  usedSinceReport = false;
+  try {
+    await reportDriver(active);
+  } catch (error) {
+    // The window keeps its last answer; the next report says that the user used it.
+    if (active) usedSinceReport = true;
+    console.warn("report for the lease failed", error);
+  }
+}
+
 /** A line for the triage chat of a project. It waits until triage can take it. */
 interface TriageLine {
   project: string;
@@ -2222,7 +2298,8 @@ let flushingTriage = false;
 
 /** Sends the queued lines whose triage can take them. The rest wait for the next poll. */
 async function flushTriageQueue(): Promise<void> {
-  if (flushingTriage) return;
+  // The lines of a window that does not drive wait in its queue (remote-shared-state).
+  if (flushingTriage || !driver) return;
   flushingTriage = true;
   try {
     for (const line of [...triageQueue]) {
@@ -2289,7 +2366,8 @@ function announceWorkerChanges(workers: Worker[]): void {
   const states = new Map(workers.map((worker) => [worker.id, worker.state]));
   const whileClosed = workerStatesFromLastRun;
   workerStatesFromLastRun = false;
-  if (lastWorkerStates) {
+  // Every window records the states; only the window that drives tells triage (remote-shared-state).
+  if (lastWorkerStates && driver) {
     const lines = new Map<string, string[]>();
     for (const worker of workers) {
       const before = lastWorkerStates.get(worker.id);
@@ -3571,6 +3649,8 @@ async function installUpdate(): Promise<void> {
 
 /** Refreshes the workers in the chat panel, and sends the lines that wait for triage. It runs again and again. */
 async function pollWorkers(): Promise<void> {
+  // Before the worker list: its changes go to triage only from the window that drives.
+  await pollShared();
   try {
     await refreshWorkers();
     await flushTriageQueue();
@@ -4006,7 +4086,7 @@ function saveState(): Promise<void> {
     focus: tab.focus,
   }));
   return call("state_save", {
-    state: { tabs: list, active: activeId, night: nightOn, triage: Object.fromEntries(triageRecords), host: hostSettings() },
+    state: { tabs: list, active: activeId, host: hostSettings() },
     paneIds: [...panes.keys()],
   });
 }
@@ -5909,6 +5989,8 @@ function tickRunTimes(): void {
 async function start(): Promise<void> {
   // The mode comes first: in the mode "Use a host" every call after this goes to the host.
   await initBackend();
+  // The one window of the mode "This PC does the work" drives; a window of a host waits for the lease.
+  driver = !hostInfo();
   await onEvent<{ id: string; data: string }>("pty-output", (payload) => {
     const pane = panes.get(payload.id);
     if (!pane) return;
@@ -6006,6 +6088,13 @@ async function start(): Promise<void> {
     () => saveState().catch((error) => console.error("host settings save failed", error)),
   );
   initHostMode(reattach);
+  // After a lost connection the host may have a newer switch and newer triage chats (remote-shared-state).
+  onConnection((connection) => {
+    if (connection.state !== "connected" || connection.first) return;
+    void call("shared_load")
+      .then((reply) => applyShared(parseShared(reply)))
+      .catch((error) => console.warn("shared state read failed", error));
+  });
   initStatusBar();
   initDecisions();
   void pollSide();
@@ -6035,6 +6124,8 @@ async function start(): Promise<void> {
         lastInput = Date.now();
         // The chime may sound only after an input of the user (alerts-options).
         startChimeAudio();
+        // The window that the user used last drives the automatic actions (remote-shared-state).
+        claimDriver();
       },
       true,
     );
@@ -6055,18 +6146,27 @@ async function start(): Promise<void> {
   void pollUpdate();
 
   const loaded = await call<SavedState | null>("state_load");
-  // Night mode: the switch comes from state.json, before the tabs open, so the first task reads
-  // see it. The old browser value counts once, while state.json has no night field yet.
+  // Night mode and the triage chats come from the shared file (remote-shared-state), before the tabs
+  // open, so the first task reads see the switch and each triage pane continues its chat. Its first
+  // read takes both from state.json of today's format. Without a reply (the host is not reachable)
+  // the switch starts off, and a later connection brings the values.
+  let shared: SharedState | null = null;
+  try {
+    shared = parseShared(await call("shared_load"));
+  } catch (error) {
+    console.error("shared state read failed", error);
+  }
+  // The old browser value (before nightmode-switch-sync) counts only in the mode "This PC does the
+  // work", and only when the shared file gives no value.
   let legacyNight: string | null = null;
   try {
-    legacyNight = localStorage.getItem("night-mode");
+    if (!hostInfo()) legacyNight = localStorage.getItem("night-mode");
   } catch {
-    // No old value: the switch takes the saved field or starts off.
+    // No old value: the switch takes the shared value or starts off.
   }
-  nightOn = nightAtStart(loaded?.night, legacyNight);
+  nightOn = nightAtStart(shared?.night, legacyNight);
   showNight();
-  // The triage chats come from state.json too, before the tabs open, so each triage pane continues its chat.
-  loadTriageRecords(loaded?.triage);
+  loadTriageRecords(shared?.triage);
   for (const saved of loaded?.tabs ?? []) {
     const tab = "layout" in saved ? saved : { id: saved.id, layout: saved, focus: saved.id };
     // A workspace runs again: triage resumes its chat, and the agent view starts.
@@ -6082,8 +6182,9 @@ async function start(): Promise<void> {
   } else if (loaded?.active) {
     activate(loaded.active);
   }
-  tabsRestored = true;
   await saveState();
+  // A window of a host asks for the lease before the night check: only the driver sends its lines.
+  if (hostInfo()) await reportDriver(false).catch((error) => console.warn("report for the lease failed", error));
   // The resumed triage chats follow the switch: each gets the skill command when its night file differs.
   const nightRoots = new Map<string, string>();
   for (const pane of panes.values()) if (pane.role === "triage" && pane.project) nightRoots.set(projectKey(pane.project), pane.project);

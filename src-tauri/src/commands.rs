@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, State};
 
@@ -73,6 +73,16 @@ pub fn screen_save(core: State<Core>, id: String, data: String) -> Result<(), St
 #[tauri::command]
 pub fn screen_load(core: State<Core>, id: String) -> Result<Option<String>, String> {
     store::screen_load(&core, id)
+}
+
+#[tauri::command]
+pub fn shared_load(core: State<Core>) -> Result<Value, String> {
+    store::shared_load(&core)
+}
+
+#[tauri::command]
+pub fn shared_set(core: State<Core>, night: Option<bool>, triage: Option<Map<String, Value>>) -> Result<Value, String> {
+    store::shared_set(&core, night, triage)
 }
 
 #[tauri::command(async)]

@@ -6,9 +6,16 @@
 //! the same window id, its `pty_spawn` for that terminal attaches: the host sends the kept output
 //! as one `pty-output` and starts no new shell. A terminal that ended while its window was away is
 //! reported as `pty-exit` right after the next hello of that window.
+//!
+//! One window at a time is the driver (docs/remote-client.md, "One window drives the automatic
+//! actions"): only it writes the lines of Dispatch into the triage chats, approves plans by itself
+//! and sends the planned entries. The driver is the window that the user used last: a window takes
+//! the lease with a key or a click, and a window without a driver, or whose driver left or did not
+//! report for `DRIVER_STALE`, takes it at its next report.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tokio::sync::mpsc::UnboundedSender;
@@ -20,6 +27,8 @@ use crate::protocol;
 
 /// The output that the host keeps of a terminal while nobody watches it.
 pub const REPLAY_LIMIT: usize = 256 * 1024;
+/// A driver that did not report for this long loses the lease to the next window that reports.
+pub const DRIVER_STALE: Duration = Duration::from_secs(30);
 
 /// What the writer of a connection sends.
 #[derive(Debug, PartialEq)]
@@ -36,6 +45,8 @@ struct Window {
     /// Tells this connection from a later one with the same window id.
     serial: u64,
     tx: Sender,
+    /// The last `driver_state` call of this window, or its hello.
+    seen: Instant,
 }
 
 struct Terminal {
@@ -55,6 +66,8 @@ struct Inner {
     windows: HashMap<String, Window>,
     terminals: HashMap<String, Terminal>,
     serial: u64,
+    /// The window id that drives the automatic actions.
+    driver: Option<String>,
 }
 
 /// What `pty_spawn` does with a terminal id.
@@ -115,7 +128,8 @@ impl Clients {
             inner.terminals.remove(&id);
             let _ = tx.send(Out::Text(protocol::event(PTY_EXIT, &Value::String(id))));
         }
-        inner.windows.insert(window.to_string(), Window { serial, tx });
+        // A new connection of the driver keeps the lease: the lease belongs to the window id.
+        inner.windows.insert(window.to_string(), Window { serial, tx, seen: Instant::now() });
         serial
     }
 
@@ -129,6 +143,34 @@ impl Clients {
         for terminal in inner.terminals.values_mut().filter(|terminal| terminal.owner == window) {
             terminal.attached = false;
         }
+        if inner.driver.as_deref() == Some(window) {
+            // The next report of another window takes the lease.
+            inner.driver = None;
+        }
+    }
+
+    /// The report of `window` at each worker poll; `active` is true when the user used it since
+    /// its last report. Gives whether `window` drives the automatic actions now.
+    pub fn driver_state(&self, window: &str, active: bool) -> bool {
+        self.driver_state_at(window, active, Instant::now())
+    }
+
+    fn driver_state_at(&self, window: &str, active: bool, now: Instant) -> bool {
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        if let Some(known) = inner.windows.get_mut(window) {
+            known.seen = now;
+        }
+        let driver_alive = inner
+            .driver
+            .as_ref()
+            .and_then(|driver| inner.windows.get(driver))
+            .is_some_and(|known| now.saturating_duration_since(known.seen) < DRIVER_STALE);
+        if (active || !driver_alive) && inner.driver.as_deref() != Some(window) {
+            println!("window {window} drives");
+            inner.driver = Some(window.to_string());
+        }
+        inner.driver.as_deref() == Some(window)
     }
 
     /// `pty_spawn` of `window` for the terminal `id`.
@@ -318,6 +360,58 @@ mod tests {
         assert_eq!(clients.check_owner("w-2", "t-1"), Err(OTHER_WINDOW.into()));
         assert_eq!(clients.check_owner("w-1", "t-1"), Ok(()));
         assert_eq!(clients.foreign_terminals("w-2"), HashSet::from(["t-1".to_string()]));
+    }
+
+    #[test]
+    fn the_first_window_drives_and_a_used_window_takes_the_lease() {
+        let clients = Clients::new("k".into());
+        let (tx1, _rx1) = unbounded_channel();
+        let (tx2, _rx2) = unbounded_channel();
+        clients.register("w-1", tx1, "0.0.0");
+        clients.register("w-2", tx2, "0.0.0");
+        assert!(clients.driver_state("w-1", false), "no driver yet: the first report takes the lease");
+        assert!(!clients.driver_state("w-2", false), "a live driver keeps the lease");
+        assert!(clients.driver_state("w-2", true), "a key or a click takes the lease");
+        assert!(!clients.driver_state("w-1", false));
+        assert!(clients.driver_state("w-1", true));
+    }
+
+    #[test]
+    fn the_lease_moves_when_the_driver_leaves_not_when_another_window_leaves() {
+        let clients = Clients::new("k".into());
+        let (tx1, _rx1) = unbounded_channel();
+        let (tx2, _rx2) = unbounded_channel();
+        let (tx3, _rx3) = unbounded_channel();
+        let serial1 = clients.register("w-1", tx1, "0.0.0");
+        let serial2 = clients.register("w-2", tx2, "0.0.0");
+        clients.register("w-3", tx3, "0.0.0");
+        assert!(clients.driver_state("w-1", true));
+        clients.unregister("w-2", serial2);
+        assert!(!clients.driver_state("w-3", false), "another window left: w-1 still drives");
+        assert!(clients.driver_state("w-1", false));
+        // A new connection of the driver keeps the lease.
+        let (tx1b, _rx1b) = unbounded_channel();
+        let serial1b = clients.register("w-1", tx1b, "0.0.0");
+        clients.unregister("w-1", serial1);
+        assert!(!clients.driver_state("w-3", false), "the old connection of w-1 ended, w-1 is still here");
+        clients.unregister("w-1", serial1b);
+        assert!(clients.driver_state("w-3", false), "the driver left: the next report takes the lease");
+    }
+
+    #[test]
+    fn a_driver_that_stops_reporting_loses_the_lease() {
+        let clients = Clients::new("k".into());
+        let (tx1, _rx1) = unbounded_channel();
+        let (tx2, _rx2) = unbounded_channel();
+        clients.register("w-1", tx1, "0.0.0");
+        clients.register("w-2", tx2, "0.0.0");
+        let start = Instant::now();
+        assert!(clients.driver_state_at("w-1", true, start));
+        let soon = start + DRIVER_STALE - Duration::from_secs(1);
+        assert!(!clients.driver_state_at("w-2", false, soon), "w-1 reported less than DRIVER_STALE ago");
+        let late = start + DRIVER_STALE + Duration::from_secs(1);
+        assert!(clients.driver_state_at("w-2", false, late), "w-1 did not report for DRIVER_STALE");
+        assert!(!clients.driver_state_at("w-1", false, late), "w-1 comes back without input: w-2 keeps the lease");
     }
 
     #[test]

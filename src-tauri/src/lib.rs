@@ -43,6 +43,8 @@ pub fn run() {
             commands::state_save,
             commands::screen_save,
             commands::screen_load,
+            commands::shared_load,
+            commands::shared_set,
             commands::pane_info,
             commands::context_usage,
             commands::pane_busy,
