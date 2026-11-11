@@ -48,3 +48,15 @@ export function nextEntry<T extends Pick<Entry, "id" | "sent" | "order">>(entrie
 export function goesStraight(text: string): boolean {
   return /^\s*\//.test(text);
 }
+
+/**
+ * What the triage chat says above its message box while planned entries wait: how many messages of
+ * the user wait, and when they go. Triage takes an entry only when it is idle, so a message can wait
+ * for a long command of triage. No entry gives an empty text.
+ */
+export function waitingText(count: number): string {
+  if (count <= 0) return "";
+  return count === 1
+    ? "1 message waits: Dispatch sends it when triage is free."
+    : `${count} messages wait: Dispatch sends them one at a time when triage is free.`;
+}

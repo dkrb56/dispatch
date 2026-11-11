@@ -4345,6 +4345,7 @@ function createPane(tabId: string, saved: SavedPane): Pane {
       },
       onFocus: () => focusPane(pane),
       onMessage: (message) => addEntry(pane.project ?? pane.cwd ?? "", message),
+      waiting: () => plannedEntries(pane.project ?? pane.cwd ?? "").length,
     });
     // The view is on top of the terminal. The terminal keeps its size behind it.
     termEl.append(pane.chat.el);

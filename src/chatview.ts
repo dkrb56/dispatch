@@ -2,6 +2,7 @@
 // for a new message. Claude Code runs in the terminal of the pane, behind this view.
 
 import { invoke } from "@tauri-apps/api/core";
+import { waitingText } from "./backlog";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { atEnd as listAtEnd, endKeeper } from "./chatend";
@@ -159,6 +160,8 @@ export interface ChatViewOptions {
    * overview-backlog): the box empties and nothing goes to the session. False sends it at once.
    */
   onMessage?: (message: string) => Promise<boolean>;
+  /** How many messages of the user are planned entries that wait for triage. The state line names them. */
+  waiting?: () => number;
 }
 
 /** Claude Code needs this time to read a paste, before the next paste or the Enter key. */
@@ -695,6 +698,8 @@ export function createChatView(options: ChatViewOptions): ChatView {
   let running = false;
   /** The status of the session from the last read. */
   let status: string | null = null;
+  /** The reply of the last read: a Send shows the state line again with it. */
+  let lastReply: ChatReply | null = null;
   let reading = false;
   let sending = false;
   /** The message that the user sent, until the chat file has it. */
@@ -1001,6 +1006,7 @@ export function createChatView(options: ChatViewOptions): ChatView {
   }
 
   function showState(reply: ChatReply): void {
+    lastReply = reply;
     const started = reply.running && !running;
     running = reply.running;
     status = reply.running ? reply.status : null;
@@ -1015,6 +1021,9 @@ export function createChatView(options: ChatViewOptions): ChatView {
     } else if (reply.status && reply.status !== "idle") {
       text = `Triage waits for you in the terminal (${reply.status}).`;
     }
+    // A message of the user is a planned entry until triage is idle: the line says that it waits.
+    const waits = waitingText(options.waiting?.() ?? 0);
+    if (waits !== "") text = text === "" ? waits : `${text} ${waits}`;
     stateText.textContent = text;
     startEl.hidden = running;
     stateEl.hidden = text === "";
@@ -1152,6 +1161,8 @@ export function createChatView(options: ChatViewOptions): ChatView {
       showImages();
       inputEl.value = "";
       fitBox();
+      // The message waits as a planned entry: the state line says so at once, not at the next read.
+      if (lastReply) showState(lastReply);
     } catch (error) {
       stateText.textContent = `Could not send the message: ${error}`;
       stateEl.hidden = false;

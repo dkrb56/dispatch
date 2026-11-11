@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { goesStraight, movedIds, nextEntry, orderedEntries } from "../src/backlog.ts";
+import { goesStraight, movedIds, nextEntry, orderedEntries, waitingText } from "../src/backlog.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const MAIN = read("../src/main.ts");
@@ -53,4 +53,15 @@ test("the entries meet the page: the commands, the card, the dispatcher and the 
   assert.match(MAIN, /setPointerCapture/);
   assert.match(CHAT, /onMessage\?: \(message: string\) => Promise<boolean>/);
   assert.match(CHAT, /deliver\(message: string\): Promise<void>/);
+});
+
+test("the line of the chat says how many messages wait for triage, and nothing for none", () => {
+  assert.equal(waitingText(0), "");
+  assert.equal(waitingText(-1), "");
+  assert.equal(waitingText(1), "1 message waits: Dispatch sends it when triage is free.");
+  assert.equal(waitingText(3), "3 messages wait: Dispatch sends them one at a time when triage is free.");
+  // The chat view adds the line to its state, also right after a Send; the page gives the number.
+  assert.match(CHAT, /waitingText\(options\.waiting\?\.\(\) \?\? 0\)/);
+  assert.match(CHAT, /if \(lastReply\) showState\(lastReply\);/);
+  assert.match(MAIN, /waiting: \(\) => plannedEntries\(/);
 });
