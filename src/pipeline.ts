@@ -21,6 +21,8 @@ interface Options {
   triageName: boolean;
   /** Dispatch approves a plan without a click, unless the plan has a `HOLD` decision. Off at the start. */
   autoApprove: boolean;
+  /** The plan run may run the listed measuring commands first. Off at the start. */
+  measureBeforePlan: boolean;
 }
 
 /** The reply of the `pipeline_plan`, `pipeline_apply` and `set_project_options` commands. */
@@ -31,6 +33,8 @@ interface Plan {
   git: boolean;
   options: Options;
   steps: Step[];
+  /** The text of `.dispatch/measure-commands.txt`: the commands that the plan run may run. */
+  measureCommands: string;
 }
 
 const dialog = document.querySelector<HTMLDialogElement>("#setup")!;
@@ -44,6 +48,8 @@ const commitEl = document.querySelector<HTMLButtonElement>("#setup-commit")!;
 const commitTitle = commitEl.title;
 /** The checkboxes of the settings. `data-option` gives the name of the setting. */
 const optionEls = [...dialog.querySelectorAll<HTMLInputElement>("#setup-options input")];
+/** The box with the measuring commands, under the switch "Measure before the plan". */
+const measureEl = document.querySelector<HTMLTextAreaElement>("#setup-measure-commands")!;
 
 /** The folder for which the dialog shows the steps, and its host (remote-multi-host). */
 let folder: string | null = null;
@@ -132,6 +138,9 @@ function show(plan: Plan): void {
     option.checked = plan.options[option.dataset.option as keyof Options];
     option.disabled = false;
   }
+  // The box keeps what the user types while it has the focus; it is open only with the switch on.
+  if (document.activeElement !== measureEl) measureEl.value = plan.measureCommands ?? "";
+  measureEl.disabled = !plan.options.measureBeforePlan;
   stepsEl.replaceChildren(
     ...plan.steps.map((step) => {
       const item = document.createElement("details");
@@ -156,12 +165,12 @@ function show(plan: Plan): void {
 }
 
 /** Asks the backend for the steps, or to do them, and shows the result. */
-async function run(command: "pipeline_plan" | "pipeline_apply" | "set_project_options", options?: Options): Promise<void> {
+async function run(command: "pipeline_plan" | "pipeline_apply" | "set_project_options" | "set_measure_commands", options?: Options, text?: string): Promise<void> {
   applyEl.disabled = true;
   // The positions of the checked working rules. Apply adds these.
   const rules = [...stepsEl.querySelectorAll<HTMLInputElement>(".setup-rules input:checked")].map((box) => Number(box.dataset.rule));
   try {
-    show(await call<Plan>(folderHost, command, { cwd: folder, options, rules }));
+    show(await call<Plan>(folderHost, command, { cwd: folder, options, rules, text }));
   } catch (error) {
     messageEl.textContent = String(error);
   }
@@ -187,6 +196,10 @@ export function initPipeline(
       void run("set_project_options", options);
     });
   }
+  // The list is saved when the box loses the focus, as a file of the project.
+  measureEl.addEventListener("change", () => {
+    if (folder) void run("set_measure_commands", undefined, measureEl.value);
+  });
   applyEl.addEventListener("click", async () => {
     if (!folder) return;
     applyEl.disabled = true;
@@ -229,6 +242,8 @@ function open(host: HostId, target: string | null): void {
   applyEl.disabled = true;
   commitEl.disabled = true;
   for (const option of optionEls) option.disabled = true;
+  measureEl.value = "";
+  measureEl.disabled = true;
   checkRun += 1;
   checkStateEl.textContent = "";
   checkListEl.replaceChildren();

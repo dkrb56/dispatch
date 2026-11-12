@@ -1643,6 +1643,8 @@ interface TaskInfo {
   goal: string[];
   /** The lines of the section "TL;DR" of the plan, in plain words, for the Decisions window. Empty without it. */
   tldr: string[];
+  /** The files outside `.dispatch` that a measuring command of the plan run changed. Absent from an older host. */
+  measureChanged?: string[];
 }
 
 /** A decision of a plan, with its options; the recommended one is first. */
@@ -3052,6 +3054,16 @@ function planCard(task: Task): HTMLElement {
     text.className = "card-summary";
     text.textContent = summary.join("\n");
     card.append(text);
+  }
+  // A measuring command of the plan run changed the working tree (ticket measure-before-plan).
+  const changed = task.info?.measureChanged ?? [];
+  if (changed.length > 0) {
+    const files = changed.length === 1 ? "1 file" : `${changed.length} files`;
+    const more = changed.length > 3 ? "\n…" : "";
+    const note = document.createElement("div");
+    note.className = "card-reason";
+    note.textContent = `The plan run changed ${files} outside .dispatch:\n${changed.slice(0, 3).join("\n")}${more}`;
+    card.append(note);
   }
   const actions = document.createElement("div");
   actions.className = "actions";

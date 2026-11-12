@@ -1891,6 +1891,26 @@ button.task-head:hover {
   word-break: normal;
 }
 
+/* The commands of "Measure before the plan", under its switch. */
+#setup-measure-commands {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 2px 0 6px;
+  padding: 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+  resize: vertical;
+}
+
+#setup-measure-commands:disabled {
+  opacity: 0.5;
+}
+
 /* The Options window: the frame of the Help window, as high as its content. */
 #options {
   width: min(92vw, 560px);

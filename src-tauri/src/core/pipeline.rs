@@ -31,6 +31,11 @@ const NOT_TASKS: &str = ":(exclude).dispatch";
 /// their own commit (`backlog::keep_committed`).
 const NOT_BACKLOG: &str = ":(exclude).dispatch/backlog";
 
+/// The line of `.dispatch/.gitignore` that keeps the scratch folder of the measuring out of git.
+const MEASURE_IGNORE: &str = "measure/";
+/// The time limit of a measuring command in seconds, when the list names none.
+const MEASURE_LIMIT: u32 = 600;
+
 /// The folder where the app saves pasted images. The app sets it at its start.
 pub(crate) static PASTED_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
@@ -75,19 +80,31 @@ pub struct Options {
     /// Dispatch approves a plan without a click, unless the plan has a `HOLD` decision. Off at
     /// the start.
     auto_approve: bool,
+    /// The plan run may run the measuring commands of `measure-commands.txt` before it writes the
+    /// plan (ticket measure-before-plan). Off at the start; a settings file without the field is off.
+    measure_before_plan: bool,
 }
 
 // A settings file of an older version has a field for answers in the triage chat. Serde drops a
 // field it does not know, so such a file reads without an error.
 impl Default for Options {
     fn default() -> Self {
-        Options { short_reports: true, triage_name: true, auto_approve: false }
+        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false }
     }
 }
 
 /// The command that runs the worker script. `reports` is the reports folder with `/`.
 fn script_command(reports: &str) -> String {
     format!("powershell -ExecutionPolicy Bypass -File {reports}/{SCRIPT_NAME}")
+}
+
+/// The line of the "Background workers" section for a project with "Measure before the plan" on.
+/// `reports` is the reports folder with `/`, `script` the command of the worker script.
+fn measure_rule(reports: &str, script: &str) -> String {
+    format!(
+        "- Measure before the plan is on in this project. Before it writes the plan, the plan run may run the commands of `{reports}/measure-commands.txt`, and only these, each with `{script} measure <ticket-id> <n>`: `<n>` is the number of the command in that list (1 for the first command; empty lines and lines that start with `#` do not count). The script runs each command with cmd.exe in the project folder, one measuring at a time per project, and ends a command after its time limit (exit code 124). It writes the output to `{reports}/measure/<ticket-id>/<n>.log`, prints its last 40 lines and ends with the exit code of the command. `{{measure}}` in a listed command stands for the folder `{reports}/measure/<ticket-id>`; the plan run may write throw-away scripts there, and git ignores the folder. A failed or stopped command is a result, not an end. The plan then has the section Measured after TL;DR: each command, what it showed and what it means for the plan; a fault that did not reproduce is marked \"not reproduced\" in plain words, and a stopped command \"stopped after N s\". The plan run runs no other command, edits no project file, and writes only its plan and into its measure folder.
+"
+    )
 }
 
 /// A folder with `/` as a permission rule writes it: `D:/folder` is `//d/folder`. The worker
@@ -149,6 +166,7 @@ pub struct Step {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Plan {
     /// The folder of the project.
     root: String,
@@ -156,6 +174,8 @@ pub struct Plan {
     git: bool,
     options: Options,
     steps: Vec<Step>,
+    /// The text of `measure-commands.txt`, for the box under the switch "Measure before the plan".
+    measure_commands: String,
 }
 
 /// The paths of one project.
@@ -258,6 +278,53 @@ impl Project {
         self.reports.join("worker-settings.json")
     }
 
+    /// The measuring commands that the plan run may run, one per line (ticket measure-before-plan).
+    pub(crate) fn measure_commands_file(&self) -> PathBuf {
+        self.reports.join("measure-commands.txt")
+    }
+
+    /// The scratch folder of the measuring: one folder per ticket with the logs and the throw-away
+    /// scripts, and the lock file. Git ignores it through `.dispatch/.gitignore`.
+    fn measure_dir(&self) -> PathBuf {
+        self.reports.join("measure")
+    }
+
+    /// The ignore file of the task folder. Its line `measure/` keeps the scratch folder out of git.
+    fn tasks_ignore(&self) -> PathBuf {
+        self.reports.join(".gitignore")
+    }
+
+    /// The permitted measuring commands: the lines of the list that are not empty and do not start
+    /// with `#`. The script numbers them the same way.
+    fn measure_commands(&self) -> Vec<String> {
+        fs::read_to_string(self.measure_commands_file())
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The time limit of a measuring command in seconds: the first line of the list that is not
+    /// empty, when it is `# limit <seconds>`, else `MEASURE_LIMIT`. The script reads it the same way.
+    fn measure_limit(&self) -> u32 {
+        let text = fs::read_to_string(self.measure_commands_file()).unwrap_or_default();
+        let first = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+        first
+            .strip_prefix('#')
+            .map(str::trim_start)
+            .and_then(|rest| rest.strip_prefix("limit"))
+            .filter(|rest| rest.starts_with(char::is_whitespace))
+            .and_then(|rest| rest.trim().parse().ok())
+            .unwrap_or(MEASURE_LIMIT)
+    }
+
+    /// The ignore file of the task folder has the line `measure/`.
+    fn measure_ignored(&self) -> bool {
+        fs::read_to_string(self.tasks_ignore()).is_ok_and(|text| text.lines().any(|line| line.trim() == MEASURE_IGNORE))
+    }
+
     fn options_file(&self) -> PathBuf {
         self.reports.join("options.json")
     }
@@ -296,7 +363,7 @@ impl Project {
     /// The files that the steps write, relative to the root with `/`. "Commit to git" commits
     /// only these. The task files of `.dispatch` (briefs, plans, reports, state files and the
     /// other options files) are committed by Dispatch at each task read (`keep_tasks_committed`).
-    fn setup_files(&self) -> [&'static str; 7] {
+    fn setup_files(&self) -> [&'static str; 8] {
         [
             "CLAUDE.md",
             ".claude/settings.json",
@@ -305,6 +372,7 @@ impl Project {
             ".dispatch/worker.ps1",
             ".dispatch/plan-flags.txt",
             ".dispatch/work-flags.txt",
+            ".dispatch/measure-commands.txt",
         ]
     }
 
@@ -369,11 +437,13 @@ impl Project {
     pub(crate) fn section_body(&self) -> String {
         let reports = self.reports_text();
         let script = script_command(&reports);
+        // With the switch off this line is empty, so the section is the text of the version before.
+        let measure = if self.options().measure_before_plan { measure_rule(&reports, &script) } else { String::new() };
         format!(
             "- A task is two runs of one worker session. The plan run reads the code and writes a plan. The work run executes the approved plan. Triage starts and resumes a worker only with the script `{reports}/{SCRIPT_NAME}`, never with `claude --bg` or `claude --resume` directly. A worker works in the main checkout (`worktree.bgIsolation` is `none`).
 - Triage writes each brief to `{reports}/briefs/<ticket-id>.md`: the user's words, the constraints, and the command that proves the work. The brief says nothing about the approach; the plan run decides that.
 - `{script} plan <ticket-id>` starts the plan run on the options in `{reports}/plan-flags.txt`: without the Edit tool, without the Agent tool and without a prompt; its Write tool may write only into `{reports}/plans/`. The plan run writes the plan to `{reports}/plans/<ticket-id>.md`, changes nothing else, and ends its turn.
-- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; the word HOLD stands in no other line of this section); Do not touch; Size (files). No code in a plan.
+{measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; the word HOLD stands in no other line of this section); Do not touch; Size (files). No code in a plan.
 - When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which resumes the same session on the options in `{reports}/work-flags.txt`, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when the working tree has uncommitted changes outside `{reports}/` (after Setup pipeline, the user commits the setup files first; Dispatch commits the files of `{reports}/` itself), when the worker still runs, or when the task was stopped.
 - The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It never pushes or merges. The user decides the push.
 - A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then: what it did, what it verified and how, open questions, where the work is.
@@ -410,11 +480,13 @@ Dispatch worker script. Triage starts and resumes a worker only through this fil
   reply <ticket-id> <message>   send the user's words to the worker; the state picks the options
   status                        the tasks with their state and the state of their worker
   stop <ticket-id>              stop the worker of a task; state: stopped
-Exit codes: 0 done, 2 refused (the reason is on stderr), other: the exit code of claude.
+  measure <ticket-id> <n>       run command n of measure-commands.txt for the plan run (Measure before the plan)
+Exit codes: 0 done, 2 refused (the reason is on stderr), 124 a measuring command stopped at its
+time limit, other: the exit code of claude or of the measuring command.
 #>
 param(
   [Parameter(Mandatory = $true, Position = 0)]
-  [ValidateSet('plan', 'approve', 'reply', 'status', 'stop')]
+  [ValidateSet('plan', 'approve', 'reply', 'status', 'stop', 'measure')]
   [string]$Verb,
   [Parameter(Position = 1)]
   [string]$Id,
@@ -512,6 +584,96 @@ function Run-Claude([string[]]$Arguments, [string]$StateOnFailure) {
   exit $code
 }
 
+# The setting "Measure before the plan" of the project in options.json; off without the file or the field.
+function Measure-On {
+  $file = Join-Path $Reports 'options.json'
+  if (-not (Test-Path -LiteralPath $file)) { return $false }
+  try { return [bool]((Get-Content -LiteralPath $file -Raw) | ConvertFrom-Json).measureBeforePlan } catch { return $false }
+}
+
+# The permitted measuring commands: the lines of measure-commands.txt that are not empty and do not
+# start with #. Setup pipeline writes the file; command n is the line n of this list.
+function Measure-Commands {
+  $file = Join-Path $Reports 'measure-commands.txt'
+  if (-not (Test-Path -LiteralPath $file)) { return @() }
+  @(Get-Content -LiteralPath $file | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' -and -not $_.StartsWith('#') })
+}
+
+# The time limit of a measuring command in seconds: a first line "# limit <seconds>" of the list, else 600.
+function Measure-Limit {
+  $file = Join-Path $Reports 'measure-commands.txt'
+  if (Test-Path -LiteralPath $file) {
+    $first = @(Get-Content -LiteralPath $file | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1)
+    if ($first.Count -gt 0 -and $first[0].Trim() -match '^#\s*limit\s+(\d+)\s*$') { return [int]$Matches[1] }
+  }
+  600
+}
+
+# The lock of the measuring: one measuring at a time per project, because projects use fixed test
+# ports. The file holds the process id, the ticket and the time. A second call waits up to the time
+# limit, then is refused; a lock whose process is gone is removed.
+function Lock-Path { Join-Path $Reports 'measure\lock' }
+function Enter-MeasureLock([int]$Limit) {
+  $lock = Lock-Path
+  $dir = Split-Path -Parent $lock
+  if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+  $deadline = (Get-Date).AddSeconds($Limit)
+  while ($true) {
+    # A move to a name that exists fails, so only one caller gets the lock, and it is never half written.
+    $mine = "$lock.$PID"
+    [IO.File]::WriteAllText($mine, "$PID`t$Id`t$((Get-Date).ToString('o'))`n")
+    try { [IO.File]::Move($mine, $lock); return } catch { Remove-Item -LiteralPath $mine -Force -ErrorAction SilentlyContinue }
+    $holder = "$(Get-Content -LiteralPath $lock -Raw -ErrorAction SilentlyContinue)".Trim() -split "`t"
+    $other = 0
+    $alive = [int]::TryParse($holder[0], [ref]$other) -and $null -ne (Get-Process -Id $other -ErrorAction SilentlyContinue)
+    if (-not $alive) {
+      Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
+      continue
+    }
+    $left = ($deadline - (Get-Date)).TotalSeconds
+    if ($left -le 0) {
+      $owner = if ($holder.Count -gt 1) { $holder[1] } else { 'another task' }
+      Refuse "another measuring of this project runs (task $owner); it held the lock for longer than the limit of $Limit s"
+    }
+    Start-Sleep -Milliseconds ([int](1000 * [Math]::Min(5, $left)))
+  }
+}
+function Exit-MeasureLock {
+  $lock = Lock-Path
+  $holder = "$(Get-Content -LiteralPath $lock -Raw -ErrorAction SilentlyContinue)".Trim() -split "`t"
+  if ($holder[0] -eq "$PID") { Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue }
+}
+
+# The changed files of the project outside .dispatch, as git status gives them; none outside git.
+function Tree-Status {
+  if (-not (Test-Path -LiteralPath (Join-Path $Project '.git'))) { return @() }
+  @(& git -C $Project status --porcelain --untracked-files=all -- . ':(exclude).dispatch')
+}
+
+# Runs one measuring command with cmd.exe in the project folder, its output into the log. The
+# command goes into a batch file next to the log, so a redirect of its own stays its own. A command
+# that runs longer than the limit is ended with its process tree; the result is then 124.
+function Run-Measured([string]$Command, [string]$Log, [int]$Limit) {
+  $batch = [IO.Path]::ChangeExtension($Log, '.cmd')
+  [IO.File]::WriteAllText($batch, "@echo off`r`n$Command`r`n")
+  $info = New-Object System.Diagnostics.ProcessStartInfo
+  $info.FileName = $env:ComSpec
+  $info.Arguments = "/d /s /c `"`"$batch`" > `"$Log`" 2>&1`""
+  $info.WorkingDirectory = $Project
+  $info.UseShellExecute = $false
+  $info.CreateNoWindow = $true
+  $process = [Diagnostics.Process]::Start($info)
+  if ($process.WaitForExit($Limit * 1000)) {
+    $process.WaitForExit()
+    return $process.ExitCode
+  }
+  # cmd.exe redirects the output of taskkill itself, so PowerShell sees no error text.
+  & $env:ComSpec /d /c "taskkill /PID $($process.Id) /T /F >nul 2>&1"
+  $process.WaitForExit(10000) | Out-Null
+  try { [IO.File]::AppendAllText($Log, "`nstopped after $Limit s: the time limit of the measuring commands`n") } catch { }
+  124
+}
+
 switch ($Verb) {
   'plan' {
     Need-Id
@@ -522,6 +684,10 @@ switch ($Verb) {
     $plan = Join-Path $plans "$Id.md"
     $flags = Read-Flags 'plan-flags.txt'
     $prompt = "Plan ticket $Id. Read the brief $brief. Write the plan to $plan with the sections that the section Background workers in CLAUDE.md names. Edit nothing. Then end your turn."
+    # The scratch folder of an earlier plan run of the ticket goes: its logs belong to that plan.
+    $scratch = Join-Path $Reports "measure\$Id"
+    if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
+    if (Measure-On) { $prompt += " Measure before the plan is on: first run the listed measuring commands as the section Background workers says, and write the section Measured." }
     Set-State 'planning'
     Run-Claude (@($prompt, '--bg', '--name', (Run-Name 'plan')) + $flags)
   }
@@ -566,6 +732,42 @@ switch ($Verb) {
       $state = (Get-Content -LiteralPath $_.FullName -Raw).Trim()
       "$ticket`t$state`t$(Worker-State (Find-Worker $workers $ticket))"
     }
+  }
+  'measure' {
+    Need-Id
+    if (-not (Measure-On)) { Refuse 'Measure before the plan is off in this project; Setup pipeline turns it on' }
+    if ((Get-State) -ne 'planning') { Refuse "the task $Id is not in its plan run; only a plan run measures" }
+    # @() keeps a list of one command a list: a plain string would give its first character.
+    $commands = @(Measure-Commands)
+    $n = 0
+    if ($null -eq $Message -or @($Message).Count -ne 1 -or -not [int]::TryParse("$($Message[0])", [ref]$n) -or $n -lt 1 -or $n -gt $commands.Count) {
+      Refuse "measure takes the number of a command of measure-commands.txt (1 to $($commands.Count)); nothing else runs"
+    }
+    $folder = Join-Path $Reports "measure\$Id"
+    if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder | Out-Null }
+    $command = $commands[$n - 1].Replace('{measure}', $folder)
+    $log = Join-Path $folder "$n.log"
+    $limit = Measure-Limit
+    Enter-MeasureLock $limit
+    try {
+      $before = Tree-Status
+      $code = Run-Measured $command $log $limit
+      $after = Tree-Status
+    } finally {
+      Exit-MeasureLock
+    }
+    # The working tree must stay as it was; a change is noted for the task card of Dispatch.
+    $changed = @($after | Where-Object { $_ -and $before -notcontains $_ }) + @($before | Where-Object { $_ -and $after -notcontains $_ })
+    if ($changed.Count -gt 0) {
+      $note = Join-Path $folder 'changed.txt'
+      $known = if (Test-Path -LiteralPath $note) { @(Get-Content -LiteralPath $note) } else { @() }
+      $new = @($changed | Where-Object { $known -notcontains $_ })
+      if ($new.Count -gt 0) { [IO.File]::AppendAllText($note, (($new -join "`n") + "`n")) }
+      [Console]::Error.WriteLine("warning: command $n changed files of the project outside .dispatch:`n$($changed -join "`n")")
+    }
+    "command $n ($($commands[$n - 1])) ended with exit code $code; the output is in $log. Its last 40 lines:"
+    if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 40 }
+    exit $code
   }
   'stop' {
     Need-Id
@@ -925,8 +1127,58 @@ fn plan(project: &Project) -> Result<Plan, String> {
             detail: role,
             rules: None,
         },
+        measure_step(project, options.measure_before_plan)?,
     ];
-    Ok(Plan { root: show(project.root.clone()), git: project.in_git, options, steps })
+    let measure_commands = fs::read_to_string(project.measure_commands_file()).unwrap_or_default().replace("\r\n", "\n");
+    Ok(Plan { root: show(project.root.clone()), git: project.in_git, options, steps, measure_commands })
+}
+
+/// The step "Measure before the plan" (ticket measure-before-plan). Off, it is done and changes
+/// nothing. On, it is done when the list has a command and git ignores the scratch folder; Apply
+/// adds the ignore line, and only the user writes the commands.
+fn measure_step(project: &Project, on: bool) -> Result<Step, String> {
+    let target = project.measure_commands_file().to_string_lossy().into_owned();
+    if !on {
+        return Ok(Step {
+            title: "Measure before the plan",
+            target,
+            done: true,
+            detail: "Off. The plan run reads the code and runs three git commands that only read.".to_string(),
+            rules: None,
+        });
+    }
+    let commands = project.measure_commands();
+    let reports = project.reports_text();
+    let list = if commands.is_empty() {
+        "No command yet: write at least one command in the box under the switch.".to_string()
+    } else {
+        commands.iter().enumerate().map(|(at, command)| format!("{}. {command}", at + 1)).collect::<Vec<_>>().join("\n")
+    };
+    Ok(Step {
+        title: "Measure before the plan",
+        target,
+        done: !commands.is_empty() && project.measure_ignored(),
+        detail: format!(
+            "The plan run may run these commands before it writes the plan, and no other one:\n{list}\n\nEach runs with cmd.exe in the project folder through {script} measure <ticket-id> <n>, one at a time per project, for at most {limit} s (a first line \"# limit <seconds>\" of the list changes that). The output and the throw-away scripts go into {reports}/measure/<ticket-id>/; {{measure}} in a command stands for that folder. Apply adds the line {MEASURE_IGNORE} to {reports}/.gitignore, so git ignores the folder. The plan gets the section Measured. The options of the plan run (step Task files) and the section in CLAUDE.md say so.",
+            script = script_command(&reports),
+            limit = project.measure_limit(),
+        ),
+        rules: None,
+    })
+}
+
+/// Adds the line `measure/` to `.dispatch/.gitignore`, and makes the file when it is absent.
+fn ignore_measure(project: &Project) -> Result<(), String> {
+    if project.measure_ignored() {
+        return Ok(());
+    }
+    let mut text = fs::read_to_string(project.tasks_ignore()).unwrap_or_default();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(MEASURE_IGNORE);
+    text.push('\n');
+    write_file(&project.tasks_ignore(), &text)
 }
 
 /// A model and an effort for one run of a worker. Empty: the settings of the user apply.
@@ -956,16 +1208,25 @@ const WORK_DEFAULT: (&str, &str) = ("opus", "xhigh");
 /// that only read plus Write, and no Edit, Agent or question tool; three git commands that only
 /// read; and Write allowed in the plans folder only. Under `dontAsk` every other write is refused
 /// without a prompt. There is no Edit tool because the local settings allow Edit on the whole
-/// reports folder, which would reach a planner that had the tool.
+/// reports folder, which would reach a planner that had the tool. With "Measure before the plan"
+/// on, the list also allows the `measure` verb of the worker script, which runs only the listed
+/// commands, and Write in the scratch folder of the measuring; off, the lines are those of 0.1.54.
 fn plan_fixed_lines(project: &Project) -> Result<Vec<String>, String> {
-    let plans = format!("{}/plans/**", project.rule_path()?);
+    let rule_path = project.rule_path()?;
+    let plans = format!("{rule_path}/plans/**");
+    let allowed = if project.options().measure_before_plan {
+        let script = script_command(&project.reports_text());
+        format!("Bash(git status*),Bash(git log *),Bash(git diff *),Bash({script} measure *),Write({plans}),Write({rule_path}/measure/**)")
+    } else {
+        format!("Bash(git status*),Bash(git log *),Bash(git diff *),Write({plans})")
+    };
     Ok(vec![
         "--permission-mode".to_string(),
         "dontAsk".to_string(),
         "--tools".to_string(),
         "Read,Grep,Glob,Bash,Write".to_string(),
         "--allowedTools".to_string(),
-        format!("Bash(git status*),Bash(git log *),Bash(git diff *),Write({plans})"),
+        allowed,
     ])
 }
 
@@ -1536,6 +1797,10 @@ pub struct TaskInfo {
     /// The lines of the section "TL;DR" of the plan, in plain words, for the Decisions window.
     /// Empty without it (a plan from before the rule).
     tldr: Vec<String>,
+    /// The changed files outside `.dispatch` that a measuring command of the plan run left, as
+    /// `git status --porcelain` lines (`measure/<ticket>/changed.txt`). Empty without a change.
+    #[serde(rename = "measureChanged")]
+    measure_changed: Vec<String>,
 }
 
 /// The reply of the `task_list` command.
@@ -1614,6 +1879,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
             words: Vec::new(),
             goal: Vec::new(),
             tldr: Vec::new(),
+            measure_changed: Vec::new(),
         });
         tasks.len() - 1
     }
@@ -1642,6 +1908,11 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
         tasks[at].questions = questions;
         tasks[at].did = report_gist(&text);
         tasks[at].report = Some(entry);
+    }
+    // A measuring command that changed the working tree left a note in the scratch folder.
+    for task in tasks.iter_mut() {
+        let note = project.measure_dir().join(&task.name).join("changed.txt");
+        task.measure_changed = fs::read_to_string(note).unwrap_or_default().lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect();
     }
     // A brief alone makes no task; a task that exists gets its brief.
     for task in tasks.iter_mut() {
@@ -1875,6 +2146,10 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
     if !done(6) {
         write_file(&project.triage_prompt(), &triage_prompt(project.options(), &project.reports_text()))?;
     }
+    // Off, the step is done, so an old project gets no new file.
+    if !done(7) {
+        ignore_measure(project)?;
+    }
     Ok(())
 }
 
@@ -1960,6 +2235,19 @@ fn keep_tasks_committed(project: &Project) -> Result<usize, String> {
 /// Commits the setup files of the project of a folder on the current branch. It makes no push.
 pub fn pipeline_commit(cwd: String) -> Result<String, String> {
     commit_setup(&Project::find(&cwd)?)
+}
+
+/// Saves the measuring commands of the project of a folder: one command per line, each line
+/// trimmed, empty lines at the end dropped. The steps then show what Apply must change.
+pub fn set_measure_commands(cwd: String, text: String) -> Result<Plan, String> {
+    let project = Project::find(&cwd)?;
+    let mut lines: Vec<&str> = text.lines().map(str::trim).collect();
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    let text = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
+    write_file(&project.measure_commands_file(), &text)?;
+    plan(&project)
 }
 
 /// Saves the settings of the project of a folder. The steps then show what Apply must change.
@@ -2440,6 +2728,7 @@ mod tests {
             words: Vec::new(),
             goal: Vec::new(),
             tldr: Vec::new(),
+            measure_changed: Vec::new(),
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };
@@ -2483,7 +2772,9 @@ mod tests {
     /// A fake `claude` command for the script: it records its arguments and its folder, answers
     /// `agents` with one worker `t-1` whose state the variable FAKE_STATE gives, and acts as the
     /// planner on a plan prompt: it writes the plan file the prompt names, as the real plan run
-    /// does. With a file `fail.txt` next to it, a run (not `agents`) ends with the exit code in that file.
+    /// does. A plan prompt with "Measure before the plan is on" makes it run command 1 through the
+    /// `measure` verb of the script first and write a plan with the section Measured.
+    /// With a file `fail.txt` next to it, a run (not `agents`) ends with the exit code in that file.
     fn fake_claude(base: &Path) -> PathBuf {
         let dir = base.join("fake-bin");
         write_file(&dir.join("claude.cmd"), "@node \"%~dp0fake-claude.js\" %*\r\n").unwrap();
@@ -2503,7 +2794,17 @@ if (args[0] === 'agents') {
   process.stdout.write('stopped ' + args[1] + '\\n');
 } else {
   const plan = /Write the plan to (.+?) with the sections/.exec(args[0]);
-  if (plan) fs.writeFileSync(plan[1], 'plan\\n');
+  let text = 'plan\\n';
+  if (plan && args[0].includes('Measure before the plan is on')) {
+    const path = require('path');
+    const brief = /Read the brief (.+?)\\. Write/.exec(args[0])[1];
+    const id = /Plan ticket (\\S+)\\./.exec(args[0])[1];
+    const script = path.join(path.dirname(path.dirname(brief)), 'worker.ps1');
+    const run = require('child_process').spawnSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, 'measure', id, '1'], { encoding: 'utf8' });
+    fs.appendFileSync(__dirname + '/args.txt', JSON.stringify(['(planner)', 'measure', id, '1', String(run.status)]) + '\\n');
+    text = '# ' + id + ': plan\\n\\n## Measured\\n- Command 1 ended with exit code ' + run.status + '.\\n\\n' + run.stdout;
+  }
+  if (plan) fs.writeFileSync(plan[1], text);
   process.stdout.write('bg-1\\n');
 }
 ",
@@ -2540,6 +2841,276 @@ if (args[0] === 'agents') {
     fn last_call(fake: &Path) -> Vec<String> {
         let calls = read(&fake.join("args.txt"));
         serde_json::from_str(calls.lines().last().unwrap()).unwrap()
+    }
+
+    /// The expected `plan-flags.txt` with "Measure before the plan" on: the lines of `plan_lines`
+    /// with the measure verb of the script and the measure folder in the allowed list.
+    fn plan_lines_measuring(project: &Project, choice_lines: &str) -> String {
+        let rule = project.rule_path().unwrap();
+        let script = script_command(&project.reports_text());
+        format!(
+            "{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,Write\n--allowedTools\nBash(git status*),Bash(git log *),Bash(git diff *),Bash({script} measure *),Write({rule}/plans/**),Write({rule}/measure/**)\n"
+        )
+    }
+
+    /// Turns "Measure before the plan" on or off in the settings file, as the switch does.
+    fn set_measure(project: &Project, on: bool) {
+        let options = Options { measure_before_plan: on, ..project.options() };
+        write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
+    }
+
+    /// The titles of the steps that are To do.
+    fn open_steps(project: &Project) -> Vec<&'static str> {
+        plan(project).unwrap().steps.iter().filter(|step| !step.done).map(|step| step.title).collect()
+    }
+
+    /// Makes the root of a proof project a git repository with a local identity, as `git_scratch`.
+    fn git_init(project: &Project) {
+        for args in [
+            &["init", "-q"][..],
+            &["config", "user.name", "Dispatch test"],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.excludesFile", "no-such-ignore-file"],
+        ] {
+            run_git(&project.root, args).unwrap();
+        }
+    }
+
+    #[test]
+    fn the_plan_options_differ_only_by_the_measure_switch() {
+        let project = scratch("measure-flags");
+        apply(&project, &[0]).unwrap();
+        let today = plan_lines(&project, "--model\nfable\n--effort\nxhigh\n");
+        assert_eq!(read(&project.plan_flags()), today, "off: the options of 0.1.54");
+        let claude_off = fs::read_to_string(project.instructions()).unwrap();
+        assert!(!claude_off.contains("measure-commands.txt"), "{claude_off}");
+        assert!(open_steps(&project).is_empty());
+        assert!(!project.measure_commands_file().exists() && !project.tasks_ignore().exists());
+
+        // On: the options, the section and the new step are To do until Apply.
+        set_measure(&project, true);
+        assert_eq!(open_steps(&project), ["Task files", "Section in CLAUDE.md", "Measure before the plan"]);
+        let cwd = project.root.to_string_lossy().into_owned();
+        let shown = set_measure_commands(cwd, "  # limit 5  \r\ncmd /c echo measured\r\n\r\n".to_string()).unwrap();
+        assert_eq!(shown.measure_commands, "# limit 5\ncmd /c echo measured\n");
+        let step = shown.steps.iter().find(|step| step.title == "Measure before the plan").unwrap();
+        assert!(step.detail.contains("1. cmd /c echo measured") && step.detail.contains("at most 5 s"), "{}", step.detail);
+        apply(&project, &[]).unwrap();
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        assert_eq!(read(&project.plan_flags()), plan_lines_measuring(&project, "--model\nfable\n--effort\nxhigh\n"));
+        assert_eq!(read(&project.tasks_ignore()), "measure/\n");
+        let claude_on = read(&project.instructions());
+        let tasks = project.reports_text();
+        assert!(claude_on.contains(&format!("the commands of `{tasks}/measure-commands.txt`, and only these")), "{claude_on}");
+        assert!(claude_on.contains("/worker.ps1 measure <ticket-id> <n>`") && claude_on.contains("the section Measured after TL;DR"), "{claude_on}");
+        assert!(claude_on.contains("\"not reproduced\""), "{claude_on}");
+        // The choice of the user stays when the switch rewrites the file.
+        write_worker_flags(&project, &choice("sonnet", "high"), &choice("opus", "xhigh"), "").unwrap();
+        assert_eq!(read(&project.plan_flags()), plan_lines_measuring(&project, "--model\nsonnet\n--effort\nhigh\n"));
+
+        // Off again: the options file and CLAUDE.md are byte for byte those of the start.
+        write_worker_flags(&project, &choice("fable", "xhigh"), &choice("opus", "xhigh"), "").unwrap();
+        set_measure(&project, false);
+        assert_eq!(open_steps(&project), ["Task files", "Section in CLAUDE.md"]);
+        apply(&project, &[]).unwrap();
+        assert_eq!(fs::read_to_string(project.plan_flags()).unwrap(), today);
+        assert_eq!(fs::read_to_string(project.instructions()).unwrap(), claude_off);
+        assert!(open_steps(&project).is_empty());
+        clean(&project);
+    }
+
+    #[test]
+    fn an_old_project_stays_off_after_the_update() {
+        let project = scratch("measure-old");
+        apply(&project, &[0]).unwrap();
+        // The settings file of 0.1.54: the three settings, no field for measuring.
+        write_file(&project.options_file(), "{\n  \"shortReports\": true,\n  \"triageName\": false,\n  \"autoApprove\": true\n}\n").unwrap();
+        write_file(&project.triage_prompt(), &triage_prompt(project.options(), &project.reports_text())).unwrap();
+        let files = [project.options_file(), project.plan_flags(), project.work_flags(), project.instructions(), project.triage_prompt(), project.local_settings(), project.settings()];
+        let before: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+
+        let options = project.options();
+        assert!(!options.measure_before_plan && options.auto_approve && !options.triage_name, "the other settings stay");
+        assert!(plan_flags_current(&project), "the plan options of 0.1.54 are current");
+        assert_eq!(read(&project.plan_flags()), plan_lines(&project, "--model\nfable\n--effort\nxhigh\n"));
+        assert!(!project.section_body().contains("Measure before the plan"));
+        let shown = plan(&project).unwrap();
+        assert_eq!(serde_json::to_value(&shown.options).unwrap()["measureBeforePlan"], json!(false));
+        assert_eq!(shown.measure_commands, "");
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+
+        apply(&project, &[]).unwrap();
+        let after: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+        assert!(before == after, "Apply changed a file of the old project");
+        assert!(!project.measure_commands_file().exists() && !project.tasks_ignore().exists() && !project.measure_dir().exists());
+        // The plan prompt of the script has no word of measuring while the switch is off.
+        assert!(WORKER_SCRIPT.contains("if (Measure-On) { $prompt += "));
+        clean(&project);
+    }
+
+    #[test]
+    fn a_measuring_command_outside_the_list_is_refused() {
+        // A git repository: the script compares `git status` before and after a command.
+        let project = git_scratch("measure-refuse");
+        apply(&project, &[0]).unwrap();
+        set_measure(&project, true);
+        write_file(&project.measure_commands_file(), "# the commands of the scratch project\ncmd /c echo measured-one\necho made> made.txt\n").unwrap();
+        apply(&project, &[]).unwrap();
+        let fake = fake_claude(project.root.parent().unwrap());
+        write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        let log = |n: u32| project.measure_dir().join("t-1").join(format!("{n}.log"));
+
+        // A number outside the list, a command text, a second argument, no argument: refused, nothing runs.
+        for args in [&["measure", "t-1", "3"][..], &["measure", "t-1", "0"], &["measure", "t-1", "echo hacked"], &["measure", "t-1", "1", "2"], &["measure", "t-1"]] {
+            let (code, out) = run_script(&project, &fake, "done", args);
+            assert_eq!(code, 2, "{args:?}: {out}");
+            assert!(out.contains("measure takes the number of a command of measure-commands.txt (1 to 2); nothing else runs"), "{args:?}: {out}");
+        }
+        assert!(!log(1).exists() && !project.measure_dir().join("lock").exists());
+
+        // A listed command runs, and its output reaches the log and the planner.
+        let (code, out) = run_script(&project, &fake, "done", &["measure", "t-1", "1"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("command 1 (cmd /c echo measured-one) ended with exit code 0") && out.contains("measured-one"), "{out}");
+        assert!(read(&log(1)).contains("measured-one"));
+        assert!(!project.measure_dir().join("t-1").join("changed.txt").exists(), "the command changed nothing");
+
+        // A command that changes the working tree: the note for the task card.
+        let (code, out) = run_script(&project, &fake, "done", &["measure", "t-1", "2"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("warning: command 2 changed files of the project outside .dispatch") && out.contains("?? made.txt"), "{out}");
+        assert_eq!(read(&project.measure_dir().join("t-1").join("changed.txt")), "?? made.txt\n");
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        let task = list.tasks.iter().find(|task| task.name == "t-1").unwrap();
+        assert_eq!(task.measure_changed, ["?? made.txt"]);
+
+        // Only a plan run measures, and only with the switch on.
+        write_file(&project.reports.join("t-1.state"), "working\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["measure", "t-1", "1"]);
+        assert!(code == 2 && out.contains("is not in its plan run"), "{out}");
+        write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        set_measure(&project, false);
+        let (code, out) = run_script(&project, &fake, "done", &["measure", "t-1", "1"]);
+        assert!(code == 2 && out.contains("Measure before the plan is off"), "{out}");
+
+        // The plan verb with the switch on: the prompt names the measuring, the planner runs command
+        // 1, and the plan has the section Measured. The plan verb first removes the old scratch folder.
+        set_measure(&project, true);
+        write_file(&project.briefs().join("t-1.md"), "brief\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["plan", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        let calls = read(&fake.join("args.txt"));
+        let start: Vec<String> = serde_json::from_str(calls.lines().rev().nth(1).unwrap()).unwrap();
+        assert!(start[0].ends_with("Then end your turn. Measure before the plan is on: first run the listed measuring commands as the section Background workers says, and write the section Measured."), "{start:?}");
+        assert_eq!(last_call(&fake), ["(planner)", "measure", "t-1", "1", "0"]);
+        let plan_text = read(&project.plans().join("t-1.md"));
+        assert!(plan_text.contains("## Measured") && plan_text.contains("measured-one"), "{plan_text}");
+        assert!(!project.measure_dir().join("t-1").join("changed.txt").exists(), "the plan verb removed the old scratch folder");
+        // Off: the prompt is the prompt of 0.1.54.
+        set_measure(&project, false);
+        let (code, out) = run_script(&project, &fake, "done", &["plan", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(last_call(&fake)[0].ends_with("Edit nothing. Then end your turn."), "{:?}", last_call(&fake));
+        assert_eq!(read(&project.plans().join("t-1.md")), "plan\n");
+        clean(&project);
+    }
+
+    #[test]
+    fn measuring_runs_one_at_a_time_and_stops_a_long_command() {
+        let project = scratch("measure-lock");
+        apply(&project, &[0]).unwrap();
+        set_measure(&project, true);
+        let fake = fake_claude(project.root.parent().unwrap());
+        for ticket in ["t-1", "t-2"] {
+            write_file(&project.reports.join(format!("{ticket}.state")), "planning\n").unwrap();
+        }
+        let lock = project.measure_dir().join("lock");
+
+        // Two measurings at once: the second waits until the first one ends.
+        write_file(&project.measure_commands_file(), "# limit 30\nping -n 4 127.0.0.1\ncmd /c echo second\n").unwrap();
+        let start = std::time::Instant::now();
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| (run_script(&project, &fake, "done", &["measure", "t-1", "1"]), start.elapsed()));
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            let second = scope.spawn(|| (run_script(&project, &fake, "done", &["measure", "t-2", "2"]), start.elapsed()));
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_eq!(first.0 .0, 0, "{}", first.0 .1);
+        assert_eq!(second.0 .0, 0, "{}", second.0 .1);
+        assert!(second.1 > first.1, "the second measuring ended after the first one: {:?} {:?}", first.1, second.1);
+        assert!(second.1.as_secs_f64() >= 3.0, "the second measuring waited for the lock: {:?}", second.1);
+        assert!(!lock.exists(), "each measuring removed its lock");
+
+        // A lock of a process that runs: refused after the limit, with the name of the other task.
+        write_file(&project.measure_commands_file(), "# limit 2\nping -n 30 127.0.0.1\ncmd /c echo second\n").unwrap();
+        write_file(&lock, &format!("{}\tt-other\t2026-11-12T22:00:00\n", std::process::id())).unwrap();
+        let start = std::time::Instant::now();
+        let (code, out) = run_script(&project, &fake, "done", &["measure", "t-1", "2"]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("another measuring of this project runs (task t-other)"), "{out}");
+        assert!(start.elapsed().as_secs_f64() >= 2.0, "it waited: {:?}", start.elapsed());
+        assert!(lock.exists(), "the lock of the other task stays");
+
+        // A lock whose process is gone is removed, and the command runs.
+        let mut gone = Command::new("cmd").args(["/c", "exit"]).spawn().unwrap();
+        gone.wait().unwrap();
+        write_file(&lock, &format!("{}\tt-gone\t2026-11-12T22:00:00\n", gone.id())).unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["measure", "t-1", "2"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("second") && !lock.exists(), "{out}");
+
+        // A command over the time limit is stopped with its process tree: exit code 124, log kept.
+        let start = std::time::Instant::now();
+        let (code, out) = run_script(&project, &fake, "done", &["measure", "t-1", "1"]);
+        let took = start.elapsed();
+        assert_eq!(code, 124, "{out}");
+        assert!(took.as_secs_f64() < 20.0, "stopped at the limit, not after 30 pings: {took:?}");
+        let log = read(&project.measure_dir().join("t-1").join("1.log"));
+        assert!(log.contains("Pinging 127.0.0.1") || log.contains("127.0.0.1"), "{log}");
+        assert!(log.contains("stopped after 2 s: the time limit of the measuring commands"), "{log}");
+        assert!(out.contains("ended with exit code 124"), "{out}");
+        assert!(!lock.exists());
+        clean(&project);
+    }
+
+    /// The scratch projects of the proof script of ticket measure-before-plan. It runs only on
+    /// request: the proof script sets MEASURE_PROOF_DIR and starts it with `--ignored`, then reads
+    /// the files and writes the result. Project `on`: the switch on, one listed command, a plan run
+    /// with the fake planner. Project `off`: Apply off, on, off again, with a copy of the first file.
+    #[test]
+    #[ignore]
+    fn measure_proof_projects() {
+        let Ok(dir) = std::env::var("MEASURE_PROOF_DIR") else { return };
+        let dir = PathBuf::from(dir);
+        let project = |name: &str| {
+            let root = dir.join(name);
+            fs::create_dir_all(&root).unwrap();
+            Project { reports: root.join(TASKS_DIR), root, in_git: false }
+        };
+        let on = project("on");
+        git_init(&on);
+        write_file(&on.root.join("README.md"), "scratch project\n").unwrap();
+        apply(&on, &[0]).unwrap();
+        set_measure(&on, true);
+        write_file(&on.measure_commands_file(), "cmd /c echo measured-by-the-proof\n").unwrap();
+        apply(&on, &[]).unwrap();
+        run_git(&on.root, &["add", "--all"]).unwrap();
+        run_git(&on.root, &["commit", "-q", "-m", "scratch setup"]).unwrap();
+        write_file(&on.briefs().join("t-1.md"), "# t-1: a scratch task\n").unwrap();
+        let fake = fake_claude(&dir);
+        let (code, out) = run_script(&on, &fake, "done", &["plan", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+
+        let off = project("off");
+        apply(&off, &[0]).unwrap();
+        fs::copy(off.plan_flags(), dir.join("plan-flags.first.txt")).unwrap();
+        set_measure(&off, true);
+        write_file(&off.measure_commands_file(), "cmd /c echo x\n").unwrap();
+        apply(&off, &[]).unwrap();
+        fs::copy(off.plan_flags(), dir.join("plan-flags.on.txt")).unwrap();
+        set_measure(&off, false);
+        apply(&off, &[]).unwrap();
     }
 
     #[test]

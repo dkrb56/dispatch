@@ -99,7 +99,12 @@
           <input type="checkbox" data-option="autoApprove" />
           <span><b>Approve plans automatically.</b> Dispatch starts the work run as soon as a plan is ready, the project has no uncommitted changes and no other work run runs. A plan with a <code>HOLD:</code> decision waits for your click.</span>
         </label>
-        <p>Short reports changes the step "Triage role". After Apply, the next start of the workspace opens a new triage chat. The other settings apply at once.</p>
+        <label>
+          <input type="checkbox" data-option="measureBeforePlan" />
+          <span><b>Measure before the plan.</b> The plan run may run the commands below first, one at a time, and the plan gets a section "Measured" with what they showed. It can run no other command.</span>
+        </label>
+        <textarea id="setup-measure-commands" rows="3" spellcheck="false" placeholder="One command per line, for example: npm test&#10;{measure} stands for the scratch folder of the task&#10;# limit 600 as the first line sets the time limit in seconds" title="The commands that the plan run may run, one per line. Each runs with cmd.exe in the project folder. The box saves when you leave it"></textarea>
+        <p>Short reports changes the step "Triage role". Measure before the plan changes the steps "Task files", "Section in CLAUDE.md" and "Measure before the plan". After Apply, the next start of the workspace opens a new triage chat. The other settings apply at once.</p>
       </fieldset>
       <section id="setup-rules-check">
         <h3>Rules that conflict with the pipeline</h3>
@@ -253,6 +258,11 @@
               <td>The script that starts, resumes and stops a worker. Triage runs it to start a plan run and to send your follow-ups. Dispatch runs it when you click Approve, Reject, Stop or an answer in the Tasks section. It refuses to start the work run when the project has uncommitted changes, when the worker still runs, or when the task was stopped.</td>
             </tr>
             <tr>
+              <td>Measure before the plan</td>
+              <td><code>.dispatch/measure-commands.txt</code></td>
+              <td>Off: done, and nothing changes. On: the plan run may run the commands of the box under the switch, and no other command, through the worker script. Each command runs with cmd.exe in the project folder, one at a time in the project, and stops after 10 minutes (a first line <code># limit &lt;seconds&gt;</code> changes that). The output and the throw-away scripts go into <code>.dispatch/measure/&lt;task&gt;/</code>, which git ignores: Apply adds the line <code>measure/</code> to <code>.dispatch/.gitignore</code>. The step is done when the box has a command. When a command changed files of the project, the task card says so.</td>
+            </tr>
+            <tr>
               <td>Triage role</td>
               <td><code>.claude/triage.md</code></td>
               <td>Tells the session in the Triage terminal that it is triage: it plans and checks, and it does no implementation. The project settings change this text.</td>
@@ -261,11 +271,12 @@
         </table>
 
         <h3>Project settings</h3>
-        <p>The settings are in the Setup pipeline window. The first two are on for a new project, the third is off.</p>
+        <p>The settings are in the Setup pipeline window. The first two are on for a new project, the other two are off.</p>
         <ul>
           <li><b>Short reports.</b> Triage tells you the result and your decisions in a few lines. It gives details when you ask.</li>
           <li><b>Fixed title.</b> A new triage chat has the name "Triage" in the chat list.</li>
           <li><b>Approve plans automatically.</b> Dispatch starts the work run as soon as a plan is ready, the project has no uncommitted changes and no other work run runs. A plan whose Decisions section has a decision with the mark <code>HOLD:</code> waits for your click. The line in the triage chat then says "approved automatically". The setting applies at once.</li>
+          <li><b>Measure before the plan.</b> The plan run may run the commands that you write in the box under the switch before it writes the plan: the tests, a browser test, a measuring script. The plan then has a section "Measured" with each command, what it showed and what it means; a fault that the plan run did not reproduce says "not reproduced". The plan run still edits no file, starts no agent and asks you nothing. After a change, click <b>Apply</b>: the options of the plan run and the section in <code>CLAUDE.md</code> change with the switch. A project that was set up before stays off.</li>
         </ul>
         <p>After a change of Short reports, click <b>Apply</b>. The next start of the workspace (<b>Project</b> with that folder, or the start of the app) then opens a new triage chat, because a chat keeps the role with which it started.</p>
 
