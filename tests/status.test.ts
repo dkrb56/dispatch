@@ -2,7 +2,7 @@
 // The address is made up; no real address stands in a test.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type StatusInfo, type UsageInfo, statusParts, USAGE_MODEL, usageParts } from "../src/status.ts";
+import { ACCOUNT_LABEL, type StatusInfo, type UsageInfo, statusParts, USAGE_MODEL, usageParts } from "../src/status.ts";
 
 const EMAIL = "tester@example.com";
 
@@ -12,7 +12,7 @@ function info(claude: StatusInfo["claude"], account: StatusInfo["account"]): Sta
 
 test("all three values come from the answer of status_info", () => {
   const parts = statusParts(info({ state: "found", version: "9.9.9" }, { state: "signed-in", email: EMAIL }));
-  assert.equal(parts.account.text, EMAIL);
+  assert.equal(parts.account.text, `Claude account: ${EMAIL}`);
   assert.equal(parts.claude.text, "Claude Code 9.9.9");
   assert.equal(parts.dispatch.text, "Dispatch 1.2.3");
   assert.deepEqual([parts.account.missing, parts.claude.missing, parts.dispatch.missing], [false, false, false]);
@@ -45,6 +45,20 @@ test("signed out: said in words and marked missing", () => {
 test("signed in without an email", () => {
   const parts = statusParts(info({ state: "found", version: "9.9.9" }, { state: "no-email", email: null }));
   assert.equal(parts.account.text, "Signed in without an email");
+});
+
+test("the label Claude account stands only before an email", () => {
+  const found = { state: "found", version: "9.9.9" } as const;
+  assert.ok(statusParts(info(found, { state: "signed-in", email: EMAIL })).account.text.startsWith(ACCOUNT_LABEL));
+  const others = [
+    statusParts(info(found, { state: "signed-out", email: null })).account.text,
+    statusParts(info(found, { state: "no-email", email: null })).account.text,
+    statusParts(info(found, { state: "signed-in", email: null })).account.text,
+    statusParts(info({ state: "missing", version: null }, { state: "unknown", email: null })).account.text,
+    statusParts(null).account.text,
+  ];
+  assert.deepEqual(others, ["Not signed in to Claude Code", "Signed in without an email", "Signed in without an email", "Account not known", "…"]);
+  for (const text of others) assert.ok(!text.startsWith(ACCOUNT_LABEL));
 });
 
 test("claude not found, and claude without a readable version", () => {

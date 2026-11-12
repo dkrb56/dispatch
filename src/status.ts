@@ -19,6 +19,8 @@ export interface StatusPart {
 }
 
 const ACCOUNT_TITLE = "The Claude account that Claude Code is signed in with on this computer (claude auth status). It stays on this computer.";
+/** The label before the email in the bar. The other account texts say what they are and get no label. */
+export const ACCOUNT_LABEL = "Claude account: ";
 const CLAUDE_TITLE = "The version of Claude Code that is installed (claude --version)";
 const DISPATCH_TITLE = "The version of Dispatch that runs";
 const WAITING = "…";
@@ -56,7 +58,7 @@ export function statusParts(info: StatusInfo | null, host?: HostVersions | null)
   }
   const account =
     info.account.state === "signed-in" && info.account.email
-      ? part(info.account.email, ACCOUNT_TITLE)
+      ? part(`${ACCOUNT_LABEL}${info.account.email}`, ACCOUNT_TITLE)
       : info.account.state === "signed-out"
         ? part("Not signed in to Claude Code", ACCOUNT_TITLE, true)
         : info.account.state === "no-email" || info.account.state === "signed-in"
