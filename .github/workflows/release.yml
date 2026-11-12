@@ -50,6 +50,20 @@ jobs:
           rustup default stable
           rustup target add aarch64-apple-darwin x86_64-apple-darwin
       - run: npm ci
+      # The app takes every program of the crate, but a universal build joins only the main one for
+      # the two chips; without this step bundling fails on dispatch-host (v0.1.53). The library
+      # embeds ../dist, so the page is built first.
+      - name: dispatch-host for Apple silicon and Intel
+        run: |
+          npm run build
+          cd src-tauri
+          cargo build --release --bin dispatch-host --target aarch64-apple-darwin
+          cargo build --release --bin dispatch-host --target x86_64-apple-darwin
+          mkdir -p target/universal-apple-darwin/release
+          lipo -create -output target/universal-apple-darwin/release/dispatch-host \
+            target/aarch64-apple-darwin/release/dispatch-host \
+            target/x86_64-apple-darwin/release/dispatch-host
+          lipo -info target/universal-apple-darwin/release/dispatch-host
       - name: Build the universal disk image
         run: npm run tauri build -- --target universal-apple-darwin --bundles dmg
       - uses: actions/upload-artifact@v4
