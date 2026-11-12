@@ -1795,8 +1795,8 @@ function showNight(): void {
   const button = document.querySelector<HTMLButtonElement>("#night-mode")!;
   button.setAttribute("aria-checked", String(nightOn));
   button.title = nightOn
-    ? "Nightmode is on: decisions take their recommended default, HOLD items and permissions wait for you. Click to end it and get the morning list. Dispatch keeps the switch over a restart, and the triage chats follow it."
-    : "Nightmode is off. Turn it on when you go away: work goes on with the recommended default for each decision, and you get a morning list. Dispatch keeps the switch over a restart, and the triage chats follow it.";
+    ? "Nightmode is on: decisions take their recommended default, HOLD items and permissions wait for you. Click to end it and get the morning list. Dispatch keeps the switch over a restart, and the triage chats follow it. This PC stays awake while it is on (the display may turn off); with a host, the host's PC stays awake."
+    : "Nightmode is off. Turn it on when you go away: work goes on with the recommended default for each decision, and you get a morning list. Dispatch keeps the switch over a restart, and the triage chats follow it. While it is on, the PC that does the work does not go to sleep.";
 }
 
 function setNight(on: boolean): void {

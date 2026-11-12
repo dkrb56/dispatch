@@ -12,7 +12,7 @@ You never sit in a terminal answering prompts: questions, permissions and plans 
 - **Tasks** for each project: the plan run and the work run of each task, its plan and its report. A plan waits for **Approve all**, **Decisions** (each decision with its options, or your own words) or **Reject**.
 - **Focus mode**: one column per project, side by side, each with its triage chat and its tasks.
 - **Map**: each project as a graph of you, triage, its tasks, their runs and agents; what waits for you is orange. A click on a run opens the **worker view**: its agents, their last tool calls and messages, tokens, files changed and a timeline, read live from the session files.
-- **Nightmode**: work goes on while you are away; each decision takes its recommended option, and you get a list of every default in the morning.
+- **Nightmode**: work goes on while you are away; each decision takes its recommended option, and you get a list of every default in the morning; the PC that does the work stays awake.
 - **Setup pipeline**: prepares a project in one click (see below). **Rules** shows every rule that Claude Code gets in the project.
 - Terminal tabs and split panes, a side panel per terminal (git state, session, context use, outputs), and a chat list of all your Claude Code chats.
 

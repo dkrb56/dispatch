@@ -27,7 +27,7 @@
       <button id="worker-alert" hidden></button>
       <button id="update-alert" hidden></button>
       <div id="tabs"></div>
-      <button id="night-mode" role="switch" aria-checked="false" title="Nightmode is off. Turn it on when you go away: work goes on with the recommended default for each decision, and you get a morning list. Dispatch keeps the switch over a restart, and the triage chats follow it.">
+      <button id="night-mode" role="switch" aria-checked="false" title="Nightmode is off. Turn it on when you go away: work goes on with the recommended default for each decision, and you get a morning list. Dispatch keeps the switch over a restart, and the triage chats follow it. While it is on, the PC that does the work does not go to sleep.">
         <span>Nightmode</span>
         <span class="switch" aria-hidden="true"><span class="knob"></span></span>
       </button>
@@ -306,6 +306,7 @@
         <ul>
           <li>The <b>Nightmode</b> switch in the bar (left of the pane buttons) is green while night mode is on. Turn it on when you go away: the work goes on, and each decision that would wait for you takes its recommended option.</li>
           <li>The switch is the one state of night mode. Dispatch keeps it on this computer, so a restart brings it back as you left it.</li>
+          <li>While the switch is on, the computer that does the work does not go to sleep by itself: this PC in the mode "This PC does the work", the host's PC in the mode "Use a host". The display may turn off. When the switch goes off, or the program ends (also at a crash), the computer sleeps as before. A computer that only shows a window may sleep. Keep a window open on a computer that stays awake, because the automatic actions of night mode run in a window; the window on the host's PC takes over within about 30 s when the other window sleeps. On a Mac, Dispatch runs the system tool <code>caffeinate</code> for this.</li>
           <li>On and off send <code>/nightmode start</code> and <code>/nightmode end</code> and a Dispatch line to the triage chat of each project with a workspace. Triage keeps the list of the defaults and writes the morning file (your <code>nightmode</code> skill).</li>
           <li>The triage chat follows the switch. At each start and each new triage chat, Dispatch compares the switch with the chat's night file (<code>.claude/state/night/night-mode.json</code>) and sends the command again when the chat is behind. The chat never changes the switch.</li>
           <li>While it is on, Dispatch approves a plan whose decisions all have a default (it writes them into the plan), and answers a question of a worker with its recommended option. Triage hears each default. A plan with a HOLD decision and a report that needs a permission wait for you; triage puts them under Reminders.</li>

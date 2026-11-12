@@ -1,7 +1,8 @@
 //! The files of the window in the data folder: the layout (`state.json`) and the screen text of
 //! each terminal (`screens/<id>.txt`). Also the state that every window of this data folder shares
 //! (`shared.json`, ticket remote-shared-state): the Nightmode switch and the triage chat of each
-//! project. In the mode "Use a host" the host reads and writes that file in its data folder.
+//! project. In the mode "Use a host" the host reads and writes that file in its data folder. The
+//! switch also drives the power request of the program that owns the file (`power`).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -9,7 +10,7 @@ use std::sync::Mutex;
 
 use serde_json::{json, Map, Value};
 
-use crate::core::{err, Core};
+use crate::core::{err, power, Core};
 
 fn screen_path(dir: &Path, id: &str) -> Result<PathBuf, String> {
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
@@ -160,16 +161,31 @@ fn set_in(dir: &Path, night: Option<bool>, triage: Option<Map<String, Value>>) -
     Ok(shared)
 }
 
+/// The program keeps the computer awake while the shared switch is on (ticket night-keep-awake). A
+/// failure goes to stderr: the switch must still reach the file and the triage chats.
+fn follow_night(shared: &Value) {
+    let on = shared["night"].as_bool().unwrap_or(false);
+    if let Err(error) = power::keep_awake(on) {
+        eprintln!("keep awake ({on}) failed: {error}");
+    }
+}
+
 /// The Nightmode switch and the triage chats that every window of this data folder shares.
 pub fn shared_load(core: &Core) -> Result<Value, String> {
     let dir = core.data_dir()?;
-    let _guard = SHARED_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-    load_in(&dir)
+    let shared = {
+        let _guard = SHARED_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        load_in(&dir)?
+    };
+    follow_night(&shared);
+    Ok(shared)
 }
 
 /// Changes the shared state and gives it back.
 pub fn shared_set(core: &Core, night: Option<bool>, triage: Option<Map<String, Value>>) -> Result<Value, String> {
-    set_in(&core.data_dir()?, night, triage)
+    let shared = set_in(&core.data_dir()?, night, triage)?;
+    follow_night(&shared);
+    Ok(shared)
 }
 
 #[cfg(test)]
