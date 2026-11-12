@@ -52,6 +52,7 @@ import { initRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
 import { terminalTheme, themeName, themeTokens } from "./theme";
 import { nightAtStart, nightLines, nightSyncLines } from "./night";
+import { rcCommand, rcSettled, rcView, type RcView, type RcWish } from "./remotecontrol";
 import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
 import { answeredLine, chosenCount, questionWaitToOpen, replyText, windowChoices, windowTitle } from "./answers";
 
@@ -141,6 +142,8 @@ interface Pane extends SavedPane {
   sideDue: number;
   /** The data that the side panel shows. A refresh with the same data changes nothing. */
   sideShown: string;
+  /** A click on the Remote Control switch that waits for the poll to confirm it (remote-control-toggle). */
+  rcWish?: RcWish;
   /** The last data for the side panel. */
   info: PaneInfo | null;
   /** Files from the Claude Code session in this terminal. */
@@ -253,6 +256,8 @@ const SCREEN_SAVE_INTERVAL_MS = 30_000;
 /** A drag cannot make a pane or a split smaller than this. */
 const MIN_SIZE_PX = 60;
 const SIDE_REFRESH_MS = 5000;
+/** The wait between the text of the Remote Control command and its Enter, as the chat view waits after a paste. */
+const RC_ENTER_WAIT_MS = 400;
 /** A file path in terminal text: no spaces, a file extension, and possibly a line number. */
 const PATH_PATTERN = /[A-Za-z0-9_.\-~\\/:@+]+\.[A-Za-z0-9]{1,8}(?::\d+)?/g;
 const MAX_PATHS_PER_LINE = 8;
@@ -553,11 +558,14 @@ function renderSide(pane: Pane): void {
   // A session that ended leaves no context to show.
   if (!session) pane.context = undefined;
   const context = pane.context ? [pane.context.usage, pane.context.error, pane.context.loading] : null;
-  const shown = JSON.stringify([pane.cwd, git, session, files, context]);
+  // A click on the Remote Control switch waits until the poll confirms it, or until the wait runs out.
+  if (!session || rcSettled(session.remoteControl, pane.rcWish, Date.now())) pane.rcWish = undefined;
+  const rc = session ? rcView(session.remoteControl, pane.rcWish, session.status, Date.now()) : null;
+  const shown = JSON.stringify([pane.cwd, git, session, files, context, rc]);
   if (shown === pane.sideShown) return;
   pane.sideShown = shown;
 
-  const rows: [string, string][] = [
+  const rows: [string, string | HTMLElement][] = [
     ["Shell", pane.shell],
     ["Folder", pane.cwd ?? ""],
   ];
@@ -571,7 +579,7 @@ function renderSide(pane: Pane): void {
   }
   if (session) {
     rows.push(["Session", [session.name, session.status].filter(Boolean).join(" \u00b7 ")]);
-    rows.push(["Remote Control", session.remoteControl ? "on" : "off"]);
+    if (rc) rows.push(["Remote Control", remoteControlSwitch(pane, rc)]);
     // Until the Context section has its table, the total shows here.
     if (session.contextTokens && !pane.context?.usage) {
       const tokens = `${Math.round(session.contextTokens / 1000)}k tokens`;
@@ -588,13 +596,63 @@ function renderSide(pane: Pane): void {
       const term = document.createElement("dt");
       term.textContent = label;
       const description = document.createElement("dd");
-      description.textContent = value;
-      description.title = value;
+      if (typeof value === "string") {
+        description.textContent = value;
+        description.title = value;
+      } else {
+        description.append(value);
+      }
       return [term, description];
     }),
   );
   renderContext(pane, session?.contextTokens ?? null);
   showGallery(pane.thumbsEl, files, (entry) => void openViewer(entry));
+}
+
+/** The switch of the row Remote Control: `rcView` gives its look, a click calls `setRemoteControl`. */
+function remoteControlSwitch(pane: Pane, view: RcView): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.className = "remote-control";
+  button.setAttribute("role", "switch");
+  button.setAttribute("aria-checked", String(view.checked));
+  button.setAttribute("aria-label", "Remote Control");
+  button.disabled = view.disabled;
+  button.title = view.title;
+  const track = document.createElement("span");
+  track.className = "switch";
+  track.setAttribute("aria-hidden", "true");
+  const knob = document.createElement("span");
+  knob.className = "knob";
+  track.append(knob);
+  const text = document.createElement("span");
+  text.textContent = view.text;
+  button.append(track, text);
+  button.addEventListener("click", () => void setRemoteControl(pane, !view.checked));
+  return button;
+}
+
+/**
+ * Types the Remote Control command into the session of a pane, on the backend of the pane (this PC
+ * or its host), as the chat view sends a slash command: the text, a short wait, then Enter. The row
+ * says "turning on …" until a poll of the side panel shows the real state. A click that gives no
+ * command (Remote Control is on) and a session that is not idle send nothing.
+ */
+async function setRemoteControl(pane: Pane, on: boolean): Promise<void> {
+  const command = rcCommand(on);
+  if (!command || pane.rcWish || pane.info?.session?.status !== "idle") return;
+  pane.rcWish = { on, since: Date.now() };
+  renderSide(pane);
+  try {
+    await call(pane.host, "pty_write", { id: pane.id, data: command });
+    await new Promise((resolve) => setTimeout(resolve, RC_ENTER_WAIT_MS));
+    await call(pane.host, "pty_write", { id: pane.id, data: "\r" });
+  } catch (error) {
+    console.error("Remote Control command failed", error);
+    pane.rcWish = undefined;
+    renderSide(pane);
+  }
+  // The next poll comes at once.
+  pane.sideDue = 0;
 }
 
 /** Refreshes the side panels of the visible tab. It runs again and again. */
@@ -610,6 +668,7 @@ async function pollSide(): Promise<void> {
       // Keep the files of a session after the session stops.
       if (info.session) pane.outputs = onHost(pane.host, info.outputs);
       refreshContext(pane);
+      // `renderSide` also settles a click on the Remote Control switch that waits for this poll.
       renderSide(pane);
     } catch (error) {
       console.error("side panel refresh failed", error);
