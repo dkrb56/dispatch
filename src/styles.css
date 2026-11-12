@@ -327,7 +327,7 @@ body:has(#panes:not(.no-side)) #toggle-side {
 }
 
 /* The bar at the bottom of the window, all on the right side: "Claude account:" with the email, the
-   weekly usage, the version of Claude Code and the version of Dispatch. It takes its own line below
+   weekly usage with its reset time, the version of Claude Code and the version of Dispatch. It takes its own line below
    the views, so it covers nothing, and it has a fixed height: a long email is cut with "…" and
    never makes a second line. */
 #status-bar {
@@ -350,7 +350,7 @@ body:has(#panes:not(.no-side)) #toggle-side {
 
 /* The account stands first on the right. In a narrow window it gives way first (its large shrink
    factor), cut at the end of the email so the label stays; then the two versions; the two usage
-   values keep their width. */
+   values and the reset keep their width. */
 #status-account {
   flex: 0 1000 auto;
   min-width: 0;
@@ -359,7 +359,8 @@ body:has(#panes:not(.no-side)) #toggle-side {
 }
 
 #status-week,
-#status-week-model {
+#status-week-model,
+#status-week-reset {
   flex: none;
 }
 

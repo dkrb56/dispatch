@@ -115,29 +115,55 @@ function weekTitle(what: string, week: UsageWeek, at: Date | null): string {
     .join(" ");
 }
 
+const RESET_TITLE = `When the weekly usage of the Claude account starts again, ${USAGE_SOURCE}`;
+
+/** The reset text of Claude Code without its trailing bracket group, the time zone. A text without one stays whole. */
+function shortReset(resets: string): string {
+  return resets.replace(/\s*\([^()]*\)\s*$/, "") || resets;
+}
+
 /**
- * The two usage parts of the bar: all models, and the model `USAGE_MODEL`. `account` and `claude`
- * are the states of the last reply of `status_info`, `null` before it; `at` is the time of the read.
- * Without a login or without Claude Code both parts are empty: the account part says why.
+ * The reset part of the bar from the weekly lines that the bar shows. One text when all reset texts
+ * are the same, else each with its name as Claude Code writes it. The tooltip keeps the full texts.
+ */
+function resetPart(weeks: (UsageWeek | undefined)[], at: Date | null): StatusPart {
+  const timed = weeks.filter((week): week is UsageWeek & { resets: string } => Boolean(week?.resets));
+  if (timed.length === 0) return part("", RESET_TITLE);
+  const short = timed.map((week) => shortReset(week.resets));
+  const text = short.every((text) => text === short[0])
+    ? `Resets ${short[0]}`
+    : `Resets: ${timed.map((week, i) => `${week.name} ${short[i]}`).join(" · ")}`;
+  const title = [RESET_TITLE, ...timed.map((week) => `${week.name}: ${week.resets}.`), at ? `Read at ${clock(at)}.` : ""]
+    .filter(Boolean)
+    .join(" ");
+  return part(text, title);
+}
+
+/**
+ * The three usage parts of the bar: all models, the model `USAGE_MODEL`, and when the weekly usage
+ * starts again. `account` and `claude` are the states of the last reply of `status_info`, `null`
+ * before it; `at` is the time of the read. Without a login or without Claude Code all parts are
+ * empty: the account part says why. The reset part is empty when no shown line has a reset text.
  */
 export function usageParts(
   usage: UsageInfo | null,
   account: StatusInfo["account"]["state"] | null,
   claude: StatusInfo["claude"]["state"] | null,
   at: Date | null,
-): { week: StatusPart; model: StatusPart } {
+): { week: StatusPart; model: StatusPart; reset: StatusPart } {
   const title = `The weekly usage of the Claude account, ${USAGE_SOURCE}`;
+  const noReset = part("", RESET_TITLE);
   if (claude === "missing" || account === "signed-out") {
-    return { week: part("", title), model: part("", title) };
+    return { week: part("", title), model: part("", title), reset: noReset };
   }
   if (!usage) {
-    return { week: part(WAITING, title), model: part(WAITING, title) };
+    return { week: part(WAITING, title), model: part(WAITING, title), reset: noReset };
   }
   if (usage.state === "unknown") {
-    return { week: part("Usage not known", `${title} It could not be read.${at ? ` Last try at ${clock(at)}.` : ""}`), model: part("", title) };
+    return { week: part("Usage not known", `${title} It could not be read.${at ? ` Last try at ${clock(at)}.` : ""}`), model: part("", title), reset: noReset };
   }
   if (usage.state === "none" || usage.weeks.length === 0) {
-    return { week: part("No weekly limit", `${title} The usage screen has no weekly line for this account.`), model: part("", title) };
+    return { week: part("No weekly limit", `${title} The usage screen has no weekly line for this account.`), model: part("", title), reset: noReset };
   }
   const has = (week: UsageWeek, word: string) => week.name.toLowerCase().includes(word.toLowerCase());
   const all = usage.weeks.find((week) => has(week, ALL_MODELS));
@@ -151,5 +177,6 @@ export function usageParts(
     model: model
       ? part(`${model.name} ${percent(model)}`, weekTitle(`the model ${model.name}`, model, at))
       : part(`${USAGE_MODEL}: no weekly limit`, `${title} The usage screen has no weekly line for ${USAGE_MODEL}. Its weekly lines: ${names}.`),
+    reset: resetPart([all, model], at),
   };
 }

@@ -110,6 +110,39 @@ test("weekly usage: both values come from the reply of usage_info", () => {
   assert.ok(parts.model.title.includes(RESET_FABLE));
   assert.ok(parts.week.title.includes("08:05"));
   assert.ok(parts.week.title.includes("/usage"));
+  // The two lines reset at different times: the bar names each, without the time zone.
+  assert.equal(parts.reset.text, "Resets: all models Jan 1, 9:00am · Fable Jan 2, 10:00am");
+  assert.equal(parts.reset.missing, false);
+  assert.ok(parts.reset.title.includes(RESET_ALL));
+  assert.ok(parts.reset.title.includes(RESET_FABLE));
+  assert.ok(parts.reset.title.includes("08:05"));
+});
+
+test("weekly usage: one reset text when the lines reset together, the time zone only in the tooltip", () => {
+  const same = usageParts(weeks(["all models", 41, RESET_ALL], ["Fable", 7, RESET_ALL]), "signed-in", "found", READ_AT);
+  assert.equal(same.reset.text, "Resets Jan 1, 9:00am");
+  assert.ok(!same.reset.text.includes("Europe"));
+  assert.ok(same.reset.title.includes(RESET_ALL));
+  // Only one line has a reset text, or there is no line for the model: that one text.
+  const one = usageParts(weeks(["all models", 41, RESET_ALL], ["Fable", 7, null]), "signed-in", "found", READ_AT);
+  assert.equal(one.reset.text, "Resets Jan 1, 9:00am");
+  const noModel = usageParts(weeks(["all models", 41, RESET_ALL]), "signed-in", "found", READ_AT);
+  assert.equal(noModel.reset.text, "Resets Jan 1, 9:00am");
+  // A reset text without a bracket stays whole.
+  const plain = usageParts(weeks(["all models", 41, "Jan 3, 7:00pm"], ["Fable", 7, "Jan 3, 7:00pm"]), "signed-in", "found", READ_AT);
+  assert.equal(plain.reset.text, "Resets Jan 3, 7:00pm");
+});
+
+test("weekly usage: the reset part is empty without a reset text to show", () => {
+  const cases = [
+    usageParts(null, null, null, null),
+    usageParts({ state: "unknown", weeks: [] }, "signed-in", "found", READ_AT),
+    usageParts({ state: "none", weeks: [] }, "signed-in", "found", READ_AT),
+    usageParts(weeks(["all models", 41, null], ["Fable", 7, null]), "signed-in", "found", READ_AT),
+    usageParts(weeks(["all models", 41, RESET_ALL], ["Fable", 7, RESET_FABLE]), "signed-out", "found", READ_AT),
+    usageParts(weeks(["all models", 41, RESET_ALL], ["Fable", 7, RESET_FABLE]), "unknown", "missing", READ_AT),
+  ];
+  for (const parts of cases) assert.equal(parts.reset.text, "");
 });
 
 test("weekly usage: the model is found without regard to capital letters, and no other model is taken", () => {

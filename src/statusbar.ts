@@ -1,5 +1,6 @@
 // The bar at the bottom of the window: the Claude account, the weekly usage of the account for all
-// models and for one model, the version of Claude Code and the version of Dispatch. It reads the
+// models and for one model, when that usage starts again, the version of Claude Code and the
+// version of Dispatch. It reads the
 // account and the versions at the start and then once a minute, the usage at the start and then
 // every 5 minutes. With several hosts (ticket remote-multi-host) it reads every host and keeps the
 // last values of each; it shows the host of the focused terminal, with the host's name in front.
@@ -66,6 +67,7 @@ export function redrawStatusBar(): void {
   const usage = usageParts(known.usage, known.info?.account.state ?? null, known.info?.claude.state ?? null, known.usageReadAt);
   show(document.querySelector<HTMLElement>("#status-week")!, usage.week);
   show(document.querySelector<HTMLElement>("#status-week-model")!, usage.model);
+  show(document.querySelector<HTMLElement>("#status-week-reset")!, usage.reset);
 }
 
 /** Reads the values of a host and draws them, then again after a minute. A failed read keeps the values. */
