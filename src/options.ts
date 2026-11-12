@@ -38,7 +38,7 @@ function showHostSettings(onHostChange: () => unknown): void {
   const saved = hostSettings();
   for (const radio of dialog.querySelectorAll<HTMLInputElement>('input[name="work-mode"]')) radio.checked = radio.value === saved.mode;
   listEl.replaceChildren(...saved.hosts.map((entry) => hostRow(entry, () => readHostSettings(onHostChange))));
-  enableHostFields(saved.mode === "hosts");
+  enableHostFields(saved.mode !== "local");
 }
 
 function enableHostFields(on: boolean): void {
@@ -58,9 +58,11 @@ function rowEntries(): HostEntry[] {
 
 /** Reads the section into the settings and lets `onHostChange` save them. */
 function readHostSettings(onHostChange: () => unknown): void {
-  const mode = dialog.querySelector<HTMLInputElement>('input[name="work-mode"]:checked')?.value === "hosts" ? "hosts" : "local";
+  // The third radio "This PC and hosts" saves `mixed` (remote-mixed-mode); the host list counts for it too.
+  const checked = dialog.querySelector<HTMLInputElement>('input[name="work-mode"]:checked')?.value;
+  const mode = checked === "hosts" || checked === "mixed" ? checked : "local";
   setHostSettings({ mode, hosts: rowEntries() });
-  enableHostFields(mode === "hosts");
+  enableHostFields(mode !== "local");
   onHostChange();
 }
 
@@ -153,7 +155,8 @@ function initHostRun(onHostChange: () => unknown): void {
   runStartEl.addEventListener("click", () => {
     const port = chosenPort();
     void hostRunAction("host_run_start", { port }, async (run) => {
-      // Start adds or updates the row of this PC and switches the window to "Use hosts" (remote-multi-host).
+      // Start adds or updates the row of this PC and switches the window to "Use hosts" (remote-multi-host),
+      // also from "This PC and hosts": the host of this PC takes over its work (decision 5 of remote-mixed-mode).
       const saved = hostSettings();
       const known = localHostEntry(port);
       const entry: HostEntry = { id: known?.id ?? crypto.randomUUID(), name: known?.name || "This PC", address: THIS_PC, port: run.port ?? port, key: run.key ?? "" };

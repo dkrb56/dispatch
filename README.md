@@ -49,13 +49,13 @@ Dispatch looks for a new release once an hour (**?** → **Check for update** ch
 
 ## Work on another computer
 
-Options → **Where the work runs** has two modes. **This PC does the work** is the default: everything runs in this window, and nothing listens on the network. **Use hosts**: one or more computers run `dispatch-host`, and this window shows and controls them over Tailscale.
+Options → **Where the work runs** has three modes. **This PC does the work** is the default: everything runs in this window, and nothing listens on the network. **Use hosts**: one or more computers run `dispatch-host`, and this window shows and controls them over Tailscale. **This PC and hosts**: this window does the work of this computer itself and shows and controls the hosts of the list too.
 
 1. On the computer that does the work: Options → **Run the host on this PC** → **Start the host**. The Key box shows its key. That window switches to **Use hosts** with the row `127.0.0.1`.
 2. On the other computer: Options → **Use hosts** → **Add host**. Fill in a name, the Tailscale name or `100.x` address, the port (empty is 7470) and the key. The key is also in `host-key.txt` in the data folder of the host.
 3. Start Dispatch again; a change of the host list counts at the next start. **Project** then opens a folder chooser with the folders of a host.
 
-With several hosts, each project name gets ` · <host name>` after it, so two projects with the same folder name stay apart. Each host keeps its own Nightmode switch; the one switch in the top bar shows a third look when the hosts differ. A host that is not reachable gets its own row in a bar below the top bar, and the other hosts keep working. **?** → **Where the work runs** has the details.
+With several hosts, each project name gets ` · <host name>` after it, so two projects with the same folder name stay apart. Each host keeps its own Nightmode switch; the one switch in the top bar shows a third look when the hosts differ. A host that is not reachable gets its own row in a bar below the top bar, and the other hosts keep working. Use **This PC and hosts** to work on this computer and see the projects of your other computers in the same window; no host program runs on this computer then. **?** → **Where the work runs** has the details.
 
 ## What Setup pipeline changes
 
@@ -86,7 +86,7 @@ The installer lands in `src-tauri/target/release/bundle/nsis/`; on a Mac, `npm r
 
 Dispatch runs on your computer. It reads the session files of Claude Code in `%USERPROFILE%\.claude` to show chats, workers and context, and it writes only the files that you apply in Setup pipeline and its own state in `%APPDATA%\com.dkrb56.dispatch`. Dispatch itself sends nothing anywhere (Claude Code talks to Anthropic as usual); its only request to the internet is the update check to the GitHub releases of this repository.
 
-In the mode **Use hosts** the window and each of its hosts talk over your tailnet only, and Tailscale encrypts the traffic. At the start of each connection the window sends the key, the versions and the id of the window; then keystrokes, terminal output, chat texts, task files, the files that the window shows and pasted images travel between them. The host never listens on all addresses: only on the Tailscale address of its computer and on `127.0.0.1`. It writes `host-key.txt`, `host.json`, `host.log` and `shared.json` into its data folder. The window keeps the keys of its hosts in its own `state.json`. Nothing goes to any other place.
+In the modes **Use hosts** and **This PC and hosts** the window and each of its hosts talk over your tailnet only, and Tailscale encrypts the traffic. At the start of each connection the window sends the key, the versions and the id of the window; then keystrokes, terminal output, chat texts, task files, the files that the window shows and pasted images travel between them. The host never listens on all addresses: only on the Tailscale address of its computer and on `127.0.0.1`. The window itself listens on nothing in any mode; a computer listens only when you start the host there. It writes `host-key.txt`, `host.json`, `host.log` and `shared.json` into its data folder. The window keeps the keys of its hosts in its own `state.json`. Nothing goes to any other place.
 
 Dispatch is an independent project. It is not made or endorsed by Anthropic.
 

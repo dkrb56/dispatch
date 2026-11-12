@@ -9,6 +9,7 @@ import {
   initBackend,
   knownBackend,
   LOCAL,
+  localWorks,
   onConnection,
   onEvent,
   usesHosts,
@@ -1035,9 +1036,10 @@ async function setupProject(host: HostId, root: string): Promise<boolean> {
 
 /**
  * Asks the user for a folder and its host: the native dialog in the mode "This PC does the work",
- * the folder chooser of the page in the mode "Use hosts", which lists the host's folders
- * (remote-folder-chooser). With several hosts the chooser asks for the host, the host of `start`
- * first (remote-multi-host).
+ * the folder chooser of the page in the modes "Use hosts" and "This PC and hosts", which lists the
+ * folders of a backend (remote-folder-chooser). With several backends the chooser asks for the
+ * backend, the one of `start` first (remote-multi-host); "This PC" lists its folders through the
+ * app command `dir_list` (remote-mixed-mode).
  */
 async function askFolder(title: string, start?: { host: HostId; path: string | null | undefined }): Promise<{ host: HostId; folder: string } | null> {
   if (usesHosts()) {
@@ -2350,14 +2352,21 @@ async function reportDriver(host: HostId, active: boolean): Promise<void> {
   setDriver(host, reply?.driver === true);
 }
 
+/** The hosts of this run, without this PC: only a host has `driver_state` and a lease. */
+function leaseHosts(): HostId[] {
+  return backends().filter((host) => host !== LOCAL);
+}
+
 /** A key or a click in this window: it takes the lease of every host, at most once per `DRIVER_CLAIM_MS`. */
 function claimDriver(): void {
   if (!usesHosts()) return;
-  for (const host of backends()) usedSinceReport.add(host);
+  // This PC always drives (`driverOf`); only a host gives a lease (remote-mixed-mode, decision 7).
+  const hosts = leaseHosts();
+  for (const host of hosts) usedSinceReport.add(host);
   const now = Date.now();
-  if (backends().every(driverOf) || now - lastClaim < DRIVER_CLAIM_MS) return;
+  if (hosts.every(driverOf) || now - lastClaim < DRIVER_CLAIM_MS) return;
   lastClaim = now;
-  for (const host of backends()) {
+  for (const host of hosts) {
     if (!driverOf(host)) void reportDriver(host, true).catch((error) => console.warn("claim of the lease failed", error));
   }
 }
@@ -2378,8 +2387,9 @@ function applyShared(host: HostId, state: SharedState): void {
 /** In the mode "Use hosts", at each worker poll: reads the shared state of every host, then reports for its lease. */
 async function pollShared(): Promise<void> {
   if (!usesHosts()) return;
+  // The shared file of this PC is read at the start only: this window is its only one.
   await Promise.all(
-    backends().map(async (host) => {
+    leaseHosts().map(async (host) => {
       try {
         applyShared(host, parseShared(await call(host, "shared_load")));
       } catch (error) {
@@ -4486,7 +4496,7 @@ function updateLabel(tab: Tab): void {
   const pane = panes.get(tab.focus ?? "");
   if (!pane) return;
   tab.label.textContent = pane.cwd ? projectName({ host: pane.host, root: pane.cwd }) : pane.shell;
-  tab.button.title = pane.cwd ? `${pane.shell}: ${pane.cwd}${usesHosts() ? ` on ${backendName(pane.host)}` : ""}` : pane.shell;
+  tab.button.title = pane.cwd ? `${pane.shell}: ${pane.cwd}${backends().length > 1 ? ` on ${backendName(pane.host)}` : ""}` : pane.shell;
   // The chat panel shows the chats of the folder of the focused terminal.
   renderChats();
 }
@@ -6467,7 +6477,8 @@ const PROJECT_KEY_MAPS = ["overview-places", "focus-sizes"];
 /**
  * Decision 4 of remote-multi-host: a value that a window saved under a project key without a host
  * belongs to the first backend. In the mode "Use hosts" the window copies each such value to the key
- * with the host once, and keeps the old one for the mode "This PC does the work".
+ * with the host once, and keeps the old one for the mode "This PC does the work". In the mode "This
+ * PC and hosts" this PC is the first backend, so nothing moves (remote-mixed-mode, decision 4).
  */
 function migrateStoredKeys(): void {
   const first = firstBackend();
@@ -6691,11 +6702,12 @@ async function start(): Promise<void> {
   // work", and only when the shared file gives no value.
   let legacyNight: string | null = null;
   try {
-    if (!usesHosts()) legacyNight = localStorage.getItem("night-mode");
+    if (localWorks()) legacyNight = localStorage.getItem("night-mode");
   } catch {
     // No old value: the switch takes the shared value or starts off.
   }
-  for (const [host, state] of shared) nightStates.set(host, nightAtStart(state?.night, legacyNight));
+  // The old browser value belongs to this PC only (remote-mixed-mode).
+  for (const [host, state] of shared) nightStates.set(host, nightAtStart(state?.night, host === LOCAL ? legacyNight : null));
   showNight();
   loadTriageRecords(shared.map(([host, state]) => [host, state?.triage] as const));
   for (const saved of loaded?.tabs ?? []) {
@@ -6716,7 +6728,7 @@ async function start(): Promise<void> {
   await saveState();
   // A window of hosts asks each host for its lease before the night check: only the driver sends its lines.
   if (usesHosts()) {
-    await Promise.all(backends().map((host) => reportDriver(host, false).catch((error) => console.warn("report for the lease failed", backendName(host), error))));
+    await Promise.all(leaseHosts().map((host) => reportDriver(host, false).catch((error) => console.warn("report for the lease failed", backendName(host), error))));
   }
   // The resumed triage chats follow the switch of their host: each gets the skill command when its night file differs.
   for (const ref of workspaceRefs()) {

@@ -1,6 +1,8 @@
 // The rules of several hosts in one window (ticket remote-multi-host): the saved host list, the
 // key of a project, the name of a project with its host, the merge of the lists of every host and
-// the look of the one Nightmode switch. No DOM, no imports: tests/hosts.test.ts imports it in Node.
+// the look of the one Nightmode switch. The mode "This PC and hosts" (ticket remote-mixed-mode)
+// adds this PC as one more backend next to the hosts: `workBackends` and `windowTitle`. No DOM, no
+// imports: tests/hosts.test.ts imports it in Node.
 
 /** `local` for the backend of this PC, else the id of a host entry. */
 export type HostId = string;
@@ -19,9 +21,12 @@ export interface HostEntry {
   key: string;
 }
 
-/** Where the work runs, with the hosts and the id of this window. Saved as `host` in `state.json`. */
+/**
+ * Where the work runs, with the hosts and the id of this window. Saved as `host` in `state.json`.
+ * `local`: this PC alone; `hosts`: the hosts alone; `mixed`: this PC and the hosts (remote-mixed-mode).
+ */
 export interface HostSettings {
-  mode: "local" | "hosts";
+  mode: "local" | "hosts" | "mixed";
   /** The id under which every host keeps the terminals of this window. */
   window: string;
   hosts: HostEntry[];
@@ -66,7 +71,8 @@ function parseEntry(value: unknown, newId: () => string): HostEntry | null {
 export function parseHostSettings(value: unknown, newId: () => string = newUuid): HostSettings {
   const saved = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
   const window = typeof saved.window === "string" && ID_PATTERN.test(saved.window) ? saved.window : newId();
-  const mode = saved.mode === "host" || saved.mode === "hosts" ? "hosts" : "local";
+  // An unknown word (an older build reads `mixed` so) gives `local`.
+  const mode = saved.mode === "host" || saved.mode === "hosts" ? "hosts" : saved.mode === "mixed" ? "mixed" : "local";
   let hosts: HostEntry[];
   if (Array.isArray(saved.hosts)) {
     hosts = saved.hosts.map((entry) => parseEntry(entry, newId)).filter((entry): entry is HostEntry => entry !== null);
@@ -88,7 +94,27 @@ export function parseHostSettings(value: unknown, newId: () => string = newUuid)
 
 /** The entries that get a connection: those with an address and a key, in the order of the list. */
 export function completeHosts(settings: HostSettings): HostEntry[] {
-  return settings.mode === "hosts" ? settings.hosts.filter((entry) => entry.address !== "" && entry.key !== "") : [];
+  return settings.mode === "local" ? [] : settings.hosts.filter((entry) => entry.address !== "" && entry.key !== "");
+}
+
+/**
+ * The backends that do work, from the mode and the ids of the hosts that got a connection: this PC
+ * alone in the mode `local` and when no host got one; the hosts in the mode `hosts`; this PC first
+ * and then the hosts in the mode `mixed` (decision 4 of remote-mixed-mode).
+ */
+export function workBackends(mode: HostSettings["mode"], hostIds: readonly HostId[]): HostId[] {
+  if (mode === "local" || hostIds.length === 0) return [LOCAL];
+  return mode === "mixed" ? [LOCAL, ...hostIds] : [...hostIds];
+}
+
+/**
+ * The title of the window: "Dispatch" without hosts; "Dispatch · host <name>" or "Dispatch · hosts
+ * <a>, <b>"; with `localWorks` "Dispatch · This PC + host <name>" (decision 2 of remote-mixed-mode).
+ */
+export function windowTitle(hostNames: readonly string[], localWorks: boolean): string {
+  if (hostNames.length === 0) return "Dispatch";
+  const hosts = hostNames.length === 1 ? `host ${hostNames[0]}` : `hosts ${hostNames.join(", ")}`;
+  return localWorks ? `Dispatch · This PC + ${hosts}` : `Dispatch · ${hosts}`;
 }
 
 /** The key of a folder alone: no separator at the end, lower case (Windows ignores the case of a path). */

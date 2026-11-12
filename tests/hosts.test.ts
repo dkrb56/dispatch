@@ -1,10 +1,14 @@
 // Tests of several hosts in one window (src/hosts.ts, ticket remote-multi-host): the saved host
 // list and its migration, the key of a project, the name with the host, the merge of the lists of
-// every host and the look of the one Nightmode switch. Run: node --test tests/
+// every host and the look of the one Nightmode switch; the mode "This PC and hosts" (ticket
+// remote-mixed-mode): its saved word, its backends, the title and the texts in index.html. Run: node --test tests/
 // The addresses and keys are made up.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { completeHosts, keyHost, keyPath, LOCAL, mergeLists, nightSwitch, parseHostSettings, pathKey, projectKey, projectLabel } from "../src/hosts.ts";
+import { completeHosts, keyHost, keyPath, LOCAL, mergeLists, nightSwitch, parseHostSettings, pathKey, projectKey, projectLabel, windowTitle, workBackends } from "../src/hosts.ts";
+
+const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
 
 /** Ids in order, so a test can name them. */
 function ids(): () => string {
@@ -133,4 +137,53 @@ test("the look of the switch: on, off, mixed; no host is off", () => {
   assert.equal(nightSwitch([true, false]), "mixed");
   assert.equal(nightSwitch([true]), "on");
   assert.equal(nightSwitch([]), "off");
+});
+
+test("the mode mixed round-trips; an unknown word still gives local (remote-mixed-mode)", () => {
+  const saved = { mode: "mixed", window: "w-1", hosts: [{ id: "a-1", name: "alpha", address: "127.0.0.1", port: 7471, key: "ka" }] };
+  assert.deepEqual(parseHostSettings(JSON.parse(JSON.stringify(saved)), ids()), saved);
+  assert.equal(parseHostSettings({ mode: "Mixed" }, ids()).mode, "local", "the word is case-sensitive");
+  assert.equal(parseHostSettings({ mode: "both" }, ids()).mode, "local");
+});
+
+test("the mode mixed connects the complete entries, the mode local none", () => {
+  const hosts = [
+    { id: "a", name: "a", address: "h", port: null, key: "k" },
+    { id: "b", name: "b", address: "", port: null, key: "k" },
+  ];
+  assert.deepEqual(completeHosts({ mode: "mixed", window: "w", hosts }).map((entry) => entry.id), ["a"]);
+  assert.deepEqual(completeHosts({ mode: "local", window: "w", hosts }), []);
+});
+
+test("the backends that work: this PC first in the mode mixed, this PC alone without a connected host", () => {
+  assert.deepEqual(workBackends("local", []), [LOCAL]);
+  assert.deepEqual(workBackends("local", ["a"]), [LOCAL], "the mode local never uses a host");
+  assert.deepEqual(workBackends("hosts", ["a", "b"]), ["a", "b"]);
+  assert.deepEqual(workBackends("hosts", []), [LOCAL], "no complete host: this PC, as before");
+  assert.deepEqual(workBackends("mixed", ["a", "b"]), [LOCAL, "a", "b"]);
+  assert.deepEqual(workBackends("mixed", []), [LOCAL]);
+  // A saved value without a host belongs to the first backend: this PC in the mode mixed.
+  assert.equal(keyHost("d:\\p", workBackends("mixed", ["a"])[0]), LOCAL);
+  assert.equal(projectKey(workBackends("mixed", ["a"])[0], "D:\\P\\"), "d:\\p", "the key of this PC stays the plain path");
+});
+
+test("the title names this PC next to the hosts when this PC works", () => {
+  assert.equal(windowTitle([], false), "Dispatch");
+  assert.equal(windowTitle([], true), "Dispatch");
+  assert.equal(windowTitle(["alpha"], false), "Dispatch · host alpha");
+  assert.equal(windowTitle(["alpha", "beta"], false), "Dispatch · hosts alpha, beta");
+  assert.equal(windowTitle(["alpha"], true), "Dispatch · This PC + host alpha");
+  assert.equal(windowTitle(["alpha", "beta"], true), "Dispatch · This PC + hosts alpha, beta");
+});
+
+test("Options has the third radio, and the Help names it with the switch of each side (remote-mixed-mode)", () => {
+  const start = HTML.indexOf('<dialog id="options">');
+  const dialog = HTML.slice(start, HTML.indexOf("</dialog>", start));
+  for (const value of ["local", "hosts", "mixed"]) assert.match(dialog, new RegExp(`<input type="radio" name="work-mode" value="${value}"`), value);
+  assert.match(dialog, /<b>This PC and hosts\.<\/b>/);
+  const where = HTML.slice(HTML.indexOf("<h3>Where the work runs</h3>"), HTML.indexOf("<h3>Other buttons</h3>"));
+  assert.match(where, /three modes/);
+  assert.match(where, /<b>This PC and hosts<\/b>/);
+  const night = HTML.slice(HTML.indexOf("<h3>Night mode</h3>"), HTML.indexOf("<h3>The Chats panel</h3>"));
+  assert.match(night, /This PC and hosts/);
 });

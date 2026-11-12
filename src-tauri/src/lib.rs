@@ -52,6 +52,7 @@ pub fn run() {
             commands::file_stat,
             commands::night_morning,
             commands::night_state,
+            commands::dir_list,
             commands::file_read,
             commands::image_save,
             commands::chat_list,

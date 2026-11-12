@@ -1,17 +1,17 @@
-// The mode "Use hosts" in the window (tickets remote-client-mode and remote-multi-host): the bar
-// below the top bar with one row for each host that is not reachable or refused the window, and
-// the window title with the hosts. In the mode "This PC does the work" the bar stays hidden and the
-// title is "Dispatch".
-import { backendName, backends, connectionOf, type HostId, hostInfo, onConnection, retryHost, usesHosts } from "./backend";
+// The modes with hosts in the window (tickets remote-client-mode, remote-multi-host and
+// remote-mixed-mode): the bar below the top bar with one row for each host that is not reachable or
+// refused the window, and the window title with the hosts, and with "This PC" in the mode "This PC
+// and hosts". In the mode "This PC does the work" the bar stays hidden and the title is "Dispatch".
+import { backendName, backends, connectionOf, type HostId, hostInfo, LOCAL, localWorks, onConnection, retryHost, usesHosts } from "./backend";
+import { windowTitle } from "./hosts";
 
 /** The wait before a pane that the host does not list gets a new shell: the `pty-exit` of a terminal that ended while the window was away comes right after the hello reply. */
 const RESTART_WAIT_MS = 500;
 
-/** "Dispatch", "Dispatch · host <name>" with one host, "Dispatch · hosts <name>, <name>" with more. */
+/** "Dispatch", "Dispatch · host <name>", "Dispatch · hosts <name>, <name>", or with "This PC + " before the hosts (remote-mixed-mode). */
 export function titleBase(): string {
   if (!usesHosts()) return "Dispatch";
-  const names = backends().map(backendName);
-  return names.length === 1 ? `Dispatch · host ${names[0]}` : `Dispatch · hosts ${names.join(", ")}`;
+  return windowTitle(backends().filter((host) => host !== LOCAL).map(backendName), localWorks());
 }
 
 /**

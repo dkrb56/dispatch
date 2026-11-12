@@ -4,10 +4,12 @@
 // and remote-multi-host) the window has one WebSocket per host of its list, to a `dispatch-host`
 // each (src-tauri/src/host/protocol.rs); every call except the window-only ones names its host and
 // goes as a frame over that host's connection, and the events of every host come back the same way.
+// In the mode "This PC and hosts" (ticket remote-mixed-mode) both run at once: `local` goes to
+// `invoke` and `listen`, each host to its connection.
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { cleanAddress, completeHosts, type HostEntry, type HostId, type HostSettings, LOCAL, parseHostSettings } from "./hosts";
+import { cleanAddress, completeHosts, type HostEntry, type HostId, type HostSettings, LOCAL, parseHostSettings, workBackends } from "./hosts";
 
 export { cleanAddress, LOCAL, type HostEntry, type HostId, type HostSettings };
 
@@ -137,9 +139,17 @@ export function usesHosts(): boolean {
   return links.size > 0;
 }
 
-/** The backends that do the work in this run: `local`, or every host of the list in its order. */
+/**
+ * Whether this PC does work in this run: the mode "This PC does the work", the mode "This PC and
+ * hosts", or the mode "Use hosts" without a complete host (remote-mixed-mode).
+ */
+export function localWorks(): boolean {
+  return settings.mode !== "hosts" || links.size === 0;
+}
+
+/** The backends that do the work in this run: `local`, every host of the list in its order, or `local` first and then the hosts. */
 export function backends(): HostId[] {
-  return links.size > 0 ? [...links.keys()] : [LOCAL];
+  return workBackends(settings.mode, [...links.keys()]);
 }
 
 /** The first backend: the host of a saved value without a host. */
@@ -149,7 +159,7 @@ export function firstBackend(): HostId {
 
 /** The host itself when this run has it, else the first backend (a host that left the list, or a pane of the other mode). */
 export function knownBackend(host: HostId | null | undefined): HostId {
-  return host && (links.has(host) || (host === LOCAL && links.size === 0)) ? host : firstBackend();
+  return host && (links.has(host) || (host === LOCAL && localWorks())) ? host : firstBackend();
 }
 
 /** The name of a backend for the user: "This PC" for `local`, else the name of its entry. */
@@ -328,11 +338,16 @@ export function windowCall<T>(command: string, args?: InvokeArgs): Promise<T> {
 }
 
 /** Calls `handler` with the host and the payload of each backend event `event`; gives the function that ends it. */
-export function onEvent<T>(event: string, handler: (host: HostId, payload: T) => void): Promise<UnlistenFn> {
-  if (links.size === 0) return listen<T>(event, ({ payload }) => handler(LOCAL, payload));
+export async function onEvent<T>(event: string, handler: (host: HostId, payload: T) => void): Promise<UnlistenFn> {
+  // This PC: the events of Tauri. In the mode "This PC and hosts" both sources at once (remote-mixed-mode).
+  const local = localWorks() ? await listen<T>(event, ({ payload }) => handler(LOCAL, payload)) : () => {};
+  if (links.size === 0) return local;
   const handlers = eventHandlers.get(event) ?? new Set();
   eventHandlers.set(event, handlers);
   const wrapped = (host: HostId, payload: unknown) => handler(host, payload as T);
   handlers.add(wrapped);
-  return Promise.resolve(() => void handlers.delete(wrapped));
+  return () => {
+    local();
+    handlers.delete(wrapped);
+  };
 }

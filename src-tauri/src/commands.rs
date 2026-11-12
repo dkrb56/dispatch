@@ -12,7 +12,7 @@ use crate::core::backlog::{self, Entry};
 use crate::core::chats::{self, Chat, ChatView, Worker};
 use crate::core::context::{self, ContextUsage};
 use crate::core::flow::{self, FlowFile};
-use crate::core::info::{self, FileEntry, PaneInfo};
+use crate::core::info::{self, DirList, FileEntry, PaneInfo};
 use crate::core::pipeline::{self, Choice, Options, Plan, ProjectRoot, TaskList, WorkerFlags};
 use crate::core::rules::{self, Rules};
 use crate::core::rules_check::{self, RulesCheck};
@@ -108,6 +108,13 @@ pub fn pane_busy(core: State<Core>, id: String) -> bool {
 #[tauri::command]
 pub fn file_stat(base: Option<String>, path: String) -> Option<FileEntry> {
     info::file_stat(base, path)
+}
+
+/// The folders of a folder of this PC for the folder chooser of the page in the mode "This PC and
+/// hosts" (ticket remote-mixed-mode); the host has the same call.
+#[tauri::command(async)]
+pub fn dir_list(core: State<Core>, path: Option<String>) -> Result<DirList, String> {
+    info::dir_list(&core, path)
 }
 
 #[tauri::command]
