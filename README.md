@@ -36,7 +36,7 @@ On a Mac, download `Dispatch_<version>_universal.dmg`, open it and drag Dispatch
 xattr -cr /Applications/Dispatch.app
 ```
 
-Dispatch looks for a new release once an hour (**?** → **Check for update** checks now) and offers **Update to …** in the top bar.
+Dispatch looks for a new release once an hour (**?** → **Check for update** checks now) and offers **Update to …** in the top bar. **?** → **What's new** lists what each version brought, and the list opens once by itself after an update.
 
 ## First steps
 

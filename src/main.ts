@@ -45,7 +45,8 @@ import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex
 import { type FlowView, openFlow } from "./flow";
 import { drawLinks, type Link } from "./links";
 import { initPipeline, openSetup, setupNeeded } from "./pipeline";
-import { initHelp, showFirstHelp, showVersion } from "./help";
+import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersion } from "./help";
+import { lastRunVersion, newEntries } from "./changelog";
 import { alertActions, alertState, CHIME, newWaits, notificationText, type Wait } from "./alerts";
 import { alertOptions, initOptions } from "./options";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
@@ -104,7 +105,12 @@ interface SavedState {
   triage?: Record<string, TriageRecord>;
   /** Where the work runs, and the id of this window (remote-client-mode). Missing in older files. */
   host?: HostSettings;
+  /** The version whose news the user saw (changelog-window). Missing in files of 0.1.54 and older. */
+  version?: string;
 }
+
+/** The version for the field `version` of state.json: the old one until the user closes "What's new". */
+let seenVersion: string | null = null;
 
 /** The triage chat that the app continues for a project, and the mark of the role file with which it started. */
 interface TriageRecord {
@@ -4796,7 +4802,7 @@ function saveState(): Promise<void> {
     focus: tab.focus,
   }));
   return windowCall("state_save", {
-    state: { tabs: list, active: activeId, host: hostSettings() },
+    state: { tabs: list, active: activeId, host: hostSettings(), ...(seenVersion ? { version: seenVersion } : {}) },
     paneIds: [...panes.keys()],
   });
 }
@@ -6890,6 +6896,7 @@ async function start(): Promise<void> {
   );
   initRules(focusedFolder, () => focusedPane()?.term.focus());
   initHelp(() => focusedPane()?.term.focus());
+  initNews(() => focusedPane()?.term.focus());
   initOptions(
     () => focusedPane()?.term.focus(),
     () => saveState().catch((error) => console.error("host settings save failed", error)),
@@ -6956,7 +6963,12 @@ async function start(): Promise<void> {
   });
   void pollUpdate();
 
+  // The version of this build, for the window "What's new" (changelog-window).
+  const appVersion = await getVersion().catch(() => "");
   const loaded = await windowCall<SavedState | null>("state_load");
+  // A fresh install has seen nothing to catch up on: it records this version at once.
+  const lastVersion = lastRunVersion(loaded);
+  seenVersion = lastVersion ?? (appVersion || null);
   // Night mode and the triage chats come from the shared file of each backend (remote-shared-state,
   // remote-multi-host), before the tabs open, so the first task reads see the switch and each triage
   // pane continues its chat. Its first read takes both from state.json of today's format. Without a
@@ -7028,6 +7040,14 @@ async function start(): Promise<void> {
   }
   await setView(savedView(mode));
   showFirstHelp();
+  // After an update: the changes since the last run, once. The close records this version.
+  if (appVersion) {
+    showNewsAtStart(newEntries(allNews, lastVersion, appVersion), () => {
+      if (seenVersion === appVersion) return;
+      seenVersion = appVersion;
+      saveState().catch((error) => console.error("state save failed", error));
+    });
+  }
   // The title names the host from the start, before the first worker read.
   updateWorkerAlert();
 }

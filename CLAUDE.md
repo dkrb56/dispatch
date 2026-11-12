@@ -28,3 +28,7 @@
 - Take each time from the clock in the same message.
 - Parse-check a new or edited PowerShell script before the first real run: `[System.Management.Automation.Language.Parser]::ParseFile`.
 - A report also says what nobody tried, in words that a tester understands.
+
+## Releases
+- The release task `release-<version>` also writes the entry of the version at the top of `CHANGELOG.md`: the heading `## <version> (<date>)`, then one `- ` line per change for the user since the last release, in plain words, with no ticket ids, no file names and no commit hashes. Dispatch shows these lines in its window "What's new" after the update.
+- The brief of a release task names that step and lists the commits since the last release.
