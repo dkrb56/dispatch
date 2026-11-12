@@ -52,7 +52,7 @@ import { initRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
 import { terminalTheme, themeName, themeTokens } from "./theme";
 import { nightAtStart, nightLines, nightSyncLines } from "./night";
-import { rcCommand, rcSettled, rcView, type RcView, type RcWish } from "./remotecontrol";
+import { KEY_DOWN, KEY_ENTER, KEY_ESC, rcCommand, rcMenuFocus, rcSettled, rcView, type RcView, type RcWish } from "./remotecontrol";
 import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
 import { answeredLine, chosenCount, questionWaitToOpen, replyText, windowChoices, windowTitle } from "./answers";
 
@@ -258,6 +258,10 @@ const MIN_SIZE_PX = 60;
 const SIDE_REFRESH_MS = 5000;
 /** The wait between the text of the Remote Control command and its Enter, as the chat view waits after a paste. */
 const RC_ENTER_WAIT_MS = 400;
+/** The menu of `/remote-control` for off: the time between two reads of the screen, how many reads wait for it, and how many Down keys at most. */
+const RC_MENU_STEP_MS = 300;
+const RC_MENU_TRIES = 20;
+const RC_MENU_MOVES = 5;
 /** A file path in terminal text: no spaces, a file extension, and possibly a line number. */
 const PATH_PATTERN = /[A-Za-z0-9_.\-~\\/:@+]+\.[A-Za-z0-9]{1,8}(?::\d+)?/g;
 const MAX_PATHS_PER_LINE = 8;
@@ -633,19 +637,41 @@ function remoteControlSwitch(pane: Pane, view: RcView): HTMLButtonElement {
 
 /**
  * Types the Remote Control command into the session of a pane, on the backend of the pane (this PC
- * or its host), as the chat view sends a slash command: the text, a short wait, then Enter. The row
- * says "turning on …" until a poll of the side panel shows the real state. A click that gives no
- * command (Remote Control is on) and a session that is not idle send nothing.
+ * or its host), as the chat view sends a slash command: the text, a short wait, then Enter. For off,
+ * Claude Code then shows a menu: Dispatch moves the focus down until the screen shows it on
+ * "Disconnect this session", and presses Enter only then; a menu that does not come, or a focus
+ * that does not get there, gets Esc ("Continue") and the click ends. The row says "turning on …" or
+ * "turning off …" until a poll of the side panel shows the real state. A session that is not idle
+ * sends nothing.
  */
 async function setRemoteControl(pane: Pane, on: boolean): Promise<void> {
-  const command = rcCommand(on);
-  if (!command || pane.rcWish || pane.info?.session?.status !== "idle") return;
+  if (pane.rcWish || pane.info?.session?.status !== "idle") return;
   pane.rcWish = { on, since: Date.now() };
   renderSide(pane);
+  const write = (data: string) => call(pane.host, "pty_write", { id: pane.id, data });
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   try {
-    await call(pane.host, "pty_write", { id: pane.id, data: command });
-    await new Promise((resolve) => setTimeout(resolve, RC_ENTER_WAIT_MS));
-    await call(pane.host, "pty_write", { id: pane.id, data: "\r" });
+    await write(rcCommand(on));
+    await pause(RC_ENTER_WAIT_MS);
+    await write(KEY_ENTER);
+    if (!on) {
+      // The menu comes within a moment; then the focus moves one item per Down key.
+      let focus = rcMenuFocus(terminalLines(pane.term));
+      for (let tries = 0; focus === "none" && tries < RC_MENU_TRIES; tries++) {
+        await pause(RC_MENU_STEP_MS);
+        focus = rcMenuFocus(terminalLines(pane.term));
+      }
+      for (let moves = 0; focus === "other" && moves < RC_MENU_MOVES; moves++) {
+        await write(KEY_DOWN);
+        await pause(RC_MENU_STEP_MS);
+        focus = rcMenuFocus(terminalLines(pane.term));
+      }
+      if (focus !== "disconnect") {
+        if (focus === "other") await write(KEY_ESC);
+        throw new Error(focus === "none" ? "the menu of /remote-control did not show" : "the focus did not reach Disconnect this session");
+      }
+      await write(KEY_ENTER);
+    }
   } catch (error) {
     console.error("Remote Control command failed", error);
     pane.rcWish = undefined;

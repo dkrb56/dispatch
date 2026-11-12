@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { RC_COMMAND, RC_OFF_TITLE, RC_WAIT_MS, rcBlocked, rcCommand, rcSettled, rcView } from "../src/remotecontrol.ts";
+import { KEY_DOWN, KEY_ENTER, KEY_ESC, RC_COMMAND, RC_OFF_TITLE, RC_WAIT_MS, rcBlocked, rcCommand, rcMenuFocus, rcSettled, rcView } from "../src/remotecontrol.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const MAIN = read("../src/main.ts");
@@ -15,10 +15,35 @@ const HTML = read("../index.html");
 
 const T = 1_000_000;
 
-test("a click on off sends /remote-control; a click on on sends nothing", () => {
+test("a click on off and a click on on both type /remote-control", () => {
   assert.equal(RC_COMMAND, "/remote-control");
   assert.equal(rcCommand(true), "/remote-control");
-  assert.equal(rcCommand(false), null);
+  assert.equal(rcCommand(false), "/remote-control");
+  assert.deepEqual([KEY_DOWN, KEY_ESC, KEY_ENTER], ["\x1b[B", "\x1b", "\r"]);
+});
+
+// The menu as Claude Code 2.1.319 draws it in a connected session (screenshot of the proof, run 6).
+const MENU = [
+  " Remote Control",
+  "",
+  "   This session is available in the Claude",
+  "   mobile app and at https://claude.ai/code/session_x.",
+  "",
+  "     Disconnect this session",
+  "     Show QR code   Scan with your phone to …",
+  "   ❯ Continue",
+  "",
+  "   Enter to select · Esc to continue",
+];
+
+test("the menu reader sees no menu, the focus elsewhere, or the focus on Disconnect this session", () => {
+  assert.equal(rcMenuFocus(["❯ /remote-control", "  ⎿  Remote Control disconnected.", "❯ "]), "none");
+  assert.equal(rcMenuFocus([]), "none");
+  assert.equal(rcMenuFocus(MENU), "other", "the focus starts on Continue");
+  const moved = MENU.map((line) => line.replace("   ❯ Continue", "     Continue").replace("     Disconnect this session", "   ❯ Disconnect this session"));
+  assert.equal(rcMenuFocus(moved), "disconnect");
+  const qr = MENU.map((line) => line.replace("   ❯ Continue", "     Continue").replace("     Show QR code", "   ❯ Show QR code"));
+  assert.equal(rcMenuFocus(qr), "other", "a focus on the QR item is not the focus on Disconnect");
 });
 
 test("the row without a click shows the real state", () => {
@@ -33,6 +58,7 @@ test("the row without a click shows the real state", () => {
   assert.equal(on.text, "on");
   assert.equal(on.disabled, false, "the switch stays active while it is on");
   assert.equal(on.title, RC_OFF_TITLE);
+  assert.match(on.title, /^Turn Remote Control off: .*Disconnect this session/);
 });
 
 test("a click waits with the wanted state and a grey switch until the poll confirms it", () => {
@@ -45,6 +71,7 @@ test("a click waits with the wanted state and a grey switch until the poll confi
   assert.equal(off.text, "turning off …");
   assert.equal(off.checked, false);
   assert.equal(off.disabled, true);
+  assert.match(off.title, /Disconnect this session/);
 });
 
 test("the confirmation ends the wait: the row shows the real state", () => {
@@ -83,9 +110,13 @@ test("main.ts builds the row as a switch and types the command on the host of th
   const start = MAIN.indexOf("async function setRemoteControl(");
   assert.ok(start >= 0, "main.ts has setRemoteControl");
   const body = MAIN.slice(start, MAIN.indexOf("\n}\n", start));
-  assert.match(body, /rcCommand\(on\)/);
-  assert.match(body, /call\(pane\.host, "pty_write", \{ id: pane\.id, data: command \}\)/);
-  assert.match(body, /call\(pane\.host, "pty_write", \{ id: pane\.id, data: "\\r" \}\)/);
+  assert.match(body, /call\(pane\.host, "pty_write", \{ id: pane\.id, data \}\)/);
+  assert.match(body, /await write\(rcCommand\(on\)\)/);
+  assert.match(body, /rcMenuFocus\(terminalLines\(pane\.term\)\)/);
+  // Enter in the menu comes only after the check of the focus; a wrong focus gets Esc.
+  const check = body.indexOf('if (focus !== "disconnect")');
+  assert.ok(check > 0 && body.indexOf("await write(KEY_ENTER)", check) > check, "the Enter of the menu follows the focus check");
+  assert.match(body, /await write\(KEY_ESC\)/);
   assert.match(body, /pane\.sideDue = 0/);
   assert.match(CSS, /\.info \.remote-control\[aria-checked="true"\] \.switch/);
 });
@@ -97,5 +128,7 @@ test("the Help names the switch of the Environment panel and its wait text", () 
   assert.match(section, /Remote Control/);
   assert.match(section, /\/remote-control/);
   assert.match(section, /turning on …/);
+  assert.match(section, /turning off …/);
   assert.match(section, /Disconnect this session/);
+  assert.doesNotMatch(section, /cannot turn Remote Control off/);
 });
