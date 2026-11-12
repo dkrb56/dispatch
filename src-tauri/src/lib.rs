@@ -59,6 +59,7 @@ pub fn run() {
             commands::chat_view,
             commands::session_flow,
             commands::worker_list,
+            commands::worker_end,
             commands::pipeline_plan,
             commands::pipeline_apply,
             commands::pipeline_commit,

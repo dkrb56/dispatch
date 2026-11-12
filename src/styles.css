@@ -1023,6 +1023,158 @@ button.task-head:hover {
   white-space: pre-wrap;
 }
 
+/* The button "N old sessions" in the top bar (stale-workers-list): quiet, it waits for nothing. */
+#bar #stale-alert {
+  max-width: 220px;
+  padding: 0 10px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The window "Old sessions": one row per session, grouped by project. */
+#stale {
+  width: min(92vw, 720px);
+  max-height: 86vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 50%);
+  color: var(--text);
+  font-size: calc(13px * var(--text-scale));
+}
+
+#stale[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#stale::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+#stale header {
+  display: flex;
+  align-items: center;
+  padding-left: 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+#stale h2 {
+  flex: 1;
+  margin: 0;
+  font-size: calc(16px * var(--text-scale));
+  font-weight: 600;
+}
+
+#stale-close {
+  width: 32px;
+  height: 32px;
+  margin: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: calc(18px * var(--text-scale));
+  cursor: pointer;
+}
+
+#stale-close:hover {
+  background: var(--card);
+}
+
+#stale-intro {
+  flex: none;
+  margin: 0;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+#stale-body {
+  flex: 1;
+  min-height: 0;
+  padding: 4px 20px 14px;
+  overflow-y: auto;
+}
+
+#stale .stale-project {
+  margin: 14px 0 6px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+#stale .stale-row {
+  padding: 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+#stale .stale-row + .stale-row {
+  margin-top: 6px;
+}
+
+#stale .stale-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#stale .stale-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#stale .stale-head button {
+  flex: none;
+  padding: 3px 12px;
+  border: 1px solid var(--danger);
+  border-radius: 6px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font: inherit;
+  font-size: calc(12px * var(--text-scale));
+  cursor: pointer;
+}
+
+#stale .stale-head button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#stale .stale-reason,
+#stale .stale-age,
+#stale .stale-none {
+  margin: 4px 0 0;
+  color: var(--text-2);
+  font-size: calc(12px * var(--text-scale));
+}
+
+#stale .stale-age {
+  color: var(--muted);
+}
+
+#stale .card-reason {
+  margin: 4px 0 0;
+  color: var(--danger);
+  font-size: calc(12px * var(--text-scale));
+  white-space: pre-wrap;
+}
+
 /* The headings "Tasks" and "Chats" in the list. */
 #chat-list h2 {
   flex: none;

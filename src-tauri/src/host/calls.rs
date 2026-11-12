@@ -120,6 +120,7 @@ pub fn run(
         }
         "session_flow" => json(flow::session_flow(core, a.req("session")?, a.req::<HashMap<String, u64>>("from")?)?),
         "worker_list" => json(chats::worker_list(core)?),
+        "worker_end" => json(chats::end_session(a.req("id")?)?),
         "pipeline_plan" => json(pipeline::pipeline_plan(a.req("cwd")?)?),
         "pipeline_apply" => json(pipeline::pipeline_apply(a.req("cwd")?, a.req("rules")?)?),
         "pipeline_commit" => json(pipeline::pipeline_commit(a.req("cwd")?)?),

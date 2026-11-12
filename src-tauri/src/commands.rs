@@ -168,6 +168,11 @@ pub fn worker_list(core: State<Core>) -> Result<Vec<Worker>, String> {
 }
 
 #[tauri::command(async)]
+pub fn worker_end(id: String) -> Result<String, String> {
+    chats::end_session(id)
+}
+
+#[tauri::command(async)]
 pub fn pipeline_plan(cwd: String) -> Result<Plan, String> {
     pipeline::pipeline_plan(cwd)
 }

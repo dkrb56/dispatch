@@ -25,6 +25,7 @@
         Chats
       </button>
       <button id="worker-alert" hidden></button>
+      <button id="stale-alert" hidden title="Worker sessions that Claude Code still keeps open after their task ended. Click to see them and end each one."></button>
       <button id="update-alert" hidden></button>
       <div id="tabs"></div>
       <button id="night-mode" role="switch" aria-checked="false" title="Nightmode is off. Turn it on when you go away: work goes on with the recommended default for each decision, and you get a morning list. Dispatch keeps the switch over a restart, and the triage chats follow it. While it is on, the PC that does the work does not go to sleep.">
@@ -154,6 +155,17 @@
         <button id="questions-send" class="primary" title="Send the selected option of every question to the worker in one reply; the worker goes on">Send the answers</button>
       </footer>
     </dialog>
+    <dialog id="stale">
+      <header>
+        <h2>Old sessions</h2>
+        <button id="stale-close" title="Close (Esc)">&times;</button>
+      </header>
+      <p id="stale-intro">
+        Claude Code still keeps these worker sessions open, but their task is finished or a newer run of the task took over.
+        End closes one session. Its task, report and state do not change.
+      </p>
+      <div id="stale-body"></div>
+    </dialog>
     <dialog id="help">
       <header>
         <h2>Help</h2>
@@ -267,6 +279,7 @@
           <li><b>Model and effort.</b> The two lists above Triage apply at the next start of triage. Above Workers there are two pairs: <b>plan</b> for the plan run and <b>work</b> for the work run. They apply to the next run that triage starts.</li>
           <li><b>Agents.</b> A worker can start agents for parts of its task in its work run. The fifth list above Workers sets the maximum number of agents that one worker runs at the same time. An agent is a helper that a worker starts; the worker itself does not count as an agent. The number next to the list is the sum of the agents that the workers of the project started; it shows only when a worker started an agent. A plan run starts no agent.</li>
           <li><b>The yellow button</b> in the top bar shows when a worker waits for you. Click it to open that worker.</li>
+          <li><b>Old sessions.</b> Claude Code keeps a worker session open after its turn ended, and the agent view lists it under "Needs input" for days. When such a session belongs to a finished task (done, failed or stopped), or a newer run of its task took over (Approve and each answer start a new run), the button <b>N old sessions</b> shows in the top bar. It opens a window with one row per session, grouped by project: the session name, its state, why it counts as old, what Claude Code still keeps (it lists the session as waiting for input, or its process still runs), and when it started and ended. <b>End</b> closes that one session with <code>claude stop</code>, on the computer that runs it; its conversation is kept. The task, its report and its state file do not change, and the triage chat gets no line. A task that works, waits at a permission prompt, or waits for your Approve, answer or Continue is never in the list, and neither is a session that you started by hand. The list covers the projects that Dispatch shows: the pills, Focus, the Map and the Overview.</li>
           <li><b>Project</b> with that folder at a later time continues your last triage chat of the project. A later <b>Setup pipeline</b> changes the settings and does the steps that are not done.</li>
           <li><b>A new triage chat at a limit.</b> The third list above Triage, <b>new chat at …</b>, sets how much context the triage chat may have (100k to 400k tokens, 200k at the start; <b>no new chat</b> turns it off). It applies per project. At the limit Dispatch waits for a quiet moment: triage does not work and asks nothing, the Chat view shows with an empty message box, no line of Dispatch waits, night mode is off, and for 2 minutes there was no turn of triage and no key or click in Dispatch. Then Dispatch closes the chat with <code>/exit</code> and starts a new triage chat in the same pane, with the model and effort above Triage. In the Terminal view the new chat does not start, because Dispatch cannot see what you type there.</li>
           <li><b>The hand-off.</b> The first message of the new chat comes from Dispatch: the open tasks and their state, how many are finished, and where the briefs, plans, reports and state files are. It holds nothing of the old chat. The lines of Dispatch that came during the switch go to the new chat after it. From then on Focus, the Map, the task cards and Project use the new chat. The old chat stays in the chat list as "earlier triage"; nothing is deleted.</li>

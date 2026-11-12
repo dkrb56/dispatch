@@ -134,6 +134,13 @@ pub struct Worker {
     status: Option<String>,
     /// Why a blocked worker waits for the user.
     waiting_for: Option<String>,
+    /// The process of the session while Claude Code still runs one for it.
+    pid: Option<u32>,
+    /// Claude Code still holds the session (ticket stale-workers-list): its state before `settle`
+    /// was `blocked` or `working`, or it has a process. `settle` hides the first fact, so it is
+    /// kept here; `claude stop` can end such a session.
+    #[serde(skip_deserializing)]
+    held: bool,
     /// The agents that the worker started. This app counts them. Claude Code does not give them.
     #[serde(skip_deserializing)]
     agents: u32,
@@ -148,6 +155,7 @@ impl Worker {
     /// `waiting`). A worker puts its question into the report and ends its turn, so that
     /// worker is done: its card shows the question, and a resume of it is no copy.
     fn settle(&mut self) {
+        self.held = matches!(self.state.as_deref(), Some("blocked" | "working")) || self.pid.is_some();
         if self.state.as_deref() == Some("blocked") && self.status.as_deref() != Some("waiting") {
             self.state = Some("done".to_string());
             self.waiting_for = None;
@@ -266,9 +274,44 @@ pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
     Ok(workers)
 }
 
+/// The id of a background session: letters, digits and `-`, as `claude agents` gives it.
+fn check_session_id(id: &str) -> Result<(), String> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Err(format!("invalid session id: {id}"));
+    }
+    Ok(())
+}
+
+/// Ends one background session with `claude stop <id>` (ticket stale-workers-list): the End button
+/// of the list of old sessions. Only a background session with a name in the current list is
+/// ended; the window decides that it belongs to a finished task. No file of the task changes.
+pub fn end_session(id: String) -> Result<String, String> {
+    check_session_id(&id)?;
+    let output = claude_command().args(["agents", "--json", "--all"]).stdin(Stdio::null()).no_window().output().map_err(err)?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let sessions: Vec<Value> = serde_json::from_slice(&output.stdout).map_err(err)?;
+    let known = sessions.iter().any(|session| {
+        session.get("id").and_then(Value::as_str) == Some(id.as_str())
+            && session.get("kind").and_then(Value::as_str) == Some("background")
+            && session.get("name").and_then(Value::as_str).is_some_and(|name| !name.is_empty())
+    });
+    if !known {
+        return Err(format!("no worker with the id {id}"));
+    }
+    let output = claude_command().args(["stop", &id]).stdin(Stdio::null()).no_window().output().map_err(err)?;
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if output.status.success() {
+        return Ok(stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(if stderr.is_empty() { format!("claude stop ended with {}", output.status) } else { stderr })
+}
+
 #[cfg(test)]
 mod worker_tests {
-    use super::{timeline_end, Worker};
+    use super::{check_session_id, end_session, timeline_end, Worker};
 
     #[test]
     fn the_end_of_a_worker_is_the_last_line_of_its_timeline() {
@@ -338,6 +381,52 @@ mod worker_tests {
         // The other states stay.
         assert_eq!(worker("working", Some("idle"), None).state.as_deref(), Some("working"));
         assert_eq!(worker("stopped", None, None).state.as_deref(), Some("stopped"));
+    }
+
+    /// A worker as the list gives it, with a process when `pid` is set, after `settle`.
+    fn listed(state: &str, status: Option<&str>, pid: Option<u32>) -> Worker {
+        let mut json = serde_json::json!({ "id": "w-1", "kind": "background", "state": state });
+        if let Some(status) = status {
+            json["status"] = status.into();
+        }
+        if let Some(pid) = pid {
+            json["pid"] = pid.into();
+        }
+        let mut worker: Worker = serde_json::from_value(json).unwrap();
+        worker.settle();
+        worker
+    }
+
+    #[test]
+    fn a_held_session_is_known_after_settle() {
+        // The four old sessions of this machine (2026-11-12): raw blocked, no status, no process.
+        // Settled they are done, but Claude Code still holds them.
+        let old = listed("blocked", None, None);
+        assert_eq!((old.state.as_deref(), old.held), (Some("done"), true));
+        let question = listed("blocked", Some("idle"), None);
+        assert_eq!((question.state.as_deref(), question.held), (Some("done"), true));
+        // A permission prompt: held and still blocked.
+        let prompt = listed("blocked", Some("waiting"), None);
+        assert_eq!((prompt.state.as_deref(), prompt.held), (Some("blocked"), true));
+        // A turn that ended while the process runs on (overview-drag-cards [work]): done and held.
+        let process = listed("done", Some("idle"), Some(42820));
+        assert_eq!((process.state.as_deref(), process.held, process.pid), (Some("done"), true, Some(42820)));
+        assert!(listed("working", None, None).held);
+        // Gone: nothing to end.
+        for state in ["done", "failed", "stopped"] {
+            assert!(!listed(state, None, None).held, "{state}");
+        }
+    }
+
+    #[test]
+    fn end_session_refuses_a_bad_id_before_any_command() {
+        for id in ["", "a b", "x&calc", "../x", "id;rm"] {
+            assert!(check_session_id(id).is_err(), "{id}");
+            let error = end_session(id.to_string()).unwrap_err();
+            assert!(error.starts_with("invalid session id"), "{id}: {error}");
+        }
+        assert!(check_session_id("973fe72b").is_ok());
+        assert!(check_session_id("973fe72b-902a-4267").is_ok());
     }
 }
 

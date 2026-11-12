@@ -37,6 +37,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, type FileInfo, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
 import { agentsText, rowParts } from "./workerrow";
+import { rowTexts, staleButtonText, staleSessions, type StaleRow } from "./stale";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
@@ -221,6 +222,10 @@ interface Worker {
   agents: number;
   /** The agents that wrote to their chat file a short time ago. It is an estimate. */
   agentsActive: number;
+  /** The process of the session while Claude Code still runs one (stale-workers-list). */
+  pid?: number | null;
+  /** Claude Code still holds the session: it was `blocked` or `working`, or it has a process. */
+  held?: boolean;
   /** The host that runs the worker; the window adds it to the reply (remote-multi-host). */
   host: HostId;
 }
@@ -291,6 +296,7 @@ const tabsEl = document.querySelector<HTMLDivElement>("#tabs")!;
 const panesEl = document.querySelector<HTMLElement>("#panes")!;
 const chatsEl = document.querySelector<HTMLElement>("#chats")!;
 const workerAlertEl = document.querySelector<HTMLButtonElement>("#worker-alert")!;
+const staleAlertEl = document.querySelector<HTMLButtonElement>("#stale-alert")!;
 const updateAlertEl = document.querySelector<HTMLButtonElement>("#update-alert")!;
 const chatSearchEl = document.querySelector<HTMLInputElement>("#chat-search")!;
 const chatScopeEl = document.querySelector<HTMLElement>("#chat-scope")!;
@@ -2043,6 +2049,162 @@ function projectTaskList(project: ProjectTasks): Task[] {
   return taskList(workerList.filter((worker) => inProject(worker, key)), project.infos, project);
 }
 
+// The old worker sessions (ticket stale-workers-list): sessions that Claude Code still holds after
+// their task ended or after a newer run took over. The rule is in src/stale.ts; this part gives it
+// the tasks of the projects that the window reads, and shows the rows in the window "Old sessions"
+// behind the button in the top bar. End runs `claude stop` on the host of the session; the files of
+// the task do not change, and the triage chat gets no line.
+
+/** A stale session and its project. */
+interface StaleEntry {
+  row: StaleRow<Worker>;
+  project: ProjectTasks;
+}
+
+/** The sessions that the user ended and Claude Code still lists, by `workerKey`. */
+const endingSessions = new Set<string>();
+/** The refusal of the last End click of a session, by `workerKey`. */
+const staleErrors = new Map<string, string>();
+const staleDialog = document.querySelector<HTMLDialogElement>("#stale")!;
+let staleShown: StaleEntry[] = [];
+
+/** The stale sessions of every project whose task list the window has, each session once. */
+function staleEntries(): StaleEntry[] {
+  const entries = new Map<string, StaleEntry>();
+  for (const project of projectTasks.values()) {
+    const tasks = projectTaskList(project)
+      .filter((task) => task.info)
+      .map((task) => {
+        const view = overviewTask(task);
+        return { name: task.name, phase: taskPhase(task), busy: view.queued || view.starting, sessions: task.workers };
+      });
+    for (const row of staleSessions(tasks)) entries.set(workerKey(row.session), { row, project });
+  }
+  return [...entries.values()];
+}
+
+/** Shows the button with the count while a stale session exists, and draws the open window again. */
+function updateStaleAlert(): void {
+  staleShown = staleEntries();
+  const count = staleShown.length;
+  staleAlertEl.hidden = count === 0;
+  staleAlertEl.textContent = staleButtonText(count);
+  if (staleDialog.open) renderStale();
+}
+
+/** Draws the rows of the window, grouped by project. */
+function renderStale(): void {
+  const body = document.querySelector<HTMLElement>("#stale-body")!;
+  if (staleShown.length === 0) {
+    const none = document.createElement("p");
+    none.className = "stale-none";
+    none.textContent = "No old session. Every worker session that Claude Code still keeps belongs to a task that works or waits for you.";
+    body.replaceChildren(none);
+    return;
+  }
+  const groups = new Map<string, StaleEntry[]>();
+  for (const entry of staleShown) {
+    const key = projectKey(entry.project.host, entry.project.cwd);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(entry);
+  }
+  const now = Date.now();
+  const parts: HTMLElement[] = [];
+  for (const entries of groups.values()) {
+    const { host, cwd } = entries[0].project;
+    const heading = document.createElement("h3");
+    heading.className = "stale-project";
+    heading.textContent = projectName({ host, root: cwd });
+    heading.title = cwd;
+    parts.push(heading);
+    for (const { row } of entries) {
+      const worker = row.session;
+      const key = workerKey(worker);
+      const texts = rowTexts(row, now);
+      const made = document.createElement("div");
+      made.className = "stale-row";
+      const head = document.createElement("div");
+      head.className = "stale-head";
+      const name = document.createElement("span");
+      name.className = "stale-name";
+      name.textContent = worker.name ?? worker.id;
+      name.title = `${texts.run} of ${row.task}\nSession ${worker.id}`;
+      const chip = document.createElement("span");
+      chip.className = `chip ${worker.state ?? ""}`;
+      chip.textContent = worker.state ?? "unknown";
+      const ending = endingSessions.has(key);
+      const end = document.createElement("button");
+      end.className = "danger";
+      end.textContent = ending ? "Ending…" : "End";
+      end.disabled = ending;
+      end.title = `End the session ${worker.name ?? worker.id} with claude stop. Its conversation is kept; the task, its report and its state do not change.`;
+      end.addEventListener("click", () => void endSession(worker));
+      head.append(name, chip, end);
+      const reason = document.createElement("p");
+      reason.className = "stale-reason";
+      reason.textContent = `${texts.run}: ${texts.reason}`;
+      made.append(head, reason);
+      if (texts.age) {
+        const age = document.createElement("p");
+        age.className = "stale-age";
+        age.textContent = texts.age;
+        made.append(age);
+      }
+      const error = staleErrors.get(key);
+      if (error) {
+        const failed = document.createElement("p");
+        failed.className = "card-reason";
+        failed.textContent = error;
+        made.append(failed);
+      }
+      parts.push(made);
+    }
+  }
+  body.replaceChildren(...parts);
+}
+
+/** The End button of a row: `claude stop` on the host of the session, then a new read of the workers. */
+async function endSession(worker: Worker): Promise<void> {
+  const key = workerKey(worker);
+  if (endingSessions.has(key)) return;
+  endingSessions.add(key);
+  staleErrors.delete(key);
+  renderStale();
+  try {
+    await call<string>(worker.host, "worker_end", { id: worker.id });
+  } catch (error) {
+    endingSessions.delete(key);
+    staleErrors.set(key, String(error));
+    renderStale();
+    return;
+  }
+  try {
+    await refreshWorkers();
+  } catch (error) {
+    console.error("worker list refresh failed", error);
+  }
+  // `claude stop` returned, but Claude Code may still hold the session: the row says so.
+  const after = workerList.find((known) => workerKey(known) === key);
+  if (after?.held && after.state !== "stopped") {
+    endingSessions.delete(key);
+    staleErrors.set(key, `claude stop returned, but Claude Code still lists the session as ${after.state ?? "unknown"}.`);
+  }
+  updateStaleAlert();
+  renderStale();
+}
+
+function initStale(): void {
+  staleAlertEl.addEventListener("click", () => {
+    updateStaleAlert();
+    renderStale();
+    staleDialog.showModal();
+  });
+  document.querySelector("#stale-close")!.addEventListener("click", () => staleDialog.close());
+  staleDialog.addEventListener("click", (event) => {
+    if (event.target === staleDialog) staleDialog.close();
+  });
+}
+
 /** Refreshes the tasks in the chat panel. It runs again and again. */
 async function pollTasks(): Promise<void> {
   const readAt = Date.now();
@@ -2650,6 +2812,8 @@ function announceWorkerChanges(workers: Worker[]): void {
     const lines = new Map<string, string[]>();
     for (const worker of workers) {
       if (!driverOf(worker.host)) continue;
+      // An old session that the user ended in the list of old sessions: its task ended long ago.
+      if (endingSessions.has(workerKey(worker))) continue;
       const before = lastWorkerStates.get(workerKey(worker));
       const now = worker.state;
       if (before === now || !now || !ANNOUNCED_STATES.has(now)) continue;
@@ -2663,6 +2827,10 @@ function announceWorkerChanges(workers: Worker[]): void {
       lines.get(project)!.push(line);
     }
     for (const [project, text] of lines) tellTriage(project, text.join(" "));
+  }
+  // An ended session leaves the quiet set once Claude Code reports it stopped or lists it no more.
+  for (const key of endingSessions) {
+    if (states.get(key) === undefined || states.get(key) === "stopped") endingSessions.delete(key);
   }
   lastWorkerStates = states;
   saveWorkerStates(states);
@@ -3894,6 +4062,7 @@ async function refreshWorkers(): Promise<void> {
   approvePlans();
   for (const pane of panes.values()) showAgentCount(pane);
   updateWorkerAlert();
+  updateStaleAlert();
   updateAlerts();
 }
 
@@ -5830,6 +5999,7 @@ async function refreshFocusTasks(): Promise<void> {
   renderOverview();
   renderPills();
   approvePlans();
+  updateStaleAlert();
   updateAlerts();
 }
 
@@ -6720,6 +6890,7 @@ async function start(): Promise<void> {
   initStatusBar(() => focusedPane()?.host ?? firstBackend());
   initDecisions();
   initQuestions();
+  initStale();
   void pollSide();
   // A click on the alert opens the first worker that waits.
   workerAlertEl.addEventListener("click", () => {
