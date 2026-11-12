@@ -18,3 +18,14 @@ export function rowParts<T>(waitingFor: string | null, time: T | null, agents: n
   const parts: (string | T | null)[] = [waitingFor, time, agentsText(agents, active)];
   return parts.filter((part): part is string | T => part !== null && part !== "");
 }
+
+/**
+ * The tooltip of a file row of a task card (ticket task-plan-row-chip). The plan row has no state
+ * chip, so that it does not look like a run; the state of the task script stands here, on a
+ * second line, and in the header of the card. Without a state the tooltip only says what a click does.
+ */
+export function fileRowTitle(label: string, path: string, state: string | null): string {
+  const open = `Open ${path}`;
+  if (!state) return open;
+  return `${open}\nThe ${label.toLowerCase()} file. The task script says: ${state}`;
+}

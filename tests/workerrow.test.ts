@@ -1,11 +1,13 @@
 // Tests of the text of a worker row in a task card (src/workerrow.ts, ticket hide-zero-agents):
 // the row shows the agents only when the worker started one, and ends after the duration
 // otherwise. The row text here is the parts joined with " · ", as workerRow in src/main.ts joins
-// them. The test does not draw the row. Run: node --test tests/
+// them. Ticket task-plan-row-chip: the plan row has no state chip, so it does not read as a run;
+// the state of the task script stands in its tooltip. The test does not draw the row.
+// Run: node --test tests/
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { agentsText, rowParts } from "../src/workerrow.ts";
+import { agentsText, fileRowTitle, rowParts } from "../src/workerrow.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const HTML = read("../index.html");
@@ -53,4 +55,28 @@ test("the row meets the page: main.ts uses the parts, no zero count, the Help sa
   assert.doesNotMatch(HTML, /0 agents/);
   assert.match(HTML, /when the worker started agents, their number/);
   assert.match(HTML, /it shows only when a worker started an agent/);
+});
+
+test("the tooltip of a file row: the path, and the state of the task script when there is one", () => {
+  assert.equal(fileRowTitle("Plan", ".dispatch/plans/t.md", null), "Open .dispatch/plans/t.md");
+  assert.equal(fileRowTitle("Plan", ".dispatch/plans/t.md", ""), "Open .dispatch/plans/t.md");
+  assert.equal(
+    fileRowTitle("Plan", ".dispatch/plans/t.md", "working"),
+    "Open .dispatch/plans/t.md\nThe plan file. The task script says: working",
+  );
+  assert.equal(fileRowTitle("Report", ".dispatch/t.md", null), "Open .dispatch/t.md");
+});
+
+test("the plan row of a task card has no chip; its tooltip has the state; the report row keeps its chip", () => {
+  // The row of the screenshot of the ticket: "Plan · Working" next to "Work run · Working".
+  assert.doesNotMatch(MAIN, /fileRow\("Plan", info\.plan, info\.report \? null : info\.state/);
+  assert.match(MAIN, /fileRow\("Plan", info\.plan, null, info\.state \|\| null\)/);
+  assert.match(MAIN, /fileRow\("Report", info\.report, info\.header\?\.state \?\? null, null\)/);
+  assert.match(MAIN, /row\.title = fileRowTitle\(label, file\.path, state\)/);
+});
+
+test("the Help says that the plan row has no state chip and where the state stands", () => {
+  assert.match(HTML, /The plan row shows when the plan file changed and has no state chip, so it does not look like a run/);
+  assert.match(HTML, /the state of the task stands in the header of the card and in the tooltip of the row/);
+  assert.match(HTML, /The report row shows the state from the first line of the report\./);
 });

@@ -36,7 +36,7 @@ import { type MenuRecord, type ScreenRow } from "./menurecord";
 import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, type FileInfo, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
-import { agentsText, rowParts } from "./workerrow";
+import { agentsText, fileRowTitle, rowParts } from "./workerrow";
 import { rowTexts, staleButtonText, staleSessions, type StaleRow } from "./stale";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
@@ -1789,11 +1789,14 @@ function eyeIcon(): SVGSVGElement {
   return svg;
 }
 
-/** A row for the plan or the report of a task. `chip` is the state that the file carries. */
-function fileRow(label: string, file: FileEntry, chip: string | null): HTMLElement {
+/**
+ * A row for the plan or the report of a task. `chip` is the state that the file carries (the
+ * report's state); `state` is the state of the task script, which only the tooltip shows.
+ */
+function fileRow(label: string, file: FileEntry, chip: string | null, state: string | null): HTMLElement {
   const row = document.createElement("button");
   row.className = "chat report";
-  row.title = `Open ${file.path}`;
+  row.title = fileRowTitle(label, file.path, state);
   const name = document.createElement("span");
   name.textContent = label;
   name.prepend(eyeIcon());
@@ -4026,9 +4029,11 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     body.className = "task-body";
     body.append(...task.workers.map((worker) => workerRow(worker, workerRun(task, worker))));
     const info = task.info;
-    // The plan row carries the state of the script until a report exists; the report row carries the report's state.
-    if (info?.plan) body.append(fileRow("Plan", info.plan, info.report ? null : info.state || null));
-    if (info?.report) body.append(fileRow("Report", info.report, info.header?.state ?? null));
+    // The plan row is a file, so it has no chip: a chip there read as a second run (task-plan-row-chip).
+    // The state of the script stands in the header of the card and in the tooltip of the plan row.
+    // The report row carries the report's state.
+    if (info?.plan) body.append(fileRow("Plan", info.plan, null, info.state || null));
+    if (info?.report) body.append(fileRow("Report", info.report, info.header?.state ?? null, null));
     // Stop stands under the runs that it stops.
     const stop = stopRow(task);
     if (stop) body.append(stop);
