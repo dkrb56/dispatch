@@ -819,6 +819,18 @@ button.task-head:hover {
   white-space: nowrap;
 }
 
+/* Why an approved task waits for the project (task-wait-reason): one row under the state, like a
+   TL;DR line, with the eye of the file rows before it; the tooltip has the full reason. */
+.task-wait {
+  min-width: 0;
+  padding-left: 33px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .task.waits .task-status {
   color: var(--wait);
 }

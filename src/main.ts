@@ -21,6 +21,7 @@ import { type FileEntry, initViewer, openViewer, showGallery, statFile } from ".
 import { durationText, runTime } from "./duration";
 import { agentsText, rowParts } from "./workerrow";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
+import { type WaitFacts, waitReason } from "./waitreason";
 import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
 import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards, triageFree } from "./pending";
 import { type FlowView, openFlow } from "./flow";
@@ -2830,11 +2831,13 @@ let decisionsTask: Task | null = null;
  * work run comes first: the changes during it are its own, and it commits them.
  */
 function approveWait(task: Task): string {
+  return waitReason(waitFacts(task))?.full ?? "";
+}
+
+/** What holds the work run of a task back: another work run of its project, and its uncommitted lines. */
+function waitFacts(task: Task): WaitFacts {
   const editing = workRun(task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos));
-  if (editing && editing.name !== task.name) return `Its work run starts when the work run of ${editing.name} ends.`;
-  const dirty = task.project?.dirty ?? dirtyLines;
-  if (dirty.length > 0) return `Its work run starts once the changes of the project are committed or stashed:\n${dirty.slice(0, 5).join("\n")}${dirty.length > 5 ? "\n…" : ""}`;
-  return "";
+  return { editing: editing && editing.name !== task.name ? editing.name : null, dirty: task.project?.dirty ?? dirtyLines };
 }
 
 /** Opens the Decisions window of a task: each decision with its options as buttons and an Other box. */
@@ -3605,6 +3608,16 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   state.className = "task-status";
   state.textContent = status.text;
   head.append(top, state);
+  // An approval that waits for the project: what it waits for, short, with an eye; the full reason in the tooltip.
+  const reason = approvalQueued(task) ? waitReason(waitFacts(task)) : null;
+  if (reason) {
+    const wait = document.createElement("span");
+    wait.className = "task-wait";
+    wait.title = reason.full;
+    wait.textContent = reason.short;
+    wait.prepend(eyeIcon());
+    head.append(wait);
+  }
   // What the task is about and what it did or does, cut from its brief, plan and report.
   const tldr = tldrElement(taskTldrOf(task), "span", "task-tldr");
   if (tldr) head.append(tldr);
