@@ -34,7 +34,7 @@ test("the check of a dir_list reply", () => {
   assert.equal(isDirList({ ...good, roots: [1] }), false);
 });
 
-test("index.html holds the chooser with the text box, Up, Choose and Cancel; the Help does not name it yet (task 8)", () => {
+test("index.html holds the chooser with the text box, Up, Choose and Cancel, and the Help names it (remote-multi-host-help)", () => {
   const start = HTML.indexOf('<dialog id="folder-chooser">');
   assert.ok(start >= 0, "index.html has the folder chooser");
   const dialog = HTML.slice(start, HTML.indexOf("</dialog>", start));
@@ -47,7 +47,7 @@ test("index.html holds the chooser with the text box, Up, Choose and Cancel; the
   }
   const helpStart = HTML.indexOf('<dialog id="help">');
   const help = HTML.slice(helpStart, HTML.indexOf("</dialog>", helpStart));
-  assert.ok(!/folder chooser/i.test(help), "the Help text changes in task 8");
+  assert.ok(/folder chooser/i.test(help), "the Help names the folder chooser");
 });
 
 test("the chooser has a hidden host list box in its head for a window with several hosts (remote-multi-host)", () => {

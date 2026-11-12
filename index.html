@@ -179,7 +179,7 @@
         <ol>
           <li>
             Click <b>Project</b> and select the folder of your project.
-            <span class="does">A project that is not set up shows the Setup pipeline window. A project that is set up opens its workspace at once: go to step 6.</span>
+            <span class="does">In the mode Use hosts the folder chooser of Dispatch opens; with several hosts it asks for the host too (see Where the work runs). A project that is not set up shows the Setup pipeline window. A project that is set up opens its workspace at once: go to step 6.</span>
           </li>
           <li>
             Read the steps.
@@ -305,8 +305,9 @@
         <h3>Night mode</h3>
         <ul>
           <li>The <b>Nightmode</b> switch in the bar (left of the pane buttons) is green while night mode is on. Turn it on when you go away: the work goes on, and each decision that would wait for you takes its recommended option.</li>
-          <li>The switch is the one state of night mode. Dispatch keeps it on this computer, so a restart brings it back as you left it.</li>
-          <li>While the switch is on, the computer that does the work does not go to sleep by itself: this PC in the mode "This PC does the work", the host's PC in the mode "Use a host". The display may turn off. When the switch goes off, or the program ends (also at a crash), the computer sleeps as before. A computer that only shows a window may sleep. Keep a window open on a computer that stays awake, because the automatic actions of night mode run in a window; the window on the host's PC takes over within about 30 s when the other window sleeps. On a Mac, Dispatch runs the system tool <code>caffeinate</code> for this.</li>
+          <li>The switch is the one state of night mode. The program that does the work keeps it: Dispatch in the mode This PC does the work, each host in the mode Use hosts. So a restart brings it back as you left it, and every window of a host shows the same switch.</li>
+          <li><b>With several hosts</b> each host has its own switch. The one switch in the bar is on when every host is on and off when every host is off. When the hosts differ, it shows a third look: the knob in the middle and half the green; its tooltip names the hosts that are on and off. A click on the third look turns night mode on for every host; a click on on turns it off for every host. A host that is not reachable keeps its own switch and is left out of the look until it is back.</li>
+          <li>While the switch is on, the computer that does the work does not go to sleep by itself: this PC in the mode This PC does the work, and each host whose switch is on in the mode Use hosts. The display may turn off. When the switch goes off, or the program ends (also at a crash), the computer sleeps as before. A computer that only shows a window may sleep. Keep a window open on a computer that stays awake, because the automatic actions of night mode run in a window; the window on the host's PC takes over within about 30 s when the other window sleeps. On a Mac, Dispatch runs the system tool <code>caffeinate</code> for this.</li>
           <li>On and off send <code>/nightmode start</code> and <code>/nightmode end</code> and a Dispatch line to the triage chat of each project with a workspace. Triage keeps the list of the defaults and writes the morning file (your <code>nightmode</code> skill).</li>
           <li>The triage chat follows the switch. At each start and each new triage chat, Dispatch compares the switch with the chat's night file (<code>.claude/state/night/night-mode.json</code>) and sends the command again when the chat is behind. The chat never changes the switch.</li>
           <li>While it is on, Dispatch approves a plan whose decisions all have a default (it writes them into the plan), and answers a question of a worker with its recommended option. Triage hears each default. A plan with a HOLD decision and a report that needs a permission wait for you; triage puts them under Reminders.</li>
@@ -327,15 +328,53 @@
           <li>Drag the right edge of the panel to make it wider or narrower; the terminals keep at least 360 pixels. Dispatch remembers the width, and it is also the usual width of the left panel of each project in focus mode (a panel that you dragged there keeps its own width). A double-click on the edge goes back to the usual width.</li>
         </ul>
 
+        <h3>Where the work runs</h3>
+        <ul>
+          <li>Options has two modes. <b>This PC does the work</b>: Dispatch runs the terminals, Claude Code and the workers on this computer, and nothing listens on the network. <b>Use hosts</b>: one or more computers run the program <code>dispatch-host</code>, and this window shows and controls them; nothing runs on this computer. The computers find each other over Tailscale.</li>
+          <li>A change of the mode or of the host list takes effect at the next start of Dispatch.</li>
+        </ul>
+        <p>To work from a second computer, do these steps one time.</p>
+        <ol>
+          <li>
+            On the computer that does the work, open Options and click <b>Start the host</b> in <b>Run the host on this PC</b>.
+            <span class="does">The host listens on the Tailscale address of this computer and on 127.0.0.1, never on all addresses. The Key box shows its key. Dispatch adds the row 127.0.0.1 with the name "This PC" to the host list, switches this window to Use hosts and starts again. On Windows, <b>Start the host at each Windows sign-in</b> starts the host after each sign-in.</span>
+          </li>
+          <li>
+            On the other computer, open Options, select <b>Use hosts</b> and click <b>Add host</b>.
+            <span class="does">A new row shows: Name, Address, Port, Key and Remove.</span>
+          </li>
+          <li>
+            Fill in the row.
+            <span class="does">Name: your name for the computer. Address: its Tailscale name (<code>name.tailnet.ts.net</code>) or its <code>100.x</code> address. Port: empty is 7470. Key: copy it from the Key box of the other computer, or from the file <code>host-key.txt</code> in the data folder of the host.</span>
+          </li>
+          <li>
+            Close Dispatch and start it again.
+            <span class="does">The window connects to every host of the list. The title says "Dispatch · host &lt;name&gt;" with one host and "Dispatch · hosts &lt;name&gt;, &lt;name&gt;" with more.</span>
+          </li>
+          <li>
+            Click <b>Project</b> and select a folder of a host.
+            <span class="does">Its workspace opens on that host, as in Set up a project.</span>
+          </li>
+        </ol>
+        <ul>
+          <li><b>Several hosts.</b> One window shows the projects of every host. With more than one host, each project name gets " · &lt;host name&gt;" after it: in the pills, the Focus columns, the Map, the Overview cards, the chat groups of All projects and the tab labels. So two projects with the same folder name on two computers stay apart. With one host the names do not change.</li>
+          <li><b>Where a new terminal runs.</b> The first tab at a start without saved tabs runs on the first host of the list. A split runs on the host of the focused terminal. A chat or a worker opens on its own host.</li>
+          <li><b>The folder chooser.</b> In the mode Use hosts, <b>Project</b> and <b>+</b> open a folder chooser inside the window. It lists the folders of a host. <b>Project</b> starts at the folder of the focused terminal; <b>+</b>, or a folder that the host cannot list, starts at the home folder of the host. Click a folder to go into it, or type a path and press Enter, then click <b>Choose</b>. With several hosts a list box at its top selects the host; the host of the focused terminal comes first. In the mode This PC does the work the usual folder dialog of the system opens.</li>
+          <li><b>A host that is gone.</b> A bar below the top bar shows one row for each host that is not reachable: "Host &lt;name&gt; (&lt;address&gt;:&lt;port&gt;) is not reachable. Dispatch tries again…". Dispatch tries again after 1 second, then after 2, 4, 8 and 10 seconds. The projects and terminals of the other hosts keep working. Typing into a terminal of the gone host goes nowhere, and nothing on that computer stops. When the host is back, a terminal that still runs there continues; a terminal that ended gets a new shell.</li>
+          <li><b>A host that refused the window</b>, for example with "the key is wrong", gets a row with its reason and <b>Try again</b>. Dispatch does not try again by itself. Correct the key in Options and start Dispatch again; Try again connects once more with the same key.</li>
+          <li><b>What travels between the computers.</b> Only the window and its hosts talk, and only on the tailnet; Tailscale encrypts the traffic. At the start of each connection the window sends the key, the versions and the id of the window. Then your keystrokes and the terminal output, the chats, the task files, the files that the window shows, and a pasted image as bytes travel. The window keeps its tabs, its saved terminal screens, its theme and its other choices on its own computer. The host keeps the terminals of a closed window, and the Nightmode switch and the triage chats of its projects.</li>
+          <li><b>Run the host on this PC</b> in Options. <b>Start the host</b>: see step 1. <b>Stop the host</b> ends the host and its terminals and removes the row 127.0.0.1 from the list and starts Dispatch again; with an empty list this window goes back to This PC does the work. <b>New key</b> starts the host again with a new key; every other window needs the new key in its row.</li>
+        </ul>
+
         <h3>Other buttons</h3>
         <ul>
           <li><b>The four icons</b> split the terminal to the right, split it down, close it, and show or hide the side panels.</li>
           <li><b>Rules</b> shows all the rules that Claude Code gets in the project. <b>Copy all</b> puts them into the clipboard as text. <b>Analyse rules</b> asks Claude Code which rules are obsolete or problematic; the three lists left of it set the time limit of the check (3 to 30 minutes, Dispatch stops the check after it), the model and the effort. Dispatch keeps the choice on this computer, and the check of the Setup pipeline window uses the same values. While a check runs, the line above the findings shows the time that passed and the limit.</li>
           <li>Each rule of a Markdown file has two buttons. <b>Off</b> takes the rule out of the file; the list keeps it with a line through it, and <b>On</b> puts it back at the end of its group. <b>Remove</b> deletes the rule after a second click. The rules that are off are kept on this computer only. A rule of the triage role comes back with the next Apply of Setup pipeline. The settings in JSON files have no buttons.</li>
           <li><b>Update to …</b> shows when a new version is available. A click saves your tabs, downloads the installer and installs in one step: Dispatch closes, a progress bar runs, and the new version opens with your tabs. On a Mac the click downloads the disk image and opens it, and Dispatch closes: drag Dispatch to Applications and start it again; the app is not signed, so run <code>xattr -cr /Applications/Dispatch.app</code> in Terminal once before that start. The check reads the public releases on GitHub and needs no login and no extra tool. The line below the title of this window shows the version and the result of the check. Dispatch checks once an hour; <b>Check for update</b> next to that line checks now, and after it found a new version it installs it.</li>
-          <li><b>Options</b> (the gear next to <b>?</b>) opens the Options window. It holds the alerts, the colour theme of the window and the terminals (Slate, or Graphite with a blue, indigo, teal or amber accent) and the size of the text in the window and in the terminals (90 to 150 percent). A change applies at once, and Dispatch keeps the choices on this computer.</li>
+          <li><b>Options</b> (the gear next to <b>?</b>) opens the Options window. It holds where the work runs (see Where the work runs above), the alerts, the colour theme of the window and the terminals (Slate, or Graphite with a blue, indigo, teal or amber accent) and the size of the text in the window and in the terminals (90 to 150 percent). A change applies at once, and Dispatch keeps the choices on this computer.</li>
           <li><b>Alerts.</b> When a task starts to wait for you, Dispatch alerts you one time: a plan is ready, a report has a question or needs a permission, or a worker waits at a prompt. Each alert has its own switch in Options: a system <b>notification</b> that names the task and what it waits for, a short, quiet <b>chime</b>, and the Dispatch button in the taskbar that <b>blinks</b> until you open the window. The tasks that already wait when Dispatch starts give no alert. The chime plays only after your first key or click in Dispatch since its start, because the window may play sound only then. While night mode is on, only a plan with a HOLD decision, a permission and a prompt alert, because night mode takes the other decisions itself. A test build that runs with <code>npm run tauri dev</code> shows the notification as from PowerShell.</li>
-          <li><b>The bar at the bottom</b> shows on its right side "Claude account:" with the email of the Claude account that Claude Code is signed in with on this computer, then the weekly usage of that account for all models and for Fable, the version of Claude Code and the version of Dispatch. Dispatch reads the account and the versions at the start and then once a minute, so a new login or an update of Claude Code shows within a minute. The email stays on this computer. Without a login the bar says "Not signed in to Claude Code"; without Claude Code it says "Claude Code not found".</li>
+          <li><b>The bar at the bottom</b> shows on its right side "Claude account:" with the email of the Claude account that Claude Code is signed in with on the computer that does the work, then the weekly usage of that account for all models and for Fable, the version of Claude Code and the version of Dispatch. The computer that does the work is this PC, or the host of the focused terminal in the mode Use hosts. With several hosts the name of that host stands in front of the account, and a click in a terminal of another host shows the values of that host. When the versions of this window and a host differ, the version part shows both versions in the wait colour; with several hosts it names the host. Dispatch reads the account and the versions at the start and then once a minute, so a new login or an update of Claude Code shows within a minute. The email stays on this computer. Without a login the bar says "Not signed in to Claude Code"; without Claude Code it says "Claude Code not found".</li>
           <li><b>The weekly usage</b> in the bar, for example "Week: all models 41 % · Fable 7 %", is the percent of the weekly limits of your subscription that is used, as <code>/usage</code> of Claude Code shows it. Dispatch reads it at the start and then every 5 minutes; each read starts Claude Code for a moment without a window, and Claude Code asks Anthropic for the numbers. The tooltip of each value says when the week starts again and when Dispatch read it. The numbers stay on this computer. When they cannot be read the bar says "Usage not known" and keeps the last values; an account without a weekly limit shows "No weekly limit", and "Fable: no weekly limit" when the usage screen has no line for Fable. Without a login or without Claude Code the two values are empty. In a narrow window the email is cut first, then the versions.</li>
           <li><b>?</b> opens this help.</li>
         </ul>
@@ -375,7 +414,7 @@
           <p id="host-run-state">The host is not running.</p>
           <label class="options-list">
             <span>Key</span>
-            <input type="text" id="host-run-key" readonly spellcheck="false" autocomplete="off" title="The key of the host on this PC; another window needs it in the mode Use a host" />
+            <input type="text" id="host-run-key" readonly spellcheck="false" autocomplete="off" title="The key of the host on this PC; another window needs it in the mode Use hosts" />
           </label>
           <div class="buttons">
             <button id="host-run-start" title="Start dispatch-host on this PC and use it in this window">Start the host</button>
@@ -387,7 +426,7 @@
             <span>Start the host at each Windows sign-in</span>
           </label>
           <p id="host-run-error" hidden></p>
-          <p>Start runs dispatch-host from the folder of Dispatch, switches this window to Use a host on 127.0.0.1 and restarts Dispatch; the terminals of this window end. Stop ends the host and its terminals. New key restarts the host with a new key; every other window needs the new key.</p>
+          <p>Start runs dispatch-host from the folder of Dispatch, adds or updates the row 127.0.0.1 of this PC in the host list, switches this window to Use hosts and restarts Dispatch; the terminals of this window end. Stop ends the host and its terminals, removes that row and restarts Dispatch; with an empty list this window goes back to This PC does the work. New key restarts the host with a new key; every other window needs the new key.</p>
         </fieldset>
         <fieldset>
           <legend>Alerts when a task waits for you</legend>

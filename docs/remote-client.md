@@ -2,6 +2,8 @@
 
 Design for ticket `remote-client`, written 2026-11-11. No code changes come with this file. Each task in "Tasks that follow" gets its own brief and plan.
 
+The section "Several hosts" (2026-11-12, ticket `remote-multi-host`) extends the design: one window now connects to several hosts. Since then the mode "Use a host" is named "Use hosts". The other sections keep the original design with one host.
+
 ## The problem and the result
 
 The user wants to use Dispatch on a laptop, but the work must run on the desktop PC: the Claude Code sessions, the terminals, git and the project files. Today Dispatch does everything in one window on one PC, so the laptop can only show its own files. The result: a small host program on the desktop does the work, and the Dispatch window on the laptop (or on the desktop) connects to it over Tailscale and shows and controls it.
@@ -74,7 +76,7 @@ The same app runs in one of two modes, chosen in Options.
 | Mode | What happens |
 |---|---|
 | **This PC does the work** (default) | Exactly today's behaviour. The backend runs inside the app, no host starts, nothing listens on the network. |
-| **Use a host** | The window takes the host address, the port and the key. It sends every host call over the WebSocket. The title bar shows the host name. |
+| **Use hosts** (first "Use a host") | The window takes a list of hosts, each with a name, an address, a port and a key. It opens one WebSocket per host and sends every host call over the connection of the host that owns the pane, the project or the chat. The title bar shows the names of the hosts. |
 
 On the desktop, Options also has **Run the host on this PC**. It starts the host, offers to start it at each Windows sign-in, shows the address and the key, and switches this window to "Use a host" with `127.0.0.1`. Thus the desktop window and the laptop window are two equal windows of one host.
 
@@ -116,14 +118,36 @@ In this order. Each task keeps the single-PC mode unchanged in behaviour. The fi
 5. **Task 5: `remote-host-install`.** Scope: the installer ships the host next to the app; Options gets "Run the host on this PC" with start, stop, the key, the address and "start at sign-in"; one host per user at a time; the update stops and restarts the host. Proof: install of a test build with its own identifier, host start from Options, a reconnect after a window restart, and an update of the test build with the host running.
 6. **Task 6: `remote-folder-chooser`.** Scope: the folder chooser inside the page for "Use a host" mode, on `dir_list`; local mode keeps the native dialog. Proof: the Project button and focus mode select a desktop folder from a window in "Use a host" mode.
 7. **Task 7: `remote-shared-state`.** Scope: the triage chat of each project and the Nightmode switch move from the window's `state.json` to a file of the host; the driver lease for the automatic actions. Proof: a second window opens the workspace of a project and continues the first window's triage chat; with two windows open, one worker change gives one line in the triage chat, not two.
-8. **Task 8: `remote-help-and-readme`.** Scope: the Help window, the README and the Options texts describe both modes, the setup of the host and Tailscale; the Privacy section of the README says what travels between the PCs (only on the tailnet). Proof: reading.
+8. **Task 8: `remote-help-and-readme`.** Scope: the Help window, the README and the Options texts describe both modes, the setup of the host and Tailscale; the Privacy section of the README says what travels between the PCs (only on the tailnet). Proof: reading. This task ran as task 10, `remote-multi-host-help`, after task 9.
+9. **Task 9: `remote-multi-host`** (done 2026-11-12, commit `3b36a73`). Scope: one window connects to several hosts; see "Several hosts". Proof: a test copy against two hosts on one PC.
+10. **Task 10: `remote-multi-host-help`.** Scope: the texts of task 8 for both modes and several hosts, and the section "Several hosts" of this file. Proof: reading, with a table of the code line behind each statement.
+
+## Several hosts
+
+Ticket `remote-multi-host`, 2026-11-12. One window connects to several hosts at once and shows the projects of all of them. The host program and its protocol did not change: a host of version 0.1.52 serves the new window.
+
+- **The host list.** Options has the mode "Use hosts" with one row per host: Name, Address, Port, Key and Remove, and the button "Add host". Each entry has a UUID that the window makes when the user adds it; the id survives a rename and a new address. A change counts at the next start of Dispatch. "Run the host on this PC" adds or updates the row `127.0.0.1`; Stop removes it, and an empty list goes back to "This PC does the work".
+- **The modes stay two** (decision 8): "This PC does the work" or "Use hosts" with one or more hosts. A window does not do work itself and use hosts at the same time.
+- **The transport.** One WebSocket per entry with an address and a key, each with its own retries (1 s doubled up to 10 s), its own refusal and its own first try. Every hello carries the one window id of this window. The window-only calls stay with the window, as before.
+- **Keys.** The key of a project is `<host id>|<path key>` in the mode "Use hosts" and the plain path key in the mode "This PC does the work". Each saved pane and each focus project carries its host; a saved value without a host belongs to the first host of the list.
+- **Names.** With more than one host each project name gets ` · <host name>` after it: the pills, the Focus columns, the Map, the Overview cards, the chat groups and the tab labels. With one host nothing changes. The title is "Dispatch · host <name>" or "Dispatch · hosts <name>, <name>".
+- **Lists without a project.** `chat_list` and `worker_list` are read from every host and merged, each item with its host. A host whose read fails keeps its last list.
+- **Shared state per host.** Each host keeps its own `shared.json`: the Nightmode switch and the triage chat of each of its projects. The driver lease is a lease of one host, so a window can drive one host and not another.
+- **The Nightmode switch.** One switch in the top bar: on when every host is on, off when every host is off, and a third look (`aria-checked="mixed"`, the knob in the middle) when they differ; the tooltip names the hosts that are on and off. A click on on turns every host off; a click on off or on the third look turns every host on. A host that is not reachable keeps its switch and is left out of the look.
+- **A host that is gone.** The bar below the top bar has one row per host that is not reachable or refused the window, with its name, address and port; a refused row has Try again. The panes and projects of the other hosts keep working.
+- **The status bar** follows the focused terminal: it shows the account, the usage and the versions of that terminal's host, with the host name in front when the window has more than one host. It polls every host and keeps the last values of each.
+- **New terminals and projects.** The first tab at a start without saved tabs runs on the first host; a split runs on the host of the focused pane; a chat or a worker opens on its host. The folder chooser has a host list box at its top, the host of the focused pane first, hidden with one host.
+- **Migration.** The old setting of one host becomes one entry named by its address. The saved focus projects, triage records, triage choices and limits, earlier triage marks, card places and focus sizes of a one-host window are copied once to the key with the host (`migrateStoredKeys`). The file of the mode "This PC does the work" keeps its format.
 
 ## Open points
 
 - **A second listen address.** The desktop window reaches the host through `127.0.0.1`, next to the Tailscale address of user decision 2. The key guards both. The alternative is that the desktop window also uses the Tailscale address, which fails when Tailscale is down on the desktop. Task 3 needs the user's yes on this.
 - **One terminal in two windows.** This design does not mirror a terminal. If the user wants to continue a desktop terminal on the laptop, a later task can add a "take over" that moves a terminal to another window id.
 - **A Mac as the desktop.** The host builds on macOS like the app, but the worker pipeline is Windows-only today, so a Mac host has no tasks.
-- **More than one laptop.** The design allows several window ids at one host. The first version is tested with two windows: the desktop's and one laptop's.
+- **More than one laptop, more than one host.** Several windows at one host are the design, and several hosts in one window are done (`remote-multi-host`). The proof ran two hosts on one PC; a host on a second real PC over Tailscale was not tried yet.
+- **Two hosts on one PC.** Both read the same `~/.claude`, so the chat list shows each chat once per host. With two real PCs this does not happen.
+- **Tabs in a narrow window.** With the projects of several hosts, tabs can lie outside a narrow top bar, and the longer names make this happen sooner.
+- **Night mode with a host that is gone.** The switch leaves that host out of its look and does not change it; nobody tried this by hand.
 - **The Tailscale access rules (ACL) of the user's tailnet.** If they limit traffic between the two PCs, the port of the host must be allowed.
 - **Install without the app.** A host without the window on a headless PC is possible with this design, but no task ships it alone.
 

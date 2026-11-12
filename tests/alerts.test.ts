@@ -119,7 +119,7 @@ test("the Options dialog holds the three switches and both lists; the top bar ho
   assert.ok(dialog.includes('id="theme"') && dialog.includes('id="text-size"'), "both lists are in the dialog");
 });
 
-test("the Options dialog holds the section Run the host on this PC; the Help does not name it yet (task 8)", () => {
+test("the Options dialog holds the section Run the host on this PC, and the Help names it (remote-multi-host-help)", () => {
   const start = HTML.indexOf('<dialog id="options">');
   const dialog = HTML.slice(start, HTML.indexOf("</dialog>", start));
   assert.match(dialog, /<legend>Run the host on this PC<\/legend>/);
@@ -128,7 +128,7 @@ test("the Options dialog holds the section Run the host on this PC; the Help doe
   assert.match(dialog, /id="host-run-key" readonly/);
   const helpStart = HTML.indexOf('<dialog id="help">');
   const help = HTML.slice(helpStart, HTML.indexOf("</dialog>", helpStart));
-  assert.ok(!help.includes("Run the host on this PC"), "the Help text changes in task 8");
+  assert.ok(help.includes("Run the host on this PC"), "the Help names the section");
 });
 
 test("the Help says where the theme and the text size are and what the alerts do", () => {
