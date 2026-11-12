@@ -2,6 +2,12 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.55 (2026-11-12)
+- Setup pipeline has the switch "Task branches": a task works on its own branch, and a Merge card merges it into your branch when you click Merge. A gate command of your choice must pass first.
+- Setup pipeline has the switch "Measure before the plan": the plan run may run the commands you list, one at a time, and the plan shows what it measured.
+- A window "What's new" opens once after an update and lists what the new versions brought. **?** → **What's new** shows the whole list.
+- The worker script has new parts, so Setup pipeline shows the step Worker script as To do once in a project that is set up. Apply it once.
+
 ## 0.1.54 (2026-11-12)
 - The Environment panel has a switch for Remote Control: a click turns it on or off for the session of the pane, on this PC or on a host.
 - The top bar shows "N old sessions" while Claude Code still keeps worker sessions of finished tasks open. Its window lists them, and End closes one session; its task does not change.
