@@ -35,13 +35,17 @@ export interface HostVersions {
   host: string;
 }
 
-/** The Dispatch part: in the mode "Use a host" it warns when the window and the host run different versions. */
-function dispatchPart(version: string, host: HostVersions | null | undefined): StatusPart {
+/**
+ * The Dispatch part: in the mode "Use hosts" it warns when the window and the host run different
+ * versions; with `hostName` the warning names the host (remote-multi-host).
+ */
+function dispatchPart(version: string, host: HostVersions | null | undefined, hostName: string | null | undefined): StatusPart {
   if (!host) return part(`Dispatch ${version}`, DISPATCH_TITLE);
   if (host.window !== host.host) {
+    const which = hostName ? `host ${hostName}` : "host";
     return part(
-      `Dispatch ${host.window} · host ${host.host}`,
-      `This window runs Dispatch ${host.window}, the host runs Dispatch ${host.host}. Update both to the same version.`,
+      `Dispatch ${host.window} · ${which} ${host.host}`,
+      `This window runs Dispatch ${host.window}, the ${which} runs Dispatch ${host.host}. Update both to the same version.`,
       true,
     );
   }
@@ -50,13 +54,18 @@ function dispatchPart(version: string, host: HostVersions | null | undefined): S
 
 /**
  * The three parts of the bar for a reply, or "…" in each part before the first reply. `host`
- * gives the two versions in the mode "Use a host".
+ * gives the two versions in the mode "Use hosts". `hostName` names the host whose values the bar
+ * shows when the window has more than one (remote-multi-host): the account part starts with it.
  */
-export function statusParts(info: StatusInfo | null, host?: HostVersions | null): { account: StatusPart; claude: StatusPart; dispatch: StatusPart } {
+export function statusParts(
+  info: StatusInfo | null,
+  host?: HostVersions | null,
+  hostName?: string | null,
+): { account: StatusPart; claude: StatusPart; dispatch: StatusPart } {
   if (!info) {
     return { account: part(WAITING, ACCOUNT_TITLE), claude: part(WAITING, CLAUDE_TITLE), dispatch: part(WAITING, DISPATCH_TITLE) };
   }
-  const account =
+  const named =
     info.account.state === "signed-in" && info.account.email
       ? part(`${ACCOUNT_LABEL}${info.account.email}`, ACCOUNT_TITLE)
       : info.account.state === "signed-out"
@@ -70,7 +79,8 @@ export function statusParts(info: StatusInfo | null, host?: HostVersions | null)
       : info.claude.state === "missing"
         ? part("Claude Code not found", CLAUDE_TITLE, true)
         : part("Claude Code, version not known", CLAUDE_TITLE);
-  return { account, claude, dispatch: dispatchPart(info.dispatch, host) };
+  const account = hostName ? { ...named, text: `${hostName} · ${named.text}` } : named;
+  return { account, claude, dispatch: dispatchPart(info.dispatch, host, hostName) };
 }
 
 /** One weekly line of `/usage` of Claude Code: its name as Claude Code writes it ("all models", "Fable"), the percent used and the reset text. */

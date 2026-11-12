@@ -2,7 +2,7 @@
 // the last tool calls and the last message of each, its tokens, the files it changed, and a
 // timeline of all its tool calls. It reads the transcripts again and again from where it stopped.
 
-import { call } from "./backend";
+import { call, type HostId } from "./backend";
 import { drawLinks, type Link } from "./links";
 
 /** A new read this often while the view is open. Claude Code writes a line when a call starts or ends. */
@@ -67,6 +67,8 @@ interface Actor {
 
 /** What the view shows about the worker; the Map gives it, and asks again at each render. */
 export interface FlowTarget {
+  /** The host of the worker: its transcript is there (remote-multi-host). */
+  host: HostId;
   session: string;
   project: string;
   task: string;
@@ -203,7 +205,7 @@ export function openFlow(host: HTMLElement, target: FlowTarget, actions: FlowAct
   const read = async () => {
     if (!open) return;
     try {
-      const reply = await call<FlowFile[]>("session_flow", { session: target.session, from: positions });
+      const reply = await call<FlowFile[]>(target.host, "session_flow", { session: target.session, from: positions });
       for (const file of reply) take(file);
       // A worker that ends writes no line about it; its state comes from the worker list.
       const state = target.state();

@@ -1,4 +1,4 @@
-import { call } from "./backend";
+import { call, type HostId } from "./backend";
 import { checkText, type Finding, findingElement, optionsText, type RulesCheck, removeAllButton, savedOptions, tick } from "./rulecheck";
 
 /** One change that the setup makes in a project. */
@@ -45,8 +45,9 @@ const commitTitle = commitEl.title;
 /** The checkboxes of the settings. `data-option` gives the name of the setting. */
 const optionEls = [...dialog.querySelectorAll<HTMLInputElement>("#setup-options input")];
 
-/** The folder for which the dialog shows the steps. */
+/** The folder for which the dialog shows the steps, and its host (remote-multi-host). */
 let folder: string | null = null;
+let folderHost: HostId = "";
 /** The positions of the working rules that the user unchecked. Each rule is on when the dialog opens. */
 const rulesOff = new Set<number>();
 /** Every step of the shown plan is done. */
@@ -61,7 +62,7 @@ let checkRun = 0;
 
 /** Takes a rule out of its file as a rule that is off; On in the Rules popup puts it back. */
 async function removeFinding(finding: Finding): Promise<void> {
-  await call("set_rule", { cwd: folder, file: finding.file, group: finding.group, text: finding.text, state: "off" });
+  await call(folderHost, "set_rule", { cwd: folder, file: finding.file, group: finding.group, text: finding.text, state: "off" });
 }
 
 /** Shows the conflicts of the rules with the pipeline, with Remove and Remove all. */
@@ -87,14 +88,14 @@ async function showConflicts(check: RulesCheck): Promise<void> {
  * Starts the check of the rules of the folder with the choice of the Rules popup. The window
  * stays usable while it runs; the state line counts the time against the limit.
  */
-function checkRules(target: string): void {
+function checkRules(host: HostId, target: string): void {
   const run = ++checkRun;
   const options = savedOptions();
   const stop = tick(options, (progress) => {
     if (run !== checkRun) return;
     checkStateEl.textContent = `Checking the rules of the project with ${optionsText(options)}: ${progress}. Apply works meanwhile; the lists in the Rules popup change the values.`;
   });
-  call<RulesCheck>("check_rules", { cwd: target, scope: "pipeline", ...options })
+  call<RulesCheck>(host, "check_rules", { cwd: target, scope: "pipeline", ...options })
     .then((check) => {
       stop();
       return run === checkRun ? showConflicts(check) : undefined;
@@ -160,7 +161,7 @@ async function run(command: "pipeline_plan" | "pipeline_apply" | "set_project_op
   // The positions of the checked working rules. Apply adds these.
   const rules = [...stepsEl.querySelectorAll<HTMLInputElement>(".setup-rules input:checked")].map((box) => Number(box.dataset.rule));
   try {
-    show(await call<Plan>(command, { cwd: folder, options, rules }));
+    show(await call<Plan>(folderHost, command, { cwd: folder, options, rules }));
   } catch (error) {
     messageEl.textContent = String(error);
   }
@@ -168,15 +169,18 @@ async function run(command: "pipeline_plan" | "pipeline_apply" | "set_project_op
 
 /**
  * Connects the Setup pipeline button and its dialog. `currentFolder` gives the folder of
- * the focused terminal. `onClose` runs when the dialog closes. `beforeApply` runs with the
- * folder before the setup changes the files.
+ * the focused terminal and its host. `onClose` runs when the dialog closes. `beforeApply` runs
+ * with the host and the folder before the setup changes the files.
  */
 export function initPipeline(
-  currentFolder: () => string | null | undefined,
+  currentFolder: () => { host: HostId; folder: string | null | undefined },
   onClose: () => void,
-  beforeApply: (folder: string) => Promise<void>,
+  beforeApply: (host: HostId, folder: string) => Promise<void>,
 ): void {
-  document.querySelector("#setup-pipeline")!.addEventListener("click", () => open(currentFolder() ?? null));
+  document.querySelector("#setup-pipeline")!.addEventListener("click", () => {
+    const current = currentFolder();
+    open(current.host, current.folder ?? null);
+  });
   for (const option of optionEls) {
     option.addEventListener("change", () => {
       const options = Object.fromEntries(optionEls.map((el) => [el.dataset.option, el.checked])) as unknown as Options;
@@ -187,7 +191,7 @@ export function initPipeline(
     if (!folder) return;
     applyEl.disabled = true;
     try {
-      await beforeApply(folder);
+      await beforeApply(folderHost, folder);
     } catch (error) {
       console.error("the record of the triage role failed", error);
     }
@@ -198,7 +202,7 @@ export function initPipeline(
     commitEl.disabled = true;
     try {
       // The button stays off after a commit: the setup files are committed.
-      messageEl.textContent = await call<string>("pipeline_commit", { cwd: folder });
+      messageEl.textContent = await call<string>(folderHost, "pipeline_commit", { cwd: folder });
     } catch (error) {
       messageEl.textContent = String(error);
       commitEl.disabled = false;
@@ -213,9 +217,10 @@ export function initPipeline(
   });
 }
 
-/** Shows the dialog with the steps of a folder. Without a folder it says so. */
-function open(target: string | null): void {
+/** Shows the dialog with the steps of a folder of a host. Without a folder it says so. */
+function open(host: HostId, target: string | null): void {
   folder = target;
+  folderHost = host;
   allDone = false;
   rulesOff.clear();
   projectEl.textContent = "";
@@ -230,13 +235,13 @@ function open(target: string | null): void {
   dialog.showModal();
   if (folder) {
     void run("pipeline_plan");
-    checkRules(folder);
+    checkRules(host, folder);
   } else messageEl.textContent = "The focused terminal has no folder.";
 }
 
 /** Whether a project has a step of the setup that is not done. It changes no file. */
-export async function setupNeeded(root: string): Promise<boolean> {
-  const plan = await call<Plan>("pipeline_plan", { cwd: root, rules: [] });
+export async function setupNeeded(host: HostId, root: string): Promise<boolean> {
+  const plan = await call<Plan>(host, "pipeline_plan", { cwd: root, rules: [] });
   return plan.steps.some((step) => !step.done);
 }
 
@@ -244,9 +249,9 @@ export async function setupNeeded(root: string): Promise<boolean> {
  * Opens the Setup pipeline window for a project and waits until the user closes it. Gives true
  * when every step was done at that time: the user clicked Apply, or nothing was to do.
  */
-export function openSetup(root: string): Promise<boolean> {
+export function openSetup(host: HostId, root: string): Promise<boolean> {
   return new Promise((resolve) => {
     pending = resolve;
-    open(root);
+    open(host, root);
   });
 }

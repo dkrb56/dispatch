@@ -49,3 +49,10 @@ test("index.html holds the chooser with the text box, Up, Choose and Cancel; the
   const help = HTML.slice(helpStart, HTML.indexOf("</dialog>", helpStart));
   assert.ok(!/folder chooser/i.test(help), "the Help text changes in task 8");
 });
+
+test("the chooser has a hidden host list box in its head for a window with several hosts (remote-multi-host)", () => {
+  const start = HTML.indexOf('<dialog id="folder-chooser">');
+  const dialog = HTML.slice(start, HTML.indexOf("</dialog>", start));
+  const head = dialog.slice(0, dialog.indexOf("</header>"));
+  assert.match(head, /<select id="folder-chooser-host"[^>]* hidden>/, "the list box is in the head and hidden at the start");
+});

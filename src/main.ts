@@ -1,6 +1,22 @@
-import { call, type HostSettings, hostInfo, hostSettings, initBackend, onConnection, onEvent } from "./backend";
+import {
+  backendName,
+  backends,
+  call,
+  firstBackend,
+  type HostId,
+  type HostSettings,
+  hostSettings,
+  initBackend,
+  knownBackend,
+  LOCAL,
+  onConnection,
+  onEvent,
+  usesHosts,
+  windowCall,
+} from "./backend";
 import { chooseFolder } from "./folderchooser";
-import { initHostMode, titleBase } from "./hostmode";
+import { initHostMode, reachable, titleBase } from "./hostmode";
+import { keyHost, keyPath, mergeLists, nightSwitch, pathKey, projectKey, projectLabel, type ProjectRef } from "./hosts";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -17,7 +33,7 @@ import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { MENU_ABOVE_LINES, menuScreen, parseMenu, parseReview, SUBMIT_QUESTION } from "./menu";
 import { type MenuRecord, type ScreenRow } from "./menurecord";
 import { getVersion } from "@tauri-apps/api/app";
-import { type FileEntry, initViewer, openViewer, showGallery, statFile } from "./files";
+import { type FileEntry, type FileInfo, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
 import { agentsText, rowParts } from "./workerrow";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
@@ -32,7 +48,7 @@ import { alertActions, alertState, CHIME, newWaits, notificationText, type Wait 
 import { alertOptions, initOptions } from "./options";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
 import { initRules } from "./rules";
-import { initStatusBar } from "./statusbar";
+import { initStatusBar, redrawStatusBar } from "./statusbar";
 import { terminalTheme, themeName, themeTokens } from "./theme";
 import { nightAtStart, nightLines, nightSyncLines } from "./night";
 import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
@@ -54,6 +70,8 @@ interface SavedPane {
   project?: string;
   /** A Commands terminal: it runs the commands of the triage chat of this project folder. */
   runs?: string;
+  /** The host of the terminal (remote-multi-host); missing for this PC and in files before that ticket. */
+  host?: HostId;
 }
 
 interface SavedSplit {
@@ -93,6 +111,8 @@ interface TriageRecord {
 
 /** One terminal. */
 interface Pane extends SavedPane {
+  /** The backend that runs the terminal: `local` or a host of the list. */
+  host: HostId;
   tabId: string;
   term: Terminal;
   fit: FitAddon;
@@ -154,7 +174,8 @@ interface PaneInfo {
     /** The MCP servers of the session. `state` is `connected`, `pending` or `failed`. */
     connectors: { name: string; state: string }[];
   } | null;
-  outputs: FileEntry[];
+  /** The files of the session, as the backend gives them: without their host. */
+  outputs: FileInfo[];
 }
 
 /** One Claude Code chat. The `chat_list` command gives all of them, the newest first. */
@@ -171,6 +192,8 @@ interface Chat {
   running: boolean;
   /** The terminal of this app in which the chat runs. */
   pane: string | null;
+  /** The host that has the chat; the window adds it to the reply (remote-multi-host). */
+  host: HostId;
 }
 
 /** A background session of Claude Code. The `worker_list` command gives all of them. */
@@ -194,6 +217,8 @@ interface Worker {
   agents: number;
   /** The agents that wrote to their chat file a short time ago. It is an estimate. */
   agentsActive: number;
+  /** The host that runs the worker; the window adds it to the reply (remote-multi-host). */
+  host: HostId;
 }
 
 /** The Claude Code command with which the shell of a new terminal starts. */
@@ -338,7 +363,7 @@ function setTheme(name: string | null): void {
 function focusedPane(): Pane | undefined {
   // In focus mode, the triage pane of the column that the user worked in last.
   if (focusOn) {
-    const root = focusProjects.find((known) => projectKey(known) === focusCurrent) ?? focusProjects[0];
+    const root = focusProjects.find((known) => refKey(known) === focusCurrent) ?? focusProjects[0];
     const triage = root ? workspacePanes(root).triage : undefined;
     if (triage) return triage;
   }
@@ -407,7 +432,7 @@ function refreshContext(pane: Pane): void {
     usage: state?.session === session.id ? state.usage : undefined,
   };
   pane.context = next;
-  call<ContextUsage>("context_usage", { cwd: pane.cwd, session: session.id, model: session.model })
+  call<ContextUsage>(pane.host, "context_usage", { cwd: pane.cwd, session: session.id, model: session.model })
     .then((usage) => {
       next.usage = usage;
       next.error = undefined;
@@ -579,10 +604,10 @@ async function pollSide(): Promise<void> {
     // A change of the folder during the request sets `sideDue` to 0 again.
     pane.sideDue = Date.now() + SIDE_REFRESH_MS;
     try {
-      const info = await call<PaneInfo>("pane_info", { id: pane.id, cwd: pane.cwd });
+      const info = await call<PaneInfo>(pane.host, "pane_info", { id: pane.id, cwd: pane.cwd });
       pane.info = info;
       // Keep the files of a session after the session stops.
-      if (info.session) pane.outputs = info.outputs;
+      if (info.session) pane.outputs = onHost(pane.host, info.outputs);
       refreshContext(pane);
       renderSide(pane);
     } catch (error) {
@@ -594,12 +619,13 @@ async function pollSide(): Promise<void> {
 
 /** The chat list that the chat panel shows. A refresh with the same list changes nothing. */
 let chatsShown = "";
-/** The chats that the user opened a short time ago, with the pane and the time of the start. */
+/** The chats that the user opened a short time ago, with the pane and the time of the start; by host and chat id. */
 const startedChats = new Map<string, { pane: string; time: number }>();
 
-/** Shows a chat in a tab. A chat that does not run in this app gets a new tab. */
+/** Shows a chat in a tab. A chat that does not run in this app gets a new tab on the host of the chat. */
 async function openChat(chat: Chat): Promise<void> {
-  const started = startedChats.get(chat.id);
+  const startKey = `${chat.host}\n${chat.id}`;
+  const started = startedChats.get(startKey);
   const recent = started && Date.now() - started.time < CHAT_START_MS ? started.pane : null;
   const open = panes.get(chat.pane ?? recent ?? "");
   if (open) {
@@ -608,66 +634,74 @@ async function openChat(chat: Chat): Promise<void> {
     await saveState();
     return;
   }
-  const pane: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: chat.cwd };
-  startedChats.set(chat.id, { pane: pane.id, time: Date.now() });
+  const pane: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: chat.cwd, host: chat.host };
+  startedChats.set(startKey, { pane: pane.id, time: Date.now() });
   const starts = new Map([[pane.id, { resume: chat.id }]]);
   await openTab({ id: crypto.randomUUID(), layout: pane, focus: pane.id }, false, starts);
   await saveState();
 }
 
-/** The key under which the app remembers the triage chat of a project. */
-function triageKey(project: string): string {
-  return `triage:${projectKey(project)}`;
+/** The key under which the app remembers the triage chat of a project (its project key, with the host). */
+function triageKey(host: HostId, project: string): string {
+  return `triage:${projectKey(host, project)}`;
 }
 
 /** The key under which the app remembers the role mark of the triage chat of a project. */
-function roleKey(project: string): string {
-  return `triage-role:${projectKey(project)}`;
+function roleKey(host: HostId, project: string): string {
+  return `triage-role:${projectKey(host, project)}`;
 }
 
 /**
  * The triage chat of each project, by project key. It is in `shared.json` of the program that does
  * the work (remote-shared-state), so every window of this PC or of the host continues the same chat.
+ * Each host keeps its own file (remote-multi-host); this map holds the records of every host.
  * The browser store of a window keeps a second record, for a project that the shared file does not have.
  */
 const triageRecords = new Map<string, TriageRecord>();
 
 /** The id of the triage chat that the app remembers for a project, or null. */
-function rememberedTriage(project: string | null | undefined): string | null {
-  return triageRecords.get(projectKey(project))?.chat ?? null;
+function rememberedTriage(host: HostId, project: string | null | undefined): string | null {
+  return triageRecords.get(projectKey(host, project))?.chat ?? null;
 }
 
-/** Records the triage chat of a project and its role mark, in the shared file and in the browser store. */
-function rememberTriage(project: string, record: TriageRecord): void {
-  triageRecords.set(projectKey(project), record);
+/** Records the triage chat of a project and its role mark, in the shared file of its host and in the browser store. */
+function rememberTriage(host: HostId, project: string, record: TriageRecord): void {
+  triageRecords.set(projectKey(host, project), record);
   try {
-    localStorage.setItem(triageKey(project), record.chat);
-    if (record.role !== null) localStorage.setItem(roleKey(project), record.role);
+    localStorage.setItem(triageKey(host, project), record.chat);
+    if (record.role !== null) localStorage.setItem(roleKey(host, project), record.role);
   } catch {
     // The shared file has the record.
   }
-  void call("shared_set", { triage: { [projectKey(project)]: record } }).catch((error) => console.error("save of the triage chat failed", error));
+  // The host keys its records by the path of the project.
+  void call(host, "shared_set", { triage: { [pathKey(project)]: record } }).catch((error) => console.error("save of the triage chat failed", error));
+}
+
+/** Takes the triage records of the shared file of one host: the host keys them by path. */
+function takeTriageRecords(host: HostId, saved: unknown): void {
+  if (!saved || typeof saved !== "object") return;
+  for (const [key, record] of Object.entries(saved as Record<string, Partial<TriageRecord> | null>)) {
+    if (typeof record?.chat !== "string") continue;
+    triageRecords.set(projectKey(host, key), { chat: record.chat, role: typeof record.role === "string" ? record.role : null });
+  }
 }
 
 /**
- * Reads the triage chats at a start: the records of the shared file, then the browser store of this
- * window for each project that the shared file does not have.
+ * Reads the triage chats at a start: the records of the shared file of each host, then the browser
+ * store of this window for each project that the shared files do not have. A stored key without a
+ * host (before remote-multi-host) belongs to the first backend.
  */
-function loadTriageRecords(saved: unknown): void {
-  if (saved && typeof saved === "object") {
-    for (const [key, record] of Object.entries(saved as Record<string, Partial<TriageRecord> | null>)) {
-      if (typeof record?.chat !== "string") continue;
-      triageRecords.set(key, { chat: record.chat, role: typeof record.role === "string" ? record.role : null });
-    }
-  }
+function loadTriageRecords(byHost: readonly (readonly [HostId, unknown])[]): void {
+  for (const [host, saved] of byHost) takeTriageRecords(host, saved);
   try {
     for (let index = 0; index < localStorage.length; index++) {
       const key = localStorage.key(index);
       if (!key?.startsWith("triage:")) continue;
-      const project = key.slice("triage:".length);
+      const stored = key.slice("triage:".length);
+      const project = projectKey(keyHost(stored, firstBackend()), keyPath(stored));
       const chat = localStorage.getItem(key);
       if (chat === null || triageRecords.has(project)) continue;
-      triageRecords.set(project, { chat, role: localStorage.getItem(`triage-role:${project}`) });
+      triageRecords.set(project, { chat, role: localStorage.getItem(`triage-role:${stored}`) });
     }
   } catch {
     // Without the browser store, only the records of state.json count.
@@ -678,25 +712,25 @@ function loadTriageRecords(saved: unknown): void {
  * Records the role of the remembered triage chat of a project, if the app has no record.
  * It runs before the setup changes the role file.
  */
-async function recordTriageRole(cwd: string): Promise<void> {
-  const { root, triageStamp } = await call<ProjectRoot>("project_root", { cwd });
-  const record = triageRecords.get(projectKey(root));
-  if (record && record.role === null) rememberTriage(root, { ...record, role: triageStamp });
+async function recordTriageRole(host: HostId, cwd: string): Promise<void> {
+  const { root, triageStamp } = await call<ProjectRoot>(host, "project_root", { cwd });
+  const record = triageRecords.get(projectKey(host, root));
+  if (record && record.role === null) rememberTriage(host, root, { ...record, role: triageStamp });
 }
 
 /**
  * The chat that the triage pane of a project continues: the chat that ran there last.
  * A chat from a different place does not have the triage role, thus the app uses no other chat.
- * `stamp` is the mark of the role file at this time.
+ * `stamp` is the mark of the role file at this time. Only the chats of the project's host count.
  */
-async function triageChat(project: string, stamp: string): Promise<Chat | undefined> {
-  const key = projectKey(project);
-  const workerChats = new Set(workerList.map((worker) => worker.sessionId));
-  const chats = (await call<Chat[]>("chat_list")).filter((chat) => {
-    const folder = projectKey(chat.cwd);
+async function triageChat(host: HostId, project: string, stamp: string): Promise<Chat | undefined> {
+  const key = pathKey(project);
+  const workerChats = new Set(workerList.filter((worker) => worker.host === host).map((worker) => worker.sessionId));
+  const chats = (await call<Omit<Chat, "host">[]>(host, "chat_list")).filter((chat) => {
+    const folder = pathKey(chat.cwd);
     return (folder === key || folder.startsWith(`${key}\\`)) && !workerChats.has(chat.id);
   });
-  const record = triageRecords.get(key);
+  const record = triageRecords.get(projectKey(host, project));
   const remembered = record?.chat ?? null;
   try {
     // A chat keeps the role with which it started. After a change of the role file, a new chat starts.
@@ -704,11 +738,12 @@ async function triageChat(project: string, stamp: string): Promise<Chat | undefi
     if (role !== null && role !== stamp) return undefined;
     // Dispatch closed this chat to start a new one (context rollover). Also after a restart in the
     // middle of that switch, the new chat starts and the closed one is not continued.
-    if (remembered !== null && localStorage.getItem(switchKey(project)) === remembered) return undefined;
+    if (remembered !== null && localStorage.getItem(switchKey(projectKey(host, project))) === remembered) return undefined;
   } catch {
     // The workspace then starts a new triage session.
   }
-  return chats.find((chat) => chat.id === remembered);
+  const found = chats.find((chat) => chat.id === remembered);
+  return found ? { ...found, host } : undefined;
 }
 
 /** A model and an effort for Claude Code. An empty text uses the settings of the user. */
@@ -741,17 +776,17 @@ function limitLabel(limit: string): string {
 function showAgentCount(pane: Pane): void {
   const count = pane.barEl.querySelector<HTMLElement>(".agent-count");
   if (!count) return;
-  const mine = workerList.filter((worker) => inProject(worker, projectKey(pane.project)));
+  const mine = workerList.filter((worker) => inProject(worker, paneKey(pane)));
   const sum = (key: "agents" | "agentsActive") => mine.reduce((total, worker) => total + worker[key], 0);
   // The number shows only when a worker started an agent; hidden, it leaves no gap in the bar.
   count.textContent = agentsText(sum("agents"), sum("agentsActive"));
   count.hidden = count.textContent === "";
 }
 
-/** The model and the effort that the user selected for triage in a project. */
-function triageChoice(project: string): Choice {
+/** The model and the effort that the user selected for triage in a project (by its project key). */
+function triageChoice(key: string): Choice {
   try {
-    const saved = JSON.parse(localStorage.getItem(`triage-choice:${projectKey(project)}`) ?? "{}");
+    const saved = JSON.parse(localStorage.getItem(`triage-choice:${key}`) ?? "{}");
     return {
       model: MODELS.includes(saved.model) ? saved.model : "",
       effort: EFFORTS.includes(saved.effort) ? saved.effort : "",
@@ -761,10 +796,10 @@ function triageChoice(project: string): Choice {
   }
 }
 
-/** The context at which Dispatch gives a project a new triage chat, in tokens; 0 is off. */
-function triageLimit(project: string): number {
+/** The context at which Dispatch gives a project (by its project key) a new triage chat, in tokens; 0 is off. */
+function triageLimit(key: string): number {
   try {
-    const saved = localStorage.getItem(`triage-limit:${projectKey(project)}`);
+    const saved = localStorage.getItem(`triage-limit:${key}`);
     return saved !== null && TRIAGE_LIMITS.includes(Number(saved)) ? Number(saved) : TRIAGE_LIMIT_DEFAULT;
   } catch {
     return TRIAGE_LIMIT_DEFAULT;
@@ -818,7 +853,7 @@ async function pollChatViews(): Promise<void> {
       console.error("chat view refresh failed", error);
     }
     // Busy and idle of triage move the temporary cards of the project on (pending-task-card).
-    if (pane.project && noteStatus(pendingCards, projectKey(pane.project), pane.chat.status(), Date.now())) {
+    if (pane.project && noteStatus(pendingCards, paneKey(pane), pane.chat.status(), Date.now())) {
       savePending();
       renderChats();
     }
@@ -842,6 +877,7 @@ function runLabel(text: string, title: string): HTMLSpanElement {
  */
 function fillPaneBar(pane: Pane): void {
   const project = pane.project ?? "";
+  const key = paneKey(pane);
   const label = document.createElement("span");
   label.textContent = pane.role === "triage" ? "Triage" : "Workers";
   const model = selector(MODELS, "model");
@@ -877,11 +913,11 @@ function fillPaneBar(pane: Pane): void {
     }
     showTriageView(pane, view);
 
-    ({ model: model.value, effort: effort.value } = triageChoice(project));
+    ({ model: model.value, effort: effort.value } = triageChoice(key));
     const changed = () => {
       const choice = { model: model.value, effort: effort.value };
       try {
-        localStorage.setItem(`triage-choice:${projectKey(project)}`, JSON.stringify(choice));
+        localStorage.setItem(`triage-choice:${key}`, JSON.stringify(choice));
       } catch {
         // The choice then applies until the app closes.
       }
@@ -899,10 +935,10 @@ function fillPaneBar(pane: Pane): void {
     limit.title =
       "When the triage chat has this much context, Dispatch starts a new triage chat at a quiet moment, with a short hand-off of the open tasks. The old chat stays in the chat list.";
     for (const value of TRIAGE_LIMITS) limit.add(new Option(limitText(value), String(value)));
-    limit.value = String(triageLimit(project));
+    limit.value = String(triageLimit(key));
     limit.addEventListener("change", () => {
       try {
-        localStorage.setItem(`triage-limit:${projectKey(project)}`, limit.value);
+        localStorage.setItem(`triage-limit:${key}`, limit.value);
       } catch {
         // Without the storage the usual limit stays.
       }
@@ -938,7 +974,7 @@ function fillPaneBar(pane: Pane): void {
   hide.title = "Hide the agent view of this project; the workers go on working";
   hide.setAttribute("aria-label", "Hide the agent view of this project; the workers go on working");
   hide.addEventListener("click", () => {
-    const column = focusColumns.get(projectKey(pane.project));
+    const column = focusColumns.get(key);
     if (column) setWorkersOpen(column, false);
   });
   pane.barEl.append(hide);
@@ -946,7 +982,7 @@ function fillPaneBar(pane: Pane): void {
   // The script that triage runs reads the options of both runs from two files.
   const failed = (error: unknown) => (hint.textContent = String(error));
   const load = async () => {
-    const flags = await call<WorkerFlags>("worker_flags", { cwd: project });
+    const flags = await call<WorkerFlags>(pane.host, "worker_flags", { cwd: project });
     const values = [
       [model, flags.plan.model],
       [effort, flags.plan.effort],
@@ -970,7 +1006,7 @@ function fillPaneBar(pane: Pane): void {
   const changed = () => {
     const plan = { model: model.value, effort: effort.value };
     const work = { model: workModel.value, effort: workEffort.value };
-    saving = saving.then(() => call("set_worker_flags", { cwd: project, plan, work, agents: agents.value })).catch(failed);
+    saving = saving.then(() => call(pane.host, "set_worker_flags", { cwd: project, plan, work, agents: agents.value })).catch(failed);
     pane.term.focus();
   };
   for (const select of [model, effort, workModel, workEffort, agents]) select.addEventListener("change", changed);
@@ -992,19 +1028,25 @@ function reloadWorkerFlags(): void {
  * Setup pipeline window; the add goes on only when every step is done at its close. Gives false
  * when the user closed the window with a step to do.
  */
-async function setupProject(root: string): Promise<boolean> {
-  if (!(await setupNeeded(root))) return true;
-  return openSetup(root);
+async function setupProject(host: HostId, root: string): Promise<boolean> {
+  if (!(await setupNeeded(host, root))) return true;
+  return openSetup(host, root);
 }
 
 /**
- * Asks the user for a folder: the native dialog in the mode "This PC does the work", the folder
- * chooser of the page in the mode "Use a host", which lists the host's folders (remote-folder-chooser).
+ * Asks the user for a folder and its host: the native dialog in the mode "This PC does the work",
+ * the folder chooser of the page in the mode "Use hosts", which lists the host's folders
+ * (remote-folder-chooser). With several hosts the chooser asks for the host, the host of `start`
+ * first (remote-multi-host).
  */
-async function askFolder(title: string, start?: string): Promise<string | null> {
-  if (hostInfo()) return chooseFolder(title, start, (path) => call("dir_list", { path }));
-  const folder = await openDialog({ directory: true, defaultPath: start, title });
-  return !folder || Array.isArray(folder) ? null : folder;
+async function askFolder(title: string, start?: { host: HostId; path: string | null | undefined }): Promise<{ host: HostId; folder: string } | null> {
+  if (usesHosts()) {
+    const first = knownBackend(start?.host);
+    const hosts = [first, ...backends().filter((host) => host !== first)].map((id) => ({ id, name: backendName(id) }));
+    return chooseFolder(title, start?.host === first ? start?.path : undefined, hosts, (host, path) => call(host, "dir_list", { path }));
+  }
+  const folder = await openDialog({ directory: true, defaultPath: start?.path ?? undefined, title });
+  return !folder || Array.isArray(folder) ? null : { host: LOCAL, folder };
 }
 
 /**
@@ -1013,11 +1055,13 @@ async function askFolder(title: string, start?: string): Promise<string | null> 
  * nothing. A project with a workspace shows it and starts what does not run.
  */
 async function selectProject(): Promise<void> {
-  const folder = await askFolder("Select the project folder", focusedPane()?.cwd ?? undefined);
-  if (!folder) return;
-  const { root } = await call<ProjectRoot>("project_root", { cwd: folder });
-  if (!hasWorkspace(root) && !(await setupProject(root))) return;
-  await openWorkspace(root);
+  const focused = focusedPane();
+  const chosen = await askFolder("Select the project folder", focused ? { host: focused.host, path: focused.cwd } : undefined);
+  if (!chosen) return;
+  const { host } = chosen;
+  const { root } = await call<ProjectRoot>(host, "project_root", { cwd: chosen.folder });
+  if (!hasWorkspace(host, root) && !(await setupProject(host, root))) return;
+  await openWorkspace(host, root);
 }
 
 /** How the workspace of the project of a folder starts triage. */
@@ -1032,10 +1076,10 @@ interface WorkspaceStart {
   triage: StartCommand;
 }
 
-async function workspaceStart(cwd: string): Promise<WorkspaceStart> {
-  const info = await call<ProjectRoot>("project_root", { cwd });
-  const choice = triageChoice(info.root);
-  const chat = await triageChat(info.root, info.triageStamp);
+async function workspaceStart(host: HostId, cwd: string): Promise<WorkspaceStart> {
+  const info = await call<ProjectRoot>(host, "project_root", { cwd });
+  const choice = triageChoice(projectKey(host, info.root));
+  const chat = await triageChat(host, info.root, info.triageStamp);
   const triage: StartCommand = {
     ...(chat ? { resume: chat.id } : { run: "claude" as const }),
     triage: info.triagePrompt,
@@ -1046,9 +1090,9 @@ async function workspaceStart(cwd: string): Promise<WorkspaceStart> {
 }
 
 /** Whether a project has a workspace: an open one, or a triage chat that the app remembers. */
-function hasWorkspace(project: string): boolean {
-  const key = projectKey(project);
-  if ([...panes.values()].some((pane) => pane.role && projectKey(pane.project) === key)) return true;
+function hasWorkspace(host: HostId, project: string): boolean {
+  const key = projectKey(host, project);
+  if ([...panes.values()].some((pane) => pane.role && paneKey(pane) === key)) return true;
   return triageRecords.has(key);
 }
 
@@ -1061,10 +1105,11 @@ async function restoredStarts(layout: SavedNode): Promise<Map<string, StartComma
   const roles: SavedPane[] = [];
   const walk = (node: SavedNode) => ("children" in node ? node.children.forEach(walk) : node.role && roles.push(node));
   walk(layout);
-  const project = roles.find((pane) => pane.project)?.project;
-  if (!project) return undefined;
+  const first = roles.find((pane) => pane.project);
+  const project = first?.project;
+  if (!first || !project) return undefined;
   try {
-    const { triage } = await workspaceStart(project);
+    const { triage } = await workspaceStart(knownBackend(first.host), project);
     return new Map(roles.map((pane) => [pane.id, pane.role === "triage" ? triage : { run: "claude agents" as const }]));
   } catch (error) {
     // A project folder that is gone gives plain shells.
@@ -1085,24 +1130,24 @@ function triageCommand(info: ProjectRoot, flags: string, chat: Chat | undefined)
   return (chat && !chat.pane ? `claude --resume ${chat.id}${flags}` : `claude${flags}${name}`) + role;
 }
 
-/** Opens triage and the agent view of the project of a folder (the focused terminal's by default), side by side. */
-async function openWorkspace(cwd = focusedPane()?.cwd): Promise<void> {
+/** Opens triage and the agent view of the project of a folder of a host, side by side. */
+async function openWorkspace(host: HostId, cwd: string | null | undefined): Promise<void> {
   if (!cwd) return;
-  const { info, flags, chat, triage: start } = await workspaceStart(cwd);
+  const { info, flags, chat, triage: start } = await workspaceStart(host, cwd);
   const { root: project } = info;
-  const key = projectKey(project);
+  const key = projectKey(host, project);
 
   // The project has a workspace tab. Start the programs again in the panes that are idle.
-  const known = [...panes.values()].find((pane) => pane.role && projectKey(pane.project) === key);
+  const known = [...panes.values()].find((pane) => pane.role && paneKey(pane) === key);
   if (known) {
     activate(known.tabId);
     for (const pane of tabPanes(known.tabId)) {
-      if (!pane.role || (await call<boolean>("pane_busy", { id: pane.id }))) continue;
+      if (!pane.role || (await call<boolean>(pane.host, "pane_busy", { id: pane.id }))) continue;
       const triage = triageCommand(info, flags, chat);
       // The agent view shows only the background sessions of the project.
       const folder = pane.shell === "cmd" ? `"${project}"` : `'${project.replace(/'/g, "''")}'`;
       const command = pane.role === "agents" ? `claude agents --cwd ${folder}` : triage;
-      await call("pty_write", { id: pane.id, data: `${command}\r` });
+      await call(pane.host, "pty_write", { id: pane.id, data: `${command}\r` });
       if (pane.role === "triage") {
         pane.startedWith = flags;
         pane.barEl.querySelector(".hint")!.textContent = "";
@@ -1121,8 +1166,8 @@ async function openWorkspace(cwd = focusedPane()?.cwd): Promise<void> {
     return;
   }
 
-  const triage: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: project, role: "triage", project };
-  const agents: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: project, role: "agents", project };
+  const triage: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: project, role: "triage", project, host };
+  const agents: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: project, role: "agents", project, host };
   const starts = new Map<string, StartCommand>([
     [triage.id, start],
     [agents.id, { run: "claude agents" }],
@@ -1139,17 +1184,17 @@ async function pollTriage(): Promise<void> {
   for (const pane of panes.values()) {
     if (pane.role !== "triage" || !pane.project) continue;
     try {
-      const info = await call<PaneInfo>("pane_info", { id: pane.id, cwd: pane.cwd });
-      const remembered = rememberedTriage(pane.project);
+      const info = await call<PaneInfo>(pane.host, "pane_info", { id: pane.id, cwd: pane.cwd });
+      const remembered = rememberedTriage(pane.host, pane.project);
       if (info.session && remembered !== info.session.id) {
         // A new chat started. Record the role that it got.
-        const { triageStamp } = await call<ProjectRoot>("project_root", { cwd: pane.project });
-        rememberTriage(pane.project, { chat: info.session.id, role: triageStamp });
+        const { triageStamp } = await call<ProjectRoot>(pane.host, "project_root", { cwd: pane.project });
+        rememberTriage(pane.host, pane.project, { chat: info.session.id, role: triageStamp });
         // The chat before it stays in the chat list, marked as an earlier triage chat. A switch ends here.
-        if (remembered) addEarlierTriage(pane.project, remembered);
-        localStorage.removeItem(switchKey(pane.project));
+        if (remembered) addEarlierTriage(paneKey(pane), remembered);
+        localStorage.removeItem(switchKey(paneKey(pane)));
         // A new triage chat follows the Nightmode switch too.
-        void syncNight(pane.project);
+        void syncNight(pane.host, pane.project);
       }
       watchContext(pane, info);
     } catch (error) {
@@ -1192,15 +1237,15 @@ let lastInput = 0;
 /** The earlier triage chats of all projects. In localStorage `triage-earlier:<project>`, one list per project. */
 const earlierTriage = new Set<string>();
 
-/** The key under which a switch to a new triage chat records the id of the chat that it closes. */
-function switchKey(project: string): string {
-  return `triage-switch:${projectKey(project)}`;
+/** The key under which a switch to a new triage chat records the id of the chat that it closes; by project key. */
+function switchKey(key: string): string {
+  return `triage-switch:${key}`;
 }
 
-/** A switch to a new triage chat runs for the project (key or folder): its lines wait. */
-function switchRuns(project: string): boolean {
+/** A switch to a new triage chat runs for the project (by its key): its lines wait. */
+function switchRuns(key: string): boolean {
   try {
-    return localStorage.getItem(switchKey(project)) !== null;
+    return localStorage.getItem(switchKey(key)) !== null;
   } catch {
     return false;
   }
@@ -1221,7 +1266,7 @@ function loadEarlierTriage(): void {
 
 function addEarlierTriage(project: string, id: string): void {
   earlierTriage.add(id);
-  const key = `triage-earlier:${projectKey(project)}`;
+  const key = `triage-earlier:${project}`;
   try {
     const ids: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
     const list = Array.isArray(ids) ? ids.filter((known) => typeof known === "string") : [];
@@ -1234,7 +1279,7 @@ function addEarlierTriage(project: string, id: string): void {
 
 /** Keeps the context of the triage chat of a pane for its card, and starts the switch when it is due. */
 function watchContext(pane: Pane, info: PaneInfo): void {
-  const key = projectKey(pane.project);
+  const key = paneKey(pane);
   const before = JSON.stringify(triageContexts.get(key) ?? null);
   const session = info.session;
   let state = triageContexts.get(key);
@@ -1265,8 +1310,8 @@ function watchContext(pane: Pane, info: PaneInfo): void {
  */
 function checkSwitch(pane: Pane, session: NonNullable<PaneInfo["session"]>, state: TriageContext): void {
   if (state.switching) return;
-  const key = projectKey(pane.project);
-  const limit = triageLimit(pane.project ?? "");
+  const key = paneKey(pane);
+  const limit = triageLimit(key);
   const tokens = session.contextTokens;
   state.due = limit > 0 && tokens !== null && tokens >= limit;
   const hold = (reason: string) => {
@@ -1275,7 +1320,7 @@ function checkSwitch(pane: Pane, session: NonNullable<PaneInfo["session"]>, stat
   };
   if (!state.due) return hold("");
   if (state.failedTokens === tokens) return hold("The last try did not close the chat; the next try comes after the next turn of triage.");
-  const reason = nightOn
+  const reason = nightOf(pane.host)
     ? "Night mode is on; the new chat starts after it ends."
     : session.status === "busy"
       ? "Triage works."
@@ -1311,7 +1356,7 @@ async function programEnded(pane: Pane, ms: number): Promise<boolean> {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     await new Promise((done) => setTimeout(done, 500));
-    if (!(await call<boolean>("pane_busy", { id: pane.id }))) return true;
+    if (!(await call<boolean>(pane.host, "pane_busy", { id: pane.id }))) return true;
   }
   return false;
 }
@@ -1323,7 +1368,7 @@ async function programEnded(pane: Pane, ms: number): Promise<boolean> {
  */
 async function switchTriage(pane: Pane, state: TriageContext): Promise<void> {
   const project = pane.project ?? "";
-  const key = projectKey(project);
+  const key = paneKey(pane);
   state.switching = true;
   state.waits = "";
   renderFocus();
@@ -1335,7 +1380,7 @@ async function switchTriage(pane: Pane, state: TriageContext): Promise<void> {
       saveTriageQueue();
     }
     try {
-      localStorage.removeItem(switchKey(project));
+      localStorage.removeItem(switchKey(key));
     } catch {
       // The mark goes with the next new chat.
     }
@@ -1346,12 +1391,12 @@ async function switchTriage(pane: Pane, state: TriageContext): Promise<void> {
   };
   try {
     // From here on the lines of Dispatch for this project wait, also across a restart.
-    localStorage.setItem(switchKey(project), state.session);
+    localStorage.setItem(switchKey(key), state.session);
     const live = workerList
       .filter((worker) => inProject(worker, key) && (worker.state === "working" || worker.state === "blocked"))
       .map(workerTask);
     const queued = [...queuedApprovals.keys()].filter((entry) => entry.startsWith(`${key}\n`)).map((entry) => entry.slice(key.length + 1));
-    const text = await call<string>("triage_handoff", { cwd: project, live, queued, tokens: state.tokens ?? 0 });
+    const text = await call<string>(pane.host, "triage_handoff", { cwd: project, live, queued, tokens: state.tokens ?? 0 });
     handoff = { project: key, text, since: Date.now() };
     triageQueue.unshift(handoff);
     saveTriageQueue();
@@ -1359,8 +1404,8 @@ async function switchTriage(pane: Pane, state: TriageContext): Promise<void> {
     await pane.chat.say("/exit");
     if (!(await programEnded(pane, TRIAGE_EXIT_WAIT_MS))) throw new Error("Claude Code did not end after /exit");
     // The remembered chat is marked as closed: the start command makes a new chat.
-    const { info, flags, chat } = await workspaceStart(project);
-    await call("pty_write", { id: pane.id, data: `${triageCommand(info, flags, chat)}\r` });
+    const { info, flags, chat } = await workspaceStart(pane.host, project);
+    await call(pane.host, "pty_write", { id: pane.id, data: `${triageCommand(info, flags, chat)}\r` });
     pane.startedWith = flags;
     const hint = pane.barEl.querySelector(".hint");
     if (hint) hint.textContent = "";
@@ -1372,13 +1417,12 @@ async function switchTriage(pane: Pane, state: TriageContext): Promise<void> {
 }
 
 /** The line of the Triage card in focus mode about the context of the chat, or null without a chat. */
-function triageContextLine(root: string): HTMLElement | null {
-  const key = projectKey(root);
+function triageContextLine(key: string): HTMLElement | null {
   const state = triageContexts.get(key);
   if (!state) return null;
   const line = document.createElement("span");
   line.className = "triage-context";
-  const limit = triageLimit(root);
+  const limit = triageLimit(key);
   const tips: string[] = [];
   if (state.switching) {
     line.classList.add("switching");
@@ -1414,18 +1458,23 @@ function triageContextLine(root: string): HTMLElement | null {
 /** The last reply of the `worker_list` command. */
 let workerList: Worker[] = [];
 let workersShown = "";
-/** The pane of each worker that the user opened. */
+/** The pane of each worker that the user opened, by `workerKey`. */
 const workerPanes = new Map<string, string>();
+
+/** The key of a worker: its id, with its host in the mode "Use hosts" (two hosts can know one id). */
+function workerKey(worker: Worker): string {
+  return worker.host === LOCAL ? worker.id : `${worker.host}\n${worker.id}`;
+}
 
 /** Shows a worker in a tab. A worker without a tab gets a new one. */
 async function openWorker(worker: Worker): Promise<void> {
   // The Overview has no agent view: the worker opens in Focus, or in a tab when focus mode does not
   // have its project.
-  if (overviewOn) await setView(focusProjects.some((known) => inProject(worker, projectKey(known))) ? "focus" : "tabs");
+  if (overviewOn) await setView(focusProjects.some((known) => inProject(worker, refKey(known))) ? "focus" : "tabs");
   // On the Map a worker shows in the worker view: the tabs are hidden there.
   if (mapOn) {
-    const root = mapProjects().find((known) => inProject(worker, projectKey(known)));
-    const record = root ? projectTasks.get(projectKey(root)) : undefined;
+    const root = mapProjects().find((known) => inProject(worker, refKey(known)));
+    const record = root ? projectTasks.get(refKey(root)) : undefined;
     const task = record ? projectTaskList(record).find((known) => known.workers.some((other) => other.id === worker.id)) : undefined;
     if (task) {
       openMapFlow(task, worker, workerRun(task, worker) ?? "worker");
@@ -1435,14 +1484,14 @@ async function openWorker(worker: Worker): Promise<void> {
   }
   // In focus mode the worker shows in the Workers pane of its project's column.
   if (focusOn) {
-    const root = focusProjects.find((known) => inProject(worker, projectKey(known)));
-    const column = root ? focusColumns.get(projectKey(root)) : undefined;
+    const root = focusProjects.find((known) => inProject(worker, refKey(known)));
+    const column = root ? focusColumns.get(refKey(root)) : undefined;
     if (column) {
       setWorkersOpen(column, true);
       return;
     }
   }
-  const open = panes.get(workerPanes.get(worker.id) ?? "");
+  const open = panes.get(workerPanes.get(workerKey(worker)) ?? "");
   if (open) {
     activate(open.tabId);
     open.term.focus();
@@ -1453,8 +1502,8 @@ async function openWorker(worker: Worker): Promise<void> {
   const live = worker.state === "working" || worker.state === "blocked";
   const start: StartCommand = live ? { attach: worker.id } : { resume: worker.sessionId ?? undefined };
   if (!start.attach && !start.resume) return;
-  const pane: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: worker.cwd };
-  workerPanes.set(worker.id, pane.id);
+  const pane: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: worker.cwd, host: worker.host };
+  workerPanes.set(workerKey(worker), pane.id);
   await openTab({ id: crypto.randomUUID(), layout: pane, focus: pane.id }, false, new Map([[pane.id, start]]));
   await saveState();
 }
@@ -1527,6 +1576,8 @@ interface TaskListReply {
 
 /** The tasks of one project, from its last `task_list` reply. Each task carries it, so a click acts on its own project. */
 interface ProjectTasks {
+  /** The host of the project (remote-multi-host). */
+  host: HostId;
   cwd: string;
   infos: TaskInfo[];
   dirty: string[];
@@ -1536,9 +1587,15 @@ interface ProjectTasks {
   backlog: Entry[];
 }
 
-/** The record of a project from a reply of `task_list`. */
-function tasksRecord(cwd: string, reply: TaskListReply): ProjectTasks {
-  return { cwd, infos: reply.tasks, dirty: reply.dirty, autoApprove: reply.autoApprove, setup: reply.setup ?? null, backlog: reply.backlog ?? [] };
+/** The record of a project of a host from a reply of `task_list`. */
+function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTasks {
+  return { host, cwd, infos: hostedTasks(host, reply.tasks), dirty: reply.dirty, autoApprove: reply.autoApprove, setup: reply.setup ?? null, backlog: reply.backlog ?? [] };
+}
+
+/** The tasks of a reply with the host on their files: the backend gives the files without it. */
+function hostedTasks(host: HostId, tasks: TaskInfo[]): TaskInfo[] {
+  const file = (entry: FileEntry | null): FileEntry | null => (entry ? { ...entry, host } : null);
+  return tasks.map((task) => ({ ...task, plan: file(task.plan), report: file(task.report), brief: file(task.brief) }));
 }
 
 /** The task lists of the projects that the window shows, by project key. */
@@ -1561,7 +1618,17 @@ const queuedApprovals = new Map<string, number>();
 const QUEUED_KEY = "queued-approvals";
 
 function queueKey(task: Task): string {
-  return `${projectKey(task.project?.cwd ?? tasksCwd)}\n${task.name}`;
+  return `${projectKey(taskHost(task), taskCwd(task))}\n${task.name}`;
+}
+
+/** The host of a task: the host of its project, else the host of the focused terminal's task list. */
+function taskHost(task: Task): HostId {
+  return task.project?.host ?? tasksHost;
+}
+
+/** The folder of a task: the folder of its project, else the focused terminal's folder. */
+function taskCwd(task: Task): string {
+  return task.project?.cwd ?? tasksCwd;
 }
 
 function loadQueued(): void {
@@ -1569,7 +1636,10 @@ function loadQueued(): void {
     const saved: unknown = JSON.parse(localStorage.getItem(QUEUED_KEY) ?? "[]");
     if (!Array.isArray(saved)) return;
     for (const entry of saved) {
-      if (Array.isArray(entry) && typeof entry[0] === "string" && typeof entry[1] === "number") queuedApprovals.set(entry[0], entry[1]);
+      if (!Array.isArray(entry) || typeof entry[0] !== "string" || typeof entry[1] !== "number") continue;
+      // The key is `<project key>\n<task>`; a project key without a host belongs to the first backend.
+      const at = entry[0].indexOf("\n");
+      queuedApprovals.set(at < 0 ? entry[0] : `${hostedKey(entry[0].slice(0, at))}${entry[0].slice(at)}`, entry[1]);
     }
   } catch {
     // A broken entry holds no approval.
@@ -1588,6 +1658,8 @@ let tasksShown = "";
 /** The key of the folder of the terminal for which `taskInfos` is, and that folder. */
 let tasksFolder = "";
 let tasksCwd = "";
+/** The host of that folder. */
+let tasksHost: HostId = LOCAL;
 /**
  * The reports whose questions the user answered: the task name and the time of the report then.
  * One reply with the answers to all questions of the report resumes the worker.
@@ -1649,25 +1721,28 @@ function fileRow(label: string, file: FileEntry, chip: string | null): HTMLEleme
 /** Reads the tasks of the project of the focused terminal and shows them in the chat panel. */
 async function refreshTasks(): Promise<void> {
   if (chatsEl.hidden) return;
-  const cwd = focusedPane()?.cwd ?? null;
+  const focused = focusedPane();
+  const cwd = focused?.cwd ?? null;
+  const host = focused?.host ?? firstBackend();
   let reply: TaskListReply = { tasks: [], dirty: [], autoApprove: false, setup: null, backlog: [] };
   if (cwd) {
     try {
-      reply = await call<TaskListReply>("task_list", { cwd });
-      taskReadTimes.set(projectKey(cwd), Date.now());
+      reply = await call<TaskListReply>(host, "task_list", { cwd });
+      taskReadTimes.set(projectKey(host, cwd), Date.now());
     } catch {
       // A folder that is no project has no tasks.
     }
   }
-  const shown = JSON.stringify([cwd, reply]);
+  const shown = JSON.stringify([host, cwd, reply]);
   if (shown === tasksShown) return;
   tasksShown = shown;
-  taskInfos = reply.tasks;
+  taskInfos = hostedTasks(host, reply.tasks);
   dirtyLines = reply.dirty;
   projectSetup = reply.setup ?? null;
-  tasksFolder = projectKey(cwd);
+  tasksFolder = projectKey(host, cwd);
   tasksCwd = cwd ?? "";
-  if (cwd) projectTasks.set(tasksFolder, tasksRecord(cwd, reply));
+  tasksHost = host;
+  if (cwd) projectTasks.set(tasksFolder, tasksRecord(host, cwd, reply));
   renderChats();
   approvePlans();
   updateAlerts();
@@ -1680,11 +1755,12 @@ async function refreshTasks(): Promise<void> {
  * plan per call: the first approval starts a work run, which holds the others until it ends.
  */
 function approvePlans(): void {
-  // Only the window that drives approves by itself (remote-shared-state).
-  if (!driver) return;
   for (const project of projectTasks.values()) {
+    // Only the window that drives the project's host approves by itself (remote-shared-state).
+    if (!driverOf(project.host)) continue;
+    const night = nightOf(project.host);
     const tasks = projectTaskList(project);
-    if (nightOn) nightDefaults(project, tasks);
+    if (night) nightDefaults(project, tasks);
     if (project.dirty.length > 0 || workRun(tasks)) continue;
     // A plan that the user approved while the project was not free starts first.
     const queued = nextQueued(project, tasks);
@@ -1695,11 +1771,11 @@ function approvePlans(): void {
       void taskAction(queued, "task_approve", { id: queued.name }, `Plan ${queued.name}, approved earlier by the user in Dispatch: the project is free now, and the work run started.`);
       continue;
     }
-    if (!project.autoApprove && !nightOn) continue;
+    if (!project.autoApprove && !night) continue;
     const task = tasks.find((task) => planReady(task) && !task.info?.hold && !busyTasks.has(task.name) && autoApproved.get(task.name) !== task.info?.plan?.modified);
     if (!task?.info?.plan) continue;
     autoApproved.set(task.name, task.info.plan.modified);
-    if (nightOn) {
+    if (night) {
       // Night mode: every decision takes its recommended option, and the plan records it.
       const decisions = task.info.decisions ?? [];
       const choices = decisions.map((decision) => ({ decision, answer: decision.options[0]?.choice ?? "" }));
@@ -1716,7 +1792,7 @@ function approvePlans(): void {
  * dropped: the user approved another text.
  */
 function nextQueued(project: ProjectTasks, tasks: Task[]): Task | undefined {
-  const folder = projectKey(project.cwd);
+  const folder = projectKey(project.host, project.cwd);
   for (const [key, modified] of [...queuedApprovals]) {
     const [keyFolder, name] = key.split("\n");
     if (keyFolder !== folder) continue;
@@ -1744,19 +1820,44 @@ function nextQueued(project: ProjectTasks, tasks: Task[]): Task | undefined {
 // and at each start and each new triage chat Dispatch compares it with the chat's night file and
 // sends the skill command when the chat is behind. The texts and rules are in src/night.ts.
 
-/** Night mode is on. In the shared file (`shared.json`), field `night`. */
-let nightOn = false;
+/**
+ * Night mode of each backend: in its shared file (`shared.json`), field `night`. Each host keeps its
+ * own switch (remote-multi-host); the one switch of the top bar shows them together.
+ */
+const nightStates = new Map<HostId, boolean>();
+
+/** Whether night mode is on for the projects of a backend. */
+function nightOf(host: HostId): boolean {
+  return nightStates.get(host) ?? false;
+}
+
+/** The backends that the switch shows: the reachable ones; a host that is gone keeps its switch. */
+function nightHosts(): HostId[] {
+  const shown = backends().filter(reachable);
+  return shown.length > 0 ? shown : backends();
+}
+
+/** The look of the one switch: on, off, or mixed when the hosts differ. */
+function nightLook(): "on" | "off" | "mixed" {
+  return nightSwitch(nightHosts().map(nightOf));
+}
+
+/** Night mode is on for at least one backend. */
+function nightAny(): boolean {
+  return backends().some(nightOf);
+}
 /** The questions and held points that night mode handled, by task and report or plan time. */
 const nightDone = new Set<string>();
 
 function nightDefaults(project: ProjectTasks, tasks: Task[]): void {
-  const triage = projectFor(project.cwd);
+  const triage = projectFor(project.host, project.cwd);
+  const folder = projectKey(project.host, project.cwd);
   for (const task of tasks) {
     if (busyTasks.has(task.name)) continue;
     const questions = openQuestions(task);
     const report = task.info?.report;
     if (questions.length > 0 && report) {
-      const key = `q:${projectKey(project.cwd)}:${task.name}:${report.modified}`;
+      const key = `q:${folder}:${task.name}:${report.modified}`;
       if (nightDone.has(key)) continue;
       nightDone.add(key);
       // Every question takes its recommended option; one reply carries all answers.
@@ -1769,14 +1870,14 @@ function nightDefaults(project: ProjectTasks, tasks: Task[]): void {
       continue;
     }
     if (planReady(task) && task.info?.hold && task.info.plan && !queuedApprovals.has(queueKey(task))) {
-      const key = `hold:${projectKey(project.cwd)}:${task.name}:${task.info.plan.modified}`;
+      const key = `hold:${folder}:${task.name}:${task.info.plan.modified}`;
       if (nightDone.has(key)) continue;
       nightDone.add(key);
       tellTriage(triage, `Night mode: the plan of ${task.name} has a HOLD decision. It waits for the user; put it under Reminders in the morning file.`);
       continue;
     }
     if (permissionWaits(task) && report) {
-      const key = `perm:${projectKey(project.cwd)}:${task.name}:${report.modified}`;
+      const key = `perm:${folder}:${task.name}:${report.modified}`;
       if (nightDone.has(key)) continue;
       nightDone.add(key);
       tellTriage(triage, `Night mode: ${task.name} needs a permission. It waits for the user; put it under Reminders in the morning file.`);
@@ -1784,33 +1885,48 @@ function nightDefaults(project: ProjectTasks, tasks: Task[]): void {
   }
 }
 
-/** The projects whose triage chat takes part: every project with a workspace. */
-function nightProjects(): string[] {
+/** The projects of a backend whose triage chat takes part: every project of it with a workspace. */
+function nightProjects(host: HostId): string[] {
   const keys = new Set<string>();
-  for (const pane of panes.values()) if (pane.role === "triage" && pane.project) keys.add(projectKey(pane.project));
+  for (const pane of panes.values()) if (pane.role === "triage" && pane.project && pane.host === host) keys.add(paneKey(pane));
   return [...keys];
 }
 
 function showNight(): void {
   const button = document.querySelector<HTMLButtonElement>("#night-mode")!;
-  button.setAttribute("aria-checked", String(nightOn));
-  button.title = nightOn
+  const look = nightLook();
+  button.setAttribute("aria-checked", look === "mixed" ? "mixed" : String(look === "on"));
+  if (look === "mixed") {
+    const shown = nightHosts();
+    const on = shown.filter(nightOf).map(backendName);
+    const off = shown.filter((host) => !nightOf(host)).map(backendName);
+    button.title = `Nightmode differs between the hosts: on for ${on.join(", ")}, off for ${off.join(", ")}. Click to turn it on for every host.`;
+    return;
+  }
+  button.title = look === "on"
     ? "Nightmode is on: decisions take their recommended default, HOLD items and permissions wait for you. Click to end it and get the morning list. Dispatch keeps the switch over a restart, and the triage chats follow it. This PC stays awake while it is on (the display may turn off); with a host, the host's PC stays awake."
     : "Nightmode is off. Turn it on when you go away: work goes on with the recommended default for each decision, and you get a morning list. Dispatch keeps the switch over a restart, and the triage chats follow it. While it is on, the PC that does the work does not go to sleep.";
 }
 
+/**
+ * Sets night mode of every reachable backend (remote-multi-host). A backend that has it already
+ * gets no line; a host that is gone keeps its own switch.
+ */
 function setNight(on: boolean): void {
-  if (on === nightOn) return;
-  nightOn = on;
-  showNight();
-  // The switch is kept in the shared file, so every window shows it (remote-shared-state).
-  void call("shared_set", { night: on }).catch((error) => console.error("save of the night switch failed", error));
-  for (const project of nightProjects()) {
-    // Triage knows only its rule "only the Approve click of the user starts a work run" (2026-11-09:
-    // it told the user that nothing gets built overnight). The line after the skill command says
-    // what Dispatch does itself while night mode is on.
-    for (const line of nightLines(on)) tellTriage(project, line);
+  const changed = nightHosts().filter((host) => nightOf(host) !== on);
+  if (changed.length === 0) return;
+  for (const host of changed) {
+    nightStates.set(host, on);
+    // The switch is kept in the shared file of the host, so every window shows it (remote-shared-state).
+    void call(host, "shared_set", { night: on }).catch((error) => console.error("save of the night switch failed", error));
+    for (const project of nightProjects(host)) {
+      // Triage knows only its rule "only the Approve click of the user starts a work run" (2026-11-09:
+      // it told the user that nothing gets built overnight). The line after the skill command says
+      // what Dispatch does itself while night mode is on.
+      for (const line of nightLines(on)) tellTriage(project, line);
+    }
   }
+  showNight();
   if (on) approvePlans();
 }
 
@@ -1819,14 +1935,14 @@ function setNight(on: boolean): void {
  * `night-mode.json` and sends the skill command and the Dispatch line when the chat is behind.
  * Dispatch never writes that file. A failed read sends nothing.
  */
-async function syncNight(root: string): Promise<void> {
-  // Only the window that drives brings the triage chats in step (remote-shared-state).
-  if (!driver) return;
+async function syncNight(host: HostId, root: string): Promise<void> {
+  // Only the window that drives the host brings its triage chats in step (remote-shared-state).
+  if (!driverOf(host)) return;
   try {
-    const file = await call<boolean | null>("night_state", { root });
-    const project = projectKey(root);
+    const file = await call<boolean | null>(host, "night_state", { root });
+    const project = projectKey(host, root);
     // The start check and the new-chat check can meet: a line that already waits is not queued twice.
-    const lines = nightSyncLines(nightOn, file ?? null);
+    const lines = nightSyncLines(nightOf(host), file ?? null);
     if (lines.every((text) => triageQueue.some((line) => line.project === project && line.text === text))) return;
     for (const line of lines) tellTriage(project, line);
   } catch (error) {
@@ -1836,7 +1952,7 @@ async function syncNight(root: string): Promise<void> {
 
 /** The tasks of a project, joined with the workers of that project only. */
 function projectTaskList(project: ProjectTasks): Task[] {
-  const key = projectKey(project.cwd);
+  const key = projectKey(project.host, project.cwd);
   return taskList(workerList.filter((worker) => inProject(worker, key)), project.infos, project);
 }
 
@@ -1888,18 +2004,18 @@ const sentEntries = new Set<string>();
 
 /** The entry went to triage, or goes now: no second send, and no planned card. */
 function entryGone(key: string, id: string): boolean {
-  return sentEntries.has(`${key}\n${id}`) || entriesToDrop.some((drop) => projectKey(drop.project) === key && drop.entry === id);
+  return sentEntries.has(`${key}\n${id}`) || entriesToDrop.some((drop) => drop.project === key && drop.entry === id);
 }
 
 /** At start, before the first task read: the cards that stood when the window closed, minus the old ones. */
 function loadPending(): void {
   try {
     const saved: unknown = JSON.parse(localStorage.getItem(PENDING_CARDS_KEY) ?? "[]");
-    pendingCards = restoreCards(saved, Date.now());
+    pendingCards = restoreCards(saved, Date.now()).map((card) => ({ ...card, project: hostedKey(card.project) }));
     for (const item of Array.isArray(saved) ? saved : []) {
       const { project, entry } = (item ?? {}) as Record<string, unknown>;
       if (typeof project !== "string" || typeof entry !== "string") continue;
-      if (!pendingCards.some((card) => card.entry === entry)) entriesToDrop.push({ project, entry });
+      if (!pendingCards.some((card) => card.entry === entry)) entriesToDrop.push({ project: hostedKey(project), entry });
     }
   } catch {
     // A broken record holds no card.
@@ -1908,10 +2024,10 @@ function loadPending(): void {
 }
 
 /** Reads the task list of one project again, with its planned entries. */
-async function readProjectTasks(cwd: string): Promise<void> {
-  const reply = await call<TaskListReply>("task_list", { cwd });
-  projectTasks.set(projectKey(cwd), tasksRecord(cwd, reply));
-  taskReadTimes.set(projectKey(cwd), Date.now());
+async function readProjectTasks(host: HostId, cwd: string): Promise<void> {
+  const reply = await call<TaskListReply>(host, "task_list", { cwd });
+  projectTasks.set(projectKey(host, cwd), tasksRecord(host, cwd, reply));
+  taskReadTimes.set(projectKey(host, cwd), Date.now());
 }
 
 /**
@@ -1919,28 +2035,29 @@ async function readProjectTasks(cwd: string): Promise<void> {
  * Dispatch sends it when triage is free; gives true then. A command of Claude Code (`/clear`) goes
  * at once: false. A failure throws, and the box keeps the text.
  */
-async function addEntry(project: string, message: string): Promise<boolean> {
+async function addEntry(host: HostId, project: string, message: string): Promise<boolean> {
   if (project === "" || goesStraight(message)) return false;
-  await call<Entry>("backlog_add", { cwd: project, text: message });
-  await readProjectTasks(project).catch((error) => console.warn("task list read failed", error));
+  await call<Entry>(host, "backlog_add", { cwd: project, text: message });
+  await readProjectTasks(host, project).catch((error) => console.warn("task list read failed", error));
   renderChats();
   void dispatchEntries();
   return true;
 }
 
-/** The folder of the record of a project key, or the key itself. */
-function projectCwd(key: string): string {
-  return projectTasks.get(key)?.cwd ?? key;
+/** The host and the folder of the record of a project key, or the host and the path of the key itself. */
+function projectCwd(key: string): { host: HostId; cwd: string } {
+  const record = projectTasks.get(key);
+  return record ? { host: record.host, cwd: record.cwd } : { host: keyHost(key, firstBackend()), cwd: keyPath(key) };
 }
 
-/** Removes the file of a planned entry, reads the list again and goes on with the next entry. */
+/** Removes the file of a planned entry of a project (by its key), reads the list again and goes on with the next entry. */
 async function removeEntry(project: string, entry: string): Promise<boolean> {
-  const cwd = projectCwd(projectKey(project));
+  const { host, cwd } = projectCwd(project);
   // True only when the list was read after the removal: an old list still holds the entry.
   let removed = false;
   try {
-    await call("backlog_remove", { cwd, id: entry });
-    await readProjectTasks(cwd);
+    await call(host, "backlog_remove", { cwd, id: entry });
+    await readProjectTasks(host, cwd);
     removed = true;
   } catch (error) {
     console.error("planned entry not removed", error);
@@ -1950,12 +2067,12 @@ async function removeEntry(project: string, entry: string): Promise<boolean> {
   return removed;
 }
 
-/** Saves a new order of the planned entries of a project. */
+/** Saves a new order of the planned entries of a project (by its key). */
 async function moveEntries(project: string, ids: string[]): Promise<void> {
-  const cwd = projectCwd(projectKey(project));
+  const { host, cwd } = projectCwd(project);
   try {
-    await call("backlog_reorder", { cwd, ids });
-    await readProjectTasks(cwd);
+    await call(host, "backlog_reorder", { cwd, ids });
+    await readProjectTasks(host, cwd);
   } catch (error) {
     console.error("planned entries not moved", error);
   }
@@ -1964,7 +2081,7 @@ async function moveEntries(project: string, ids: string[]): Promise<void> {
 
 /** The status of the session of a triage pane from its session file (`idle`, `shell`, `busy`, `waiting`), or null. */
 async function triageStatus(pane: Pane): Promise<string | null> {
-  const info = await call<PaneInfo>("pane_info", { id: pane.id, cwd: pane.cwd });
+  const info = await call<PaneInfo>(pane.host, "pane_info", { id: pane.id, cwd: pane.cwd });
   return info.session?.status ?? null;
 }
 
@@ -1985,13 +2102,13 @@ async function dispatchEntries(): Promise<void> {
   dispatching = true;
   try {
     for (const drop of [...entriesToDrop]) {
-      if (!projectTasks.has(projectKey(drop.project))) continue;
+      if (!projectTasks.has(drop.project)) continue;
       // A failed removal stays in the list: the next tick tries again, and the entry is not sent.
       if (await removeEntry(drop.project, drop.entry)) entriesToDrop.splice(entriesToDrop.indexOf(drop), 1);
     }
-    // Only the window that drives sends the planned entries (remote-shared-state).
-    if (!driver) return;
     for (const [key, record] of projectTasks) {
+      // Only the window that drives the project's host sends its planned entries (remote-shared-state).
+      if (!driverOf(record.host)) continue;
       const pane = triagePane(key);
       if (!pane?.chat) continue;
       if (pendingCards.some((card) => card.project === key)) {
@@ -2002,7 +2119,7 @@ async function dispatchEntries(): Promise<void> {
       }
       const entry = nextEntry(record.backlog.filter((one) => !entryGone(key, one.id)), []);
       if (!entry) continue;
-      if (switchRuns(key) || triageQueue.some((line) => projectKey(line.project) === key)) continue;
+      if (switchRuns(key) || triageQueue.some((line) => line.project === key)) continue;
       if (!triageFree(await triageStatus(pane).catch(() => null))) continue;
       if (parseMenu(menuLines(pane.term)) !== null) continue;
       const known = projectTaskList(record).map((task) => task.name);
@@ -2052,9 +2169,8 @@ function settlePending(readAt: number): void {
   void dispatchEntries();
 }
 
-/** The cards of a project, oldest first. */
-function projectPending(project: string): PendingCard[] {
-  const key = projectKey(project);
+/** The cards of a project (by its key), oldest first. */
+function projectPending(key: string): PendingCard[] {
   return pendingCards.filter((card) => card.project === key);
 }
 
@@ -2063,7 +2179,7 @@ function taskWaits(task: Task): boolean {
   return planReady(task) || reportWaits(task);
 }
 
-/** The elements of a task list with the temporary cards of the project at their place. */
+/** The elements of a task list with the temporary cards of the project (by its key) at their place. */
 function withPending<T extends HTMLElement>(tasks: Task[], items: T[], project: string): HTMLElement[] {
   const cards = projectPending(project);
   if (cards.length === 0) return items;
@@ -2102,7 +2218,7 @@ let recordVersion: Promise<string> | null = null;
 async function saveMenuRecord(pane: Pane, name: string, record: MenuRecord): Promise<void> {
   recordVersion ??= getVersion().catch(() => "");
   const full: MenuRecord = { ...record, version: await recordVersion, project: pane.project ?? pane.cwd ?? null };
-  await call("menu_record_save", { name, data: JSON.stringify(full, null, 2) });
+  await windowCall("menu_record_save", { name, data: JSON.stringify(full, null, 2) });
 }
 
 /** The `count` rows of the scrollback right above the screen of a terminal, joined as in `terminalLines`. */
@@ -2140,7 +2256,7 @@ function recordOpenQuestions(): void {
     const screen = menuLines(pane.term);
     const menu = parseMenu(screen);
     if (!menu || menu.length === 0) continue;
-    open[projectKey(pane.project)] = lostQuestionLine(menu, screen);
+    open[paneKey(pane)] = lostQuestionLine(menu, screen);
   }
   try {
     const text = JSON.stringify(open);
@@ -2192,7 +2308,7 @@ function askLostQuestions(): void {
   for (const [project, line] of Object.entries(lost)) {
     if (typeof line !== "string" || !line) continue;
     // A record of 0.1.35-0.1.37 holds only the question; a newer one the whole line.
-    tellTriage(project, line.startsWith("Dispatch:") ? line : lostLine(line));
+    tellTriage(hostedKey(project), line.startsWith("Dispatch:") ? line : lostLine(line));
   }
   setInterval(recordOpenQuestions, OPEN_QUESTIONS_MS);
 }
@@ -2203,68 +2319,84 @@ function askLostQuestions(): void {
 // The host gives the lease to the window that the user used last (`driver_state`). In the mode
 // "This PC does the work" the one window always drives. The alerts are not part of the lease.
 
-/** This window drives the automatic actions. The start sets it: always on in the mode "This PC does the work". */
-let driver = false;
-/** A key or a click came since the last report to the host. */
-let usedSinceReport = false;
+/**
+ * The hosts whose automatic actions this window drives: each host gives its lease to one window
+ * (remote-multi-host). The backend of the mode "This PC does the work" always drives.
+ */
+const drivers = new Set<HostId>();
+/** The hosts to which a key or a click came since the last report. */
+const usedSinceReport = new Set<HostId>();
 /** The time of the last claim of the lease after a key or a click. */
 let lastClaim = 0;
 
-/** Takes the reply of the host. A window that gets the lease runs what waited for it. */
-function setDriver(now: boolean): void {
-  const gained = now && !driver;
-  driver = now;
+/** Whether this window drives the automatic actions of a backend. */
+function driverOf(host: HostId): boolean {
+  return host === LOCAL || drivers.has(host);
+}
+
+/** Takes the reply of a host. A window that gets the lease runs what waited for it. */
+function setDriver(host: HostId, now: boolean): void {
+  const gained = now && !drivers.has(host);
+  if (now) drivers.add(host);
+  else drivers.delete(host);
   if (!gained) return;
   approvePlans();
   void flushTriageQueue();
 }
 
-/** Reports to the host; `active` says that the user used this window since the last report. */
-async function reportDriver(active: boolean): Promise<void> {
-  const reply = await call<{ driver?: unknown } | null>("driver_state", { active });
-  setDriver(reply?.driver === true);
+/** Reports to a host; `active` says that the user used this window since the last report. */
+async function reportDriver(host: HostId, active: boolean): Promise<void> {
+  const reply = await call<{ driver?: unknown } | null>(host, "driver_state", { active });
+  setDriver(host, reply?.driver === true);
 }
 
-/** A key or a click in this window: it takes the lease, at most once per `DRIVER_CLAIM_MS`. */
+/** A key or a click in this window: it takes the lease of every host, at most once per `DRIVER_CLAIM_MS`. */
 function claimDriver(): void {
-  if (!hostInfo()) return;
-  usedSinceReport = true;
+  if (!usesHosts()) return;
+  for (const host of backends()) usedSinceReport.add(host);
   const now = Date.now();
-  if (driver || now - lastClaim < DRIVER_CLAIM_MS) return;
+  if (backends().every(driverOf) || now - lastClaim < DRIVER_CLAIM_MS) return;
   lastClaim = now;
-  void reportDriver(true).catch((error) => console.warn("claim of the lease failed", error));
+  for (const host of backends()) {
+    if (!driverOf(host)) void reportDriver(host, true).catch((error) => console.warn("claim of the lease failed", error));
+  }
 }
 
 /**
- * The shared state that another window may have changed: the switch shows its new state without a
- * line for triage (the window of the click sends the lines), and each triage chat of the shared
- * file replaces the one of this window.
+ * The shared state of a host that another window may have changed: the switch shows its new state
+ * without a line for triage (the window of the click sends the lines), and each triage chat of the
+ * shared file replaces the one of this window.
  */
-function applyShared(state: SharedState): void {
-  if (state.night !== nightOn) {
-    nightOn = state.night;
+function applyShared(host: HostId, state: SharedState): void {
+  if (state.night !== nightOf(host)) {
+    nightStates.set(host, state.night);
     showNight();
   }
-  for (const [key, record] of Object.entries(state.triage)) triageRecords.set(key, record);
+  takeTriageRecords(host, state.triage);
 }
 
-/** In the mode "Use a host", at each worker poll: reads the shared state, then reports for the lease. */
+/** In the mode "Use hosts", at each worker poll: reads the shared state of every host, then reports for its lease. */
 async function pollShared(): Promise<void> {
-  if (!hostInfo()) return;
-  try {
-    applyShared(parseShared(await call("shared_load")));
-  } catch (error) {
-    console.warn("shared state read failed", error);
-  }
-  const active = usedSinceReport;
-  usedSinceReport = false;
-  try {
-    await reportDriver(active);
-  } catch (error) {
-    // The window keeps its last answer; the next report says that the user used it.
-    if (active) usedSinceReport = true;
-    console.warn("report for the lease failed", error);
-  }
+  if (!usesHosts()) return;
+  await Promise.all(
+    backends().map(async (host) => {
+      try {
+        applyShared(host, parseShared(await call(host, "shared_load")));
+      } catch (error) {
+        console.warn("shared state read failed", backendName(host), error);
+      }
+      const active = usedSinceReport.delete(host);
+      try {
+        await reportDriver(host, active);
+      } catch (error) {
+        // The window keeps its last answer; the next report says that the user used it.
+        if (active) usedSinceReport.add(host);
+        console.warn("report for the lease failed", backendName(host), error);
+      }
+    }),
+  );
+  // A host that came back or went away changes the look of the switch.
+  showNight();
 }
 
 /** A line for the triage chat of a project. It waits until triage can take it. */
@@ -2304,7 +2436,9 @@ function loadTriageQueue(): void {
     const saved: unknown = JSON.parse(localStorage.getItem(TRIAGE_QUEUE_KEY) ?? "[]");
     if (!Array.isArray(saved)) return;
     for (const line of saved) {
-      if (line && typeof line.project === "string" && typeof line.text === "string" && typeof line.since === "number") triageQueue.push(line);
+      if (line && typeof line.project === "string" && typeof line.text === "string" && typeof line.since === "number") {
+        triageQueue.push({ ...line, project: hostedKey(line.project) });
+      }
     }
   } catch {
     // A broken record holds no line.
@@ -2327,9 +2461,9 @@ function lineText(line: TriageLine): string {
   return `[${day}${time}] ${line.text}`;
 }
 
-/** The triage pane of a project that has a chat view, or null. */
+/** The triage pane of a project (by its key) that has a chat view, or null. */
 function triagePane(project: string): Pane | null {
-  return [...panes.values()].find((pane) => pane.role === "triage" && projectKey(pane.project) === project && pane.chat) ?? null;
+  return [...panes.values()].find((pane) => pane.role === "triage" && paneKey(pane) === project && pane.chat) ?? null;
 }
 
 /**
@@ -2338,7 +2472,7 @@ function triagePane(project: string): Pane | null {
  * option. A busy session queues typed input, so a line may go to it.
  */
 async function triageReady(pane: Pane): Promise<boolean> {
-  const info = await call<PaneInfo>("pane_info", { id: pane.id, cwd: pane.cwd });
+  const info = await call<PaneInfo>(pane.host, "pane_info", { id: pane.id, cwd: pane.cwd });
   if (!info.session || info.session.status === "waiting") return false;
   return parseMenu(menuLines(pane.term)) === null;
 }
@@ -2347,8 +2481,7 @@ let flushingTriage = false;
 
 /** Sends the queued lines whose triage can take them. The rest wait for the next poll. */
 async function flushTriageQueue(): Promise<void> {
-  // The lines of a window that does not drive wait in its queue (remote-shared-state).
-  if (flushingTriage || !driver) return;
+  if (flushingTriage) return;
   flushingTriage = true;
   try {
     for (const line of [...triageQueue]) {
@@ -2361,6 +2494,8 @@ async function flushTriageQueue(): Promise<void> {
         renderChats();
         continue;
       }
+      // The lines for a host that this window does not drive wait in its queue (remote-shared-state).
+      if (!driverOf(keyHost(line.project, firstBackend()))) continue;
       // While Dispatch switches the project to a new triage chat, its lines wait for the new chat.
       if (switchRuns(line.project)) continue;
       const pane = triagePane(line.project);
@@ -2412,14 +2547,15 @@ function saveWorkerStates(states: Map<string, string | null>): void {
 
 /** Tells the triage chat of each project which of its workers changed to a state that needs it. */
 function announceWorkerChanges(workers: Worker[]): void {
-  const states = new Map(workers.map((worker) => [worker.id, worker.state]));
+  const states = new Map(workers.map((worker) => [workerKey(worker), worker.state]));
   const whileClosed = workerStatesFromLastRun;
   workerStatesFromLastRun = false;
-  // Every window records the states; only the window that drives tells triage (remote-shared-state).
-  if (lastWorkerStates && driver) {
+  // Every window records the states; only the window that drives a host tells triage (remote-shared-state).
+  if (lastWorkerStates) {
     const lines = new Map<string, string[]>();
     for (const worker of workers) {
-      const before = lastWorkerStates.get(worker.id);
+      if (!driverOf(worker.host)) continue;
+      const before = lastWorkerStates.get(workerKey(worker));
       const now = worker.state;
       if (before === now || !now || !ANNOUNCED_STATES.has(now)) continue;
       // A finished worker that shows for the first time is old news, unless it waits for the user.
@@ -2427,7 +2563,7 @@ function announceWorkerChanges(workers: Worker[]): void {
       const name = worker.name ?? worker.id;
       const when = whileClosed ? " (this happened while Dispatch was closed)" : "";
       const line = now === "blocked" ? `Worker ${name} is blocked${when}${worker.waitingFor ? `: ${worker.waitingFor}` : ""}.` : `Worker ${name} is ${now}${when}.`;
-      const project = projectFor(worker.cwd);
+      const project = projectFor(worker.host, worker.cwd);
       if (!lines.has(project)) lines.set(project, []);
       lines.get(project)!.push(line);
     }
@@ -2601,10 +2737,11 @@ async function taskAction(task: Task, command: string, args: Record<string, stri
   renderChats();
   let done = false;
   try {
-    const cwd = task.project?.cwd ?? tasksCwd;
-    await call(command, { cwd, ...args });
+    const cwd = taskCwd(task);
+    const host = taskHost(task);
+    await call(host, command, { cwd, ...args });
     done = true;
-    tellTriage(projectFor(cwd), line);
+    tellTriage(projectFor(host, cwd), line);
   } catch (error) {
     actionErrors.set(task.name, String(error));
   } finally {
@@ -2774,7 +2911,7 @@ async function writeDecisions(task: Task, choices: DecisionAnswer[]): Promise<nu
     ...decisionLines(choices),
   ].join("\n");
   try {
-    const written = await call<number>("task_decide", { cwd: task.project?.cwd ?? tasksCwd, id: task.name, text });
+    const written = await call<number>(taskHost(task), "task_decide", { cwd: taskCwd(task), id: task.name, text });
     // The written plan is the same plan: an automatic approval tries it once, not again.
     autoApproved.set(task.name, written);
     return written;
@@ -2804,8 +2941,7 @@ async function approveOrQueue(task: Task, choices: DecisionAnswer[], how: string
   queuedApprovals.set(queueKey(task), written);
   saveQueued();
   autoApproved.set(task.name, written);
-  const cwd = task.project?.cwd ?? tasksCwd;
-  tellTriage(projectFor(cwd), `Plan ${task.name} approved in Dispatch${how ? ` ${how}` : ""}. ${wait.replace(/:\n[\s\S]*$/, ".")} Dispatch starts its work run then; do not start it yourself.`);
+  tellTriage(projectFor(taskHost(task), taskCwd(task)), `Plan ${task.name} approved in Dispatch${how ? ` ${how}` : ""}. ${wait.replace(/:\n[\s\S]*$/, ".")} Dispatch starts its work run then; do not start it yourself.`);
   // The plan file changed: the next refresh reads it again.
   tasksShown = "";
   await refreshTasks();
@@ -2817,7 +2953,7 @@ async function approveOrQueue(task: Task, choices: DecisionAnswer[], how: string
 function cancelQueued(task: Task): void {
   if (!queuedApprovals.delete(queueKey(task))) return;
   saveQueued();
-  tellTriage(projectFor(task.project?.cwd ?? tasksCwd), `Plan ${task.name}: the user took back the approval in Dispatch. The plan waits for Approve again.`);
+  tellTriage(projectFor(taskHost(task), taskCwd(task)), `Plan ${task.name}: the user took back the approval in Dispatch. The plan waits for Approve again.`);
   renderChats();
 }
 
@@ -3062,7 +3198,7 @@ let questionsModified = 0;
 
 /** The current state of a task of the window: from the last task list of its project, else as it was. */
 function currentTask(task: Task): Task {
-  const project = projectTasks.get(projectKey(task.project?.cwd ?? tasksCwd));
+  const project = projectTasks.get(projectKey(taskHost(task), taskCwd(task)));
   return (project && projectTaskList(project).find((known) => known.name === task.name)) ?? task;
 }
 
@@ -3403,14 +3539,13 @@ function pendingElement(card: PendingCard): HTMLElement {
 /** A drag of a planned card runs: the renders wait until the drop, so the card stays under the pointer. */
 let entryDragging = false;
 
-/** The planned entries of a project that still wait, in their order: not the one in flight. */
-function plannedEntries(project: string): Entry[] {
-  const key = projectKey(project);
+/** The planned entries of a project (by its key) that still wait, in their order: not the one in flight. */
+function plannedEntries(key: string): Entry[] {
   const inFlight = pendingCards.filter((card) => card.project === key).map((card) => card.entry);
   return orderedEntries(projectTasks.get(key)?.backlog ?? []).filter((entry) => !inFlight.includes(entry.id) && !entryGone(key, entry.id));
 }
 
-/** The cards of the planned entries of a project, in their order. */
+/** The cards of the planned entries of a project (by its key), in their order. */
 function plannedItems(project: string): HTMLElement[] {
   const entries = plannedEntries(project);
   const ids = entries.map((entry) => entry.id);
@@ -3535,7 +3670,7 @@ function startCardDrag(event: PointerEvent, card: OverviewCard): void {
   event.preventDefault();
   const head = event.currentTarget as HTMLElement;
   head.setPointerCapture(event.pointerId);
-  const key = projectKey(card.root);
+  const key = projectKey(card.host, card.root);
   const from = overviewPlaces[key] ?? { x: 0, y: 0 };
   const startX = event.clientX;
   const startY = event.clientY;
@@ -3570,7 +3705,7 @@ function startCardDrag(event: PointerEvent, card: OverviewCard): void {
  * is closed. `alwaysOpen` has no fold.
  */
 function taskElement(task: Task, alwaysOpen = false): HTMLElement {
-  const key = `${projectKey(task.project?.cwd ?? "")}|${task.name}`;
+  const key = `${projectKey(task.project?.host ?? LOCAL, task.project?.cwd ?? "")}|${task.name}`;
   const status = taskStatus(task);
   const open = alwaysOpen || (taskOpenChoice.get(key) ?? status.kind !== "done");
   const made = document.createElement("div");
@@ -3645,8 +3780,15 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
 
 /** Reads the worker list and shows it in the chat panel. */
 async function refreshWorkers(): Promise<void> {
-  // The alert must show also when the chat panel is hidden. Thus this runs always.
-  const workers = await call<Worker[]>("worker_list");
+  // The alert must show also when the chat panel is hidden. Thus this runs always. Every host gives
+  // its workers; a host that does not answer keeps its last list (remote-multi-host).
+  const replies = await Promise.allSettled(backends().map((host) => call<Omit<Worker, "host">[]>(host, "worker_list")));
+  if (replies.every((reply) => reply.status === "rejected")) throw (replies[0] as PromiseRejectedResult).reason;
+  const byHost = backends().map((host, at) => {
+    const reply = replies[at];
+    return [host, reply.status === "fulfilled" ? reply.value : null] as const;
+  });
+  const workers = mergeLists(byHost, workerList, (worker) => worker.startedAt ?? 0);
   const shown = JSON.stringify(workers);
   if (shown === workersShown) return;
   workersShown = shown;
@@ -3746,12 +3888,12 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
   const scopes: string[] = [];
   questionWaitTasks = new Map();
   for (const project of projectTasks.values()) {
-    const key = projectKey(project.cwd);
+    const key = projectKey(project.host, project.cwd);
     const scope = `tasks|${key}`;
     scopes.push(scope);
     for (const task of projectTaskList(project)) {
       const info = task.info;
-      const base = { key: `${key}|${task.name}`, scope, name: task.name, project: folderName(project.cwd), text: taskStatus(task).text };
+      const base = { key: `${key}|${task.name}`, scope, name: task.name, project: projectName({ host: project.host, root: project.cwd }), text: taskStatus(task).text };
       if (planReady(task) && !approvalQueued(task) && info?.plan) {
         waits.push({ ...base, kind: info.hold ? "hold" : "plan", stamp: String(info.plan.modified) });
       } else if (openQuestions(task).length > 0 && info?.report) {
@@ -3767,16 +3909,17 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
   const blocked = new Set<string>();
   for (const worker of workerList) {
     if (worker.state !== "blocked") continue;
-    blocked.add(worker.id);
-    if (!blockedBefore.has(worker.id)) promptCounts.set(worker.id, (promptCounts.get(worker.id) ?? 0) + 1);
+    const id = workerKey(worker);
+    blocked.add(id);
+    if (!blockedBefore.has(id)) promptCounts.set(id, (promptCounts.get(id) ?? 0) + 1);
     const name = worker.name ?? worker.id;
     waits.push({
-      key: `${projectKey(worker.cwd)}|${name}`,
+      key: `${projectKey(worker.host, worker.cwd)}|${name}`,
       kind: "prompt",
-      stamp: `${worker.id}#${promptCounts.get(worker.id) ?? 1}`,
+      stamp: `${worker.id}#${promptCounts.get(id) ?? 1}`,
       scope: "workers",
       name,
-      project: folderName(worker.cwd ?? ""),
+      project: projectName({ host: worker.host, root: worker.cwd ?? "" }),
       text: `waits at a prompt${worker.waitingFor ? `: ${worker.waitingFor}` : ""}`,
     });
   }
@@ -3789,7 +3932,7 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
 /** Alerts the user when a task starts to wait: notification, chime and blink, as the switches say. */
 function updateAlerts(): void {
   const { waits, scopes } = currentWaits();
-  const found = newWaits(waits, scopes, alertMarks, nightOn);
+  const found = newWaits(waits, scopes, alertMarks, nightAny());
   // A new question opens its window by itself, like a decision of a plan (ticket question-window).
   // `newWaits` leaves out the first read and night mode; an open window of the app stays on top.
   const opens = questionWaitToOpen(found, document.querySelector("dialog[open]") !== null);
@@ -3840,7 +3983,7 @@ async function checkUpdate(): Promise<void> {
   updateCheckEl.textContent = "Checking…";
   const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   try {
-    const update = await call<Update>("update_check");
+    const update = await windowCall<Update>("update_check");
     showVersion(`${versionText(update)} Checked at ${time}.`);
     document.querySelector<HTMLElement>("#show-help")!.title = `Help · Dispatch ${update.current}`;
     updateNewer = update.newer;
@@ -3879,7 +4022,7 @@ async function installUpdate(): Promise<void> {
     recordOpenQuestions();
     await saveScreens();
     await saveState();
-    const version = await call<string>("update_install");
+    const version = await windowCall<string>("update_install");
     updateAlertEl.textContent = `Installer ${version} started`;
     updateCheckEl.textContent = updateAlertEl.textContent;
     updateCheckEl.disabled = true;
@@ -3887,7 +4030,7 @@ async function installUpdate(): Promise<void> {
     await getCurrentWindow().close();
     // An installer that ends while the app still runs was cancelled or failed: the buttons work
     // again, and a new check shows the latest version (it can be newer than this installer's).
-    while (await call<boolean>("update_installer_open").catch(() => false)) await new Promise((done) => setTimeout(done, INSTALLER_POLL_MS));
+    while (await windowCall<boolean>("update_installer_open").catch(() => false)) await new Promise((done) => setTimeout(done, INSTALLER_POLL_MS));
     updateAlertEl.disabled = false;
     updateAlertEl.title = `The installer of version ${version} closed without updating.`;
     await checkUpdate();
@@ -3922,9 +4065,31 @@ const groupOpen = new Map<string, boolean>();
 /** The row "Older chats" is open. The choice is in localStorage `old-chats-open`. */
 let oldChatsOpen = false;
 
-/** The key of the project of a folder. Windows ignores the case of the letters in a path. */
-function projectKey(cwd: string | null | undefined): string {
-  return (cwd ?? "").replace(/[\\/]+$/, "").toLowerCase();
+/** A saved project key with its host: a key without one (before remote-multi-host) belongs to the first backend. */
+function hostedKey(key: string): string {
+  return projectKey(keyHost(key, firstBackend()), keyPath(key));
+}
+
+/** The key of a project of a list (remote-multi-host): its folder with its host. */
+function refKey(ref: ProjectRef): string {
+  return projectKey(ref.host, ref.root);
+}
+
+/** The key of the project of a workspace pane. */
+function paneKey(pane: { host: HostId; project?: string }): string {
+  return projectKey(pane.host, pane.project);
+}
+
+/** The name of a project: its folder name, with the host's name when the window has more than one backend. */
+function projectName(ref: ProjectRef): string {
+  return projectLabel(folderName(ref.root), backendName(ref.host), backends().length > 1);
+}
+
+/** The projects with a workspace pane, each once, in the order of the panes. */
+function workspaceRefs(): ProjectRef[] {
+  const refs = new Map<string, ProjectRef>();
+  for (const pane of panes.values()) if (pane.role && pane.project) refs.set(paneKey(pane), { host: pane.host, root: pane.project });
+  return [...refs.values()];
 }
 
 /** The date and the time of a chat or a worker, in a short form. */
@@ -3951,38 +4116,39 @@ interface ProjectRoot {
   triageName: boolean;
 }
 
-/** The project of each terminal folder that the `project_root` command gave. The key is the folder key. */
+/** The project of each terminal folder that the `project_root` command gave. The key is the folder key, with the host. */
 const projectRoots = new Map<string, ProjectRoot | "pending">();
 
 /**
- * The key of the project folder of a terminal folder. In a git repository, it is the top
- * folder. In other folders, it is the nearest folder with a chat: the folder, or one above it.
+ * The key of the project folder of a terminal folder of a host. In a git repository, it is the top
+ * folder. In other folders, it is the nearest folder with a chat of that host: the folder, or one above it.
  */
-function projectFor(cwd: string | null | undefined): string {
-  const folder = projectKey(cwd);
+function projectFor(host: HostId, cwd: string | null | undefined): string {
+  const folder = projectKey(host, cwd);
   if (!cwd || folder === "") return "";
   const known = projectRoots.get(folder);
   if (known === undefined) {
     // Ask one time for each folder, and show the chats again when the reply comes.
     projectRoots.set(folder, "pending");
-    call<ProjectRoot>("project_root", { cwd })
+    call<ProjectRoot>(host, "project_root", { cwd })
       .catch((): ProjectRoot => ({ root: cwd, git: false, triagePrompt: false, triageStamp: "", triageName: false }))
       .then((project) => {
         projectRoots.set(folder, project);
         renderChats();
       });
   } else if (known !== "pending" && known.git) {
-    return projectKey(known.root);
+    return projectKey(host, known.root);
   }
   const above = chatList
-    .map((chat) => projectKey(chat.cwd))
+    .filter((chat) => chat.host === host)
+    .map((chat) => projectKey(host, chat.cwd))
     .filter((key) => key !== "" && (folder === key || folder.startsWith(`${key}\\`)));
   return above.sort((a, b) => b.length - a.length)[0] ?? folder;
 }
 
-/** A chat is in a project when its folder is the project folder, or below it. */
-function inProject(chat: { cwd: string | null }, project: string): boolean {
-  const key = projectKey(chat.cwd);
+/** A chat is in a project (by its key) when it is on the project's host and its folder is the project folder, or below it. */
+function inProject(chat: { cwd: string | null; host: HostId }, project: string): boolean {
+  const key = projectKey(chat.host, chat.cwd);
   return key !== "" && project !== "" && (key === project || key.startsWith(`${project}\\`));
 }
 
@@ -4040,8 +4206,10 @@ function renderChats(): void {
   for (const button of chatScopeEl.querySelectorAll("button")) {
     button.classList.toggle("active", button.dataset.scope === chatScope);
   }
-  const folder = projectKey(focusedPane()?.cwd);
-  const project = projectFor(focusedPane()?.cwd);
+  const focused = focusedPane();
+  const focusedHost = focused?.host ?? firstBackend();
+  const folder = projectKey(focusedHost, focused?.cwd);
+  const project = projectFor(focusedHost, focused?.cwd);
   // A chat must have each word of the search text in its title or in its folder.
   const words = chatSearchEl.value.toLowerCase().split(/\s+/).filter(Boolean);
   const agrees = (name: string, cwd: string | null) => {
@@ -4049,8 +4217,8 @@ function renderChats(): void {
     return words.every((word) => text.includes(word));
   };
   // A worker is a chat too. It shows only in the list of the workers.
-  const workerChats = new Set(workerList.map((worker) => worker.sessionId));
-  const found = chatList.filter((chat) => !workerChats.has(chat.id) && agrees(chat.title, chat.cwd));
+  const workerChats = new Set(workerList.map((worker) => `${worker.host}|${worker.sessionId}`));
+  const found = chatList.filter((chat) => !workerChats.has(`${chat.host}|${chat.id}`) && agrees(chat.title, chat.cwd));
   const workers = workerList
     .filter((worker) => agrees(worker.name ?? worker.id, worker.cwd))
     .filter((worker) => chatScope === "all" || inProject(worker, project))
@@ -4075,7 +4243,7 @@ function renderChats(): void {
   // The triage chat of the project is first. The list of the chats below does not repeat it.
   let triage: Chat | undefined;
   try {
-    const remembered = rememberedTriage(project);
+    const remembered = triageRecords.get(project)?.chat ?? null;
     triage = found.find((chat) => chat.id === remembered && inProject(chat, project));
   } catch {
     // The chat is then in the list of the chats.
@@ -4145,7 +4313,7 @@ function renderChats(): void {
     // The list has the newest chat first. Thus the project with the newest chat is first.
     const groups = new Map<string, Chat[]>();
     for (const chat of found) {
-      const key = projectKey(chat.cwd);
+      const key = projectKey(chat.host, chat.cwd);
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(chat);
     }
@@ -4157,7 +4325,7 @@ function renderChats(): void {
       header.title = chats[0].cwd ?? "";
       const name = document.createElement("span");
       name.className = "name";
-      name.textContent = chats[0].cwd ? folderName(chats[0].cwd) : "(no folder)";
+      name.textContent = chats[0].cwd ? projectName({ host: chats[0].host, root: chats[0].cwd }) : "(no folder)";
       const count = document.createElement("span");
       count.className = "count";
       count.textContent = String(chats.length);
@@ -4177,7 +4345,14 @@ function renderChats(): void {
 /** Reads the chat list and shows it in the chat panel. */
 async function refreshChats(): Promise<void> {
   if (chatsEl.hidden) return;
-  const chats = await call<Chat[]>("chat_list");
+  // Every host gives its chats; a host that does not answer keeps its last list (remote-multi-host).
+  const replies = await Promise.allSettled(backends().map((host) => call<Omit<Chat, "host">[]>(host, "chat_list")));
+  if (replies.every((reply) => reply.status === "rejected")) throw (replies[0] as PromiseRejectedResult).reason;
+  const byHost = backends().map((host, at) => {
+    const reply = replies[at];
+    return [host, reply.status === "fulfilled" ? reply.value : null] as const;
+  });
+  const chats = mergeLists(byHost, chatList, (chat) => chat.modified);
   const shown = JSON.stringify(chats);
   if (shown === chatsShown) return;
   chatsShown = shown;
@@ -4232,14 +4407,14 @@ async function openLink(pane: Pane, uri: string): Promise<void> {
       return;
     }
   }
-  const entry = await statFile(pane.cwd, path.replace(/:\d+$/, ""));
+  const entry = await statFile(pane.host, pane.cwd, path.replace(/:\d+$/, ""));
   if (entry) openFile(pane, entry);
 }
 
 /** Saves an image from the clipboard, adds it to the gallery of the pane, and gives the path of the file. */
 async function saveImage(pane: Pane, image: File): Promise<string> {
-  const path = await call<string>("image_save", new Uint8Array(await image.arrayBuffer()));
-  const entry = await statFile(null, path);
+  const path = await call<string>(pane.host, "image_save", new Uint8Array(await image.arrayBuffer()));
+  const entry = await statFile(pane.host, null, path);
   if (entry) {
     pane.extra.push(entry);
     renderSide(pane);
@@ -4310,8 +4485,8 @@ function folderName(path: string): string {
 function updateLabel(tab: Tab): void {
   const pane = panes.get(tab.focus ?? "");
   if (!pane) return;
-  tab.label.textContent = pane.cwd ? folderName(pane.cwd) : pane.shell;
-  tab.button.title = pane.cwd ? `${pane.shell}: ${pane.cwd}` : pane.shell;
+  tab.label.textContent = pane.cwd ? projectName({ host: pane.host, root: pane.cwd }) : pane.shell;
+  tab.button.title = pane.cwd ? `${pane.shell}: ${pane.cwd}${usesHosts() ? ` on ${backendName(pane.host)}` : ""}` : pane.shell;
   // The chat panel shows the chats of the folder of the focused terminal.
   renderChats();
 }
@@ -4327,8 +4502,9 @@ function saveNode(node: Element): SavedNode {
       ...size,
     };
   }
-  const { id, shell, cwd, role, project, runs } = panes.get(el.dataset.pane!)!;
-  return { id, shell, cwd, ...(role ? { role, project } : {}), ...(runs ? { runs } : {}), ...size };
+  const { id, shell, cwd, role, project, runs, host } = panes.get(el.dataset.pane!)!;
+  // A pane of this PC keeps the format of before remote-multi-host: no host field.
+  return { id, shell, cwd, ...(role ? { role, project } : {}), ...(runs ? { runs } : {}), ...(host !== LOCAL ? { host } : {}), ...size };
 }
 
 /** Saves the tab list, the layout and the folders of each tab, and the active tab. */
@@ -4338,7 +4514,7 @@ function saveState(): Promise<void> {
     layout: saveNode(tab.view.firstElementChild!),
     focus: tab.focus,
   }));
-  return call("state_save", {
+  return windowCall("state_save", {
     state: { tabs: list, active: activeId, host: hostSettings() },
     paneIds: [...panes.keys()],
   });
@@ -4354,7 +4530,7 @@ async function saveScreens(): Promise<void> {
       excludeAltBuffer: true,
       excludeModes: true,
     });
-    await call("screen_save", { id: pane.id, data });
+    await windowCall("screen_save", { id: pane.id, data });
   }
 }
 
@@ -4370,6 +4546,7 @@ function activate(id: string): void {
   for (const pane of tabPanes(id)) pane.sideDue = 0;
   panes.get(tab.focus ?? "")?.term.focus();
   renderChats();
+  redrawStatusBar();
   // The tab shows: at the start, at a click on the tab, back from Focus or the Map. In Focus the
   // triage panes stand in their columns, and `moveInto` puts their chats at the end.
   if (!focusOn) for (const pane of tabPanes(id)) pane.chat?.toEnd();
@@ -4385,6 +4562,8 @@ function focusPane(pane: Pane): void {
   if (tab.focus === pane.id) return;
   tab.focus = pane.id;
   updateLabel(tab);
+  // The status bar shows the host of the focused terminal (remote-multi-host).
+  redrawStatusBar();
   void saveState();
 }
 
@@ -4393,7 +4572,7 @@ async function splitFocused(dir: Direction): Promise<void> {
   const tab = tabs.get(activeId ?? "");
   const source = panes.get(tab?.focus ?? "");
   if (!tab || !source) return;
-  const pane = await splitPane(source, dir, { id: crypto.randomUUID(), shell: source.shell, cwd: source.cwd });
+  const pane = await splitPane(source, dir, { id: crypto.randomUUID(), shell: source.shell, cwd: source.cwd, host: source.host });
   pane.term.focus();
 }
 
@@ -4423,10 +4602,10 @@ async function splitPane(source: Pane, dir: Direction, saved: SavedPane): Promis
   return pane;
 }
 
-/** The Commands terminals of a project. */
-function commandPanes(project: string): Pane[] {
-  const key = projectKey(project);
-  return [...panes.values()].filter((pane) => pane.runs !== undefined && projectKey(pane.runs) === key);
+/** The Commands terminals of a project of a host. */
+function commandPanes(host: HostId, project: string): Pane[] {
+  const key = projectKey(host, project);
+  return [...panes.values()].filter((pane) => pane.runs !== undefined && projectKey(pane.host, pane.runs) === key);
 }
 
 /**
@@ -4435,23 +4614,23 @@ function commandPanes(project: string): Pane[] {
  * where a program still runs keeps it; the commands then get a new terminal. A command without
  * `enter` waits in the terminal for the user to finish it, and the lines after it do not run.
  */
-async function runCommands(project: string, lines: RunLine[]): Promise<void> {
+async function runCommands(host: HostId, project: string, lines: RunLine[]): Promise<void> {
   if (!project || lines.length === 0) return;
   let target: Pane | undefined;
-  for (const pane of commandPanes(project)) {
+  for (const pane of commandPanes(host, project)) {
     // A cmdlet like Start-Sleep runs inside the shell, without a process of its own: the
     // terminal is busy from its line until its next prompt.
-    if (!pane.lineOpen && !pane.sequence && !(await call<boolean>("pane_busy", { id: pane.id }))) {
+    if (!pane.lineOpen && !pane.sequence && !(await call<boolean>(pane.host, "pane_busy", { id: pane.id }))) {
       target = pane;
       break;
     }
   }
   if (!target) {
-    const { triage } = workspacePanes(project);
-    const last = commandPanes(project).slice(-1)[0] as Pane | undefined;
+    const { triage } = workspacePanes({ host, root: project });
+    const last = commandPanes(host, project).slice(-1)[0] as Pane | undefined;
     const source = last ?? triage;
     if (!source) return;
-    target = await splitPane(source, last ? "row" : "column", { id: crypto.randomUUID(), shell: "powershell", cwd: project, runs: project });
+    target = await splitPane(source, last ? "row" : "column", { id: crypto.randomUUID(), shell: "powershell", cwd: project, runs: project, host });
   }
   // A new shell takes the line after its first prompt.
   await Promise.race([target.prompted, new Promise((resolve) => setTimeout(resolve, PROMPT_WAIT_MS))]);
@@ -4465,7 +4644,7 @@ async function runCommands(project: string, lines: RunLine[]): Promise<void> {
       // The prompt after this line: it is set up before the write, which a quick command can outrun.
       const done = new Promise<void>((resolve) => pane.promptWaiters.push(resolve));
       pane.lineOpen = true;
-      await call("pty_write", { id: pane.id, data: enter ? `${command}\r` : command });
+      await call(pane.host, "pty_write", { id: pane.id, data: enter ? `${command}\r` : command });
       if (!enter || index === lines.length - 1) break;
       await done;
       // The user closed the terminal: the other lines do not run.
@@ -4528,7 +4707,7 @@ async function closePane(id: string): Promise<void> {
   }
   fitTab(tab.id);
   if (activeId === tab.id) panes.get(tab.focus ?? "")?.term.focus();
-  await call("pty_kill", { id });
+  await call(pane.host, "pty_kill", { id });
   await saveState();
 }
 
@@ -4547,7 +4726,7 @@ async function closeTab(id: string): Promise<void> {
   tab.view.remove();
   tab.button.remove();
   for (const pane of closed) {
-    await call("pty_kill", { id: pane.id });
+    await call(pane.host, "pty_kill", { id: pane.id });
   }
 
   if (tabs.size === 0) {
@@ -4624,6 +4803,8 @@ function createPane(tabId: string, saved: SavedPane): Pane {
   const prompted = new Promise<void>((resolve) => (promptSeen = resolve));
   const pane: Pane = {
     id: saved.id,
+    // A saved host that this run does not have, and a pane of the other mode, go to the first backend.
+    host: knownBackend(saved.host),
     shell: saved.shell,
     cwd: saved.cwd,
     role: saved.role,
@@ -4654,48 +4835,49 @@ function createPane(tabId: string, saved: SavedPane): Pane {
   if (pane.role === "triage") {
     pane.chat = createChatView({
       pane: pane.id,
+      host: pane.host,
       remembered: () => {
         try {
-          return rememberedTriage(pane.project);
+          return rememberedTriage(pane.host, pane.project);
         } catch {
           return null;
         }
       },
       paste: (text) => term.paste(text),
-      write: (data) => call("pty_write", { id: pane.id, data }),
+      write: (data) => call(pane.host, "pty_write", { id: pane.id, data }),
       screen: () => menuLines(term),
       screenRows: () => terminalRows(term),
       saveRecord: (name, record) => saveMenuRecord(pane, name, record),
       saveImage: (image) => saveImage(pane, image),
       openLink: (href) => void openLink(pane, href),
       run: (lines) => {
-        void runCommands(pane.project ?? pane.cwd ?? "", lines).catch((error) => console.error("run failed", error));
+        void runCommands(pane.host, pane.project ?? pane.cwd ?? "", lines).catch((error) => console.error("run failed", error));
       },
       showTerminal: () => {
         // The Overview has no terminal: the project opens in Focus (or its tab), with the terminal.
         if (!overviewOn) return selectTriageView(pane, "terminal");
-        void showProject(pane.project ?? pane.cwd ?? "").then(() => selectTriageView(pane, "terminal"));
+        void showProject({ host: pane.host, root: pane.project ?? pane.cwd ?? "" }).then(() => selectTriageView(pane, "terminal"));
       },
       // View defaults of a question about the night defaults: the file of the Morning button.
       viewDefaults: {
         find: () => {
           const root = pane.project ?? pane.cwd;
-          return root ? call<FileEntry | null>("night_morning", { root }) : Promise.resolve(null);
+          return root ? call<FileInfo | null>(pane.host, "night_morning", { root }).then((file) => (file ? { ...file, host: pane.host } : null)) : Promise.resolve(null);
         },
         open: (file) => void openViewer(file),
       },
       startTriage: () => {
         // The same start as Workspace. In focus mode the tab that was active stays active.
         const back = activeId;
-        void openWorkspace(pane.project ?? pane.cwd ?? undefined)
+        void openWorkspace(pane.host, pane.project ?? pane.cwd ?? undefined)
           .then(() => {
             if (focusOn && back && tabs.has(back)) activate(back);
           })
           .catch((error) => console.error("triage start failed", error));
       },
       onFocus: () => focusPane(pane),
-      onMessage: (message) => addEntry(pane.project ?? pane.cwd ?? "", message),
-      waiting: () => plannedEntries(pane.project ?? pane.cwd ?? "").length,
+      onMessage: (message) => addEntry(pane.host, pane.project ?? pane.cwd ?? "", message),
+      waiting: () => plannedEntries(projectKey(pane.host, pane.project ?? pane.cwd)).length,
     });
     // The view is on top of the terminal. The terminal keeps its size behind it.
     termEl.append(pane.chat.el);
@@ -4728,7 +4910,7 @@ function buildNode(tabId: string, node: SavedNode, created: Pane[]): HTMLDivElem
 async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Promise<void> {
   const { id, shell, term } = pane;
   // The agent view draws itself again at its start: its old screen would only be old frames.
-  const screen = restore && pane.role !== "agents" ? await call<string | null>("screen_load", { id }) : null;
+  const screen = restore && pane.role !== "agents" ? await windowCall<string | null>("screen_load", { id }) : null;
   if (!panes.has(id)) return;
 
   term.open(pane.termEl);
@@ -4790,7 +4972,7 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
         .filter((match) => !match[0].includes("://"))
         .slice(0, MAX_PATHS_PER_LINE);
       const checks = matches.map(async (match) => {
-        const entry = await statFile(pane.cwd, match[0].replace(/:\d+$/, ""));
+        const entry = await statFile(pane.host, pane.cwd, match[0].replace(/:\d+$/, ""));
         if (!entry) return [];
         const range = {
           start: cell(match.index),
@@ -4828,7 +5010,7 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
     return true;
   });
 
-  term.onData((data) => void call("pty_write", { id, data }));
+  term.onData((data) => void call(pane.host, "pty_write", { id, data }));
   term.onResize(({ cols, rows }) => {
     // The agent view prints a new frame at each size and leaves the old ones above it. Before it
     // draws again, the screen and the scrollback of its pane are empty, and the cursor is at the top.
@@ -4836,43 +5018,46 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
       term.clear();
       term.write("\x1b[H\x1b[2J");
     }
-    void call("pty_resize", { id, cols, rows });
+    void call(pane.host, "pty_resize", { id, cols, rows });
   });
 
   pane.spawnArgs = { id, shell, cwd: pane.cwd, ...start };
   try {
-    await call("pty_spawn", { id, shell, cwd: pane.cwd, cols: term.cols, rows: term.rows, ...start });
+    await call(pane.host, "pty_spawn", { id, shell, cwd: pane.cwd, cols: term.cols, rows: term.rows, ...start });
   } catch (error) {
     term.write(`\r\n\x1b[31mCould not start ${shell}: ${error}\x1b[0m\r\n`);
   }
 }
 
 /**
- * After a reconnect to the host (remote-client-mode): each pane whose terminal still runs on the
- * host calls `pty_spawn` again, and the host attaches it and sends the output that the window
- * missed. A pane that the host does not list starts a new shell after `restartAfterMs`, when it
- * is still open then: a terminal that ended while the window was away closes its pane through
- * its `pty-exit` first, and a host that was restarted knows no terminal.
+ * After a reconnect to a host (remote-client-mode): each pane of that host whose terminal still
+ * runs on it calls `pty_spawn` again, and the host attaches it and sends the output that the window
+ * missed. A pane of that host that it does not list starts a new shell after `restartAfterMs`, when
+ * it is still open then: a terminal that ended while the window was away closes its pane through
+ * its `pty-exit` first, and a host that was restarted knows no terminal. The panes of the other
+ * hosts are not touched (remote-multi-host).
  */
-function reattach(alive: string[], restartAfterMs: number): void {
+function reattach(host: HostId, alive: string[], restartAfterMs: number): void {
   const spawn = async (pane: Pane) => {
     if (!pane.spawnArgs || panes.get(pane.id) !== pane) return;
     try {
-      await call("pty_spawn", { ...pane.spawnArgs, cwd: pane.cwd, cols: pane.term.cols, rows: pane.term.rows });
+      await call(pane.host, "pty_spawn", { ...pane.spawnArgs, cwd: pane.cwd, cols: pane.term.cols, rows: pane.term.rows });
     } catch (error) {
       pane.term.write(`\r\n\x1b[31mCould not start ${pane.shell}: ${error}\x1b[0m\r\n`);
     }
   };
   const later: Pane[] = [];
   for (const pane of panes.values()) {
+    if (pane.host !== host) continue;
     if (alive.includes(pane.id)) void spawn(pane);
     else later.push(pane);
   }
   if (later.length > 0) setTimeout(() => later.forEach((pane) => void spawn(pane)), restartAfterMs);
 }
 
-function newTab(shell: Shell, cwd: string | null = null): Promise<void> {
-  const pane: SavedPane = { id: crypto.randomUUID(), shell, cwd };
+/** A new tab with one terminal on `host` (remote-multi-host: the first backend at a start without tabs). */
+function newTab(shell: Shell, host: HostId, cwd: string | null = null): Promise<void> {
+  const pane: SavedPane = { id: crypto.randomUUID(), shell, cwd, host };
   return openTab({ id: crypto.randomUUID(), layout: pane, focus: pane.id }, false);
 }
 
@@ -4931,8 +5116,8 @@ const focusProjectsEl = document.querySelector<HTMLElement>("#focus-projects")!;
 const focusAddEl = document.querySelector<HTMLButtonElement>("#focus-add")!;
 /** Focus mode is on. The choice is in localStorage `view-mode`. */
 let focusOn = false;
-/** The project folders of focus mode, in their order. In localStorage `focus-projects`. */
-let focusProjects: string[] = [];
+/** The projects of focus mode with their hosts, in their order. In localStorage `focus-projects`. */
+let focusProjects: ProjectRef[] = [];
 /** The project of the column that the user worked in last: Setup and Rules act on it. */
 let focusCurrent = "";
 
@@ -4947,7 +5132,7 @@ function setFocusCurrent(key: string): void {
 
 /** Puts the frame on the column of the project in focus; with one project no column has it. */
 function showFocusMark(): void {
-  const keys = focusProjects.map(projectKey);
+  const keys = focusProjects.map(refKey);
   const areas = keys.flatMap((key) => {
     const column = focusColumns.get(key);
     return column ? [{ key, classList: column.el.classList }] : [];
@@ -4961,6 +5146,8 @@ function showFocusMark(): void {
 const focusMoved = new Map<string, HTMLElement>();
 
 interface FocusColumn {
+  /** The host of the project (remote-multi-host). */
+  host: HostId;
   root: string;
   el: HTMLElement;
   dotEl: HTMLElement;
@@ -4992,9 +5179,9 @@ function saveFocus(): void {
 }
 
 /** The triage pane and the Workers pane of the workspace of a project. */
-function workspacePanes(root: string): { triage?: Pane; agents?: Pane } {
-  const key = projectKey(root);
-  const mine = [...panes.values()].filter((pane) => pane.role && projectKey(pane.project) === key);
+function workspacePanes(ref: ProjectRef): { triage?: Pane; agents?: Pane } {
+  const key = refKey(ref);
+  const mine = [...panes.values()].filter((pane) => pane.role && paneKey(pane) === key);
   return { triage: mine.find((pane) => pane.role === "triage"), agents: mine.find((pane) => pane.role === "agents") };
 }
 
@@ -5003,9 +5190,9 @@ function shownPanes(): Pane[] {
   // The Overview shows the Chat view of each triage pane: its state, its question and its box need the reads.
   if (overviewOn) return overviewProjects().flatMap((root) => workspacePanes(root).triage ?? []);
   if (!focusOn) return tabPanes(activeId ?? "");
-  return focusProjects.flatMap((root) => {
-    const { triage, agents } = workspacePanes(root);
-    return [triage, agents, ...commandPanes(root)].filter((pane): pane is Pane => pane !== undefined);
+  return focusProjects.flatMap((ref) => {
+    const { triage, agents } = workspacePanes(ref);
+    return [triage, agents, ...commandPanes(ref.host, ref.root)].filter((pane): pane is Pane => pane !== undefined);
   });
 }
 
@@ -5201,12 +5388,12 @@ function dragColumns(handle: HTMLElement, key: string, el: HTMLElement): void {
     () => {
       if (!next) return;
       saveFocusSize(key, { grow: Number(el.style.flexGrow) });
-      const nextKey = focusProjects.map(projectKey).find((known) => focusColumns.get(known)?.el === next);
+      const nextKey = focusProjects.map(refKey).find((known) => focusColumns.get(known)?.el === next);
       if (nextKey) saveFocusSize(nextKey, { grow: Number(next.style.flexGrow) });
     },
   );
   handle.addEventListener("dblclick", () => {
-    for (const known of focusProjects.map(projectKey)) {
+    for (const known of focusProjects.map(refKey)) {
       const column = focusColumns.get(known);
       if (column) column.el.style.flexGrow = "1";
       saveFocusSize(known, { grow: undefined });
@@ -5214,20 +5401,21 @@ function dragColumns(handle: HTMLElement, key: string, el: HTMLElement): void {
   });
 }
 
-function focusColumn(root: string): FocusColumn {
-  const key = projectKey(root);
+function focusColumn(ref: ProjectRef): FocusColumn {
+  const { host, root } = ref;
+  const key = refKey(ref);
   const known = focusColumns.get(key);
   if (known) return known;
   const el = document.createElement("section");
   el.className = "focus-col";
-  el.setAttribute("aria-label", folderName(root));
+  el.setAttribute("aria-label", projectName(ref));
   const head = document.createElement("div");
   head.className = "focus-head";
   const dotEl = document.createElement("span");
   dotEl.className = "focus-dot";
   const name = document.createElement("span");
   name.className = "focus-name";
-  name.textContent = folderName(root);
+  name.textContent = projectName(ref);
   name.title = root;
   const pathEl = document.createElement("span");
   pathEl.className = "focus-path";
@@ -5241,7 +5429,7 @@ function focusColumn(root: string): FocusColumn {
   close.className = "focus-close";
   close.textContent = "×";
   close.title = "Remove this project from focus mode; its workspace stays in Tabs";
-  close.setAttribute("aria-label", `Remove ${folderName(root)} from focus mode`);
+  close.setAttribute("aria-label", `Remove ${projectName(ref)} from focus mode`);
   // The Map of this project: who works on what, and the worker view of each run.
   const mapButton = document.createElement("button");
   mapButton.className = "focus-workers-button";
@@ -5249,7 +5437,7 @@ function focusColumn(root: string): FocusColumn {
   mapButton.title = "Show this project on the Map: its tasks, runs and agents, and what each worker does";
   mapButton.addEventListener("click", () => {
     void setView("map").then(() => {
-      mapEl.querySelector<HTMLElement>(`.map-project[data-project="${CSS.escape(projectKey(root))}"]`)?.scrollIntoView({ block: "start" });
+      mapEl.querySelector<HTMLElement>(`.map-project[data-project="${CSS.escape(key)}"]`)?.scrollIntoView({ block: "start" });
     });
   });
   // The morning list of night mode (the `nightmode` skill): the defaults it took, with their options.
@@ -5281,12 +5469,12 @@ function focusColumn(root: string): FocusColumn {
   applyFocusSizes(key, el, sideEl);
   dragSide(sideHandle, key, sideEl);
   dragColumns(colHandle, key, el);
-  const column: FocusColumn = { root, el, dotEl, pathEl, workersEl, sideEl, triageEl, commandsEl, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0 };
+  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, commandsEl, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0 };
   morningEl.addEventListener("click", () => {
     if (column.morning) void openViewer(column.morning);
   });
   workersEl.addEventListener("click", () => setWorkersOpen(column, !column.workersOpen));
-  close.addEventListener("click", () => removeFocusProject(root));
+  close.addEventListener("click", () => removeFocusProject(ref));
   // The column that the user works in is the project of Setup and Rules: a click in it (not on a
   // drag edge) or the keyboard arriving in it.
   watchArea(el, key, setFocusCurrent);
@@ -5314,7 +5502,8 @@ async function refreshMorning(column: FocusColumn): Promise<void> {
   column.morningChecked = now;
   let morning: FileEntry | null = null;
   try {
-    morning = await call<FileEntry | null>("night_morning", { root: column.root });
+    const found = await call<FileInfo | null>(column.host, "night_morning", { root: column.root });
+    morning = found ? { ...found, host: column.host } : null;
   } catch (error) {
     console.error("morning list check failed", error);
   }
@@ -5326,11 +5515,12 @@ async function refreshMorning(column: FocusColumn): Promise<void> {
   column.morningEl.title = `Open the morning list of night mode${date ? ` of ${date}` : ""}: the defaults it took with their options, what was built, and what waits for you. Changed ${new Date(morning.modified).toLocaleString()}.`;
 }
 
-function focusState(root: string): { waits: number; working: number } {
-  const record = projectTasks.get(projectKey(root));
+function focusState(ref: ProjectRef): { waits: number; working: number } {
+  const key = refKey(ref);
+  const record = projectTasks.get(key);
   const tasks = record ? projectTaskList(record) : [];
   const waits = tasks.filter((task) => (planReady(task) && !approvalQueued(task)) || reportWaits(task)).length;
-  const working = workerList.filter((worker) => inProject(worker, projectKey(root)) && worker.state === "working").length;
+  const working = workerList.filter((worker) => inProject(worker, key) && worker.state === "working").length;
   return { waits, working };
 }
 
@@ -5343,7 +5533,7 @@ function focusBadge(state: { waits: number; working: number }): { text: string; 
 /** Shows or hides the Workers pane of a column, and sets its button in the head of the column. */
 function showWorkers(column: FocusColumn): void {
   column.agentsEl.hidden = !column.workersOpen;
-  const live = workerList.filter((worker) => inProject(worker, projectKey(column.root)) && (worker.state === "working" || worker.state === "blocked")).length;
+  const live = workerList.filter((worker) => inProject(worker, projectKey(column.host, column.root)) && (worker.state === "working" || worker.state === "blocked")).length;
   column.workersEl.textContent = `${column.workersOpen ? "▾" : "▸"} Workers${live > 0 ? ` · ${live} working` : ""}`;
   column.workersEl.title = column.workersOpen ? "Hide the agent view of this project" : "Show the agent view of Claude Code with the workers of this project";
   column.workersEl.classList.toggle("open", column.workersOpen);
@@ -5356,7 +5546,7 @@ function showWorkers(column: FocusColumn): void {
 function setWorkersOpen(column: FocusColumn, open: boolean): void {
   column.workersOpen = open;
   showWorkers(column);
-  const { agents } = workspacePanes(column.root);
+  const { agents } = workspacePanes(column);
   if (open && agents) requestAnimationFrame(() => fitPane(agents));
   renderFocus();
 }
@@ -5383,23 +5573,23 @@ function renderFocus(): void {
   showFocusMark();
 
   for (const column of columns) {
-    const key = projectKey(column.root);
+    const key = projectKey(column.host, column.root);
     void refreshMorning(column);
-    const state = focusState(column.root);
+    const state = focusState(column);
     const badge = focusBadge(state);
     column.dotEl.className = `focus-dot ${badge.kind}`;
 
-    const { triage, agents } = workspacePanes(column.root);
+    const { triage, agents } = workspacePanes(column);
     if (triage) moveInto(triage, column.triageEl);
     else {
       const start = document.createElement("button");
       start.className = "focus-start";
       start.textContent = "Start triage";
       start.title = "Open the workspace of this project: triage and the agent view";
-      start.addEventListener("click", () => void ensureWorkspace(column.root).then(renderFocus));
+      start.addEventListener("click", () => void ensureWorkspace(column).then(renderFocus));
       column.triageEl.replaceChildren(start);
     }
-    const commands = commandPanes(column.root);
+    const commands = commandPanes(column.host, column.root);
     for (const child of [...column.commandsEl.children]) {
       // A closed terminal has left the slot already. Any other element goes.
       if (!commands.some((pane) => pane.el === child)) child.remove();
@@ -5419,11 +5609,11 @@ function renderFocus(): void {
     };
     let remembered: string | null = null;
     try {
-      remembered = rememberedTriage(column.root);
+      remembered = rememberedTriage(column.host, column.root);
     } catch {
       // Without the storage the triage row shows without a time.
     }
-    const chat = chatList.find((chat) => chat.id === remembered);
+    const chat = chatList.find((chat) => chat.id === remembered && chat.host === column.host);
     const triageRow = document.createElement("button");
     triageRow.className = "chat focus-triage-row";
     triageRow.title = "The triage chat of this project";
@@ -5435,7 +5625,7 @@ function renderFocus(): void {
     triageWhen.textContent = chat ? chatTime(chat.modified) : triage ? "starting" : "not running";
     triageRow.append(triageName, triageWhen);
     // How full the triage chat is, and whether a new chat is due.
-    const contextLine = triage ? triageContextLine(column.root) : null;
+    const contextLine = triage ? triageContextLine(key) : null;
     if (contextLine) triageRow.append(contextLine);
     triageRow.addEventListener("click", () => {
       setFocusCurrent(key);
@@ -5471,16 +5661,16 @@ function renderFocus(): void {
 function renderPills(): void {
   const roots = focusOn ? focusProjects : mapProjects();
   const pills = roots.map((root) => {
-    const key = projectKey(root);
+    const key = refKey(root);
     const badge = focusBadge(focusState(root));
     const pill = document.createElement("button");
     pill.className = "focus-pill";
-    pill.title = root;
+    pill.title = backends().length > 1 ? `${root.root}\non ${backendName(root.host)}` : root.root;
     const dot = document.createElement("span");
     dot.className = `focus-dot ${badge.kind}`;
     const name = document.createElement("span");
     name.className = "name";
-    name.textContent = folderName(root);
+    name.textContent = projectName(root);
     const count = document.createElement("span");
     count.className = `count ${badge.kind}`;
     count.textContent = badge.text;
@@ -5499,7 +5689,7 @@ function renderPills(): void {
         if (triage) {
           activate(triage.tabId);
           triage.term.focus();
-        } else void openWorkspace(root).then(renderPills);
+        } else void openWorkspace(root.host, root.root).then(renderPills);
       }
     });
     return pill;
@@ -5508,10 +5698,10 @@ function renderPills(): void {
 }
 
 /** Opens the workspace of a project when it has none: triage and the agent view start. */
-async function ensureWorkspace(root: string): Promise<void> {
-  if (workspacePanes(root).triage) return;
+async function ensureWorkspace(ref: ProjectRef): Promise<void> {
+  if (workspacePanes(ref).triage) return;
   const back = activeId;
-  await openWorkspace(root);
+  await openWorkspace(ref.host, ref.root);
   // The new tab hides behind focus mode; the tab that was active stays active.
   if (back && tabs.has(back)) activate(back);
 }
@@ -5519,22 +5709,24 @@ async function ensureWorkspace(root: string): Promise<void> {
 /** Reads the tasks of every project of focus mode. */
 async function refreshFocusTasks(): Promise<void> {
   // Focus mode shows its projects; night mode takes the defaults of every project with a workspace.
-  const roots = new Map<string, string>();
-  if (focusOn || mapOn) for (const root of mapProjects()) roots.set(projectKey(root), root);
+  const roots = new Map<string, ProjectRef>();
+  if (focusOn || mapOn) for (const root of mapProjects()) roots.set(refKey(root), root);
   // The pills of the projects group show the state of their projects in every mode.
-  for (const root of focusOn ? focusProjects : mapProjects()) roots.set(projectKey(root), root);
-  if (overviewOn) for (const root of overviewProjects()) roots.set(projectKey(root), root);
-  if (nightOn) for (const pane of panes.values()) if (pane.role === "triage" && pane.project) roots.set(projectKey(pane.project), pane.project);
+  for (const root of focusOn ? focusProjects : mapProjects()) roots.set(refKey(root), root);
+  if (overviewOn) for (const root of overviewProjects()) roots.set(refKey(root), root);
+  for (const pane of panes.values()) {
+    if (pane.role === "triage" && pane.project && nightOf(pane.host)) roots.set(paneKey(pane), { host: pane.host, root: pane.project });
+  }
   if (roots.size === 0) return;
   await Promise.all(
-    [...roots.values()].map(async (root) => {
+    [...roots.values()].map(async ({ host, root }) => {
       try {
-        const reply = await call<TaskListReply>("task_list", { cwd: root });
-        projectTasks.set(projectKey(root), tasksRecord(root, reply));
-        taskReadTimes.set(projectKey(root), Date.now());
+        const reply = await call<TaskListReply>(host, "task_list", { cwd: root });
+        projectTasks.set(projectKey(host, root), tasksRecord(host, root, reply));
+        taskReadTimes.set(projectKey(host, root), Date.now());
       } catch {
         // A folder that is no project has no tasks.
-        projectTasks.delete(projectKey(root));
+        projectTasks.delete(projectKey(host, root));
       }
     }),
   );
@@ -5547,17 +5739,20 @@ async function refreshFocusTasks(): Promise<void> {
 }
 
 async function addFocusProject(): Promise<void> {
-  const folder = await askFolder("Select a project folder for focus mode");
-  if (!folder) return;
-  const { root } = await call<ProjectRoot>("project_root", { cwd: folder });
+  const focused = focusedPane();
+  const chosen = await askFolder("Select a project folder for focus mode", focused ? { host: focused.host, path: undefined } : undefined);
+  if (!chosen) return;
+  const { host } = chosen;
+  const { root } = await call<ProjectRoot>(host, "project_root", { cwd: chosen.folder });
   // A project that is not set up shows the Setup pipeline window first; a close without Apply adds nothing.
-  if (!hasWorkspace(root) && !(await setupProject(root))) return;
-  if (!focusProjects.some((known) => projectKey(known) === projectKey(root))) focusProjects.push(root);
+  if (!hasWorkspace(host, root) && !(await setupProject(host, root))) return;
+  const ref: ProjectRef = { host, root };
+  if (!focusProjects.some((known) => refKey(known) === refKey(ref))) focusProjects.push(ref);
   saveFocus();
-  await ensureWorkspace(root);
+  await ensureWorkspace(ref);
   // In Tabs the workspace of the new project shows; the other modes keep their view.
   if (!focusOn && !mapOn && !overviewOn) {
-    const { triage } = workspacePanes(root);
+    const { triage } = workspacePanes(ref);
     if (triage) activate(triage.tabId);
   }
   renderFocus();
@@ -5565,11 +5760,11 @@ async function addFocusProject(): Promise<void> {
   await refreshFocusTasks();
 }
 
-function removeFocusProject(root: string): void {
-  const key = projectKey(root);
-  focusProjects = focusProjects.filter((known) => projectKey(known) !== key);
-  const { triage, agents } = workspacePanes(root);
-  for (const pane of [triage, agents, ...commandPanes(root)]) if (pane) moveBack(pane);
+function removeFocusProject(ref: ProjectRef): void {
+  const key = refKey(ref);
+  focusProjects = focusProjects.filter((known) => refKey(known) !== key);
+  const { triage, agents } = workspacePanes(ref);
+  for (const pane of [triage, agents, ...commandPanes(ref.host, ref.root)]) if (pane) moveBack(pane);
   focusColumns.get(key)?.el.remove();
   focusColumns.delete(key);
   saveFocus();
@@ -5586,11 +5781,7 @@ async function setFocus(on: boolean): Promise<void> {
     button.classList.toggle("active", button.dataset.mode === (on ? "focus" : "tabs"));
   }
   if (on) {
-    if (focusProjects.length === 0) {
-      const roots = new Map<string, string>();
-      for (const pane of panes.values()) if (pane.role && pane.project) roots.set(projectKey(pane.project), pane.project);
-      focusProjects = [...roots.values()];
-    }
+    if (focusProjects.length === 0) focusProjects = workspaceRefs();
     for (const root of focusProjects) await ensureWorkspace(root);
     renderFocus();
     await refreshFocusTasks();
@@ -5635,11 +5826,9 @@ function mapElement<K extends keyof HTMLElementTagNameMap>(tag: K, className = "
 }
 
 /** The projects of the Map: the ones of focus mode, else the ones with a workspace. */
-function mapProjects(): string[] {
+function mapProjects(): ProjectRef[] {
   if (focusProjects.length > 0) return focusProjects;
-  const roots = new Map<string, string>();
-  for (const pane of panes.values()) if (pane.role && pane.project) roots.set(projectKey(pane.project), pane.project);
-  return [...roots.values()];
+  return workspaceRefs();
 }
 
 /** Switches between the four views. */
@@ -5796,8 +5985,9 @@ function taskTime(task: Task): number {
   return Math.max(task.info?.report?.modified ?? 0, task.info?.plan?.modified ?? 0, ...task.workers.map((worker) => worker.startedAt ?? 0));
 }
 
-function mapSection(root: string): HTMLElement {
-  const key = projectKey(root);
+function mapSection(ref: ProjectRef): HTMLElement {
+  const { root } = ref;
+  const key = refKey(ref);
   const record = projectTasks.get(key);
   const all = record ? projectTaskList(record) : [];
   const waiting = all.filter((task) => (planReady(task) && !approvalQueued(task)) || reportWaits(task));
@@ -5819,7 +6009,7 @@ function mapSection(root: string): HTMLElement {
   const head = mapElement("div", "map-head");
   const dot = mapElement("span", `focus-dot ${waiting.length > 0 ? "waits" : live.length > 0 ? "working" : ""}`);
   dot.setAttribute("aria-hidden", "true");
-  const name = mapElement("b", "", folderName(root));
+  const name = mapElement("b", "", projectName(ref));
   const path = mapElement("span", "map-muted", root);
   const counts = mapElement("span", "map-muted", [`${live.length} working`, waiting.length > 0 ? `${waiting.length} wait for you` : ""].filter(Boolean).join(" · "));
   head.append(dot, name, path, counts);
@@ -5830,7 +6020,7 @@ function mapSection(root: string): HTMLElement {
   const links: Link[] = [];
   // The temporary cards of messages to triage take one row each, where their tasks will stand. Only
   // the entry in flight has one: the planned entries that wait add no rows (overview-backlog).
-  const cards = projectPending(root);
+  const cards = projectPending(key);
   const cardAt = pendingIndex(tasks, taskWaits);
   const rows = Math.max(1, tasks.length + cards.length + (older > 0 ? 1 : 0));
   graph.style.gridTemplateRows = `repeat(${rows}, auto)`;
@@ -5843,8 +6033,8 @@ function mapSection(root: string): HTMLElement {
   const atTop = rows >= MAP_TOP_ROWS;
   if (atTop) you.classList.add("top");
 
-  const { triage } = workspacePanes(root);
-  const choice = triageChoice(root);
+  const { triage } = workspacePanes(ref);
+  const choice = triageChoice(key);
   const triageCard = mapElement("button", "map-node triage");
   triageCard.title = "Go to the triage chat of this project in focus mode";
   triageCard.append(mapElement("b", "", "Triage"), mapElement("span", "map-line", triage ? [choice.model || "default model", choice.effort || "default effort"].join(" · ") : "not running · click to start"));
@@ -5853,7 +6043,7 @@ function mapSection(root: string): HTMLElement {
   if (atTop) triageCard.classList.add("top");
   triageCard.addEventListener("click", () => {
     void setView("focus").then(async () => {
-      await ensureWorkspace(root);
+      await ensureWorkspace(ref);
       renderFocus();
       focusColumns.get(key)?.el.scrollIntoView({ behavior: "smooth", inline: "nearest" });
     });
@@ -5976,15 +6166,16 @@ function openMapFlow(task: Task, worker: Worker, run: "plan" | "work" | "worker"
   mapFlow = openFlow(
     host,
     {
+      host: worker.host,
       session: worker.sessionId,
-      project: folderName(task.project?.cwd ?? worker.cwd ?? ""),
+      project: projectName({ host: worker.host, root: task.project?.cwd ?? worker.cwd ?? "" }),
       task: task.name,
       run,
-      state: () => workerList.find((known) => known.id === worker.id)?.state ?? worker.state,
+      state: () => workerList.find((known) => workerKey(known) === workerKey(worker))?.state ?? worker.state,
       startedAt: worker.startedAt,
       // The lines change with the task (working to done): the newest task list gives them.
       tldr: () => {
-        const record = projectTasks.get(projectKey(task.project?.cwd ?? worker.cwd ?? ""));
+        const record = projectTasks.get(projectKey(worker.host, task.project?.cwd ?? worker.cwd ?? ""));
         const now = record ? projectTaskList(record).find((known) => known.name === task.name) : undefined;
         return taskTldrOf(now ?? task);
       },
@@ -6016,6 +6207,8 @@ const overviewEl = document.querySelector<HTMLElement>("#overview")!;
 let overviewOn = false;
 
 interface OverviewCard {
+  /** The host of the project (remote-multi-host). */
+  host: HostId;
   root: string;
   el: HTMLElement;
   /** The handle of a card drag: the grip, the dot, the count and the space between. */
@@ -6063,10 +6256,10 @@ function placeCards(cards: readonly OverviewCard[]): void {
   const usable = Math.max(0, overviewEl.clientWidth - 20);
   let changed = false;
   for (const card of cards) {
-    const key = projectKey(card.root);
+    const key = projectKey(card.host, card.root);
     if (overviewPlaces[key]) continue;
     const taken: OverviewRect[] = cards.flatMap((other) => {
-      const place = overviewPlaces[projectKey(other.root)];
+      const place = overviewPlaces[projectKey(other.host, other.root)];
       return other !== card && place ? [{ ...place, width: other.el.offsetWidth, height: other.el.offsetHeight }] : [];
     });
     overviewPlaces = { ...overviewPlaces, [key]: freePlace(taken, { width: card.el.offsetWidth, height: card.el.offsetHeight }, usable) };
@@ -6075,7 +6268,7 @@ function placeCards(cards: readonly OverviewCard[]): void {
   if (changed) savePlaces();
   const order = Object.keys(overviewPlaces);
   for (const card of cards) {
-    const key = projectKey(card.root);
+    const key = projectKey(card.host, card.root);
     const place = overviewPlaces[key];
     card.el.style.left = `${place.x}px`;
     card.el.style.top = `${place.y}px`;
@@ -6084,10 +6277,8 @@ function placeCards(cards: readonly OverviewCard[]): void {
 }
 
 /** The projects of the Overview: every project with an open workspace (decision 4 of the plan). */
-function overviewProjects(): string[] {
-  const roots = new Map<string, string>();
-  for (const pane of panes.values()) if (pane.role && pane.project) roots.set(projectKey(pane.project), pane.project);
-  return [...roots.values()];
+function overviewProjects(): ProjectRef[] {
+  return workspaceRefs();
 }
 
 /** How the Overview and the Map see a task: its kind, an approval that waits, a run on its way. */
@@ -6109,45 +6300,46 @@ function overviewTask(task: Task): OverviewTask {
  * Leaves the Overview for a project: its column in Focus, or its tab when focus mode does not have
  * it. Rules and Setup pipeline then act on it.
  */
-async function showProject(root: string): Promise<void> {
-  const key = projectKey(root);
-  if (focusProjects.some((known) => projectKey(known) === key)) {
+async function showProject(ref: ProjectRef): Promise<void> {
+  const key = refKey(ref);
+  if (focusProjects.some((known) => refKey(known) === key)) {
     setFocusCurrent(key);
     await setView("focus");
     focusColumns.get(key)?.el.scrollIntoView({ behavior: "smooth", inline: "nearest" });
     return;
   }
   await setView("tabs");
-  const { triage } = workspacePanes(root);
+  const { triage } = workspacePanes(ref);
   if (triage) activate(triage.tabId);
 }
 
-function overviewCard(root: string): OverviewCard {
-  const key = projectKey(root);
+function overviewCard(ref: ProjectRef): OverviewCard {
+  const { host, root } = ref;
+  const key = refKey(ref);
   const known = overviewCards.get(key);
   if (known) return known;
   const el = mapElement("section", "overview-card");
   el.dataset.project = key;
-  el.setAttribute("aria-label", folderName(root));
+  el.setAttribute("aria-label", projectName(ref));
   const head = mapElement("div", "overview-head");
   const grip = mapElement("span", "entry-grip overview-grip", "⠿");
   grip.title = "Drag to move this card; it snaps to the grid";
   grip.setAttribute("aria-hidden", "true");
   const dotEl = mapElement("span", "focus-dot");
   dotEl.setAttribute("aria-hidden", "true");
-  const name = mapElement("button", "overview-name", folderName(root));
+  const name = mapElement("button", "overview-name", projectName(ref));
   name.title = `${root}\nOpen this project in Focus, or in its tab when focus mode does not have it`;
-  name.addEventListener("click", () => void showProject(root));
+  name.addEventListener("click", () => void showProject(ref));
   const countEl = mapElement("span", "overview-count");
   head.append(grip, dotEl, name, countEl);
   const tasksEl = mapElement("div", "overview-tasks");
   const startEl = mapElement("button", "focus-start", "Start triage");
   startEl.title = "Open the workspace of this project: triage and the agent view";
   startEl.hidden = true;
-  startEl.addEventListener("click", () => void ensureWorkspace(root).then(renderOverview));
+  startEl.addEventListener("click", () => void ensureWorkspace(ref).then(renderOverview));
   const chatEl = mapElement("div", "overview-chat");
   el.append(head, tasksEl, startEl, chatEl);
-  const card: OverviewCard = { root, el, headEl: head, dotEl, countEl, tasksEl, startEl, chatEl };
+  const card: OverviewCard = { host, root, el, headEl: head, dotEl, countEl, tasksEl, startEl, chatEl };
   head.title = "Drag to move this card; it snaps to the grid";
   head.addEventListener("pointerdown", (event) => startCardDrag(event, card));
   overviewCards.set(key, card);
@@ -6171,11 +6363,12 @@ function renderOverview(): void {
     overviewEl.replaceChildren(...cards.map((card) => card.el));
   }
   for (const card of cards) {
-    const badge = focusBadge(focusState(card.root));
+    const key = projectKey(card.host, card.root);
+    const badge = focusBadge(focusState(card));
     card.dotEl.className = `focus-dot ${badge.kind}`;
     card.countEl.className = `overview-count ${badge.kind}`;
     card.countEl.textContent = badge.text;
-    const record = projectTasks.get(projectKey(card.root));
+    const record = projectTasks.get(key);
     if (!record) {
       card.tasksEl.replaceChildren(mapElement("p", "overview-none", "Reading the tasks…"));
       continue;
@@ -6188,21 +6381,21 @@ function renderOverview(): void {
       ...(items.length > 0 ? items : [mapElement("p", noneClass, none)]),
     ];
     card.tasksEl.replaceChildren(
-      ...part("In work", withPending(tasks, tasks.map((task) => taskElement(task)), card.root), "Nothing in work"),
+      ...part("In work", withPending(tasks, tasks.map((task) => taskElement(task)), key), "Nothing in work"),
       ...part("Done", doneTasks(all, overviewTask, taskTime).map((task) => taskElement(task)), "Nothing done yet"),
-      ...part("Planned", plannedItems(card.root), "Nothing planned yet", "overview-none overview-empty"),
+      ...part("Planned", plannedItems(key), "Nothing planned yet", "overview-none overview-empty"),
     );
   }
   const chats = [...panes.values()].flatMap((pane) => {
     const chat = pane.role === "triage" ? pane.chat : undefined;
     if (!chat) return [];
-    return [{ key: projectKey(pane.project), home: pane.termEl, el: chat.el, visible: () => chat.visible(), setVisible: (visible: boolean) => chat.setVisible(visible) }];
+    return [{ key: paneKey(pane), home: pane.termEl, el: chat.el, visible: () => chat.visible(), setVisible: (visible: boolean) => chat.setVisible(visible) }];
   });
   const without = overviewChats.place(
-    cards.map((card) => ({ key: projectKey(card.root), slot: card.chatEl })),
+    cards.map((card) => ({ key: projectKey(card.host, card.root), slot: card.chatEl })),
     chats,
   );
-  for (const card of cards) card.startEl.hidden = !without.includes(projectKey(card.root));
+  for (const card of cards) card.startEl.hidden = !without.includes(projectKey(card.host, card.root));
   placeCards(cards);
 }
 
@@ -6246,18 +6439,87 @@ function tickRunTimes(): void {
   }
 }
 
+/**
+ * The focus projects from the browser store: a project with its host, or a folder alone (before
+ * remote-multi-host), which belongs to the first backend. A host that this run does not have goes
+ * to the first backend too; a project that two entries name stays once.
+ */
+function parseFocusProjects(saved: unknown): ProjectRef[] {
+  if (!Array.isArray(saved)) return [];
+  const refs = new Map<string, ProjectRef>();
+  for (const item of saved) {
+    const ref: ProjectRef | null =
+      typeof item === "string"
+        ? { host: firstBackend(), root: item }
+        : item && typeof item === "object" && typeof item.root === "string"
+          ? { host: knownBackend(typeof item.host === "string" ? item.host : null), root: item.root }
+          : null;
+    if (ref && ref.root !== "" && !refs.has(refKey(ref))) refs.set(refKey(ref), ref);
+  }
+  return [...refs.values()];
+}
+
+/** The prefixes of the browser store whose rest is a project key. */
+const PROJECT_KEY_PREFIXES = ["triage:", "triage-role:", "triage-choice:", "triage-limit:", "triage-earlier:"];
+/** The records of the browser store that map project keys to a value. */
+const PROJECT_KEY_MAPS = ["overview-places", "focus-sizes"];
+
+/**
+ * Decision 4 of remote-multi-host: a value that a window saved under a project key without a host
+ * belongs to the first backend. In the mode "Use hosts" the window copies each such value to the key
+ * with the host once, and keeps the old one for the mode "This PC does the work".
+ */
+function migrateStoredKeys(): void {
+  const first = firstBackend();
+  if (first === LOCAL) return;
+  try {
+    const keys: string[] = [];
+    for (let index = 0; index < localStorage.length; index++) keys.push(localStorage.key(index) ?? "");
+    for (const key of keys) {
+      const prefix = PROJECT_KEY_PREFIXES.find((known) => key.startsWith(known));
+      if (!prefix) continue;
+      const rest = key.slice(prefix.length);
+      if (rest === "" || rest.includes("|")) continue;
+      const moved = `${prefix}${projectKey(first, rest)}`;
+      const value = localStorage.getItem(key);
+      if (value !== null && localStorage.getItem(moved) === null) localStorage.setItem(moved, value);
+    }
+    for (const name of PROJECT_KEY_MAPS) {
+      const saved: unknown = JSON.parse(localStorage.getItem(name) ?? "{}");
+      if (!saved || typeof saved !== "object" || Array.isArray(saved)) continue;
+      const map = saved as Record<string, unknown>;
+      let changed = false;
+      for (const [rest, value] of Object.entries(map)) {
+        if (rest === "" || rest.includes("|")) continue;
+        const moved = projectKey(first, rest);
+        if (!(moved in map)) {
+          map[moved] = value;
+          changed = true;
+        }
+      }
+      if (changed) localStorage.setItem(name, JSON.stringify(map));
+    }
+  } catch (error) {
+    console.warn("the stored project values were not moved", error);
+  }
+  overviewPlaces = readPlaces();
+}
+
 async function start(): Promise<void> {
-  // The mode comes first: in the mode "Use a host" every call after this goes to the host.
+  // The mode comes first: in the mode "Use hosts" every call after this names its host.
   await initBackend();
-  // The one window of the mode "This PC does the work" drives; a window of a host waits for the lease.
-  driver = !hostInfo();
-  await onEvent<{ id: string; data: string }>("pty-output", (payload) => {
+  // The values of the browser store that a one-host window saved before remote-multi-host.
+  migrateStoredKeys();
+  // The one window of the mode "This PC does the work" drives (`driverOf`); a window of hosts waits for each lease.
+  await onEvent<{ id: string; data: string }>("pty-output", (host, payload) => {
     const pane = panes.get(payload.id);
-    if (!pane) return;
+    if (!pane || pane.host !== host) return;
     pane.term.write(payload.data);
     pane.dirty = true;
   });
-  await onEvent<string>("pty-exit", (payload) => void closePane(payload));
+  await onEvent<string>("pty-exit", (host, payload) => {
+    if (panes.get(payload)?.host === host) void closePane(payload);
+  });
 
   await getCurrentWindow().onCloseRequested(async () => {
     try {
@@ -6330,18 +6592,20 @@ async function start(): Promise<void> {
     setTextSize(100);
   }
   initViewer(() => focusedPane()?.term.focus());
+  // Setup pipeline and Rules act on the folder of the focused terminal, on its host.
+  const focusedFolder = () => {
+    const pane = focusedPane();
+    return { host: pane?.host ?? firstBackend(), folder: pane?.cwd };
+  };
   initPipeline(
-    () => focusedPane()?.cwd,
+    focusedFolder,
     () => {
       reloadWorkerFlags();
       focusedPane()?.term.focus();
     },
     recordTriageRole,
   );
-  initRules(
-    () => focusedPane()?.cwd,
-    () => focusedPane()?.term.focus(),
-  );
+  initRules(focusedFolder, () => focusedPane()?.term.focus());
   initHelp(() => focusedPane()?.term.focus());
   initOptions(
     () => focusedPane()?.term.focus(),
@@ -6349,13 +6613,15 @@ async function start(): Promise<void> {
   );
   initHostMode(reattach);
   // After a lost connection the host may have a newer switch and newer triage chats (remote-shared-state).
-  onConnection((connection) => {
+  // A host that goes or comes changes the look of the switch (remote-multi-host).
+  onConnection((host, connection) => {
+    showNight();
     if (connection.state !== "connected" || connection.first) return;
-    void call("shared_load")
-      .then((reply) => applyShared(parseShared(reply)))
+    void call(host, "shared_load")
+      .then((reply) => applyShared(host, parseShared(reply)))
       .catch((error) => console.warn("shared state read failed", error));
   });
-  initStatusBar();
+  initStatusBar(() => focusedPane()?.host ?? firstBackend());
   initDecisions();
   initQuestions();
   void pollSide();
@@ -6406,28 +6672,32 @@ async function start(): Promise<void> {
   });
   void pollUpdate();
 
-  const loaded = await call<SavedState | null>("state_load");
-  // Night mode and the triage chats come from the shared file (remote-shared-state), before the tabs
-  // open, so the first task reads see the switch and each triage pane continues its chat. Its first
-  // read takes both from state.json of today's format. Without a reply (the host is not reachable)
-  // the switch starts off, and a later connection brings the values.
-  let shared: SharedState | null = null;
-  try {
-    shared = parseShared(await call("shared_load"));
-  } catch (error) {
-    console.error("shared state read failed", error);
-  }
+  const loaded = await windowCall<SavedState | null>("state_load");
+  // Night mode and the triage chats come from the shared file of each backend (remote-shared-state,
+  // remote-multi-host), before the tabs open, so the first task reads see the switch and each triage
+  // pane continues its chat. Its first read takes both from state.json of today's format. Without a
+  // reply (the host is not reachable) its switch starts off, and a later connection brings the values.
+  const shared = await Promise.all(
+    backends().map(async (host) => {
+      try {
+        return [host, parseShared(await call(host, "shared_load"))] as const;
+      } catch (error) {
+        console.error("shared state read failed", backendName(host), error);
+        return [host, null] as const;
+      }
+    }),
+  );
   // The old browser value (before nightmode-switch-sync) counts only in the mode "This PC does the
   // work", and only when the shared file gives no value.
   let legacyNight: string | null = null;
   try {
-    if (!hostInfo()) legacyNight = localStorage.getItem("night-mode");
+    if (!usesHosts()) legacyNight = localStorage.getItem("night-mode");
   } catch {
     // No old value: the switch takes the shared value or starts off.
   }
-  nightOn = nightAtStart(shared?.night, legacyNight);
+  for (const [host, state] of shared) nightStates.set(host, nightAtStart(state?.night, legacyNight));
   showNight();
-  loadTriageRecords(shared?.triage);
+  loadTriageRecords(shared.map(([host, state]) => [host, state?.triage] as const));
   for (const saved of loaded?.tabs ?? []) {
     const tab = "layout" in saved ? saved : { id: saved.id, layout: saved, focus: saved.id };
     // A workspace runs again: triage resumes its chat, and the agent view starts.
@@ -6439,17 +6709,19 @@ async function start(): Promise<void> {
     }
   }
   if (tabs.size === 0) {
-    await newTab("powershell");
+    await newTab("powershell", firstBackend());
   } else if (loaded?.active) {
     activate(loaded.active);
   }
   await saveState();
-  // A window of a host asks for the lease before the night check: only the driver sends its lines.
-  if (hostInfo()) await reportDriver(false).catch((error) => console.warn("report for the lease failed", error));
-  // The resumed triage chats follow the switch: each gets the skill command when its night file differs.
-  const nightRoots = new Map<string, string>();
-  for (const pane of panes.values()) if (pane.role === "triage" && pane.project) nightRoots.set(projectKey(pane.project), pane.project);
-  for (const root of nightRoots.values()) void syncNight(root);
+  // A window of hosts asks each host for its lease before the night check: only the driver sends its lines.
+  if (usesHosts()) {
+    await Promise.all(backends().map((host) => reportDriver(host, false).catch((error) => console.warn("report for the lease failed", backendName(host), error))));
+  }
+  // The resumed triage chats follow the switch of their host: each gets the skill command when its night file differs.
+  for (const ref of workspaceRefs()) {
+    if ([...panes.values()].some((pane) => pane.role === "triage" && paneKey(pane) === refKey(ref))) void syncNight(ref.host, ref.root);
+  }
   setInterval(() => void saveScreens(), SCREEN_SAVE_INTERVAL_MS);
   setInterval(tickRunTimes, RUN_TICK_MS);
 
@@ -6460,12 +6732,12 @@ async function start(): Promise<void> {
   focusAddEl.addEventListener("click", () => void addFocusProject().catch((error) => console.error("focus project failed", error)));
   // Night mode: the click of the switch (its state came from state.json above).
   loadQueued();
-  document.querySelector("#night-mode")!.addEventListener("click", () => setNight(!nightOn));
+  // A click on "on" turns every host off; on "off" or on the mixed look it turns every host on (remote-multi-host).
+  document.querySelector("#night-mode")!.addEventListener("click", () => setNight(nightLook() !== "on"));
   let mode = "tabs";
   try {
     mode = localStorage.getItem("view-mode") ?? "tabs";
-    focusProjects = JSON.parse(localStorage.getItem("focus-projects") ?? "[]");
-    if (!Array.isArray(focusProjects)) focusProjects = [];
+    focusProjects = parseFocusProjects(JSON.parse(localStorage.getItem("focus-projects") ?? "[]"));
   } catch {
     focusProjects = [];
   }

@@ -360,9 +360,9 @@ test("the Overview meets the page", () => {
   assert.match(block, /listedTasks\(/);
   assert.match(block, /\.place\(/);
   assert.match(block, /\.restore\(\)/);
-  // Each Chat view still writes to the terminal of its own pane.
+  // Each Chat view still writes to the terminal of its own pane, on the pane's host (remote-multi-host).
   assert.match(MAIN, /paste: \(text\) => term\.paste\(text\),/);
-  assert.match(MAIN, /write: \(data\) => call\("pty_write", \{ id: pane\.id, data \}\),/);
+  assert.match(MAIN, /write: \(data\) => call\(pane\.host, "pty_write", \{ id: pane\.id, data \}\),/);
   assert.match(MAIN, /savedView\(/);
 });
 

@@ -266,31 +266,41 @@ body:has(#panes:not(.no-side)) #toggle-side {
   cursor: default;
 }
 
-/* The bar below the top bar in the mode "Use a host": the host is not reachable, or it refused the
-   window. It takes one line, as the status bar does; a long text is cut with "…". */
+/* The bar below the top bar in the mode "Use hosts": one row for each host that is not reachable or
+   refused the window (remote-multi-host). Each row takes one line, as the status bar does; a long
+   text is cut with "…". */
 #host-bar {
   display: flex;
   flex: none;
+  flex-direction: column;
+  border-bottom: 1px solid var(--wait-line);
+  background: var(--wait-bg);
+  color: var(--wait);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.host-bar-row {
+  display: flex;
   align-items: center;
   gap: 12px;
   box-sizing: border-box;
   height: calc(28px * var(--text-scale));
   padding: 0 10px;
   overflow: hidden;
-  border-bottom: 1px solid var(--wait-line);
-  background: var(--wait-bg);
-  color: var(--wait);
-  font-size: calc(12px * var(--text-scale));
   white-space: nowrap;
 }
 
-#host-bar-text {
+.host-bar-row + .host-bar-row {
+  border-top: 1px solid var(--wait-line);
+}
+
+.host-bar-text {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-#host-bar button {
+.host-bar-row button {
   flex: none;
   height: calc(22px * var(--text-scale));
   padding: 0 10px;
@@ -302,7 +312,7 @@ body:has(#panes:not(.no-side)) #toggle-side {
   cursor: pointer;
 }
 
-#host-bar button:hover {
+.host-bar-row button:hover {
   background: var(--wait-glow);
 }
 
@@ -1726,6 +1736,52 @@ button.task-head:hover {
   opacity: 0.6;
 }
 
+/* The host list of the section "Where the work runs" (remote-multi-host): one row per host with the
+   name, the address, the port, the key and Remove. */
+#host-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+#options .host-row {
+  display: grid;
+  grid-template-columns: 1fr 2fr 70px 1fr auto;
+  gap: 6px;
+  align-items: center;
+}
+
+#options .host-row input[type="text"],
+#options .host-row input[type="password"],
+#options .host-row input[type="number"] {
+  width: 100%;
+  min-width: 0;
+}
+
+#options .host-row input:disabled {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+#options #host-add,
+#options .host-remove {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+#options #host-add:disabled,
+#options .host-remove:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
 /* The section "Run the host on this PC": the key, the three buttons and the error line. */
 #options #host-run-key {
   width: 80%;
@@ -1818,6 +1874,18 @@ button.task-head:hover {
 
 #folder-chooser-close:hover {
   background: var(--card);
+}
+
+/* The host of the chooser (remote-multi-host): shown when the window has more than one host. */
+#folder-chooser-host {
+  height: 30px;
+  max-width: 40%;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
 }
 
 #folder-chooser-body {
@@ -3729,6 +3797,19 @@ body {
 #night-mode[aria-checked="true"] .knob {
   left: 17px;
   background: var(--text);
+}
+
+/* The hosts differ (remote-multi-host): the knob stands in the middle, on half the colour of on. */
+#bar #night-mode[aria-checked="mixed"] {
+  color: var(--text);
+}
+
+#night-mode[aria-checked="mixed"] .switch {
+  background: color-mix(in srgb, var(--switch-on) 50%, var(--line));
+}
+
+#night-mode[aria-checked="mixed"] .knob {
+  left: 10px;
 }
 
 /* The Nightmode switch stands right before the pane buttons and takes their push to the right. */

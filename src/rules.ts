@@ -1,4 +1,4 @@
-import { call } from "./backend";
+import { call, type HostId } from "./backend";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import {
@@ -68,6 +68,8 @@ const COPIED_MS = 1500;
 let shownText = "";
 /** The folder of the focused terminal when the popup opened. */
 let folder: string | null = null;
+/** The host of that folder (remote-multi-host). */
+let folderHost: HostId = "";
 /** The Remove button asks again for this time. */
 const SURE_MS = 3000;
 
@@ -91,7 +93,7 @@ async function ruleElement(file: string, group: string, part: RulePart): Promise
   buttons.className = "rule-buttons";
   const set = (state: RuleState) => {
     for (const button of buttons.querySelectorAll("button")) button.disabled = true;
-    call<Rules>("set_rule", { cwd: folder, file, group, text: part.markdown, state })
+    call<Rules>(folderHost, "set_rule", { cwd: folder, file, group, text: part.markdown, state })
       .then(show)
       .catch((error) => (projectEl.textContent = `The change failed: ${error}`));
   };
@@ -198,12 +200,12 @@ function stateLine(text: string): HTMLElement {
 
 /** Takes a finding out of its file as a rule that is off, and shows the new list of rules. */
 async function removeFinding(finding: Finding): Promise<void> {
-  await show(await call<Rules>("set_rule", { cwd: folder, file: finding.file, group: finding.group, text: finding.text, state: "off" }));
+  await show(await call<Rules>(folderHost, "set_rule", { cwd: folder, file: finding.file, group: finding.group, text: finding.text, state: "off" }));
 }
 
 /** Writes the recommended text of a finding in place of the rule, and shows the new list. */
 async function updateFinding(finding: Finding): Promise<void> {
-  await show(await call<Rules>("update_rule", { cwd: folder, file: finding.file, group: finding.group, text: finding.text, newText: finding.update }));
+  await show(await call<Rules>(folderHost, "update_rule", { cwd: folder, file: finding.file, group: finding.group, text: finding.text, newText: finding.update }));
 }
 
 /** Shows the result of the check above the groups. */
@@ -229,7 +231,7 @@ async function showFindings(check: RulesCheck): Promise<void> {
  * Connects the Rules button and its popup. `currentFolder` gives the folder of the focused
  * terminal. `onClose` runs when the popup closes.
  */
-export function initRules(currentFolder: () => string | null | undefined, onClose: () => void): void {
+export function initRules(currentFolder: () => { host: HostId; folder: string | null | undefined }, onClose: () => void): void {
   // The time limit, the model and the effort of Analyse rules, left of the button. The choice is
   // kept on this computer; the check of the Setup pipeline window uses it too.
   const limitEl = document.createElement("select");
@@ -255,7 +257,9 @@ export function initRules(currentFolder: () => string | null | undefined, onClos
   }
   analyseEl.before(limitEl, modelEl, effortEl);
   document.querySelector("#show-rules")!.addEventListener("click", () => {
-    folder = currentFolder() ?? null;
+    const current = currentFolder();
+    folder = current.folder ?? null;
+    folderHost = current.host;
     projectEl.textContent = folder ?? "The focused terminal has no folder.";
     bodyEl.replaceChildren();
     shownText = "";
@@ -266,7 +270,7 @@ export function initRules(currentFolder: () => string | null | undefined, onClos
     analyseEl.disabled = !folder;
     dialog.showModal();
     if (!folder) return;
-    call<Rules>("project_rules", { cwd: folder })
+    call<Rules>(folderHost, "project_rules", { cwd: folder })
       .then(show)
       .catch((error) => (bodyEl.textContent = String(error)));
   });
@@ -279,7 +283,7 @@ export function initRules(currentFolder: () => string | null | undefined, onClos
     const state = stateLine("");
     findingsEl.replaceChildren(state);
     const stop = tick(options, (progress) => (state.textContent = `Analysing the rules of the project with ${optionsText(options)}: ${progress}`));
-    call<RulesCheck>("check_rules", { cwd: folder, scope: "all", ...options })
+    call<RulesCheck>(folderHost, "check_rules", { cwd: folder, scope: "all", ...options })
       .then((check) => (run === checkRun ? showFindings(check) : undefined))
       .catch((error) => {
         if (run === checkRun) findingsEl.replaceChildren(stateLine(`The check failed: ${error}`));

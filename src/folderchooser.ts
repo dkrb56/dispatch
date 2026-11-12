@@ -2,7 +2,8 @@
 // dialog shows the folders of the window's computer; this chooser inside the page shows the
 // folders of the host through its command `dir_list`. The mode "This PC does the work" keeps the
 // native dialog. The module has no imports, so the tests can load it: the caller gives it the
-// function that calls `dir_list`, and it reads its elements of index.html only when it opens.
+// function that calls `dir_list`, and it reads its elements of index.html only when it opens. With
+// several hosts (ticket remote-multi-host) a list box at its top picks the host of the folder.
 
 /** The reply of `dir_list` (src-tauri/src/core/info.rs): a folder, its parent, its sub folders and the roots. */
 export interface DirList {
@@ -15,8 +16,20 @@ export interface DirList {
   roots: string[];
 }
 
-/** Lists a folder of the host; without a path, the home folder of the host. */
-export type ListFolder = (path: string | null) => Promise<unknown>;
+/** Lists a folder of a host; without a path, the home folder of the host. */
+export type ListFolder = (host: string, path: string | null) => Promise<unknown>;
+
+/** A host that the chooser can show. */
+export interface ChooserHost {
+  id: string;
+  name: string;
+}
+
+/** The folder that the user chose, and its host. */
+export interface ChosenFolder {
+  host: string;
+  folder: string;
+}
 
 /** The path of the sub folder `name` of `parent`, with the separator of `parent`. */
 export function joinPath(parent: string, name: string): string {
@@ -35,6 +48,7 @@ export function isDirList(value: unknown): value is DirList {
 interface Elements {
   dialog: HTMLDialogElement;
   title: HTMLElement;
+  host: HTMLSelectElement;
   path: HTMLInputElement;
   form: HTMLFormElement;
   up: HTMLButtonElement;
@@ -45,8 +59,8 @@ interface Elements {
 }
 
 let elements: Elements | null = null;
-/** The function of the chooser that is open, and the folder that it shows. */
-let open: { list: ListFolder; shown: DirList | null; done: (folder: string | null) => void } | null = null;
+/** The function of the chooser that is open, its host, and the folder that it shows. */
+let open: { list: ListFolder; host: string; shown: DirList | null; done: (folder: ChosenFolder | null) => void } | null = null;
 /** The number of the last navigation: an older reply that comes late is dropped. */
 let navigation = 0;
 
@@ -60,6 +74,7 @@ function init(): Elements {
   const found: Elements = {
     dialog: el("folder-chooser"),
     title: el("folder-chooser-title"),
+    host: el("folder-chooser-host"),
     path: el("folder-chooser-path"),
     form: el("folder-chooser-go-form"),
     up: el("folder-chooser-up"),
@@ -73,11 +88,19 @@ function init(): Elements {
     const typed = found.path.value.trim();
     if (typed) void show(typed);
   });
+  // Another host: its home folder shows.
+  found.host.addEventListener("change", () => {
+    if (!open) return;
+    open.host = found.host.value;
+    open.shown = null;
+    found.choose.disabled = true;
+    void show(null);
+  });
   found.up.addEventListener("click", () => {
     const parent = open?.shown?.parent;
     if (parent) void show(parent);
   });
-  found.choose.addEventListener("click", () => finish(open?.shown?.path ?? null));
+  found.choose.addEventListener("click", () => finish(open?.shown ? { host: open.host, folder: open.shown.path } : null));
   el("folder-chooser-cancel").addEventListener("click", () => finish(null));
   el("folder-chooser-close").addEventListener("click", () => finish(null));
   // A click on the dark area around the dialog closes it.
@@ -94,7 +117,7 @@ function init(): Elements {
 }
 
 /** Ends the open chooser with a folder or with null. */
-function finish(folder: string | null): void {
+function finish(folder: ChosenFolder | null): void {
   const ending = open;
   if (!ending) return;
   open = null;
@@ -111,7 +134,7 @@ async function show(path: string | null): Promise<void> {
   const number = ++navigation;
   let reply: unknown;
   try {
-    reply = await current.list(path);
+    reply = await current.list(current.host, path);
   } catch (error) {
     if (number !== navigation || open !== current) return;
     parts.error.textContent = String(error);
@@ -166,16 +189,27 @@ function render(parts: Elements, folder: DirList): void {
 }
 
 /**
- * Shows the chooser with `title`, at `start` or at the home folder of the host. Gives the folder
- * that the path line shows at Choose, or null at Cancel, Esc, the close button or the backdrop.
- * When `start` cannot be listed, the chooser starts at the home folder of the host.
+ * Shows the chooser with `title` on the first of `hosts`, at `start` or at the home folder of that
+ * host. The list box of the hosts shows only with more than one host. Gives the folder that the
+ * path line shows at Choose with its host, or null at Cancel, Esc, the close button or the
+ * backdrop. When `start` cannot be listed, the chooser starts at the home folder of the host.
  */
-export function chooseFolder(title: string, start: string | null | undefined, list: ListFolder): Promise<string | null> {
+export function chooseFolder(title: string, start: string | null | undefined, hosts: readonly ChooserHost[], list: ListFolder): Promise<ChosenFolder | null> {
   const parts = init();
   finish(null);
   return new Promise((resolve) => {
-    open = { list, shown: null, done: resolve };
+    open = { list, host: hosts[0]?.id ?? "", shown: null, done: resolve };
     parts.title.textContent = title;
+    parts.host.replaceChildren(
+      ...hosts.map((host) => {
+        const option = document.createElement("option");
+        option.value = host.id;
+        option.textContent = host.name;
+        return option;
+      }),
+    );
+    parts.host.value = open.host;
+    parts.host.hidden = hosts.length < 2;
     parts.path.value = start ?? "";
     parts.error.hidden = true;
     parts.error.textContent = "";

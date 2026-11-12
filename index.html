@@ -58,7 +58,7 @@
       </button>
       <button id="show-help" title="Help: how to set up a project" aria-label="Help">?</button>
     </header>
-    <div id="host-bar" hidden><span id="host-bar-text"></span><button id="host-bar-retry" hidden>Try again</button></div>
+    <div id="host-bar" hidden></div>
     <div id="main">
       <aside id="chats">
         <input id="chat-search" type="search" placeholder="Search chats" />
@@ -354,21 +354,20 @@
             <span><b>This PC does the work.</b> Dispatch runs the terminals, Claude Code and the workers on this computer, as before.</span>
           </label>
           <label>
-            <input type="radio" name="work-mode" value="host" />
-            <span><b>Use a host.</b> Dispatch shows and controls a <code>dispatch-host</code> on another computer over Tailscale, or on this one. Nothing runs here.</span>
+            <input type="radio" name="work-mode" value="hosts" />
+            <span><b>Use hosts.</b> Dispatch shows and controls one or more <code>dispatch-host</code> programs on other computers over Tailscale, or on this one. Nothing runs here.</span>
           </label>
-          <label class="options-list">
-            <span>Host address</span>
-            <input type="text" id="host-address" placeholder="100.x.y.z or name.tailnet.ts.net" spellcheck="false" autocomplete="off" title="The Tailscale address or name of the computer that runs dispatch-host; 127.0.0.1 for this computer" />
-          </label>
-          <label class="options-list">
-            <span>Port</span>
-            <input type="number" id="host-port" min="1" max="65535" placeholder="7470" title="The port of the host; empty is 7470" />
-          </label>
-          <label class="options-list">
-            <span>Key</span>
-            <input type="password" id="host-key" spellcheck="false" autocomplete="off" title="The key from host-key.txt in the data folder of the host" />
-          </label>
+          <div id="host-list"></div>
+          <button id="host-add" type="button" title="Add a row for one more host">Add host</button>
+          <template id="host-row">
+            <div class="host-row">
+              <input type="text" class="host-name" placeholder="Name" spellcheck="false" autocomplete="off" title="The name of the host in the window: in the title, the bar and after each project name" aria-label="Host name" />
+              <input type="text" class="host-address" placeholder="100.x.y.z or name.tailnet.ts.net" spellcheck="false" autocomplete="off" title="The Tailscale address or name of the computer that runs dispatch-host; 127.0.0.1 for this computer" aria-label="Host address" />
+              <input type="number" class="host-port" min="1" max="65535" placeholder="7470" title="The port of the host; empty is 7470" aria-label="Port" />
+              <input type="password" class="host-key" placeholder="Key" spellcheck="false" autocomplete="off" title="The key from host-key.txt in the data folder of the host" aria-label="Key" />
+              <button type="button" class="host-remove" title="Remove this host from the list">Remove</button>
+            </div>
+          </template>
           <p>A change here takes effect at the next start of Dispatch.</p>
         </fieldset>
         <fieldset id="host-run">
@@ -434,6 +433,7 @@
     <dialog id="folder-chooser">
       <header>
         <h2 id="folder-chooser-title">Select a folder</h2>
+        <select id="folder-chooser-host" title="The host whose folders the chooser shows" aria-label="Host" hidden></select>
         <button id="folder-chooser-close" title="Close (Esc)">&times;</button>
       </header>
       <div id="folder-chooser-body">

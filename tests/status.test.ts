@@ -35,6 +35,21 @@ test("in the mode Use a host the Dispatch part warns when the window and the hos
   assert.equal(statusParts(found).dispatch.text, "Dispatch 1.2.3");
 });
 
+test("with several hosts the bar names the host of its values (remote-multi-host)", () => {
+  const found = info({ state: "found", version: "9.9.9" }, { state: "signed-in", email: EMAIL });
+  const named = statusParts(found, { window: "1.2.4", host: "1.2.3" }, "beta");
+  assert.equal(named.account.text, `beta · Claude account: ${EMAIL}`);
+  assert.equal(named.dispatch.text, "Dispatch 1.2.4 · host beta 1.2.3");
+  assert.match(named.dispatch.title, /the host beta runs Dispatch 1\.2\.3/);
+  const signedOut = statusParts(info({ state: "found", version: "9.9.9" }, { state: "signed-out", email: null }), null, "alpha");
+  assert.equal(signedOut.account.text, "alpha · Not signed in to Claude Code");
+  assert.equal(signedOut.account.missing, true);
+  // Without a name nothing changes.
+  assert.deepEqual(statusParts(found, { window: "1.2.4", host: "1.2.3" }, null), statusParts(found, { window: "1.2.4", host: "1.2.3" }));
+  assert.equal(statusParts(found, null, null).account.text, `Claude account: ${EMAIL}`);
+  assert.equal(statusParts(null, null, "beta").account.text, "…", "before the first reply the parts wait");
+});
+
 test("signed out: said in words and marked missing", () => {
   const parts = statusParts(info({ state: "found", version: "9.9.9" }, { state: "signed-out", email: null }));
   assert.equal(parts.account.text, "Not signed in to Claude Code");

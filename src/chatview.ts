@@ -1,7 +1,7 @@
 // The chat view of a triage pane: the messages of the chat as formatted text, and a box
 // for a new message. Claude Code runs in the terminal of the pane, behind this view.
 
-import { call } from "./backend";
+import { call, type HostId } from "./backend";
 import { waitingText } from "./backlog";
 import { statusLine, triageFree } from "./pending";
 import DOMPurify from "dompurify";
@@ -122,6 +122,8 @@ export interface ChatView {
 export interface ChatViewOptions {
   /** The id of the pane. */
   pane: string;
+  /** The host of the pane: the chat file is there (remote-multi-host). */
+  host: HostId;
   /** The chat to show when no session runs in the pane. */
   remembered: () => string | null;
   /** Gives a text to Claude Code in the terminal of the pane, as a paste. */
@@ -400,11 +402,11 @@ function decorateCode(made: HTMLElement, run: (lines: RunLine[]) => void): void 
  * path (2026-11-08, 2.1.319: the message is the text of the path). A path with a space has quotes.
  */
 const IMAGE_PATH = /"([A-Za-z]:\\[^"\n]+?\.(?:png|jpe?g|gif|webp|bmp))"|([A-Za-z]:\\[^\s"]+?\.(?:png|jpe?g|gif|webp|bmp))(?=\s|$)/gi;
-/** The loaded images by path. A message comes again at each restart of the list. */
+/** The loaded images by host and path. A message comes again at each restart of the list. */
 const imageUrls = new Map<string, Promise<string>>();
 
-/** A message of the user: its images as thumbnails, then its text without their paths. */
-function userElement(text: string, open?: (path: string) => void): HTMLElement {
+/** A message of the user: its images as thumbnails, then its text without their paths. The images are files of `host`. */
+function userElement(text: string, host: HostId, open?: (path: string) => void): HTMLElement {
   const made = element("div", "msg user");
   const paths: string[] = [];
   const rest = text.replace(IMAGE_PATH, (_whole, quoted?: string, plain?: string) => {
@@ -419,11 +421,12 @@ function userElement(text: string, open?: (path: string) => void): HTMLElement {
       thumb.setAttribute("aria-label", `Open ${path}`);
       thumb.addEventListener("click", () => open?.(path));
       row.append(thumb);
-      let url = imageUrls.get(path);
+      const cacheKey = `${host}\n${path}`;
+      let url = imageUrls.get(cacheKey);
       if (!url) {
-        url = imageFileUrl(path);
-        imageUrls.set(path, url);
-        url.catch(() => imageUrls.delete(path));
+        url = imageFileUrl(host, path);
+        imageUrls.set(cacheKey, url);
+        url.catch(() => imageUrls.delete(cacheKey));
       }
       url
         .then((src) => {
@@ -448,8 +451,8 @@ function userElement(text: string, open?: (path: string) => void): HTMLElement {
   return made;
 }
 
-function itemElement(item: ChatItem, open?: (path: string) => void): HTMLElement {
-  if (item.kind === "user") return userElement(item.text, open);
+function itemElement(item: ChatItem, host: HostId, open?: (path: string) => void): HTMLElement {
+  if (item.kind === "user") return userElement(item.text, host, open);
   const made = element("div", `msg ${item.kind}`);
   if (item.kind === "assistant") {
     made.classList.add("markdown");
@@ -760,8 +763,8 @@ export function createChatView(options: ChatViewOptions): ChatView {
       if (!question || (question.id !== null && question.id !== item.id)) return null;
       closeQuestion();
     }
-    if (item.text === "") return itemElement({ kind: "note", text: "You cancelled the question." });
-    return itemElement({ kind: "user", text: item.text });
+    if (item.text === "") return itemElement({ kind: "note", text: "You cancelled the question." }, options.host);
+    return itemElement({ kind: "user", text: item.text }, options.host);
   }
 
   /**
@@ -847,7 +850,7 @@ export function createChatView(options: ChatViewOptions): ChatView {
     if (reading) return;
     reading = true;
     try {
-      const reply = await call<ChatReply>("chat_view", {
+      const reply = await call<ChatReply>(options.host, "chat_view", {
         pane: options.pane,
         shown,
         from: next,
@@ -885,7 +888,7 @@ export function createChatView(options: ChatViewOptions): ChatView {
         } else {
           // A message after a question ends the question.
           closeQuestion();
-          made = itemElement(item, options.openLink);
+          made = itemElement(item, options.host, options.openLink);
           if (item.kind === "assistant") decorateCode(made, options.run);
         }
         if (made) {
@@ -963,7 +966,7 @@ export function createChatView(options: ChatViewOptions): ChatView {
     dropPending();
     // The same look as the message from the chat file: thumbnails, then the text.
     const message = [...paths.map(quotePath), text].filter(Boolean).join(" ");
-    const made = userElement(message, options.openLink);
+    const made = userElement(message, options.host, options.openLink);
     made.classList.add("pending");
     record(made, true, "user", message);
     pending = made;

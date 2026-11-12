@@ -1,16 +1,27 @@
 // The gallery of thumbnails in the side panel, and the viewer for one file.
 
-import { call } from "./backend";
+import { call, type HostId } from "./backend";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 
-export interface FileEntry {
+/** A file as the backend gives it (`file_stat`, `pane_info`, `night_morning`). */
+export interface FileInfo {
   path: string;
   kind: "image" | "markdown" | "text" | "other";
   /** Milliseconds since the Unix epoch. */
   modified: number;
   size: number;
+}
+
+/** A file and the host that has it (remote-multi-host). */
+export interface FileEntry extends FileInfo {
+  host: HostId;
+}
+
+/** The entries of the files of a backend reply, with their host. */
+export function onHost(host: HostId, files: readonly FileInfo[]): FileEntry[] {
+  return files.map((file) => ({ ...file, host }));
 }
 
 const MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024;
@@ -39,17 +50,18 @@ function folderOf(path: string): string {
   return path.replace(/[\\/][^\\/]*$/, "");
 }
 
-export function statFile(base: string | null, path: string): Promise<FileEntry | null> {
-  return call<FileEntry | null>("file_stat", { base, path });
+export async function statFile(host: HostId, base: string | null, path: string): Promise<FileEntry | null> {
+  const file = await call<FileInfo | null>(host, "file_stat", { base, path });
+  return file ? { ...file, host } : null;
 }
 
-function readFile(path: string): Promise<ArrayBuffer> {
-  return call<ArrayBuffer>("file_read", { path });
+function readFile(host: HostId, path: string): Promise<ArrayBuffer> {
+  return call<ArrayBuffer>(host, "file_read", { path });
 }
 
-/** Reads an image file and gives an address for an `img` element. */
-export async function imageFileUrl(path: string): Promise<string> {
-  const bytes = await readFile(path);
+/** Reads an image file of a host and gives an address for an `img` element. */
+export async function imageFileUrl(host: HostId, path: string): Promise<string> {
+  const bytes = await readFile(host, path);
   return imageUrl({ path } as FileEntry, bytes);
 }
 
@@ -62,7 +74,7 @@ function imageUrl(entry: FileEntry, bytes: ArrayBuffer): string {
 async function fillPreview(preview: HTMLElement, entry: FileEntry): Promise<void> {
   try {
     if (entry.size > MAX_THUMBNAIL_BYTES) throw new Error("too large");
-    const bytes = await readFile(entry.path);
+    const bytes = await readFile(entry.host, entry.path);
     if (entry.kind === "image") {
       const image = new Image();
       image.src = imageUrl(entry, bytes);
@@ -139,7 +151,7 @@ export async function openViewer(entry: FileEntry): Promise<void> {
 
   let content: HTMLElement;
   try {
-    const bytes = await readFile(entry.path);
+    const bytes = await readFile(entry.host, entry.path);
     if (entry.kind === "image") {
       const image = new Image();
       image.src = imageUrl(entry, bytes);
@@ -174,7 +186,7 @@ async function followViewerLink(href: string): Promise<void> {
   }
   if (!viewerEntry || href.startsWith("#")) return;
   const path = decodeURIComponent(href.replace(/[?#].*$/, "")).replace(/^file:\/\/\/?/i, "");
-  const target = await statFile(folderOf(viewerEntry.path), path);
+  const target = await statFile(viewerEntry.host, folderOf(viewerEntry.path), path);
   if (target) await openViewer(target);
 }
 
