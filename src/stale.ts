@@ -44,6 +44,7 @@ const FINISHED: Record<string, string> = {
   done: "its task is done",
   failed: "its task failed",
   stopped: "its task was stopped",
+  merge: "its task is done and waits for Merge",
 };
 
 const RUN_NAME = /^(.*) \[(plan|work)\]$/;

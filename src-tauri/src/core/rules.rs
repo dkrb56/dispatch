@@ -495,11 +495,13 @@ pub fn project_rules(core: &Core, cwd: String) -> Result<Rules, String> {
     };
     sources.extend(project_files.iter().filter_map(source));
     // The options of the two runs of a worker, one argument per line in each file, and the
-    // commands that the plan run may run with "Measure before the plan" on.
+    // commands that the plan run may run with "Measure before the plan" on, and the gate command of
+    // the merge step with "Task branches" on.
     for (title, path) in [
         ("Options of the plan run", project.plan_flags()),
         ("Options of the work run", project.work_flags()),
         ("Measuring commands", project.measure_commands_file()),
+        ("Merge gate command", project.merge_gate_file()),
     ] {
         if let Ok(flags) = fs::read_to_string(&path) {
             if !flags.trim().is_empty() {

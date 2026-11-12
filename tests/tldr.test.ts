@@ -97,3 +97,9 @@ test("the lines meet the page: main.ts and flow.ts use them, the style cuts them
   assert.match(HTML, /the title of its brief/);
   assert.match(HTML, /cut from the brief, the plan and the report/);
 });
+
+test("a task whose branch waits for Merge says so, with what the worker did (ticket task-branches)", () => {
+  assert.equal(lines("merge").now, `Waits for your Merge. Done: ${DID}`);
+  assert.equal(lines("merge", { did: "" }).now, "Waits for your Merge.");
+  assert.equal(lines("merge").about, ABOUT);
+});

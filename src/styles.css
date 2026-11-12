@@ -987,6 +987,28 @@ button.task-head:hover {
   padding: 3px 8px;
 }
 
+/* The branch of a task with "Task branches" on (ticket task-branches): a row like the file rows. */
+.task-branch {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 3px 8px;
+  font-size: calc(12px * var(--text-scale));
+}
+
+.task-branch .task-branch-name {
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.task-branch .when {
+  color: var(--muted);
+}
+
+.task-branch .card-reason {
+  flex-basis: 100%;
+}
+
 .task-stop .task-stop-text {
   flex-basis: 100%;
   color: var(--muted);
@@ -1927,8 +1949,9 @@ button.task-head:hover {
   word-break: normal;
 }
 
-/* The commands of "Measure before the plan", under its switch. */
-#setup-measure-commands {
+/* The commands of "Measure before the plan" and the gate command of "Task branches", under their switches. */
+#setup-measure-commands,
+#setup-merge-gate {
   display: block;
   box-sizing: border-box;
   width: 100%;
@@ -1943,7 +1966,8 @@ button.task-head:hover {
   resize: vertical;
 }
 
-#setup-measure-commands:disabled {
+#setup-measure-commands:disabled,
+#setup-merge-gate:disabled {
   opacity: 0.5;
 }
 

@@ -35,6 +35,12 @@ const NOT_BACKLOG: &str = ":(exclude).dispatch/backlog";
 const MEASURE_IGNORE: &str = "measure/";
 /// The time limit of a measuring command in seconds, when the list names none.
 const MEASURE_LIMIT: u32 = 600;
+/// The line of `.dispatch/.gitignore` that keeps the merge lock and the gate logs out of git.
+const MERGE_IGNORE: &str = "merge/";
+/// The time limit of the gate command in seconds, when its file names none.
+const GATE_LIMIT: u32 = 14400;
+/// The prefix of a task branch: the branch of ticket `t-1` is `task/t-1`.
+const BRANCH_PREFIX: &str = "task/";
 
 /// The folder where the app saves pasted images. The app sets it at its start.
 pub(crate) static PASTED_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -83,13 +89,17 @@ pub struct Options {
     /// The plan run may run the measuring commands of `measure-commands.txt` before it writes the
     /// plan (ticket measure-before-plan). Off at the start; a settings file without the field is off.
     measure_before_plan: bool,
+    /// Each task works on its own branch `task/<ticket-id>`, and Dispatch merges it on the user's
+    /// click after the gate command (ticket task-branches). Off at the start; a settings file
+    /// without the field is off.
+    task_branches: bool,
 }
 
 // A settings file of an older version has a field for answers in the triage chat. Serde drops a
 // field it does not know, so such a file reads without an error.
 impl Default for Options {
     fn default() -> Self {
-        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false }
+        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false }
     }
 }
 
@@ -103,6 +113,14 @@ fn script_command(reports: &str) -> String {
 fn measure_rule(reports: &str, script: &str) -> String {
     format!(
         "- Measure before the plan is on in this project. Before it writes the plan, the plan run may run the commands of `{reports}/measure-commands.txt`, and only these, each with `{script} measure <ticket-id> <n>`: `<n>` is the number of the command in that list (1 for the first command; empty lines and lines that start with `#` do not count). The script runs each command with cmd.exe in the project folder, one measuring at a time per project, and ends a command after its time limit (exit code 124). It writes the output to `{reports}/measure/<ticket-id>/<n>.log`, prints its last 40 lines and ends with the exit code of the command. `{{measure}}` in a listed command stands for the folder `{reports}/measure/<ticket-id>`; the plan run may write throw-away scripts there, and git ignores the folder. A failed or stopped command is a result, not an end. The plan then has the section Measured after TL;DR: each command, what it showed and what it means for the plan; a fault that did not reproduce is marked \"not reproduced\" in plain words, and a stopped command \"stopped after N s\". The plan run runs no other command, edits no project file, and writes only its plan and into its measure folder.
+"
+    )
+}
+
+/// The line of the "Background workers" section for a project with "Task branches" on.
+fn branches_rule(reports: &str, script: &str) -> String {
+    format!(
+        "- Task branches is on in this project. The plan verb of the script writes the base branch (the current branch) into `{reports}/<ticket-id>.branch`. Approve makes the branch `{BRANCH_PREFIX}<ticket-id>` from that base and checks it out in the main checkout; the work run commits on that branch, switches no branch, and never merges or pushes. When the report is written, Dispatch switches the checkout back to the base and commits the task files there. The user merges the branch with the Merge button in the task card of Dispatch: the script merges it with `--no-ff` into the base, after the gate command of `{reports}/merge-gate.txt` passed on the merged code. Triage never runs `{script} merge`; the local settings deny it that verb.
 "
     )
 }
@@ -176,6 +194,8 @@ pub struct Plan {
     steps: Vec<Step>,
     /// The text of `measure-commands.txt`, for the box under the switch "Measure before the plan".
     measure_commands: String,
+    /// The text of `merge-gate.txt`, for the box under the switch "Task branches".
+    merge_gate: String,
 }
 
 /// The paths of one project.
@@ -309,20 +329,59 @@ impl Project {
     /// The time limit of a measuring command in seconds: the first line of the list that is not
     /// empty, when it is `# limit <seconds>`, else `MEASURE_LIMIT`. The script reads it the same way.
     fn measure_limit(&self) -> u32 {
-        let text = fs::read_to_string(self.measure_commands_file()).unwrap_or_default();
-        let first = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
-        first
-            .strip_prefix('#')
-            .map(str::trim_start)
-            .and_then(|rest| rest.strip_prefix("limit"))
-            .filter(|rest| rest.starts_with(char::is_whitespace))
-            .and_then(|rest| rest.trim().parse().ok())
-            .unwrap_or(MEASURE_LIMIT)
+        list_limit(&self.measure_commands_file(), MEASURE_LIMIT)
     }
 
     /// The ignore file of the task folder has the line `measure/`.
     fn measure_ignored(&self) -> bool {
-        fs::read_to_string(self.tasks_ignore()).is_ok_and(|text| text.lines().any(|line| line.trim() == MEASURE_IGNORE))
+        self.ignores(MEASURE_IGNORE)
+    }
+
+    /// The gate command of the merge step, one line (ticket task-branches).
+    pub(crate) fn merge_gate_file(&self) -> PathBuf {
+        self.reports.join("merge-gate.txt")
+    }
+
+    /// The folder of the merge lock and the gate logs. Git ignores it through `.dispatch/.gitignore`.
+    fn merge_dir(&self) -> PathBuf {
+        self.reports.join("merge")
+    }
+
+    /// The branch file of a ticket: its branch, its base, and the merge when it is done.
+    fn branch_file(&self, ticket: &str) -> PathBuf {
+        self.reports.join(format!("{ticket}.branch"))
+    }
+
+    /// The gate command: the first line of the gate file that is not empty and not a comment.
+    fn merge_gate(&self) -> String {
+        fs::read_to_string(self.merge_gate_file())
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with('#'))
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The time limit of the gate command in seconds: a first line `# limit <seconds>`, else `GATE_LIMIT`.
+    fn merge_gate_limit(&self) -> u32 {
+        list_limit(&self.merge_gate_file(), GATE_LIMIT)
+    }
+
+    /// The ticket whose merge holds the merge lock, while the lock is younger than the time limit of
+    /// the gate (a lock of a crashed merge is not shown for ever; the script removes it).
+    fn merging(&self) -> Option<String> {
+        let lock = self.merge_dir().join("lock");
+        let age = fs::metadata(&lock).and_then(|meta| meta.modified()).ok()?.elapsed().unwrap_or_default();
+        if age.as_secs() > u64::from(self.merge_gate_limit()) + 600 {
+            return None;
+        }
+        fs::read_to_string(&lock).ok()?.split('\t').nth(1).map(|ticket| ticket.trim().to_string()).filter(|ticket| !ticket.is_empty())
+    }
+
+    /// The ignore file of the task folder has a line.
+    fn ignores(&self, line: &str) -> bool {
+        fs::read_to_string(self.tasks_ignore()).is_ok_and(|text| text.lines().any(|known| known.trim() == line))
     }
 
     fn options_file(&self) -> PathBuf {
@@ -363,7 +422,7 @@ impl Project {
     /// The files that the steps write, relative to the root with `/`. "Commit to git" commits
     /// only these. The task files of `.dispatch` (briefs, plans, reports, state files and the
     /// other options files) are committed by Dispatch at each task read (`keep_tasks_committed`).
-    fn setup_files(&self) -> [&'static str; 8] {
+    fn setup_files(&self) -> [&'static str; 9] {
         [
             "CLAUDE.md",
             ".claude/settings.json",
@@ -373,6 +432,7 @@ impl Project {
             ".dispatch/plan-flags.txt",
             ".dispatch/work-flags.txt",
             ".dispatch/measure-commands.txt",
+            ".dispatch/merge-gate.txt",
         ]
     }
 
@@ -429,8 +489,14 @@ impl Project {
     /// The rule that keeps triage from the approve verb of the script: only the Approve button of
     /// Dispatch starts a work run. A deny rule wins over the allow rule above. The app runs the
     /// script outside Claude Code, so the rule does not touch it.
+    /// With "Task branches" on, the merge verb is denied too: only the Merge button merges.
     fn deny_rules(&self) -> Vec<String> {
-        vec![format!("Bash({} approve *)", script_command(&self.reports_text()))]
+        let script = script_command(&self.reports_text());
+        let mut rules = vec![format!("Bash({script} approve *)")];
+        if self.options().task_branches {
+            rules.push(format!("Bash({script} merge *)"));
+        }
+        rules
     }
 
     /// The text of the section under its heading and its mark line.
@@ -439,6 +505,8 @@ impl Project {
         let script = script_command(&reports);
         // With the switch off this line is empty, so the section is the text of the version before.
         let measure = if self.options().measure_before_plan { measure_rule(&reports, &script) } else { String::new() };
+        // The same for "Task branches": off, the section is the text of the version before.
+        let branches = if self.options().task_branches { branches_rule(&reports, &script) } else { String::new() };
         format!(
             "- A task is two runs of one worker session. The plan run reads the code and writes a plan. The work run executes the approved plan. Triage starts and resumes a worker only with the script `{reports}/{SCRIPT_NAME}`, never with `claude --bg` or `claude --resume` directly. A worker works in the main checkout (`worktree.bgIsolation` is `none`).
 - Triage writes each brief to `{reports}/briefs/<ticket-id>.md`: the user's words, the constraints, and the command that proves the work. The brief says nothing about the approach; the plan run decides that.
@@ -446,7 +514,7 @@ impl Project {
 {measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; the word HOLD stands in no other line of this section); Do not touch; Size (files). No code in a plan.
 - When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which resumes the same session on the options in `{reports}/work-flags.txt`, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when the working tree has uncommitted changes outside `{reports}/` (after Setup pipeline, the user commits the setup files first; Dispatch commits the files of `{reports}/` itself), when the worker still runs, or when the task was stopped.
 - The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It never pushes or merges. The user decides the push.
-- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then: what it did, what it verified and how, open questions, where the work is.
+{branches}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then: what it did, what it verified and how, open questions, where the work is.
 - A worker starts no session and sends no message to a chat. It has no question tool. A question for the user goes into the report under the heading `## Questions`: numbered items, each with its options as list items, the recommended option first. Each option is one short line, because Dispatch shows it as a button and sends it back word for word; the details stand above the questions. The worker then writes `state: needs-decision` and `needs: decision` and ends its turn, also when the question is about a permission. `needs: permission` means: a refused tool call stopped the work, the report names the refused call and the rule it needs, and the work goes on with a follow-up `Continue` once the user changed the rule. The user answers in the task card of Dispatch, and the answer arrives as a follow-up `Answer to question N: <option>`.
 - A follow-up goes through `{script} reply <ticket-id> \"<message>\"` and quotes the user's words exactly. The script takes the options of the run from `{reports}/<ticket-id>.state`.
 - Triage does no implementation. It classifies, writes briefs, starts the plan run, shows the plan, relays the yes, checks results and reports to the user.
@@ -470,6 +538,20 @@ impl Project {
     }
 }
 
+/// The time limit of the commands of a list file: the first line of the file that is not empty,
+/// when it is `# limit <seconds>`, else `default`. The script reads it the same way.
+fn list_limit(path: &Path, default: u32) -> u32 {
+    let text = fs::read_to_string(path).unwrap_or_default();
+    let first = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+    first
+        .strip_prefix('#')
+        .map(str::trim_start)
+        .and_then(|rest| rest.strip_prefix("limit"))
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .and_then(|rest| rest.trim().parse().ok())
+        .unwrap_or(default)
+}
+
 /// The worker script. Setup writes it into the reports folder; triage runs it with PowerShell.
 /// The prompt is the first argument of each `claude` command, because `--tools` and
 /// `--allowedTools` take a list and would take a prompt that follows them as a list item.
@@ -481,12 +563,13 @@ Dispatch worker script. Triage starts and resumes a worker only through this fil
   status                        the tasks with their state and the state of their worker
   stop <ticket-id>              stop the worker of a task; state: stopped
   measure <ticket-id> <n>       run command n of measure-commands.txt for the plan run (Measure before the plan)
+  merge <ticket-id>             merge the task branch into its base after the gate command (Task branches; Dispatch only)
 Exit codes: 0 done, 2 refused (the reason is on stderr), 124 a measuring command stopped at its
 time limit, other: the exit code of claude or of the measuring command.
 #>
 param(
   [Parameter(Mandatory = $true, Position = 0)]
-  [ValidateSet('plan', 'approve', 'reply', 'status', 'stop', 'measure')]
+  [ValidateSet('plan', 'approve', 'reply', 'status', 'stop', 'measure', 'merge')]
   [string]$Verb,
   [Parameter(Position = 1)]
   [string]$Id,
@@ -570,8 +653,9 @@ function Resume-Target {
 # Runs claude in the project folder: a worker reads the settings and the allow rules of the folder
 # it starts in, not of the folder the caller is in. A failure sets the state back to $StateOnFailure
 # when one is given, so the task card of Dispatch comes back with the error, and ends the script
-# with the exit code of claude; a claude that is not found counts as exit code 1.
-function Run-Claude([string[]]$Arguments, [string]$StateOnFailure) {
+# with the exit code of claude; a claude that is not found counts as exit code 1. A failure also
+# checks out $BranchOnFailure again when one is given: the branch before the task branch.
+function Run-Claude([string[]]$Arguments, [string]$StateOnFailure, [string]$BranchOnFailure) {
   Push-Location -LiteralPath $Project
   $global:LASTEXITCODE = 0
   & claude @Arguments
@@ -581,6 +665,7 @@ function Run-Claude([string[]]$Arguments, [string]$StateOnFailure) {
   if ($ok -and $code -eq 0) { return }
   if ($code -eq 0) { $code = 1 }
   if ($StateOnFailure) { Set-State $StateOnFailure }
+  if ($BranchOnFailure) { Invoke-Git @('checkout', '-q', $BranchOnFailure) | Out-Null }
   exit $code
 }
 
@@ -591,57 +676,190 @@ function Measure-On {
   try { return [bool]((Get-Content -LiteralPath $file -Raw) | ConvertFrom-Json).measureBeforePlan } catch { return $false }
 }
 
-# The permitted measuring commands: the lines of measure-commands.txt that are not empty and do not
-# start with #. Setup pipeline writes the file; command n is the line n of this list.
-function Measure-Commands {
-  $file = Join-Path $Reports 'measure-commands.txt'
+# The command lines of a list file of .dispatch: the lines that are not empty and do not start with #.
+# Setup pipeline writes the files; command n is the line n of this list.
+function Command-Lines([string]$Name) {
+  $file = Join-Path $Reports $Name
   if (-not (Test-Path -LiteralPath $file)) { return @() }
   @(Get-Content -LiteralPath $file | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' -and -not $_.StartsWith('#') })
 }
 
-# The time limit of a measuring command in seconds: a first line "# limit <seconds>" of the list, else 600.
-function Measure-Limit {
-  $file = Join-Path $Reports 'measure-commands.txt'
+# The time limit of the commands of a list file in seconds: a first line "# limit <seconds>", else $Default.
+function Command-Limit([string]$Name, [int]$Default) {
+  $file = Join-Path $Reports $Name
   if (Test-Path -LiteralPath $file) {
     $first = @(Get-Content -LiteralPath $file | Where-Object { $_.Trim() -ne '' } | Select-Object -First 1)
     if ($first.Count -gt 0 -and $first[0].Trim() -match '^#\s*limit\s+(\d+)\s*$') { return [int]$Matches[1] }
   }
-  600
+  $Default
 }
 
-# The lock of the measuring: one measuring at a time per project, because projects use fixed test
-# ports. The file holds the process id, the ticket and the time. A second call waits up to the time
-# limit, then is refused; a lock whose process is gone is removed.
+# The permitted measuring commands and their time limit (Measure before the plan).
+function Measure-Commands { Command-Lines 'measure-commands.txt' }
+function Measure-Limit { Command-Limit 'measure-commands.txt' 600 }
+
+# The locks of the project: one measuring at a time (projects use fixed test ports), and one merge at
+# a time. A lock file holds the process id, the ticket and the time. A lock whose process is gone is
+# removed.
 function Lock-Path { Join-Path $Reports 'measure\lock' }
-function Enter-MeasureLock([int]$Limit) {
-  $lock = Lock-Path
-  $dir = Split-Path -Parent $lock
+function Merge-Lock { Join-Path $Reports 'merge\lock' }
+
+# The ticket of a lock whose process still runs, else $null.
+function Lock-Holder([string]$Lock) {
+  if (-not (Test-Path -LiteralPath $Lock)) { return $null }
+  $holder = "$(Get-Content -LiteralPath $Lock -Raw -ErrorAction SilentlyContinue)".Trim() -split "`t"
+  $other = 0
+  if ([int]::TryParse($holder[0], [ref]$other) -and $null -ne (Get-Process -Id $other -ErrorAction SilentlyContinue)) {
+    if ($holder.Count -gt 1) { return $holder[1] }
+    return 'another task'
+  }
+  Remove-Item -LiteralPath $Lock -Force -ErrorAction SilentlyContinue
+  $null
+}
+
+# Takes a lock. A second caller waits up to $Limit seconds (a check every 5 s), then is refused.
+function Enter-Lock([string]$Lock, [int]$Limit, [string]$What) {
+  $dir = Split-Path -Parent $Lock
   if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
   $deadline = (Get-Date).AddSeconds($Limit)
   while ($true) {
     # A move to a name that exists fails, so only one caller gets the lock, and it is never half written.
-    $mine = "$lock.$PID"
+    $mine = "$Lock.$PID"
     [IO.File]::WriteAllText($mine, "$PID`t$Id`t$((Get-Date).ToString('o'))`n")
-    try { [IO.File]::Move($mine, $lock); return } catch { Remove-Item -LiteralPath $mine -Force -ErrorAction SilentlyContinue }
-    $holder = "$(Get-Content -LiteralPath $lock -Raw -ErrorAction SilentlyContinue)".Trim() -split "`t"
-    $other = 0
-    $alive = [int]::TryParse($holder[0], [ref]$other) -and $null -ne (Get-Process -Id $other -ErrorAction SilentlyContinue)
-    if (-not $alive) {
-      Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue
-      continue
-    }
+    try { [IO.File]::Move($mine, $Lock); return } catch { Remove-Item -LiteralPath $mine -Force -ErrorAction SilentlyContinue }
+    $owner = Lock-Holder $Lock
+    if (-not $owner) { continue }
     $left = ($deadline - (Get-Date)).TotalSeconds
     if ($left -le 0) {
-      $owner = if ($holder.Count -gt 1) { $holder[1] } else { 'another task' }
-      Refuse "another measuring of this project runs (task $owner); it held the lock for longer than the limit of $Limit s"
+      $held = if ($Limit -gt 0) { "; it held the lock for longer than the limit of $Limit s" } else { '' }
+      Refuse "another $What of this project runs (task $owner)$held"
     }
     Start-Sleep -Milliseconds ([int](1000 * [Math]::Min(5, $left)))
   }
 }
-function Exit-MeasureLock {
-  $lock = Lock-Path
-  $holder = "$(Get-Content -LiteralPath $lock -Raw -ErrorAction SilentlyContinue)".Trim() -split "`t"
-  if ($holder[0] -eq "$PID") { Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue }
+function Exit-Lock([string]$Lock) {
+  $holder = "$(Get-Content -LiteralPath $Lock -Raw -ErrorAction SilentlyContinue)".Trim() -split "`t"
+  if ($holder[0] -eq "$PID") { Remove-Item -LiteralPath $Lock -Force -ErrorAction SilentlyContinue }
+}
+
+# Runs git in the project folder. Gives the exit code and the lines of stdout and stderr. Windows
+# PowerShell turns the stderr lines of a native command into errors, so the preference is local.
+function Invoke-Git([string[]]$A) {
+  $ErrorActionPreference = 'Continue'
+  $lines = @(& git -C $Project @A 2>&1 | ForEach-Object { "$_" })
+  [pscustomobject]@{ Code = $LASTEXITCODE; Lines = $lines; Text = ($lines -join "`n").Trim() }
+}
+
+# The setting "Task branches" of the project in options.json; off without the file or the field.
+function Branches-On {
+  $file = Join-Path $Reports 'options.json'
+  if (-not (Test-Path -LiteralPath $file)) { return $false }
+  try { return [bool]((Get-Content -LiteralPath $file -Raw) | ConvertFrom-Json).taskBranches } catch { return $false }
+}
+
+# The branch that the main checkout is on; empty when HEAD is detached or the folder is no repository.
+function Current-Branch {
+  $result = Invoke-Git @('symbolic-ref', '--short', '-q', 'HEAD')
+  if ($result.Code -ne 0) { return '' }
+  $result.Text
+}
+
+# The branch file of a ticket: "branch: task/<ticket>", "base: <branch>", and "merge: done <sha> <time>"
+# after the merge. $null without the file.
+function Branch-Path([string]$Ticket) { Join-Path $Reports "$Ticket.branch" }
+function Read-BranchFile([string]$Ticket) {
+  $file = Branch-Path $Ticket
+  if (-not (Test-Path -LiteralPath $file)) { return $null }
+  $info = @{ branch = ''; base = ''; merge = '' }
+  foreach ($line in Get-Content -LiteralPath $file) {
+    if ($line -match '^\s*(branch|base|merge):\s*(.*?)\s*$') { $info[$Matches[1]] = $Matches[2] }
+  }
+  [pscustomobject]$info
+}
+function Write-BranchFile([string]$Branch, [string]$Base, [string]$Merge) {
+  $text = "branch: $Branch`nbase: $Base`n"
+  if ($Merge) { $text += "merge: $Merge`n" }
+  [IO.File]::WriteAllText((Branch-Path $Id), $text)
+}
+
+# The branch file of the ticket, written when it is missing or names a merged branch. The base is the
+# current branch; while the checkout is on the branch of another task, the base of that task.
+function Ensure-BranchFile {
+  $info = Read-BranchFile $Id
+  if ($info -and $info.branch -and $info.base -and -not $info.merge) { return $info }
+  $current = Current-Branch
+  if (-not $current) { Refuse 'Task branches needs a current branch as the base, and the checkout has none (detached HEAD, or no git repository)' }
+  $base = $current
+  if ($current.StartsWith('task/')) {
+    $other = Read-BranchFile $current.Substring(5)
+    if ($other -and $other.base) { $base = $other.base }
+  }
+  Write-BranchFile "task/$Id" $base ''
+  Read-BranchFile $Id
+}
+
+# Puts the main checkout on the branch of the task, made from its base when it does not exist yet.
+# Gives the branch that was checked out before, or '' when the checkout was on the task branch.
+function Enter-TaskBranch {
+  $info = Ensure-BranchFile
+  $current = Current-Branch
+  if ($current -eq $info.branch) { return '' }
+  if ($current.StartsWith('task/')) { Refuse "the checkout is on $current, the branch of another task; Dispatch switches back to the base when that work run has ended" }
+  $holder = Lock-Holder (Merge-Lock)
+  if ($holder) { Refuse "a merge of this project runs (task $holder); try again when it has ended" }
+  $exists = (Invoke-Git @('rev-parse', '--verify', '--quiet', "refs/heads/$($info.branch)")).Code -eq 0
+  $result = if ($exists) { Invoke-Git @('checkout', '-q', $info.branch) } else { Invoke-Git @('checkout', '-q', '-b', $info.branch, $info.base) }
+  if ($result.Code -ne 0) { Refuse "git could not check out $($info.branch): $($result.Text)" }
+  $current
+}
+
+# Merges the task branch into the base in the main checkout: git merge --no-ff --no-commit, the gate
+# command on the merged code, then the merge commit, or git merge --abort. A conflict only in the task
+# files of .dispatch takes the version of the base, where Dispatch keeps them current. Gives the
+# reason of a refusal, or '' after the merge; $script:Merged holds the commit then.
+function Merge-Branch($Info, [string]$Gate, [int]$Limit) {
+  $branch = $Info.branch
+  $merge = Invoke-Git @('merge', '--no-ff', '--no-commit', $branch)
+  $open = (Invoke-Git @('rev-parse', '-q', '--verify', 'MERGE_HEAD')).Code -eq 0
+  if (-not $open) {
+    if ($merge.Code -ne 0) { return "git could not merge ${branch}: $($merge.Text)" }
+    # Nothing to merge: the branch has no commit that the base lacks.
+    Invoke-Git @('branch', '-d', $branch) | Out-Null
+    $script:Merged = 'nothing to merge'
+    Write-BranchFile $branch $Info.base "done nothing-to-merge $((Get-Date).ToString('s'))"
+    return ''
+  }
+  if ($merge.Code -ne 0) {
+    $conflicts = @((Invoke-Git @('diff', '--name-only', '--diff-filter=U')).Lines | Where-Object { $_ })
+    $code = @($conflicts | Where-Object { -not $_.StartsWith('.dispatch/') })
+    if ($code.Count -gt 0 -or $conflicts.Count -eq 0) {
+      Invoke-Git @('merge', '--abort') | Out-Null
+      if ($code.Count -gt 0) { return "the merge of $branch into $($Info.base) does not apply; nothing was merged. Conflicts in:`n$($code -join "`n")" }
+      return "git could not merge ${branch}: $($merge.Text)"
+    }
+    foreach ($file in $conflicts) {
+      if ((Invoke-Git @('checkout', '--ours', '--', $file)).Code -eq 0) { Invoke-Git @('add', '--', $file) | Out-Null }
+      else { Invoke-Git @('rm', '-q', '--', $file) | Out-Null }
+    }
+  }
+  if ($Gate) {
+    $log = Join-Path $Reports "merge\$Id.log"
+    $code = Run-Measured $Gate $log $Limit
+    if ($code -ne 0) {
+      Invoke-Git @('merge', '--abort') | Out-Null
+      $tail = if (Test-Path -LiteralPath $log) { (Get-Content -LiteralPath $log -Tail 40) -join "`n" } else { '' }
+      return "the gate command failed with exit code $code, so nothing was merged ($Gate; the log is $log). Its last 40 lines:`n$tail"
+    }
+  }
+  $commit = Invoke-Git @('commit', '-q', '-m', "Merge $branch into $($Info.base) ($Id)")
+  if ($commit.Code -ne 0) {
+    Invoke-Git @('merge', '--abort') | Out-Null
+    return "git could not commit the merge: $($commit.Text)"
+  }
+  $script:Merged = (Invoke-Git @('rev-parse', '--short', 'HEAD')).Text
+  Invoke-Git @('branch', '-d', $branch) | Out-Null
+  Write-BranchFile $branch $Info.base "done $script:Merged $((Get-Date).ToString('s'))"
+  ''
 }
 
 # The changed files of the project outside .dispatch, as git status gives them; none outside git.
@@ -684,6 +902,8 @@ switch ($Verb) {
     $plan = Join-Path $plans "$Id.md"
     $flags = Read-Flags 'plan-flags.txt'
     $prompt = "Plan ticket $Id. Read the brief $brief. Write the plan to $plan with the sections that the section Background workers in CLAUDE.md names. Edit nothing. Then end your turn."
+    # Task branches: the base of the task is the branch of the checkout at the plan run.
+    if (Branches-On) { Ensure-BranchFile | Out-Null }
     # The scratch folder of an earlier plan run of the ticket goes: its logs belong to that plan.
     $scratch = Join-Path $Reports "measure\$Id"
     if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
@@ -706,11 +926,17 @@ switch ($Verb) {
     # The prompt names the report file: a worker planned with the paths of its plan run.
     $report = Join-Path $Reports "$Id.md"
     $prompt = "Plan approved: $plan. Execute it. A deviation goes into the report, not into the code. Write the report to $report."
+    # Task branches: the work run works on the branch of the task; a failed start checks out the branch before.
+    $back = ''
+    if (Branches-On) {
+      $back = Enter-TaskBranch
+      $prompt += " Task branches is on: the checkout is on the branch $((Read-BranchFile $Id).branch) of this task. Commit there; switch no branch, merge nothing, push nothing."
+    }
     Set-State 'approved'
     # A resume with other options than the saved ones of the session starts a copy of it (Claude
     # Code 2.1.319). The name keeps the copy with the task and marks it as the work run: Dispatch and
     # this script find a worker by its name.
-    Run-Claude (@($prompt, '--resume', $worker.sessionId, '--bg', '--name', (Run-Name 'work')) + $flags) 'planning'
+    Run-Claude (@($prompt, '--resume', $worker.sessionId, '--bg', '--name', (Run-Name 'work')) + $flags) 'planning' $back
     Set-State 'working'
   }
   'reply' {
@@ -723,7 +949,14 @@ switch ($Verb) {
     $worker = Resume-Target
     $run = if ((Get-State) -eq 'planning') { 'plan' } else { 'work' }
     $flags = Read-Flags "$run-flags.txt"
-    Run-Claude (@($text, '--resume', $worker.sessionId, '--bg', '--name', (Run-Name $run)) + $flags)
+    # Task branches: a work run goes on on the branch of its task, also after Dispatch switched back.
+    $branch = if ($run -eq 'work' -and (Branches-On)) { Read-BranchFile $Id } else { $null }
+    $tracked = $null -ne $branch -and -not $branch.merge
+    $back = if ($tracked) { Enter-TaskBranch } else { '' }
+    Run-Claude (@($text, '--resume', $worker.sessionId, '--bg', '--name', (Run-Name $run)) + $flags) '' $back
+    # The state file is newer than the report now: Dispatch keeps the checkout on the task branch
+    # until the worker writes its report again.
+    if ($tracked) { Set-State (Get-State) }
   }
   'status' {
     $workers = Get-Workers
@@ -748,13 +981,13 @@ switch ($Verb) {
     $command = $commands[$n - 1].Replace('{measure}', $folder)
     $log = Join-Path $folder "$n.log"
     $limit = Measure-Limit
-    Enter-MeasureLock $limit
+    Enter-Lock (Lock-Path) $limit 'measuring'
     try {
       $before = Tree-Status
       $code = Run-Measured $command $log $limit
       $after = Tree-Status
     } finally {
-      Exit-MeasureLock
+      Exit-Lock (Lock-Path)
     }
     # The working tree must stay as it was; a change is noted for the task card of Dispatch.
     $changed = @($after | Where-Object { $_ -and $before -notcontains $_ }) + @($before | Where-Object { $_ -and $after -notcontains $_ })
@@ -768,6 +1001,31 @@ switch ($Verb) {
     "command $n ($($commands[$n - 1])) ended with exit code $code; the output is in $log. Its last 40 lines:"
     if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 40 }
     exit $code
+  }
+  'merge' {
+    Need-Id
+    if ($env:CLAUDECODE) { Refuse 'only the Merge button of Dispatch merges a task branch; a Claude Code session may not run this verb' }
+    if (-not (Branches-On)) { Refuse 'Task branches is off in this project; Setup pipeline turns it on' }
+    $info = Read-BranchFile $Id
+    if ($null -eq $info -or -not $info.branch -or -not $info.base) { Refuse "the task $Id has no branch file" }
+    if ($info.merge) { Refuse "the branch $($info.branch) is merged already: $($info.merge)" }
+    if ((Invoke-Git @('rev-parse', '--verify', '--quiet', "refs/heads/$($info.branch)")).Code -ne 0) { Refuse "the branch $($info.branch) does not exist; the task had no work run" }
+    $current = Current-Branch
+    if ($current -ne $info.base) { Refuse "the checkout is on $current, not on the base $($info.base); Dispatch switches back when the work run has ended" }
+    if ((Invoke-Git @('rev-parse', '-q', '--verify', 'MERGE_HEAD')).Code -eq 0) { Refuse 'the checkout has an unfinished merge; finish it or run git merge --abort first' }
+    $dirty = @((Invoke-Git @('status', '--porcelain', '--untracked-files=no')).Lines | Where-Object { $_ })
+    if ($dirty.Count -gt 0) { Refuse "the checkout has uncommitted changes; commit or stash them first:`n$($dirty -join "`n")" }
+    $gate = "$(@(Command-Lines 'merge-gate.txt') | Select-Object -First 1)"
+    $limit = Command-Limit 'merge-gate.txt' 14400
+    Enter-Lock (Merge-Lock) 0 'merge'
+    $script:Merged = ''
+    try {
+      $refusal = "$(Merge-Branch $info $gate $limit)"
+    } finally {
+      Exit-Lock (Merge-Lock)
+    }
+    if ($refusal) { Refuse $refusal }
+    "merged $($info.branch) into $($info.base): $script:Merged"
   }
   'stop' {
     Need-Id
@@ -843,11 +1101,17 @@ fn rule_changes(project: &Project) -> Result<RuleChanges, String> {
     };
     let mut obsolete: Vec<String> = OBSOLETE_RULES.iter().filter(|rule| has(allow, rule)).map(|rule| rule.to_string()).collect();
     obsolete.extend(named_old(allow));
+    let mut obsolete_deny = named_old(deny);
+    // With "Task branches" off again, the deny rule of the merge verb goes, so the file is as before.
+    let merge_deny = format!("Bash({} merge *)", script_command(&project.reports_text()));
+    if !project.options().task_branches && has(deny, &merge_deny) {
+        obsolete_deny.push(merge_deny);
+    }
     Ok(RuleChanges {
         missing: project.allow_rules()?.into_iter().filter(|rule| !has(allow, rule)).collect(),
         obsolete,
         missing_deny: project.deny_rules().into_iter().filter(|rule| !has(deny, rule)).collect(),
-        obsolete_deny: named_old(deny),
+        obsolete_deny,
         missing_dirs: project.extra_directories().into_iter().filter(|dir| !has(dirs, dir)).collect(),
     })
 }
@@ -1128,9 +1392,39 @@ fn plan(project: &Project) -> Result<Plan, String> {
             rules: None,
         },
         measure_step(project, options.measure_before_plan)?,
+        branches_step(project, options.task_branches),
     ];
     let measure_commands = fs::read_to_string(project.measure_commands_file()).unwrap_or_default().replace("\r\n", "\n");
-    Ok(Plan { root: show(project.root.clone()), git: project.in_git, options, steps, measure_commands })
+    let merge_gate = fs::read_to_string(project.merge_gate_file()).unwrap_or_default().replace("\r\n", "\n");
+    Ok(Plan { root: show(project.root.clone()), git: project.in_git, options, steps, measure_commands, merge_gate })
+}
+
+/// The step "Task branches" (ticket task-branches). Off, it is done and changes nothing. On, it is
+/// done when git ignores the folder of the merge lock and the gate logs; Apply adds the ignore line.
+fn branches_step(project: &Project, on: bool) -> Step {
+    let target = project.merge_gate_file().to_string_lossy().into_owned();
+    if !on {
+        return Step {
+            title: "Task branches",
+            target,
+            done: true,
+            detail: "Off. A worker works on the current branch of the main checkout, as today.".to_string(),
+            rules: None,
+        };
+    }
+    let reports = project.reports_text();
+    let gate = project.merge_gate();
+    let gate = if gate.is_empty() { "no gate command: the merge does not wait for a check".to_string() } else { format!("the gate command: {gate}") };
+    Step {
+        title: "Task branches",
+        target,
+        done: project.ignores(MERGE_IGNORE),
+        detail: format!(
+            "Each task works on its own branch {BRANCH_PREFIX}<ticket-id>, made at Approve from the branch that the checkout was on at the plan run (the base, in {reports}/<ticket-id>.branch). The worker commits there and never merges or pushes. When the report is written, Dispatch switches the checkout back to the base and commits the task files there. The task card then shows Merge: the worker script merges the branch with --no-ff into the base, runs {gate} on the merged code (at most {limit} s; a first line \"# limit <seconds>\" of {reports}/merge-gate.txt changes that), and commits the merge or takes it back. One merge at a time; the log goes into {reports}/merge/<ticket-id>.log. Apply adds the line {MERGE_IGNORE} to {reports}/.gitignore. The section in CLAUDE.md and the deny rules (step Allow rules) say so. The push stays with you.",
+            limit = project.merge_gate_limit(),
+        ),
+        rules: None,
+    }
 }
 
 /// The step "Measure before the plan" (ticket measure-before-plan). Off, it is done and changes
@@ -1167,16 +1461,16 @@ fn measure_step(project: &Project, on: bool) -> Result<Step, String> {
     })
 }
 
-/// Adds the line `measure/` to `.dispatch/.gitignore`, and makes the file when it is absent.
-fn ignore_measure(project: &Project) -> Result<(), String> {
-    if project.measure_ignored() {
+/// Adds a line (`measure/`, `merge/`) to `.dispatch/.gitignore`, and makes the file when it is absent.
+fn ignore_line(project: &Project, line: &str) -> Result<(), String> {
+    if project.ignores(line) {
         return Ok(());
     }
     let mut text = fs::read_to_string(project.tasks_ignore()).unwrap_or_default();
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(MEASURE_IGNORE);
+    text.push_str(line);
     text.push('\n');
     write_file(&project.tasks_ignore(), &text)
 }
@@ -1801,6 +2095,117 @@ pub struct TaskInfo {
     /// `git status --porcelain` lines (`measure/<ticket>/changed.txt`). Empty without a change.
     #[serde(rename = "measureChanged")]
     measure_changed: Vec<String>,
+    /// The branch of the task with "Task branches" on (`<ticket>.branch`), else none.
+    branch: Option<BranchInfo>,
+}
+
+/// The branch of a task (ticket task-branches): from its branch file and from git.
+#[derive(Serialize, Clone, Default, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchInfo {
+    /// `task/<ticket>`.
+    name: String,
+    /// The branch that the task branch starts from and merges into.
+    base: String,
+    /// The merge line of the branch file after the merge: `done <sha> <time>`. Empty before.
+    merge: String,
+    /// The branch exists in git: Approve made it, and no merge removed it.
+    exists: bool,
+    /// The main checkout is on this branch now.
+    checked_out: bool,
+    /// Why Dispatch did not switch the checkout back to the base, or empty.
+    note: String,
+}
+
+/// Reads a branch file: the lines `branch:`, `base:` and `merge:`. None without the file.
+fn read_branch_file(path: &Path) -> Option<BranchInfo> {
+    let text = fs::read_to_string(path).ok()?;
+    let mut info = BranchInfo::default();
+    for line in text.lines() {
+        let Some((key, value)) = line.split_once(':') else { continue };
+        let value = value.trim().to_string();
+        match key.trim() {
+            "branch" => info.name = value,
+            "base" => info.base = value,
+            "merge" => info.merge = value,
+            _ => {}
+        }
+    }
+    (!info.name.is_empty() && !info.base.is_empty()).then_some(info)
+}
+
+/// The modification time of a file.
+fn modified(path: &Path) -> Option<std::time::SystemTime> {
+    fs::metadata(path).and_then(|meta| meta.modified()).ok()
+}
+
+/// Switches the main checkout back to the base of a task whose work run has ended (decision 3 of
+/// task-branches): the report is newer than the state file (a reply makes the state newer), or the
+/// task was stopped. Only with a clean tree outside `.dispatch`. Then every task file that the task
+/// branch changed in `.dispatch` comes onto the base in one commit, so the files of all tasks stay
+/// readable and end on the base; the merge brings the rest. Gives the note when it did not switch.
+fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<(), String> {
+    let report = project.reports.join(format!("{ticket}.md"));
+    let state_path = project.reports.join(format!("{ticket}.state"));
+    let state = fs::read_to_string(&state_path).unwrap_or_default();
+    let ended = state.trim() == "stopped"
+        || matches!((modified(&report), modified(&state_path)), (Some(report), Some(state)) if report >= state)
+        || (report.is_file() && !state_path.is_file());
+    if !ended {
+        return Ok(());
+    }
+    let dirty = run_git(&project.root, &["status", "--porcelain", "--", ".", NOT_TASKS])?;
+    if !dirty.trim().is_empty() {
+        return Err(format!(
+            "The checkout stays on {}: the work run left uncommitted changes outside .dispatch. Commit or stash them; Dispatch then switches back to {}.",
+            info.name, info.base
+        ));
+    }
+    run_git(&project.root, &["checkout", "-q", &info.base])?;
+    // The task files that the branch changed since it left the base.
+    let range = format!("{}...{}", info.base, info.name);
+    let changed = run_git(&project.root, &["diff", "--name-status", "--no-renames", &range, "--", TASKS_DIR])?;
+    let mut paths = Vec::new();
+    for line in changed.lines() {
+        let Some((status, path)) = line.split_once('\t') else { continue };
+        let path = path.trim().trim_matches('"').to_string();
+        if status.starts_with('D') {
+            let _ = run_git(&project.root, &["rm", "-q", "--ignore-unmatch", "--", &path]);
+        } else {
+            run_git(&project.root, &["checkout", &info.name, "--", &path])?;
+        }
+        paths.push(path);
+    }
+    // A later return (after a reply) finds the files of the first one on the base already.
+    let mut status = vec!["status", "--porcelain", "--"];
+    status.extend(paths.iter().map(String::as_str));
+    if paths.is_empty() || run_git(&project.root, &status)?.trim().is_empty() {
+        return Ok(());
+    }
+    let message = format!("Dispatch: task files of {ticket}");
+    let mut commit = vec!["commit", "-q", "-m", &message, "--"];
+    commit.extend(paths.iter().map(String::as_str));
+    run_git(&project.root, &commit).map(|_| ())
+}
+
+/// The branch of a task for the task list, after the return to the base when its work run has ended.
+fn task_branch(project: &Project, ticket: &str, current: &str) -> Option<BranchInfo> {
+    let mut info = read_branch_file(&project.branch_file(ticket))?;
+    let exists = |name: &str| git(&project.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_some();
+    info.exists = info.merge.is_empty() && exists(&info.name);
+    info.checked_out = current == info.name;
+    if info.checked_out && info.merge.is_empty() {
+        match return_to_base(project, ticket, &info) {
+            Ok(()) => info.checked_out = current_branch(project).as_deref() == Some(info.name.as_str()),
+            Err(note) => info.note = note,
+        }
+    }
+    Some(info)
+}
+
+/// The branch that the main checkout is on, or none (detached HEAD, no repository).
+fn current_branch(project: &Project) -> Option<String> {
+    git(&project.root, &["symbolic-ref", "--short", "-q", "HEAD"]).map(|name| name.trim().to_string()).filter(|name| !name.is_empty())
 }
 
 /// The reply of the `task_list` command.
@@ -1819,6 +2224,10 @@ pub struct TaskList {
     setup: Option<u64>,
     /// The planned entries of the project in their order (ticket overview-backlog).
     backlog: Vec<crate::core::backlog::Entry>,
+    /// The ticket whose merge runs now (ticket task-branches): Approve waits for it.
+    merging: Option<String>,
+    /// The gate command of the merge step, for the Merge card; empty without one.
+    gate: String,
 }
 
 /// The files with an extension in a folder: the name without the extension, the path, the entry.
@@ -1880,6 +2289,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
             goal: Vec::new(),
             tldr: Vec::new(),
             measure_changed: Vec::new(),
+            branch: None,
         });
         tasks.len() - 1
     }
@@ -1935,6 +2345,15 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
             eprintln!("task files not committed: {error}");
         }
     }
+    // Task branches: the branch of each task, and the way back to the base after a work run. Only
+    // the task branch that is checked out can switch back; a merge in progress keeps the checkout.
+    let merging = project.merging();
+    if project.in_git && (project.options().task_branches || tasks.iter().any(|task| project.branch_file(&task.name).is_file())) {
+        let current = if merging.is_none() { current_branch(&project).unwrap_or_default() } else { String::new() };
+        for task in tasks.iter_mut() {
+            task.branch = task_branch(&project, &task.name, &current);
+        }
+    }
     // The script refuses an approval for these lines; the task files do not count.
     let dirty = if project.in_git {
         git(&project.root, &["status", "--porcelain", "--", ".", NOT_TASKS]).unwrap_or_default().lines().map(str::to_string).collect()
@@ -1943,7 +2362,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
     };
     let setup = setup_time(&project);
     let backlog = crate::core::backlog::list(&project);
-    Ok(TaskList { tasks, dirty, auto_approve: project.options().auto_approve, setup, backlog })
+    Ok(TaskList { tasks, dirty, auto_approve: project.options().auto_approve, setup, backlog, merging, gate: project.merge_gate() })
 }
 
 /// At most this many open tasks get their own part in the hand-off; the rest are counted.
@@ -1983,8 +2402,9 @@ fn handoff_state(task: &TaskInfo, live: bool, queued: bool) -> Option<String> {
     if report_state == "failed" {
         return Some("failed, see its report".to_string());
     }
+    let unmerged = task.branch.as_ref().is_some_and(|branch| branch.exists && branch.merge.is_empty());
     if report_state == "done" && (needs.is_empty() || needs == "nothing") {
-        return None;
+        return unmerged.then(|| "done, its branch waits for Merge in the task card of Dispatch".to_string());
     }
     if task.report.is_none() && (task.state == "approved" || task.state == "working") {
         return Some("approved, its work run is starting or ended without a report".to_string());
@@ -2054,10 +2474,13 @@ fn check_ticket(id: &str) -> Result<(), String> {
 /// Runs the worker script with a verb and its arguments. The script's exit code 2 is a refusal,
 /// and its reason on stderr is the error; the output of claude is the result.
 fn run_script(project: &Project, args: &[&str]) -> Result<String, String> {
+    // The merge verb refuses a caller with this variable: Claude Code sets it in its sessions. Dispatch
+    // is no such session, also when a session started it (`session_variables` removes it there too).
     let output = Command::new("powershell")
         .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(project.script())
         .args(args)
+        .env_remove("CLAUDECODE")
         .stdin(Stdio::null())
         .no_window()
         .output()
@@ -2148,7 +2571,10 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
     }
     // Off, the step is done, so an old project gets no new file.
     if !done(7) {
-        ignore_measure(project)?;
+        ignore_line(project, MEASURE_IGNORE)?;
+    }
+    if !done(8) {
+        ignore_line(project, MERGE_IGNORE)?;
     }
     Ok(())
 }
@@ -2248,6 +2674,32 @@ pub fn set_measure_commands(cwd: String, text: String) -> Result<Plan, String> {
     let text = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
     write_file(&project.measure_commands_file(), &text)?;
     plan(&project)
+}
+
+/// Saves the gate command of the merge step (ticket task-branches): the text of the box, each line
+/// trimmed, empty lines at the end dropped.
+pub fn set_merge_gate(cwd: String, text: String) -> Result<Plan, String> {
+    let project = Project::find(&cwd)?;
+    let mut lines: Vec<&str> = text.lines().map(str::trim).collect();
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    let text = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
+    write_file(&project.merge_gate_file(), &text)?;
+    plan(&project)
+}
+
+/// Merges the branch of a task into its base: the Merge button of the task card. The task files
+/// are committed first, so the checkout is clean; the script refuses a dirty checkout, a failed
+/// gate and a conflict outside `.dispatch`, and then changes nothing.
+pub fn task_merge(cwd: String, id: String) -> Result<String, String> {
+    check_ticket(&id)?;
+    let project = Project::find(&cwd)?;
+    if let Err(error) = keep_tasks_committed(&project) {
+        eprintln!("task files not committed before the merge: {error}");
+    }
+    let _ = crate::core::backlog::keep_committed(&project);
+    run_script(&project, &["merge", &id])
 }
 
 /// Saves the settings of the project of a folder. The steps then show what Apply must change.
@@ -2729,6 +3181,7 @@ mod tests {
             goal: Vec::new(),
             tldr: Vec::new(),
             measure_changed: Vec::new(),
+            branch: None,
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };
@@ -2805,6 +3258,15 @@ if (args[0] === 'agents') {
     text = '# ' + id + ': plan\\n\\n## Measured\\n- Command 1 ended with exit code ' + run.status + '.\\n\\n' + run.stdout;
   }
   if (plan) fs.writeFileSync(plan[1], text);
+  const report = /Write the report to (.+?[.]md)[.]/.exec(args[0]);
+  if (report && fs.existsSync(__dirname + '/work.txt')) {
+    const git = (...more) => require('child_process').execFileSync('git', more, { encoding: 'utf8' }).trim();
+    const ticket = require('path').basename(report[1], '.md');
+    fs.appendFileSync(__dirname + '/branches.txt', ticket + ' ' + git('symbolic-ref', '--short', 'HEAD') + '\\n');
+    fs.writeFileSync('work-' + ticket + '.txt', fs.readFileSync(__dirname + '/work.txt', 'utf8'));
+    git('add', 'work-' + ticket + '.txt');
+    git('commit', '-q', '-m', ticket + ' work');
+  }
   process.stdout.write('bg-1\\n');
 }
 ",
@@ -2816,6 +3278,11 @@ if (args[0] === 'agents') {
     /// Runs the script with the fake `claude` first on PATH. Gives the exit code and both outputs.
     /// `state` is the state of the fake worker; `blocked/waiting` gives it the status `waiting` too.
     fn run_script(project: &Project, fake: &Path, state: &str, args: &[&str]) -> (i32, String) {
+        run_script_env(project, fake, state, args, &[])
+    }
+
+    /// `run_script` with more variables for the script.
+    fn run_script_env(project: &Project, fake: &Path, state: &str, args: &[&str], extra: &[(&str, &str)]) -> (i32, String) {
         let path = format!("{};{}", fake.display(), std::env::var("PATH").unwrap_or_default());
         let (state, status) = state.split_once('/').unwrap_or((state, ""));
         let output = Command::new("powershell")
@@ -2826,6 +3293,8 @@ if (args[0] === 'agents') {
             .env("FAKE_STATE", state)
             .env("FAKE_STATUS", status)
             .env("FAKE_NAME", fake_name(project))
+            .env_remove("CLAUDECODE")
+            .envs(extra.iter().copied())
             .output()
             .unwrap();
         let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
@@ -3404,5 +3873,270 @@ if (args[0] === 'agents') {
         // claude runs in the project folder: the parent of `.dispatch`.
         assert_eq!(Path::new(read(&fake.join("cwd.txt")).trim()), project.root.as_path());
         clean(&project);
+    }
+
+    /// Turns "Task branches" on or off in the settings file, as the switch does.
+    fn set_branches(project: &Project, on: bool) {
+        let options = Options { task_branches: on, ..project.options() };
+        write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
+    }
+
+    /// Runs git in a scratch project and gives its output; a failure fails the test.
+    fn git_out(project: &Project, args: &[&str]) -> String {
+        run_git(&project.root, args).unwrap().trim().to_string()
+    }
+
+    /// A git scratch project with "Task branches" on, its setup committed, a fake worker that commits
+    /// a file in its work run, and the name of the base branch.
+    fn branch_project(name: &str) -> (Project, PathBuf, String) {
+        let project = git_scratch(name);
+        write_file(&project.root.join("README.md"), "scratch project\n").unwrap();
+        apply(&project, &[0]).unwrap();
+        set_branches(&project, true);
+        apply(&project, &[]).unwrap();
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        git_out(&project, &["add", "--all"]);
+        git_out(&project, &["commit", "-q", "-m", "scratch setup"]);
+        let fake = fake_claude(project.root.parent().unwrap());
+        write_file(&fake.join("work.txt"), "the work of the task\n").unwrap();
+        let base = current_branch(&project).unwrap();
+        (project, fake, base)
+    }
+
+    /// The plan run and the work run of a scratch ticket through the script, with the fake worker.
+    fn plan_and_approve(project: &Project, fake: &Path, ticket: &str) {
+        write_file(&project.briefs().join(format!("{ticket}.md")), &format!("# {ticket}: a scratch task\n")).unwrap();
+        write_file(&project.reports.join("fake-name.txt"), ticket).unwrap();
+        let (code, out) = run_script(project, fake, "done", &["plan", ticket]);
+        assert_eq!(code, 0, "{out}");
+        let (code, out) = run_script(project, fake, "done", &["approve", ticket]);
+        assert_eq!(code, 0, "{out}");
+    }
+
+    /// The worker writes its report: later than the state file, as a real work run does.
+    fn write_report(project: &Project, ticket: &str) {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        write_file(&project.reports.join(format!("{ticket}.md")), "state: done\nneeds: nothing\nfiles: work.txt\nplan: p\n\nDid the work.\n").unwrap();
+    }
+
+    /// The branch of a ticket in a fresh task list of the project.
+    fn listed_branch(project: &Project, ticket: &str) -> BranchInfo {
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        list.tasks.into_iter().find(|task| task.name == ticket).and_then(|task| task.branch).expect("the task has a branch")
+    }
+
+    /// The merge is not open and the checkout has no change of a tracked file outside `.dispatch` (the
+    /// branch file of a merge waits for the next task read, which commits it).
+    fn assert_no_merge_left(project: &Project) {
+        assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_none(), "a merge is still open");
+        assert_eq!(git_out(project, &["status", "--porcelain", "--untracked-files=no", "--", ".", NOT_TASKS]), "");
+    }
+
+    #[test]
+    fn the_script_and_the_options_are_the_same_in_the_two_branch_states() {
+        let project = scratch("branch-states");
+        apply(&project, &[0]).unwrap();
+        let files = [project.script(), project.plan_flags(), project.work_flags(), project.triage_prompt(), project.local_settings(), project.instructions()];
+        let first: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+        assert!(!project.section_body().contains("Task branches"));
+        assert_eq!(project.deny_rules().len(), 1);
+
+        set_branches(&project, true);
+        assert_eq!(open_steps(&project), vec!["Allow rules", "Section in CLAUDE.md", "Task branches"]);
+        apply(&project, &[]).unwrap();
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        assert!(project.section_body().contains("Task branches is on in this project"));
+        assert!(project.deny_rules()[1].ends_with("worker.ps1 merge *)"), "{:?}", project.deny_rules());
+        assert!(read(&project.local_settings()).contains("worker.ps1 merge *)"));
+        assert!(project.ignores(MERGE_IGNORE));
+        // The script and both options files do not change with the switch.
+        for (at, file) in files.iter().enumerate().take(4) {
+            assert!(fs::read(file).unwrap() == first[at], "{} changed with the switch on", file.display());
+        }
+
+        set_branches(&project, false);
+        assert_eq!(open_steps(&project), vec!["Allow rules", "Section in CLAUDE.md"]);
+        apply(&project, &[]).unwrap();
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        for (at, file) in files.iter().enumerate() {
+            assert!(fs::read(file).unwrap() == first[at], "{} is not the file of the first Apply", file.display());
+        }
+        clean(&project);
+    }
+
+    #[test]
+    fn an_old_project_stays_off_after_the_branch_update() {
+        let project = scratch("branch-old");
+        apply(&project, &[0]).unwrap();
+        // The settings file of 0.1.55: four settings, no field for task branches.
+        write_file(&project.options_file(), "{\n  \"shortReports\": true,\n  \"triageName\": true,\n  \"autoApprove\": false,\n  \"measureBeforePlan\": false\n}\n").unwrap();
+        let files = [project.options_file(), project.plan_flags(), project.work_flags(), project.instructions(), project.triage_prompt(), project.local_settings(), project.settings(), project.script()];
+        let before: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+
+        assert!(!project.options().task_branches);
+        let shown = plan(&project).unwrap();
+        assert_eq!(serde_json::to_value(&shown.options).unwrap()["taskBranches"], json!(false));
+        assert_eq!(shown.merge_gate, "");
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        apply(&project, &[]).unwrap();
+        let after: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+        assert!(before == after, "Apply changed a file of the old project");
+        assert!(!project.merge_gate_file().exists() && !project.tasks_ignore().exists() && !project.merge_dir().exists());
+        clean(&project);
+    }
+
+    #[test]
+    fn approve_makes_the_task_branch_and_the_task_read_returns_to_the_base() {
+        let (project, fake, base) = branch_project("branch-flow");
+        let base_head = git_out(&project, &["rev-parse", &base]);
+        plan_and_approve(&project, &fake, "t-1");
+        assert_eq!(read(&project.branch_file("t-1")), format!("branch: task/t-1\nbase: {base}\n"));
+        // The worker ran on the task branch and committed there; the base did not move.
+        assert_eq!(read(&fake.join("branches.txt")), "t-1 task/t-1\n");
+        assert!(last_call(&fake)[0].contains("Task branches is on: the checkout is on the branch task/t-1"));
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", "task/t-1"]), "t-1 work");
+        assert_eq!(git_out(&project, &["rev-parse", &base]), base_head);
+        // The work run has no report yet: the checkout stays on the task branch.
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.exists && branch.checked_out && branch.merge.is_empty() && branch.note.is_empty(), "{branch:?}");
+
+        write_report(&project, "t-1");
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.exists && !branch.checked_out && branch.note.is_empty(), "{branch:?}");
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", &base]), "Dispatch: task files of t-1");
+        let tree = git_out(&project, &["ls-tree", "-r", "--name-only", &base, ".dispatch"]);
+        for file in [".dispatch/t-1.md", ".dispatch/t-1.state", ".dispatch/t-1.branch", ".dispatch/plans/t-1.md", ".dispatch/briefs/t-1.md"] {
+            assert!(tree.lines().any(|line| line == file), "{file} is not on the base: {tree}");
+        }
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_none(), "the work is on the base before the merge");
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        let task = list.tasks.iter().find(|task| task.name == "t-1").unwrap();
+        assert_eq!(handoff_state(task, false, false).as_deref(), Some("done, its branch waits for Merge in the task card of Dispatch"));
+
+        let merged = task_merge(project.root.to_string_lossy().into_owned(), "t-1".to_string()).unwrap();
+        assert!(merged.starts_with(&format!("merged task/t-1 into {base}: ")), "{merged}");
+        let parents = git_out(&project, &["rev-list", "--parents", "-n", "1", &base]);
+        assert_eq!(parents.split_whitespace().count(), 3, "the merge commit has two parents: {parents}");
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", &base]), format!("Merge task/t-1 into {base} (t-1)"));
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
+        assert!(git(&project.root, &["rev-parse", "--verify", "--quiet", "refs/heads/task/t-1"]).is_none(), "the branch was not deleted");
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.merge.starts_with("done ") && !branch.exists, "{branch:?}");
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    #[test]
+    fn a_merge_is_refused_when_the_gate_fails_and_merges_when_it_passes() {
+        let (project, fake, base) = branch_project("branch-gate");
+        let cwd = project.root.to_string_lossy().into_owned();
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        set_merge_gate(cwd.clone(), "cmd /c echo the gate runs & exit 1\n".to_string()).unwrap();
+        let head = git_out(&project, &["rev-parse", &base]);
+
+        let refused = task_merge(cwd.clone(), "t-1".to_string()).unwrap_err();
+        assert!(refused.contains("the gate command failed with exit code 1, so nothing was merged") && refused.contains("the gate runs"), "{refused}");
+        // The task files of the gate change are committed; the code of the base did not move.
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", &base]), "Dispatch: 1 task file");
+        assert_eq!(git_out(&project, &["rev-parse", &format!("{base}~1")]), head);
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_none());
+        assert!(project.merge_dir().join("t-1.log").is_file());
+        assert!(!project.merge_dir().join("lock").exists(), "the merge lock stayed");
+        assert_no_merge_left(&project);
+        assert!(listed_branch(&project, "t-1").exists);
+
+        set_merge_gate(cwd.clone(), "# limit 60\ncmd /c exit 0\n".to_string()).unwrap();
+        let merged = task_merge(cwd, "t-1".to_string()).unwrap();
+        assert!(merged.starts_with("merged task/t-1"), "{merged}");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    #[test]
+    fn a_merge_is_refused_for_a_claude_session_a_dirty_checkout_and_a_conflict() {
+        let (project, fake, base) = branch_project("branch-refuse");
+        let cwd = project.root.to_string_lossy().into_owned();
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+
+        // A Claude Code session (triage) may not merge, even past the deny rule.
+        let (code, out) = run_script_env(&project, &fake, "done", &["merge", "t-1"], &[("CLAUDECODE", "1")]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("only the Merge button of Dispatch merges a task branch"), "{out}");
+
+        // A changed file of the user.
+        write_file(&project.root.join("README.md"), "changed by the user\n").unwrap();
+        let refused = task_merge(cwd.clone(), "t-1".to_string()).unwrap_err();
+        assert!(refused.contains("uncommitted changes") && refused.contains("README.md"), "{refused}");
+        git_out(&project, &["checkout", "--", "README.md"]);
+
+        // The base got its own version of the file of the task: the merge does not apply.
+        write_file(&project.root.join("work-t-1.txt"), "another text on the base\n").unwrap();
+        git_out(&project, &["add", "work-t-1.txt"]);
+        git_out(&project, &["commit", "-q", "-m", "base change"]);
+        let head = git_out(&project, &["rev-parse", &base]);
+        let refused = task_merge(cwd, "t-1".to_string()).unwrap_err();
+        assert!(refused.contains("does not apply; nothing was merged") && refused.contains("work-t-1.txt"), "{refused}");
+        assert_eq!(git_out(&project, &["rev-parse", &base]), head);
+        assert_eq!(read(&project.root.join("work-t-1.txt")), "another text on the base\n");
+        assert_no_merge_left(&project);
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.exists && branch.merge.is_empty(), "{branch:?}");
+        clean(&project);
+    }
+
+    /// Builds the scratch projects of the proof script of ticket task-branches when the variable
+    /// BRANCHES_PROOF_DIR names an empty folder: `on` runs a scratch ticket through plan, approve,
+    /// report, return and merge and writes the task list as JSON; `off` gets Apply with the switch
+    /// off, on and off again and keeps copies of its files. The script then checks the files with git.
+    #[test]
+    #[ignore]
+    fn branches_proof_projects() {
+        let Ok(dir) = std::env::var("BRANCHES_PROOF_DIR") else { return };
+        let dir = PathBuf::from(dir);
+        let project = |name: &str| {
+            let root = dir.join(name);
+            fs::create_dir_all(&root).unwrap();
+            Project { reports: root.join(TASKS_DIR), root, in_git: false }
+        };
+        let mut on = project("on");
+        git_init(&on);
+        on.in_git = true;
+        write_file(&on.root.join("README.md"), "scratch project\n").unwrap();
+        apply(&on, &[0]).unwrap();
+        set_branches(&on, true);
+        apply(&on, &[]).unwrap();
+        run_git(&on.root, &["add", "--all"]).unwrap();
+        run_git(&on.root, &["commit", "-q", "-m", "scratch setup"]).unwrap();
+        let fake = fake_claude(&dir);
+        write_file(&fake.join("work.txt"), "the work of the task\n").unwrap();
+        let cwd = on.root.to_string_lossy().into_owned();
+        fs::write(dir.join("base-before.txt"), git_out(&on, &["rev-parse", "HEAD"])).unwrap();
+        plan_and_approve(&on, &fake, "t-1");
+        fs::write(dir.join("after-approve.json"), serde_json::to_string_pretty(&task_list(cwd.clone()).unwrap()).unwrap()).unwrap();
+        fs::write(dir.join("branch-after-approve.txt"), current_branch(&on).unwrap_or_default()).unwrap();
+        let base = read_branch_file(&on.branch_file("t-1")).map(|info| info.base).unwrap_or_default();
+        fs::write(dir.join("base-after-approve.txt"), git_out(&on, &["rev-parse", &base])).unwrap();
+        fs::write(dir.join("task-branch-log.txt"), git_out(&on, &["log", "--oneline", "-3", "task/t-1"])).unwrap();
+        write_report(&on, "t-1");
+        fs::write(dir.join("after-report.json"), serde_json::to_string_pretty(&task_list(cwd.clone()).unwrap()).unwrap()).unwrap();
+        fs::write(dir.join("merge.txt"), task_merge(cwd.clone(), "t-1".to_string()).unwrap_or_else(|error| format!("refused: {error}"))).unwrap();
+        fs::write(dir.join("after-merge.json"), serde_json::to_string_pretty(&task_list(cwd).unwrap()).unwrap()).unwrap();
+
+        let off = project("off");
+        apply(&off, &[0]).unwrap();
+        for (name, path) in [("worker", off.script()), ("plan-flags", off.plan_flags()), ("work-flags", off.work_flags())] {
+            fs::copy(&path, dir.join(format!("{name}.first.txt"))).unwrap();
+        }
+        set_branches(&off, true);
+        apply(&off, &[]).unwrap();
+        set_branches(&off, false);
+        apply(&off, &[]).unwrap();
     }
 }

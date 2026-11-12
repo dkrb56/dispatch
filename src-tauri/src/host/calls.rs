@@ -126,6 +126,7 @@ pub fn run(
         "pipeline_commit" => json(pipeline::pipeline_commit(a.req("cwd")?)?),
         "set_project_options" => json(pipeline::set_project_options(a.req("cwd")?, a.req("options")?)?),
         "set_measure_commands" => json(pipeline::set_measure_commands(a.req("cwd")?, a.req("text")?)?),
+        "set_merge_gate" => json(pipeline::set_merge_gate(a.req("cwd")?, a.req("text")?)?),
         "task_list" => json(pipeline::task_list(a.req("cwd")?)?),
         "backlog_add" => json(backlog::backlog_add(a.req("cwd")?, a.req("text")?)?),
         "backlog_remove" => json(backlog::backlog_remove(a.req("cwd")?, a.req("id")?)?),
@@ -135,6 +136,7 @@ pub fn run(
         "task_reject" => json(pipeline::task_reject(a.req("cwd")?, a.req("id")?, a.req("reason")?)?),
         "task_reply" => json(pipeline::task_reply(a.req("cwd")?, a.req("id")?, a.req("text")?)?),
         "task_stop" => json(pipeline::task_stop(a.req("cwd")?, a.req("id")?)?),
+        "task_merge" => json(pipeline::task_merge(a.req("cwd")?, a.req("id")?)?),
         "triage_handoff" => {
             json(pipeline::triage_handoff(a.req("cwd")?, a.req("live")?, a.req("queued")?, a.req("tokens")?)?)
         }

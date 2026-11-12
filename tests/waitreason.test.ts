@@ -71,3 +71,12 @@ test("the line meets the page: main.ts draws it with the eye, the style cuts it,
   assert.match(CSS, /\.task-wait \{[^}]*text-overflow: ellipsis/);
   assert.match(HTML, /with an eye before it, which work run it waits for/);
 });
+
+test("a merge holds the work run first, before another work run and changed files (ticket task-branches)", () => {
+  const reason = waitReason({ editing: "other-task", dirty: [" M a.ts"], merging: "t-1" });
+  assert.deepEqual(reason, {
+    short: "Waits for the merge of t-1.",
+    full: "Its work run starts when the merge of t-1 ends.",
+  });
+  assert.equal(waitReason({ editing: null, dirty: [], merging: null }), null);
+});

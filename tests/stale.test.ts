@@ -119,3 +119,8 @@ test("the list meets the page: main.ts uses the module and the command, the Help
   assert.match(html, /<dialog id="stale"/);
   assert.match(html, /<b>Old sessions\.<\/b>/);
 });
+
+test("a done task whose branch waits for Merge: its finished work run is an old session (ticket task-branches)", () => {
+  const rows = staleSessions([task("t-1", "merge", [session("t-1 [work]", "done", NOW - DAY, { held: true })])]);
+  assert.deepEqual(rows.map((row) => row.reason), ["its task is done and waits for Merge"]);
+});

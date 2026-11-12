@@ -10,6 +10,8 @@ export interface WaitFacts {
   editing: string | null;
   /** The lines of `git status --porcelain` of the project. */
   dirty: readonly string[];
+  /** The task whose branch Dispatch merges now (ticket task-branches), or null. */
+  merging?: string | null;
 }
 
 /** The reason in two lengths. */
@@ -20,8 +22,17 @@ export interface WaitReason {
   full: string;
 }
 
-/** The reason, or null when nothing holds the work run back. The running work run comes first. */
+/**
+ * The reason, or null when nothing holds the work run back. A merge comes first (it holds the main
+ * checkout and runs its gate there), then the running work run.
+ */
 export function waitReason(facts: WaitFacts): WaitReason | null {
+  if (facts.merging) {
+    return {
+      short: `Waits for the merge of ${facts.merging}.`,
+      full: `Its work run starts when the merge of ${facts.merging} ends.`,
+    };
+  }
   if (facts.editing) {
     return {
       short: `Waits for the work run of ${facts.editing}.`,

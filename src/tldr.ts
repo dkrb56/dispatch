@@ -16,6 +16,7 @@ export type TaskPhase =
   | "done"
   | "failed"
   | "stopped"
+  | "merge"
   | "none";
 
 /** What the lines are cut from. */
@@ -78,6 +79,9 @@ export function taskTldr(input: TldrInput): Tldr {
         return did ? `Failed: ${did}` : "Failed, no report.";
       case "stopped":
         return did || first ? `Stopped. ${did || first}` : "Stopped.";
+      case "merge":
+        // Task branches (ticket task-branches): the work is on its branch and waits for the Merge click.
+        return did ? `Waits for your Merge. Done: ${did}` : "Waits for your Merge.";
       case "none":
         return "";
     }

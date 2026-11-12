@@ -1651,6 +1651,24 @@ interface TaskInfo {
   tldr: string[];
   /** The files outside `.dispatch` that a measuring command of the plan run changed. Absent from an older host. */
   measureChanged?: string[];
+  /** The branch of the task with "Task branches" on (ticket task-branches); null or absent without one. */
+  branch?: BranchInfo | null;
+}
+
+/** The branch of a task (ticket task-branches), from its branch file and from git. */
+interface BranchInfo {
+  /** `task/<ticket>`. */
+  name: string;
+  /** The branch that the task branch starts from and merges into. */
+  base: string;
+  /** `done <sha> <time>` after the merge, else empty. */
+  merge: string;
+  /** The branch exists in git: Approve made it, and no merge removed it. */
+  exists: boolean;
+  /** The main checkout is on the task branch now. */
+  checkedOut: boolean;
+  /** Why Dispatch did not switch the checkout back to the base, or empty. */
+  note: string;
 }
 
 /** A decision of a plan, with its options; the recommended one is first. */
@@ -1673,6 +1691,10 @@ interface TaskListReply {
   setup: number | null;
   /** The planned entries of the project (overview-backlog), in the order of the files. */
   backlog: Entry[];
+  /** The task whose branch Dispatch merges now (ticket task-branches). Absent from an older host. */
+  merging?: string | null;
+  /** The gate command of the merge step; empty without one. Absent from an older host. */
+  gate?: string;
 }
 
 /** The tasks of one project, from its last `task_list` reply. Each task carries it, so a click acts on its own project. */
@@ -1686,11 +1708,25 @@ interface ProjectTasks {
   setup: number | null;
   /** The planned entries of the project (overview-backlog). */
   backlog: Entry[];
+  /** The task whose branch Dispatch merges now: Approve waits for it (ticket task-branches). */
+  merging: string | null;
+  /** The gate command of the merge step; empty without one. */
+  gate: string;
 }
 
 /** The record of a project of a host from a reply of `task_list`. */
 function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTasks {
-  return { host, cwd, infos: hostedTasks(host, reply.tasks), dirty: reply.dirty, autoApprove: reply.autoApprove, setup: reply.setup ?? null, backlog: reply.backlog ?? [] };
+  return {
+    host,
+    cwd,
+    infos: hostedTasks(host, reply.tasks),
+    dirty: reply.dirty,
+    autoApprove: reply.autoApprove,
+    setup: reply.setup ?? null,
+    backlog: reply.backlog ?? [],
+    merging: reply.merging ?? null,
+    gate: reply.gate ?? "",
+  };
 }
 
 /** The tasks of a reply with the host on their files: the backend gives the files without it. */
@@ -1705,6 +1741,9 @@ const projectTasks = new Map<string, ProjectTasks>();
 /** The last reply of the `task_list` command, for the folder of the focused terminal. */
 let taskInfos: TaskInfo[] = [];
 let dirtyLines: string[] = [];
+/** The merge in progress and the gate command of the project of the focused terminal (ticket task-branches). */
+let mergingTask: string | null = null;
+let gateCommand = "";
 /** The setup time of that project: the chats that started before it are old. */
 let projectSetup: number | null = null;
 /** The plans that Dispatch approved itself, or tried to: the task name and the time of the plan file. One try per plan. */
@@ -1842,6 +1881,8 @@ async function refreshTasks(): Promise<void> {
   tasksShown = shown;
   taskInfos = hostedTasks(host, reply.tasks);
   dirtyLines = reply.dirty;
+  mergingTask = reply.merging ?? null;
+  gateCommand = reply.gate ?? "";
   projectSetup = reply.setup ?? null;
   tasksFolder = projectKey(host, cwd);
   tasksCwd = cwd ?? "";
@@ -1865,7 +1906,8 @@ function approvePlans(): void {
     const night = nightOf(project.host);
     const tasks = projectTaskList(project);
     if (night) nightDefaults(project, tasks);
-    if (project.dirty.length > 0 || workRun(tasks)) continue;
+    // A merge holds the main checkout and runs its gate there (ticket task-branches).
+    if (project.dirty.length > 0 || workRun(tasks) || project.merging) continue;
     // A plan that the user approved while the project was not free starts first.
     const queued = nextQueued(project, tasks);
     if (queued?.info?.plan) {
@@ -3257,7 +3299,8 @@ function approveWait(task: Task): string {
 /** What holds the work run of a task back: another work run of its project, and its uncommitted lines. */
 function waitFacts(task: Task): WaitFacts {
   const editing = workRun(task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos));
-  return { editing: editing && editing.name !== task.name ? editing.name : null, dirty: task.project?.dirty ?? dirtyLines };
+  const merging = task.project ? task.project.merging : mergingTask;
+  return { editing: editing && editing.name !== task.name ? editing.name : null, dirty: task.project?.dirty ?? dirtyLines, merging };
 }
 
 /** Opens the Decisions window of a task: each decision with its options as buttons and an Other box. */
@@ -3661,6 +3704,130 @@ function permissionCard(task: Task): HTMLElement {
 }
 
 /**
+ * Whether the branch of a task waits for the Merge click (ticket task-branches): the branch exists and
+ * is not merged, its work run ended (a report, or the task was stopped), no worker of the task runs,
+ * no plan and no question waits for the user. Night mode never merges: the branch waits for the user.
+ */
+function mergeWaits(task: Task): boolean {
+  const info = task.info;
+  const branch = info?.branch;
+  if (!info || !branch?.exists || branch.merge) return false;
+  if (!info.report && info.state !== "stopped") return false;
+  if (planReady(task) || reportWaits(task)) return false;
+  return !task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
+}
+
+/** When the user clicked Merge in this window, by task name: the card says since when it merges. */
+const mergeStarts = new Map<string, number>();
+
+/** The merge of the task runs now: clicked in this window, or the merge lock of its project names it. */
+function mergeRunning(task: Task): boolean {
+  return mergeStarts.has(task.name) || (task.project ? task.project.merging : mergingTask) === task.name;
+}
+
+/**
+ * Merges the branch of a task through the worker script, then queues one line for triage with the
+ * merge commit. The gate can run for hours; the card says "merging" meanwhile. A refusal stays in
+ * the card until the next click.
+ */
+async function mergeTask(task: Task): Promise<void> {
+  const branch = task.info?.branch;
+  if (!branch || busyTasks.has(task.name)) return;
+  busyTasks.add(task.name);
+  mergeStarts.set(task.name, Date.now());
+  actionErrors.delete(task.name);
+  renderChats();
+  try {
+    const host = taskHost(task);
+    const cwd = taskCwd(task);
+    const result = await call<string>(host, "task_merge", { cwd, id: task.name });
+    const commit = result.split(": ").pop()?.trim() ?? "";
+    tellTriage(projectFor(host, cwd), `Branch ${branch.name} of ${task.name} merged into ${branch.base} in Dispatch (merge ${commit}). No push.`);
+  } catch (error) {
+    actionErrors.set(task.name, String(error));
+  } finally {
+    busyTasks.delete(task.name);
+    mergeStarts.delete(task.name);
+    tasksShown = "";
+    try {
+      await refreshTasks();
+    } catch (error) {
+      console.error("task list refresh failed", error);
+    }
+    renderChats();
+  }
+}
+
+/** The card of a branch that waits for the Merge click: what Merge does, the gate, and the button. */
+function mergeCard(task: Task): HTMLElement {
+  const branch = task.info!.branch!;
+  const gate = task.project ? task.project.gate : gateCommand;
+  const running = mergeRunning(task);
+  const started = mergeStarts.get(task.name);
+  const card = document.createElement("div");
+  card.className = "task-card";
+  const title = document.createElement("div");
+  title.className = "card-title";
+  title.textContent = running
+    ? `Branch ${branch.name} · merging${started ? ` since ${chatTime(started)}` : ""}`
+    : `Branch ${branch.name} · waits for Merge`;
+  const text = document.createElement("div");
+  text.className = "card-question";
+  text.textContent =
+    `The work of ${task.name} is on ${branch.name}. Merge brings it into ${branch.base} with a merge commit` +
+    (gate ? `, after the gate command passed on the merged code: ${gate}` : "; the project has no gate command") +
+    ". Dispatch makes no push.";
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const button = document.createElement("button");
+  button.className = "primary";
+  button.textContent = `Merge into ${branch.base}`;
+  button.title = `Merge ${branch.name} into ${branch.base}${gate ? " after the gate command" : ""}; a failed gate or a conflict merges nothing`;
+  button.disabled = busyTasks.has(task.name) || running || branch.checkedOut;
+  button.addEventListener("click", () => void mergeTask(task));
+  actions.append(button);
+  card.append(title, text, actions);
+  // The checkout is still on the task branch: the branch row says why, and the merge waits for it.
+  if (branch.checkedOut && branch.note) {
+    const note = document.createElement("div");
+    note.className = "card-reason";
+    note.textContent = branch.note;
+    card.append(note);
+  }
+  const error = actionError(task);
+  if (error) card.append(error);
+  return card;
+}
+
+/** The row of the branch of a task in its open card: the branch, its base and where it stands. */
+function branchRow(branch: BranchInfo): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "task-branch";
+  const state = branch.merge
+    ? `merged ${branch.merge.replace(/^done\s*/, "")}`
+    : branch.checkedOut
+      ? "checked out"
+      : branch.exists
+        ? "waits for Merge"
+        : "made at Approve";
+  const name = document.createElement("span");
+  name.className = "task-branch-name";
+  name.textContent = `Branch ${branch.name}`;
+  const when = document.createElement("span");
+  when.className = "when";
+  when.textContent = `from ${branch.base} · ${state}`;
+  row.title = `The task works on ${branch.name}, made from ${branch.base}. The push stays with you.`;
+  row.append(name, when);
+  if (branch.note) {
+    const note = document.createElement("div");
+    note.className = "card-reason";
+    note.textContent = branch.note;
+    row.append(note);
+  }
+  return row;
+}
+
+/**
  * The Stop row of a task whose worker works or waits at a prompt, or null. The first click arms
  * it; "Stop now" ends the worker through the script, "Keep running" steps back. A task without
  * files in the reports folder has no Stop row: the script knows only tasks of the pipeline.
@@ -3727,6 +3894,7 @@ function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"
     const name = run === "plan" ? "Plan run" : run === "work" ? "Work run" : "Worker";
     return live.state === "blocked" ? { kind: "waits", text: `${name} waits at a prompt` } : { kind: "working", text: `${name} working` };
   }
+  if (mergeWaits(task)) return { kind: "waits", text: mergeRunning(task) ? "merging its branch" : "branch waits for Merge" };
   if (task.info?.state === "stopped") return { kind: "failed", text: "stopped" };
   if (!task.info?.report && task.workers.some((worker) => worker.state === "failed")) return { kind: "failed", text: "failed" };
   const state = task.info?.header?.state ?? (task.info?.report ? "done" : task.info?.plan ? `plan ${task.info.state || "written"}` : (task.workers[0]?.state ?? ""));
@@ -3750,6 +3918,7 @@ function taskPhase(task: Task): TaskPhase {
     if (live.state === "blocked") return "prompt";
     return liveRun(task, live) === "plan" ? "planning" : "working";
   }
+  if (mergeWaits(task)) return "merge";
   if (info.state === "stopped") return "stopped";
   if (!info.report && task.workers.some((worker) => worker.state === "failed")) return "failed";
   if (info.header?.state === "failed") return "failed";
@@ -4052,6 +4221,7 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     // The report row carries the report's state.
     if (info?.plan) body.append(fileRow("Plan", info.plan, null, info.state || null));
     if (info?.report) body.append(fileRow("Report", info.report, info.header?.state ?? null, null));
+    if (info?.branch) body.append(branchRow(info.branch));
     // Stop stands under the runs that it stops.
     const stop = stopRow(task);
     if (stop) body.append(stop);
@@ -4061,6 +4231,7 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   const questions = openQuestions(task);
   if (questions.length > 0) made.append(questionCard(task, questions));
   else if (permissionWaits(task)) made.append(permissionCard(task));
+  if (mergeWaits(task)) made.append(mergeCard(task));
   return made;
 }
 
@@ -6238,6 +6409,7 @@ function workNode(task: Task, select: () => void): MapNode | null {
     return { kind: worker.state === "blocked" ? "wait" : "work", title: "Work run", line: `${worker.state === "blocked" ? "waits at a prompt" : "working"}${agents}`, ...nodeTime(worker), click: watch };
   }
   if (worker?.state === "failed") return { kind: "failed", title: "Work run", line: "failed", ...nodeTime(worker), click: watch };
+  if (mergeWaits(task)) return { kind: "wait", title: "Work run", line: mergeRunning(task) ? "merging its branch" : "branch waits for Merge", ...nodeTime(worker), click: select };
   if (worker || task.info.report) {
     const state = task.info.header?.state ?? worker?.state ?? "done";
     return { kind: "done", title: "Work run", line: state, ...nodeTime(worker), click: watch };

@@ -64,6 +64,7 @@ All in the open, each step listed before you apply it:
 - the folder `.dispatch` inside the project, with the briefs, plans, reports, the state of each task and the worker script `worker.ps1`; git tracks it, Dispatch commits its files itself, and Apply moves the files of an older `<project>-reports` folder there;
 - allow and deny rules, and two read folders, in `.claude/settings.local.json` of the project;
 - worktree isolation off, so workers edit the project itself;
+- optional, off by default: "Measure before the plan" lets the plan run run listed commands first, and "Task branches" gives each task its own branch `task/<task>`, which Dispatch merges on your click after a gate command passed (no push);
 - a "Background workers" section and optional working rules in `CLAUDE.md`;
 - the triage role in `.claude/triage.md`.
 

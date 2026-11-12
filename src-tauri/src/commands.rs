@@ -198,6 +198,11 @@ pub fn set_measure_commands(cwd: String, text: String) -> Result<Plan, String> {
 }
 
 #[tauri::command(async)]
+pub fn set_merge_gate(cwd: String, text: String) -> Result<Plan, String> {
+    pipeline::set_merge_gate(cwd, text)
+}
+
+#[tauri::command(async)]
 pub fn task_list(cwd: String) -> Result<TaskList, String> {
     pipeline::task_list(cwd)
 }
@@ -240,6 +245,11 @@ pub fn task_reply(cwd: String, id: String, text: String) -> Result<String, Strin
 #[tauri::command(async)]
 pub fn task_stop(cwd: String, id: String) -> Result<String, String> {
     pipeline::task_stop(cwd, id)
+}
+
+#[tauri::command(async)]
+pub fn task_merge(cwd: String, id: String) -> Result<String, String> {
+    pipeline::task_merge(cwd, id)
 }
 
 #[tauri::command(async)]
