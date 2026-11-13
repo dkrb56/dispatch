@@ -59,6 +59,7 @@ import { nightAtStart, nightLines, nightSyncLines } from "./night";
 import { KEY_DOWN, KEY_ENTER, KEY_ESC, rcCommand, rcMenuFocus, rcSettled, rcView, type RcView, type RcWish } from "./remotecontrol";
 import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
 import { answeredLine, chosenCount, questionWaitToOpen, replyText, windowChoices, windowTitle } from "./answers";
+import { ANSWERED_KEY, type AnsweredQuestion, type AnsweredReport, answeredRecord, parseAnswered, type RepeatAction, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered } from "./repeat";
 
 type Shell = "powershell" | "cmd";
 
@@ -1836,10 +1837,30 @@ let tasksCwd = "";
 /** The host of that folder. */
 let tasksHost: HostId = LOCAL;
 /**
- * The reports whose questions the user answered: the task name and the time of the report then.
- * One reply with the answers to all questions of the report resumes the worker.
+ * The reports whose questions the user answered, by task name: the time of the report then, its
+ * questions with the answers, and the reply (ticket answered-question-repeat). One reply with the
+ * answers to all questions of the report resumes the worker. The records stay in localStorage, so
+ * a restart of Dispatch does not show an answered report as new.
  */
-const answeredReports = new Map<string, number>();
+const answeredReports = loadAnswered();
+
+function loadAnswered(): Map<string, AnsweredReport> {
+  try {
+    return parseAnswered(localStorage.getItem(ANSWERED_KEY));
+  } catch {
+    return new Map();
+  }
+}
+
+/** Keeps the record of an answered report, also for the next start of Dispatch. */
+function markAnswered(task: string, record: AnsweredReport): void {
+  answeredReports.set(task, record);
+  try {
+    localStorage.setItem(ANSWERED_KEY, serializeAnswered(answeredReports));
+  } catch {
+    // The record stays for this run of the app.
+  }
+}
 /**
  * The choices of the user in the question card of a report that has not had its reply yet: by task
  * name, the time of the report and the chosen option per question number. A render replaces the
@@ -1852,6 +1873,8 @@ const rejectDrafts = new Map<string, string>();
 let rejectFocus: string | null = null;
 /** The tasks whose Stop row waits for the second click. A re-render keeps it. */
 const stopArmed = new Set<string>();
+/** The tasks whose Stop button of the repeat card waits for the second click. */
+const repeatStopArmed = new Set<string>();
 /** The tasks whose click runs now. Their buttons stay grey across re-renders. */
 const busyTasks = new Set<string>();
 /** The last failure of a click per task, shown in its card until the next click. */
@@ -2057,12 +2080,21 @@ function nightDefaults(project: ProjectTasks, tasks: Task[]): void {
       if (nightDone.has(key)) continue;
       nightDone.add(key);
       // Every question takes its recommended option; one reply carries all answers.
-      const answers = replyText(questions, new Map(questions.map((question) => [question.number, question.options[0] ?? ""]))) ?? "";
+      const choices = new Map(questions.map((question) => [question.number, question.options[0] ?? ""]));
+      const answers = replyText(questions, choices) ?? "";
       const options = questions.map((question) => `question ${question.number} (${question.text}): ${question.options.join(" | ")}`);
       const line = `DEFAULT DECISION (night mode): Dispatch answered ${task.name} with the recommended option. ${answers} The options were: ${options.join("; ")}.`;
       void taskAction(task, "task_reply", { id: task.name, text: answers }, line).then((sent) => {
-        if (sent) answeredReports.set(task.name, report.modified);
+        if (sent) markAnswered(task.name, answeredRecord(report.modified, questions, choices, answers));
       });
+      continue;
+    }
+    // A worker that left an answered question in its report: night mode does not answer again (ticket answered-question-repeat).
+    if (repeatedQuestionsOf(task) && report) {
+      const key = `repeat:${folder}:${task.name}:${report.modified}`;
+      if (nightDone.has(key)) continue;
+      nightDone.add(key);
+      tellTriage(triage, `Night mode: the worker of ${task.name} left the answered question in its report. It waits for the user; put it under Reminders in the morning file.`);
       continue;
     }
     if (planReady(task) && task.info?.hold && task.info.plan && !queuedApprovals.has(queueKey(task))) {
@@ -3170,12 +3202,25 @@ function reportWaits(task: Task): boolean {
   if (info.state === "stopped") return false;
   // One answer resumes the worker. While it runs, and until it writes the report again, nothing is open.
   const live = task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
-  return !live && answeredReports.get(task.name) !== info.report.modified;
+  return !live && answeredReports.get(task.name)?.modified !== info.report.modified;
 }
 
-/** The questions of a task that wait for an answer. */
+/**
+ * The questions of a task that wait for an answer. A report that only asks again what the user
+ * answered has none: its card is the repeat card (ticket answered-question-repeat).
+ */
 function openQuestions(task: Task): Question[] {
-  return reportWaits(task) ? (task.info?.questions ?? []) : [];
+  return reportWaits(task) && !repeatedQuestionsOf(task) ? (task.info?.questions ?? []) : [];
+}
+
+/**
+ * The answered questions that the waiting report of a task asks again, with the answers of the
+ * user, or null: the worker got the answers and wrote its report again with the same questions.
+ */
+function repeatedQuestionsOf(task: Task): AnsweredQuestion[] | null {
+  const report = task.info?.report;
+  if (!report || !reportWaits(task)) return null;
+  return repeatedQuestions(answeredReports.get(task.name), report.modified, task.info?.questions ?? []);
 }
 
 /** Whether a task waits for a changed rule: the report says `needs: permission` and asks no question. */
@@ -3674,7 +3719,7 @@ async function sendAnswers(task: Task, questions: Question[], choices: ReadonlyM
   const line = answeredLine(task.name, questions, choices);
   const sent = await taskAction(task, "task_reply", { id: task.name, text: reply }, line);
   if (!sent) return false;
-  answeredReports.set(task.name, modified);
+  markAnswered(task.name, answeredRecord(modified, questions, choices, reply));
   questionChoices.delete(task.name);
   renderChats();
   return true;
@@ -3854,12 +3899,76 @@ function permissionCard(task: Task): HTMLElement {
     const line = `Permission for ${task.name} changed in Dispatch. The worker continues.`;
     void taskAction(task, "task_reply", { id: task.name, text: "Continue" }, line).then((sent) => {
       if (!sent) return;
-      answeredReports.set(task.name, modified);
+      markAnswered(task.name, answeredRecord(modified, [], new Map(), "Continue"));
       renderChats();
     });
   });
   actions.append(button);
   card.append(title, text, actions);
+  const error = actionError(task);
+  if (error) card.append(error);
+  return card;
+}
+
+/**
+ * The card of a report that asks again what the user answered (ticket answered-question-repeat):
+ * each question with the answer of the user, and three buttons (decision 3 of the plan). Continue
+ * tells the worker to go on, Send the answer again sends the first reply word for word, Stop ends
+ * the task. None of them sends an "answered" line to triage.
+ */
+function repeatCard(task: Task, repeats: AnsweredQuestion[]): HTMLElement {
+  const texts = repeatCardText(repeats);
+  const card = document.createElement("div");
+  card.className = "task-card task-repeat";
+  const title = document.createElement("div");
+  title.className = "card-title";
+  title.textContent = texts.title;
+  card.append(title);
+  for (const line of texts.lines) {
+    const text = document.createElement("div");
+    text.className = "card-question";
+    text.textContent = line;
+    card.append(text);
+  }
+  const note = document.createElement("div");
+  note.className = "card-question card-repeat-note";
+  note.textContent = texts.note;
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const modified = task.info?.report?.modified ?? 0;
+  const record = answeredReports.get(task.name);
+  const send = (action: RepeatAction, text: string) => {
+    if (!record) return;
+    void taskAction(task, "task_reply", { id: task.name, text }, repeatLine(task.name, action)).then((sent) => {
+      if (!sent) return;
+      // The same answers for this report: a third report with the same questions is a repeat again.
+      markAnswered(task.name, { ...record, modified });
+      renderChats();
+    });
+  };
+  const button = (label: string, tip: string, click: () => void) => {
+    const made = document.createElement("button");
+    made.textContent = label;
+    made.title = tip;
+    made.disabled = busyTasks.has(task.name);
+    made.addEventListener("click", click);
+    actions.append(made);
+    return made;
+  };
+  button("Continue", "Tell the worker to go on with the answers it has", () => send("continue", "Continue")).className = "primary";
+  const again = button("Send the answer again", "Send your answer to the worker again, word for word", () => send("again", record?.reply ?? ""));
+  if (!record?.reply) again.disabled = true;
+  // Like the Stop row: the first click arms, the second click stops.
+  const armed = repeatStopArmed.has(task.name);
+  button(armed ? "Stop now" : "Stop", armed ? "End the task now. It cannot be resumed" : "End the task. A second click confirms", () => {
+    if (!repeatStopArmed.has(task.name)) {
+      repeatStopArmed.add(task.name);
+      return renderChats();
+    }
+    repeatStopArmed.delete(task.name);
+    void taskAction(task, "task_stop", { id: task.name }, repeatLine(task.name, "stop"));
+  }).className = armed ? "danger" : "";
+  card.append(note, actions);
   const error = actionError(task);
   if (error) card.append(error);
   return card;
@@ -4114,6 +4223,7 @@ const taskOpenChoice = new Map<string, boolean>();
 function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"; text: string } {
   if (approvalQueued(task)) return { kind: "done", text: "approved · starts when the project is free" };
   if (planReady(task)) return { kind: "waits", text: "plan ready · waits for you" };
+  if (repeatedQuestionsOf(task)) return { kind: "waits", text: "left your answered question in its report" };
   if (reportWaits(task)) return { kind: "waits", text: permissionWaits(task) ? "needs a permission" : "has a question for you" };
   const live = task.workers.find((worker) => worker.state === "working" || worker.state === "blocked");
   if (live) {
@@ -4154,6 +4264,7 @@ function taskPhase(task: Task): TaskPhase {
   if (!info) return "none";
   if (approvalQueued(task)) return "queued";
   if (planReady(task)) return "plan-ready";
+  if (repeatedQuestionsOf(task)) return "repeated";
   if (reportWaits(task)) return permissionWaits(task) ? "permission" : "question";
   const live = task.workers.find((worker) => worker.state === "working" || worker.state === "blocked");
   if (live) {
@@ -4180,7 +4291,7 @@ function taskTldrOf(task: Task): Tldr {
     about: info?.about ?? "",
     summary: info?.summary ?? [],
     did: info?.did ?? "",
-    question: openQuestions(task)[0]?.text ?? "",
+    question: (openQuestions(task)[0] ?? repeatedQuestionsOf(task)?.[0])?.text ?? "",
     run: live ? liveRun(task, live) : undefined,
     hasPlan: Boolean(info?.plan),
   });
@@ -4700,7 +4811,9 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   }
   if (planReady(task)) made.append(planCard(task));
   const questions = openQuestions(task);
-  if (questions.length > 0) made.append(questionCard(task, questions));
+  const repeats = repeatedQuestionsOf(task);
+  if (repeats) made.append(repeatCard(task, repeats));
+  else if (questions.length > 0) made.append(questionCard(task, questions));
   else if (permissionWaits(task)) made.append(permissionCard(task));
   if (mergeWaits(task)) made.append(mergeCard(task));
   return made;
@@ -4828,6 +4941,9 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
       } else if (openQuestions(task).length > 0 && info?.report) {
         waits.push({ ...base, kind: "question", stamp: String(info.report.modified) });
         questionWaitTasks.set(base.key, task);
+      } else if (repeatedQuestionsOf(task) && info?.report) {
+        // A repeat waits for the user too, but its window does not open by itself: it has no new question.
+        waits.push({ ...base, kind: "question", stamp: String(info.report.modified) });
       } else if (permissionWaits(task) && info?.report) {
         waits.push({ ...base, kind: "permission", stamp: String(info.report.modified) });
       }
@@ -6969,6 +7085,7 @@ function workNode(task: Task, select: () => void): MapNode | null {
   if (!task.info) return null;
   const worker = runWorker(task, "work");
   const watch = worker ? () => openMapFlow(task, worker, "work") : select;
+  if (repeatedQuestionsOf(task)) return { kind: "wait", title: "Work run", line: "asks again what you answered", click: select };
   if (reportWaits(task)) {
     const what = permissionWaits(task) ? "a permission" : `${openQuestions(task).length || 1} question${openQuestions(task).length > 1 ? "s" : ""}`;
     return { kind: "wait", title: "Work run", line: `waits for ${what}`, click: select };

@@ -499,7 +499,7 @@
           <li>Each task shows two short lines: what it is about, and what was done or is in work.</li>
           <li><b>Plan ready.</b> Click <b>Approve all</b> to take the recommended options. Click <b>Decisions</b> to choose each option.</li>
           <li><b>Reject</b> sends the plan back with your reason.</li>
-          <li><b>Questions.</b> A question of a worker shows its options as buttons. Click one for each question.</li>
+          <li><b>Questions.</b> A question of a worker shows its options as buttons. Click one for each question. A question that you answered does not come back as new.</li>
           <li><b>Merge.</b> With Task branches on, a finished task shows <b>Merge into &lt;branch&gt;</b>.</li>
           <li><b>Stop.</b> Ends a worker that runs. A stopped task cannot go on.</li>
           <li><b>Report check.</b> A done report must name the commands it ran. A claim without evidence keeps the task open.</li>
@@ -526,6 +526,7 @@
             <li>The Decisions window starts with your words from the brief, the Goal and the <b>TL;DR</b> of the plan. Click an option, or type your own answer under Other. Then click <b>Approve with these decisions</b>, or <b>Send back to the planner</b> to revise the plan with them.</li>
             <li>Approve is grey while the project has uncommitted changes or another work run of the project runs; the reason shows below it.</li>
             <li>Your answer goes to the worker word for word, with the number of the question in front. With several questions each click is a choice: the chosen option is marked, and another click changes it. When every question has a choice, the answers go to the worker together in one reply.</li>
+            <li>When a worker leaves an answered question in its report, the card shows no buttons for it again. It says what you answered and offers <b>Continue</b>, <b>Send the answer again</b> or <b>Stop</b>. Triage hears about your answer once. A changed question or a new question shows its buttons as before.</li>
             <li>A new question also opens a window by itself; <b>Answer in a window</b> in the card opens it again. Click the options, then <b>Send the answers</b>. The window does not open by itself in night mode, at the start of Dispatch, or while another window is open.</li>
             <li>A worker that stopped at a refused step says so in its report, and the task shows <b>Continue</b>. Change the rule first, then click it.</li>
             <li><b>Merge.</b> The task shows its branch, the branch it came from, and where it stands. A click merges with a merge commit after the gate command passed, and the Approve of another task waits meanwhile. A failed gate, a conflict in your code or uncommitted changes merge nothing; the card shows why.</li>

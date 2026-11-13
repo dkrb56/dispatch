@@ -52,6 +52,11 @@ test("a question and a refused step", () => {
   assert.equal(lines("permission").now, "Stopped at a refused step: New Tauri command `task_stop` in `pipeline.rs`.");
 });
 
+test("a question that the user answered and the worker left in its report (ticket answered-question-repeat)", () => {
+  assert.equal(lines("repeated").now, "Asks again what you answered: Which place for the button?");
+  assert.equal(lines("repeated", { question: "" }).now, "");
+});
+
 test("done: the first line of the report body", () => {
   assert.equal(lines("done").now, "Done: New Tauri command `task_stop` in `pipeline.rs`.");
   assert.equal(lines("done", { did: "" }).now, "");

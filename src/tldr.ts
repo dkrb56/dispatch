@@ -12,6 +12,7 @@ export type TaskPhase =
   | "working"
   | "prompt"
   | "question"
+  | "repeated"
   | "permission"
   | "done"
   | "unverified"
@@ -72,6 +73,9 @@ export function taskTldr(input: TldrInput): Tldr {
         return prefixed("In work: ", first);
       case "question":
         return prefixed("Asks: ", input.question.trim());
+      case "repeated":
+        // The worker left a question that the user answered (ticket answered-question-repeat).
+        return prefixed("Asks again what you answered: ", input.question.trim());
       case "permission":
         return prefixed("Stopped at a refused step: ", did);
       case "done":
