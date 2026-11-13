@@ -2,7 +2,7 @@
 // for a new message. Claude Code runs in the terminal of the pane, behind this view.
 
 import { call, type HostId } from "./backend";
-import { waitingText } from "./backlog";
+import { waitingText } from "./tickets";
 import { statusLine, triageFree } from "./pending";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
@@ -105,7 +105,8 @@ export interface ChatView {
    */
   say(text: string): Promise<void>;
   /**
-   * Sends a planned entry to the session as the box sends a message (ticket overview-backlog): the
+   * Sends a ticket of the Todo column (ticket tickets) or a question of the board to the session as
+   * the box sends a message (ticket overview-backlog): the
    * paths of pasted images at its start each as a paste of their own, then the text, then Enter. The
    * message box keeps its draft. The caller makes sure that the session can take a message.
    */
@@ -157,11 +158,12 @@ export interface ChatViewOptions {
   onFocus: () => void;
   /**
    * Gets each message of the user before it goes, as the box would send it: the paths of pasted
-   * images first, then the text. True means that it took the message (a planned entry, ticket
-   * overview-backlog): the box empties and nothing goes to the session. False sends it at once.
+   * images first, then the text. A text means that it took the message (a ticket, ticket tickets):
+   * the box empties, nothing goes to the session, and the state line shows the text for a while.
+   * Null sends it at once (a question to triage, a command of Claude Code).
    */
-  onMessage?: (message: string) => Promise<boolean>;
-  /** How many messages of the user are planned entries that wait for triage. The state line names them. */
+  onMessage?: (message: string) => Promise<string | null>;
+  /** How many Todo tickets wait for triage. The state line names them. */
   waiting?: () => number;
 }
 
@@ -505,6 +507,10 @@ export function createChatView(options: ChatViewOptions): ChatView {
   let status: string | null = null;
   /** The reply of the last read: a Send shows the state line again with it. */
   let lastReply: ChatReply | null = null;
+  /** What the box did with the last message (a ticket), and until when the state line says it. */
+  let notice: { text: string; until: number } | null = null;
+  /** The state line shows the notice this long. */
+  const NOTICE_MS = 8000;
   let reading = false;
   let sending = false;
   /** The message that the user sent, until the chat file has it. */
@@ -828,10 +834,12 @@ export function createChatView(options: ChatViewOptions): ChatView {
     } else {
       text = statusLine(reply.status);
     }
-    // A message of the user is a planned entry until triage is free (idle, or shell with a
-    // background command): the line says that it waits.
+    // The Todo tickets wait until triage is free (idle, or shell with a background command): the
+    // line says how many wait. A message that became a ticket says so first, for a while.
     const waits = waitingText(options.waiting?.() ?? 0);
     if (waits !== "") text = text === "" ? waits : `${text} ${waits}`;
+    if (notice && Date.now() < notice.until) text = text === "" ? notice.text : `${notice.text} ${text}`;
+    else notice = null;
     stateText.textContent = text;
     startEl.hidden = running;
     stateEl.hidden = text === "";
@@ -981,16 +989,17 @@ export function createChatView(options: ChatViewOptions): ChatView {
     sendEl.disabled = true;
     try {
       const message = [...images.map((image) => quotePath(image.path)), text].filter(Boolean).join(" ");
-      // A message is a planned entry first (overview-backlog): Dispatch sends it when triage is free.
-      // A failure of the entry keeps the text in the box (the catch below).
-      const taken = (await options.onMessage?.(message)) ?? false;
-      if (!taken) await pasteMessage(images.map((image) => image.path), text);
+      // A message is a ticket first (ticket tickets): the user moves it to Todo, and Dispatch sends
+      // it when triage is free. A failure of the ticket keeps the text in the box (the catch below).
+      const taken = (await options.onMessage?.(message)) ?? null;
+      if (taken === null) await pasteMessage(images.map((image) => image.path), text);
+      else notice = { text: taken, until: Date.now() + NOTICE_MS };
       for (const image of images) URL.revokeObjectURL(image.url);
       images = [];
       showImages();
       inputEl.value = "";
       fitBox();
-      // The message waits as a planned entry: the state line says so at once, not at the next read.
+      // The message is a ticket: the state line says so at once, not at the next read.
       if (lastReply) showState(lastReply);
     } catch (error) {
       stateText.textContent = `Could not send the message: ${error}`;

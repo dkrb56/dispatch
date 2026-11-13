@@ -27,9 +27,6 @@ const SCRIPT_NAME: &str = "worker.ps1";
 const TASKS_DIR: &str = ".dispatch";
 /// The pathspec that leaves the task files out: Approve does not count them as changes.
 const NOT_TASKS: &str = ":(exclude).dispatch";
-/// The pathspec that leaves the planned entries out of the commit of the task files: they have
-/// their own commit (`backlog::keep_committed`).
-const NOT_BACKLOG: &str = ":(exclude).dispatch/backlog";
 
 /// The line of `.dispatch/.gitignore` that keeps the scratch folder of the measuring out of git.
 const MEASURE_IGNORE: &str = "measure/";
@@ -261,10 +258,15 @@ impl Project {
         Project::find(cwd).is_ok_and(|project| project.reports.join(format!("{ticket}.md")).is_file())
     }
 
-    /// The planned entries of the project (ticket overview-backlog): one Markdown file each, in
-    /// the project, so git can track them.
+    /// The planned entries of the old layout (ticket overview-backlog): one Markdown file each.
+    /// The first task read makes each a ticket and removes the folder (ticket tickets).
     pub(crate) fn backlog_dir(&self) -> PathBuf {
-        self.root.join(TASKS_DIR).join("backlog")
+        self.reports.join("backlog")
+    }
+
+    /// The tickets of the project (ticket tickets): one JSON event per line.
+    pub(crate) fn tickets_file(&self) -> PathBuf {
+        self.reports.join("tickets.jsonl")
     }
 
     /// A project with given folders, for the tests of other modules.
@@ -510,6 +512,7 @@ impl Project {
         format!(
             "- A task is two runs of one worker session. The plan run reads the code and writes a plan. The work run executes the approved plan. Triage starts and resumes a worker only with the script `{reports}/{SCRIPT_NAME}`, never with `claude --bg` or `claude --resume` directly. A worker works in the main checkout (`worktree.bgIsolation` is `none`).
 - Triage writes each brief to `{reports}/briefs/<ticket-id>.md`: the user's words, the constraints, and the command that proves the work. The brief says nothing about the approach; the plan run decides that.
+- A message that Dispatch sends from its tickets board starts with the line `Ticket <id>: <title>`. Triage uses that id as the ticket id of the task. Dispatch keeps the tickets file `{reports}/tickets.jsonl`; triage and the workers do not edit it.
 - `{script} plan <ticket-id>` starts the plan run on the options in `{reports}/plan-flags.txt`: without the Edit tool, without the Agent tool and without a prompt; its Write tool may write only into `{reports}/plans/`. The plan run writes the plan to `{reports}/plans/<ticket-id>.md`, changes nothing else, and ends its turn.
 {measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; the word HOLD stands in no other line of this section); Do not touch; Size (files). No code in a plan.
 - When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which resumes the same session on the options in `{reports}/work-flags.txt`, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when the working tree has uncommitted changes outside `{reports}/` (after Setup pipeline, the user commits the setup files first; Dispatch commits the files of `{reports}/` itself), when the worker still runs, or when the task was stopped.
@@ -2222,8 +2225,8 @@ pub struct TaskList {
     /// oldest state file, see `setup_time`), which the first Apply makes and a later one keeps, in milliseconds since the Unix epoch. The chat
     /// list folds the chats from before it.
     setup: Option<u64>,
-    /// The planned entries of the project in their order (ticket overview-backlog).
-    backlog: Vec<crate::core::backlog::Entry>,
+    /// The tickets of the project, in the order of the file (ticket tickets).
+    tickets: Vec<crate::core::tickets::Ticket>,
     /// The ticket whose merge runs now (ticket task-branches): Approve waits for it.
     merging: Option<String>,
     /// The gate command of the merge step, for the Merge card; empty without one.
@@ -2324,17 +2327,44 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
         let note = project.measure_dir().join(&task.name).join("changed.txt");
         task.measure_changed = fs::read_to_string(note).unwrap_or_default().lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect();
     }
-    // A brief alone makes no task; a task that exists gets its brief.
+    // A brief alone makes no task; a task that exists gets its brief. The title of the brief is
+    // what the ticket of the task takes (ticket tickets).
+    let mut brief_titles: Vec<(String, String)> = Vec::new();
     for task in tasks.iter_mut() {
         let path = project.briefs().join(format!("{}.md", task.name));
         let Some(entry) = file_entry(&path) else { continue };
         let text = fs::read_to_string(&path).unwrap_or_default();
         let about = parse_brief(&text);
         if !about.is_empty() {
+            brief_titles.push((task.name.clone(), about.clone()));
             task.about = about;
         }
         task.words = section_lines(&text, "The user's words");
         task.brief = Some(entry);
+    }
+    // The tickets (ticket tickets): the planned messages of the old layout become tickets, each
+    // ticket follows its task, and a task with a ticket shows the title of the ticket. A failure is
+    // logged; the next task read tries again.
+    let mut tickets = crate::core::tickets::list(&project);
+    {
+        let brief = |name: &str| brief_titles.iter().find(|(task, _)| task == name).map_or("", |(_, title)| title.as_str());
+        let facts: Vec<crate::core::tickets::TaskFacts> = tasks
+            .iter()
+            .map(|task| crate::core::tickets::TaskFacts {
+                name: &task.name,
+                state: &task.state,
+                report: task.header.as_ref().map(|header| header.state.as_str()),
+                brief: brief(&task.name),
+            })
+            .collect();
+        if let Err(error) = crate::core::tickets::follow(&project, &mut tickets, &facts) {
+            eprintln!("tickets not moved after their tasks: {error}");
+        }
+    }
+    for task in tasks.iter_mut() {
+        if let Some(ticket) = tickets.iter().find(|ticket| ticket.task_name() == task.name) {
+            task.about = ticket.title.clone();
+        }
     }
     // Dispatch commits the task files, but not while a work run may commit itself: a task approved
     // or working without a report. A failure (an index lock of a git command of the user, no git
@@ -2361,8 +2391,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
         Vec::new()
     };
     let setup = setup_time(&project);
-    let backlog = crate::core::backlog::list(&project);
-    Ok(TaskList { tasks, dirty, auto_approve: project.options().auto_approve, setup, backlog, merging, gate: project.merge_gate() })
+    Ok(TaskList { tasks, dirty, auto_approve: project.options().auto_approve, setup, tickets, merging, gate: project.merge_gate() })
 }
 
 /// At most this many open tasks get their own part in the hand-off; the rest are counted.
@@ -2638,23 +2667,23 @@ fn commit_setup(project: &Project) -> Result<String, String> {
 }
 
 /// Commits the changes of the task files in `.dispatch` (briefs, plans, reports, state files,
-/// the script and the options files), and no other file. The planned entries in
-/// `.dispatch/backlog` keep their own commit. Other staged changes of the user stay staged.
+/// the script, the options files and the tickets file), and no other file. Other staged changes
+/// of the user stay staged.
 /// Gives the number of changed files, 0 when there was nothing to commit or no git repository.
 fn keep_tasks_committed(project: &Project) -> Result<usize, String> {
     if !project.in_git {
         return Ok(0);
     }
     // `--untracked-files=all`: a new folder shows its files, not only the folder.
-    let status = run_git(&project.root, &["status", "--porcelain", "--untracked-files=all", "--", TASKS_DIR, NOT_BACKLOG])?;
+    let status = run_git(&project.root, &["status", "--porcelain", "--untracked-files=all", "--", TASKS_DIR])?;
     let changed = status.lines().filter(|line| !line.trim().is_empty()).count();
     if changed == 0 {
         return Ok(0);
     }
-    run_git(&project.root, &["add", "--all", "--", TASKS_DIR, NOT_BACKLOG])?;
+    run_git(&project.root, &["add", "--all", "--", TASKS_DIR])?;
     let message = format!("Dispatch: {changed} task {}", if changed == 1 { "file" } else { "files" });
     // A commit with paths takes only these paths.
-    run_git(&project.root, &["commit", "-m", &message, "--", TASKS_DIR, NOT_BACKLOG])?;
+    run_git(&project.root, &["commit", "-m", &message, "--", TASKS_DIR])?;
     Ok(changed)
 }
 
@@ -2698,7 +2727,6 @@ pub fn task_merge(cwd: String, id: String) -> Result<String, String> {
     if let Err(error) = keep_tasks_committed(&project) {
         eprintln!("task files not committed before the merge: {error}");
     }
-    let _ = crate::core::backlog::keep_committed(&project);
     run_script(&project, &["merge", &id])
 }
 
@@ -3108,14 +3136,18 @@ mod tests {
         // Not tasks: the briefs, the options files, the script and a report without the Markdown extension.
         write_file(&project.briefs().join("t-3.md"), "brief\n").unwrap();
         write_file(&project.reports.join("notes.txt"), "x\n").unwrap();
-        // A planned entry is no task either; the reply lists it apart.
+        // A planned entry of the old layout is no task either: it becomes a ticket in Todo.
         write_file(&project.backlog_dir().join("e-1.md"), "sent: 1\norder: 1\n\nplanned work\n").unwrap();
+        // The ticket of t-1 follows its task, and t-1 shows the title of the ticket.
+        write_file(&project.tickets_file(), "{\"op\":\"open\",\"id\":\"t-1\",\"title\":\"Do it\",\"status\":\"todo\",\"order\":1}\n").unwrap();
 
         let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
         let mut names: Vec<&str> = list.tasks.iter().map(|task| task.name.as_str()).collect();
         names.sort_unstable();
         assert_eq!(names, ["t-1", "t-2"]);
-        assert_eq!(list.backlog.len(), 1);
+        let tickets: Vec<(&str, &str, &str, &str)> = list.tickets.iter().map(|t| (t.id.as_str(), t.title.as_str(), t.status.as_str(), t.note.as_str())).collect();
+        assert_eq!(tickets, [("t-1", "the brief title", "done", "done"), ("planned-work", "Planned work", "todo", "")]);
+        assert!(!project.backlog_dir().exists());
         let t1 = list.tasks.iter().find(|task| task.name == "t-1").unwrap();
         assert_eq!(t1.state, "working");
         assert!(t1.plan.is_some() && t1.report.is_some());
@@ -3808,21 +3840,25 @@ if (args[0] === 'agents') {
         write_file(&project.briefs().join("t-1.md"), "brief\n").unwrap();
         write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
         write_file(&project.plans().join("t-1.md"), "# Plan t-1: one\n").unwrap();
+        // A planned entry of the old layout, committed before: it becomes a ticket, and the commit
+        // of the task files takes the removal of the file and the tickets file.
         write_file(&project.backlog_dir().join("e-1.md"), "sent: 1\norder: 1\n\nplanned\n").unwrap();
+        git(&["add", ".dispatch/backlog/e-1.md"]);
+        git(&["commit", "-q", "-m", "old planned entry", "--", ".dispatch/backlog/e-1.md"]);
 
         let list = task_list(cwd.clone()).unwrap();
         assert!(list.dirty.iter().all(|line| !line.contains(".dispatch")), "{:?}", list.dirty);
         assert!(list.dirty.iter().any(|line| line == "A  staged.txt"), "{:?}", list.dirty);
         let subjects = git(&["log", "--format=%s"]);
         let subjects: Vec<&str> = subjects.lines().collect();
-        // Newest first: the planned entry, then the task files with the script and the options files.
+        // Newest first: the task files with the script, the options files and the tickets file.
         assert_eq!(subjects.len(), 2, "{subjects:?}");
-        assert!(subjects[0].starts_with("Backlog: "), "{subjects:?}");
-        assert!(subjects[1].starts_with("Dispatch: ") && subjects[1].ends_with(" task files"), "{subjects:?}");
-        let files = git(&["show", "--name-only", "--format=", "HEAD~1"]);
+        assert!(subjects[0].starts_with("Dispatch: ") && subjects[0].ends_with(" task files"), "{subjects:?}");
+        let files = git(&["show", "--name-only", "--format=", "HEAD"]);
         let files: Vec<&str> = files.lines().filter(|line| !line.is_empty()).collect();
-        assert!(files.iter().all(|file| file.starts_with(".dispatch/") && !file.starts_with(".dispatch/backlog/")), "{files:?}");
-        for file in [".dispatch/briefs/t-1.md", ".dispatch/t-1.state", ".dispatch/plans/t-1.md", ".dispatch/worker.ps1"] {
+        assert!(files.iter().all(|file| file.starts_with(".dispatch/")), "{files:?}");
+        assert_eq!(list.tickets.len(), 1);
+        for file in [".dispatch/briefs/t-1.md", ".dispatch/t-1.state", ".dispatch/plans/t-1.md", ".dispatch/worker.ps1", ".dispatch/tickets.jsonl", ".dispatch/backlog/e-1.md"] {
             assert!(files.contains(&file), "{file} missing: {files:?}");
         }
         let status = git(&["status", "--porcelain"]);

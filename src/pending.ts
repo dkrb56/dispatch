@@ -1,8 +1,8 @@
 // The temporary task cards (ticket pending-task-card): a message that went to triage shows as a
 // card in the task list of its project, until the real task card takes its place or triage answers
-// without a task. Since ticket overview-backlog a message of the user is a planned entry first (a
-// file in `.dispatch/backlog/`, src/backlog.ts); a card here is the entry that Dispatch sent to
-// triage, in flight, and `entry` names its file, which goes when the card goes. The cards are in
+// without a task. Since ticket tickets a message of the user is a ticket first (in
+// `.dispatch/tickets.jsonl`, src/tickets.ts); a card here is the Todo ticket that Dispatch sent to
+// triage, in flight, and `entry` names the ticket, which follows its task when the card goes. The cards are in
 // localStorage of the window too, so a restart keeps them (ticket pending-card-persist). No imports
 // and no access to the page, so a test can load this file with Node (tests/pending.test.ts).
 // main.ts gives the task names and the status of the triage session.
@@ -21,7 +21,7 @@ export interface PendingCard {
   busySeen: boolean;
   /** When the turn of triage ended (idle after busy), or null. */
   endedAt: number | null;
-  /** The id of the planned entry that this card sent to triage, or null for a message without a file. */
+  /** The id of the ticket that this card sent to triage, or null for a message without a ticket. */
   entry: string | null;
 }
 

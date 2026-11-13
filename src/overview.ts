@@ -1,5 +1,5 @@
 // The Overview (overview-mode): one card per project with three parts (ticket overview-backlog):
-// the tasks in work, the 5 newest finished tasks, and the planned entries; then the message box of
+// the tasks in work, the 5 newest finished tasks, and the tickets (ticket tickets); then the message box of
 // its triage chat, without the chat history. No imports and no access to the page, so a test can
 // load this file with Node (`node --test`).
 //

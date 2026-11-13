@@ -9,7 +9,7 @@
 //!
 //! One window at a time is the driver (docs/remote-client.md, "One window drives the automatic
 //! actions"): only it writes the lines of Dispatch into the triage chats, approves plans by itself
-//! and sends the planned entries. The driver is the window that the user used last: a window takes
+//! and sends the Todo tickets. The driver is the window that the user used last: a window takes
 //! the lease with a key or a click, and a window without a driver, or whose driver left or did not
 //! report for `DRIVER_STALE`, takes it at its next report.
 

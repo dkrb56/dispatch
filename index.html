@@ -14,7 +14,7 @@
         <button data-mode="focus" title="One column per project: its tasks and its triage chat, side by side">Focus</button>
         <button data-mode="tabs" title="The terminal tabs, the chat list and the group of the current project">Details</button>
         <button data-mode="map" title="The Map: each project with its tasks, runs and agents, and what waits for you; a click on a run shows what its worker does">Map</button>
-        <button data-mode="overview" title="One card for each project: the tasks in work, the newest finished tasks, the planned messages, and a message box to its triage chat, without the chat history">Overview</button>
+        <button data-mode="overview" title="One card for each project: the tasks in work, the newest finished tasks, its tickets, and a message box to its triage chat, without the chat history">Overview</button>
       </div>
       <div id="bar-projects" role="group" aria-label="Projects">
         <div id="focus-projects"></div>
@@ -160,6 +160,18 @@
         <div id="questions-reason"></div>
         <button id="questions-send" class="primary" title="Send the selected option of every question to the worker in one reply; the worker goes on">Send the answers</button>
       </footer>
+    </dialog>
+    <dialog id="tickets">
+      <header>
+        <h2 id="tickets-title">Tickets</h2>
+        <span id="tickets-count"></span>
+        <span id="tickets-path"></span>
+        <input id="tickets-search" type="search" placeholder="Search tickets" aria-label="Search tickets" />
+        <button id="tickets-new" title="Add a ticket in your words to New; nothing goes to triage">New ticket</button>
+        <button id="tickets-close" title="Close (Esc)">&times;</button>
+      </header>
+      <p id="tickets-error" hidden></p>
+      <div id="tickets-columns"></div>
     </dialog>
     <dialog id="stale">
       <header>
@@ -322,7 +334,7 @@
         <ul>
           <li><b>Triage</b> (left). Type your tasks here. Triage plans each task with a worker and tells you when the plan is ready.</li>
           <li>Approve the plan in the task card. The worker does the work, and triage reports the result.</li>
-          <li>A message waits as a <b>planned message</b> until triage is free. Dispatch sends them one at a time, in your order.</li>
+          <li>A message becomes a <b>ticket</b> on the board of the project. Move it to <b>Todo</b>: Dispatch sends the Todo tickets to triage, one at a time, in their order. See Tickets.</li>
           <li><b>Chat</b> and <b>Terminal</b> above Triage select its view. Chat shows formatted messages. Terminal shows Claude Code itself.</li>
           <li><b>Workers</b> (right). This is the agent view of Claude Code. Select a worker to see its work or answer a prompt.</li>
           <li><b>Environment</b> in the side panel shows the shell, folder, branch and session of a terminal. Its <b>Remote Control</b> switch turns Remote Control on or off.</li>
@@ -334,7 +346,7 @@
           <summary>Details</summary>
           <ul>
             <li>For each task, triage writes a brief and starts the plan run of a worker. Dispatch writes one line into the triage chat when a worker is done, blocked or failed, and when you approved, rejected, stopped or answered in the Tasks section.</li>
-            <li>A planned message is a file in <code>.dispatch/backlog/</code> of the project. A message that starts with <code>/</code> (a command of Claude Code) goes at once. The Overview and the Tasks section tell more.</li>
+            <li>A question to triage goes at once: a message that ends with <code>?</code> or starts with a question word. A message that starts with <code>/</code> (a command of Claude Code) goes at once too. Every other message is a ticket.</li>
             <li>You can click Approve also while another work run edits the project or the project has uncommitted changes. The card then says "Approved · waits for the project", and Dispatch starts the work run when the project is free. <b>Cancel approval</b> takes it back.</li>
             <li>A question of triage shows its options as buttons. Click one, or press Ctrl+Enter for the first.</li>
             <li>In the Chat view, Enter sends the message and Ctrl+V adds an image from the clipboard. A permission prompt of triage ("Allow this read …?", "Do you want to proceed?") shows as buttons too, marked Permission.</li>
@@ -410,7 +422,7 @@
         <ul>
           <li><b>Overview</b> at the left of the bar opens it.</li>
           <li>Drag a card by its grip ⠿ to any place. It snaps to a 50 px grid; the dots show the grid.</li>
-          <li>Each card has <b>In work</b>, <b>Done</b> and <b>Planned</b>. The tasks have the same buttons as in the Tasks section.</li>
+          <li>Each card has <b>In work</b>, <b>Done</b> and <b>Tickets</b>. The tasks have the same buttons as in the Tasks section.</li>
           <li>The box at the bottom sends a message to the triage chat of the project. The chat itself does not show.</li>
         </ul>
         <details class="help-more">
@@ -419,15 +431,37 @@
             <li>The Overview shows each project with an open workspace. You can also drag a card anywhere on its head but the name. The top left corner of a card lands on a dot.</li>
             <li>Dispatch keeps the places on this computer, so a restart shows them again. The card of a new project takes the first free place. A card that you drop on another lies on top of it; the card you moved last is always on top.</li>
             <li><b>In work</b> lists a worker that runs, a plan that waits for Approve, a question or a permission of a worker, a worker at a prompt, a plan that you approved until its work run starts, and the message that triage reads now. Without one it says "Nothing in work".</li>
-            <li><b>Done</b> shows the 5 newest tasks that ended (done, failed or stopped), newest first. <b>Planned</b> shows your messages that wait for triage, in their order. Each task shows the same two lines as in the Tasks section.</li>
-            <li><b>Planned messages.</b> Each message that you send from the box is a planned card first, also when triage is free; you can type many in a row. Drag a card by its grip, or click ▲ or ▼, to change the order; × removes it. When triage is idle and asks nothing, Dispatch sends the first message, word for word. A command that triage runs in the background after its answer does not hold the message.</li>
-            <li>Until then the message waits while triage works, also during a long command of its turn. The line above the box says how many messages wait. Its card then stands under In work and says "Sent to triage". When triage starts the plan run, the task card takes its place. A message that gives no task goes after the answer of triage.</li>
-            <li>Each planned message is a Markdown file in <code>.dispatch/backlog/</code> of the project, so it stays after a restart. You can edit or delete a file in an editor; Dispatch follows within a few seconds. Dispatch commits each change of these files at once, with only these files (the commit message starts with "Backlog:"). Focus and the Tasks section show the same cards under <b>Planned</b>.</li>
+            <li><b>Done</b> shows the 5 newest tasks that ended (done, failed or stopped), newest first. Each task shows the same two lines as in the Tasks section.</li>
+            <li><b>Tickets</b> shows how many tickets are new and how many wait in Todo. A click opens the tickets board of the project.</li>
             <li>The message box has the keys of the chat: Enter sends, Shift+Enter makes a new line, Ctrl+V adds an image. A text that you began in Focus stands in it too.</li>
             <li>The line above the box says when triage works or waits. While triage asks a question, the question shows above the box with its buttons; <b>Other…</b> opens the project with its terminal.</li>
             <li><b>Record of a question from the screen.</b> Claude Code writes a question into the chat only after your answer, so Dispatch reads the open question from the terminal. Each read goes into a file in the folder <code>menu-reads</code> in the data folder of Dispatch, named <code>menu-&lt;date&gt;-&lt;time&gt;-&lt;pane&gt;.json</code>.</li>
             <li>The file holds the screen text of each read, which lines the terminal wrapped, the question and the options that Dispatch made of it, and the times. Dispatch keeps the newest 50 files. When a question shows a wrong text or wrong buttons, give the newest file to triage with your report.</li>
             <li>A click on the name of a project opens it in Focus, or in its tab when focus mode does not have it. A click on a run opens the agent view of the project the same way. Dispatch remembers the Overview at the next start.</li>
+          </ul>
+        </details>
+
+        <h3>Tickets</h3>
+        <p class="tldr">Each message to triage is a ticket; the Todo column is the queue.</p>
+        <ul>
+          <li><b>Tickets</b> among the buttons of a project opens its board. The number on it counts the New and Todo tickets.</li>
+          <li>The board has five columns: <b>New</b>, <b>Todo</b>, <b>In progress</b>, <b>Done</b> and <b>Canceled</b>.</li>
+          <li>A message that you type into triage lands in <b>New</b> with a title that Dispatch makes from your words.</li>
+          <li>Move a ticket to <b>Todo</b> with <b>→ Todo</b> or by its grip ⠿. Dispatch sends the Todo tickets to triage in the order of the column.</li>
+          <li>A ticket moves to In progress, Done or Canceled by itself as its task goes on.</li>
+          <li>Click a title, or ✎, to rename it. Click the type tag to change the type.</li>
+        </ul>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li><b>Questions go at once.</b> A message that ends with <code>?</code> or starts with what, why, how, when, where, which, who, is, are, do, does, did, can, could, should, would, will, was, were, has or have is a question: it goes to triage and makes no ticket. A ticket that is a question has <b>Ask triage</b>: it sends the words to triage and moves the ticket to Canceled.</li>
+            <li><b>The queue.</b> When triage is idle and asks nothing, Dispatch sends the first Todo ticket: your images, the line <code>Ticket &lt;id&gt;: &lt;title&gt;</code>, then your words. Triage uses that id for the task. One ticket at a time per project; night mode sends them too. A command that triage runs in the background after its answer does not hold the ticket.</li>
+            <li>The line above the message box says how many Todo tickets wait. The ticket in flight shows "Sent to triage", then "Triage reads", and its dashed card stands under In work until its task comes.</li>
+            <li><b>Following the task.</b> When the plan run starts, the ticket goes to In progress and takes the title of the brief, unless you renamed it. A report that says done or failed moves it to Done ("failed" in red). A stopped task moves it to Canceled. When triage answers without a task, the ticket goes to Canceled with that note; drag it back to Todo to send it again.</li>
+            <li>In Todo, ▲ and ▼ change the order, <b>← New</b> takes a ticket back, and × cancels it. <b>New ticket</b> adds a ticket in your words without sending anything. The search box finds a ticket by its title, words, id or type.</li>
+            <li>The file is <code>.dispatch/tickets.jsonl</code> of the project: one line per change, in the form of the starminer-manager tickets file. Dispatch commits it with the task files. Triage and the workers do not edit it.</li>
+            <li>The planned messages of an older version became Todo tickets at the first start, in their order, and the folder <code>.dispatch/backlog/</code> went.</li>
+            <li>Setup pipeline shows "Section in CLAUDE.md" To do once after this update, because the section names the ticket line. Click Apply there.</li>
           </ul>
         </details>
 
@@ -480,7 +514,7 @@
             <li>The plan row shows when the plan file changed and has no state chip, so it does not look like a run; the state of the task stands in the header of the card and in the tooltip of the row. The report row shows the state from the first line of the report.</li>
             <li>The two lines come from the title of its brief (else your words in the brief, else the title of the plan), and from the first Summary line of the plan, the first line of the report, or the open question. Dispatch writes nothing itself: the text is cut from the brief, the plan and the report. A long line ends in “…”; its tooltip has both lines in full.</li>
             <li>A task that you approved while the project was not free shows under its state, with an eye before it, which work run it waits for or how many changed files wait for a commit.</li>
-            <li>A message that you send to triage is a planned card under <b>Planned</b> first (see the Overview). When Dispatch sends it, it shows as a <b>temporary card</b> with a dashed edge: your message, the time, and "Sent to triage", then "Triage reads" while triage works on it.</li>
+            <li>A message that you send to triage is a ticket first (see Tickets). When Dispatch sends a Todo ticket, it shows as a <b>temporary card</b> with a dashed edge: the title of the ticket, the time, and "Sent to triage", then "Triage reads" while triage works on it.</li>
             <li>The temporary card stands where the new task will stand. When triage starts the plan run, the real task card takes its place. When triage answers without a task, the card goes a few seconds after the answer, or at the latest after 10 minutes. The card stays when you close and open Dispatch. It has no buttons and starts no worker.</li>
             <li><b>Approve all</b> also takes the HOLD decisions, writes the options into the plan under "User decisions", and starts the work run. A plan without decisions shows <b>Approve</b>. A task that waits for you is first in the list.</li>
             <li>The Decisions window starts with your words from the brief, the Goal and the <b>TL;DR</b> of the plan. Click an option, or type your own answer under Other. Then click <b>Approve with these decisions</b>, or <b>Send back to the planner</b> to revise the plan with them.</li>
@@ -549,7 +583,7 @@
         <p class="tldr">The rest of the buttons.</p>
         <ul>
           <li><b>The four icons</b> split the terminal right or down, close it, and show or hide the side panels.</li>
-          <li><b>The buttons of a project.</b> <b>Rules</b>, <b>Setup</b>, <b>N old</b> and the folder button act on that project.</li>
+          <li><b>The buttons of a project.</b> <b>Tickets</b>, <b>Rules</b>, <b>Setup</b>, <b>N old</b> and the folder button act on that project.</li>
           <li><b>Rules</b> shows all the rules that Claude Code gets in the project. <b>Analyse rules</b> finds old or bad rules.</li>
           <li><b>Update to …</b> shows when a new version is ready. Click it to install the update.</li>
           <li><b>Options</b> (the gear) holds the mode, the alerts, the colour theme and the size of the text.</li>
@@ -561,7 +595,7 @@
         <details class="help-more">
           <summary>Details</summary>
           <ul>
-            <li>In Details the buttons of a project stand in the group of the current project in the bar; in Focus in the head of each column. <b>Setup</b> opens the Setup pipeline window. <b>N old</b> shows only when the project has old sessions. The folder button opens the workspace; a project that is not set up shows the Setup pipeline window first.</li>
+            <li>In Details the buttons of a project stand in the group of the current project in the bar; in Focus in the head of each column. <b>Tickets</b> opens the tickets board. <b>Setup</b> opens the Setup pipeline window. <b>N old</b> shows only when the project has old sessions. The folder button opens the workspace; a project that is not set up shows the Setup pipeline window first.</li>
             <li>In the Map and the Overview the right side of the top bar keeps <b>Rules</b>, <b>Setup pipeline</b> and <b>N old sessions</b>. Rules and Setup pipeline act on the project of the focused terminal there, and N old sessions shows the old sessions of all projects.</li>
             <li><b>Copy all</b> puts the rules into the clipboard as text. The three lists left of <b>Analyse rules</b> set the time limit of the check (3 to 30 minutes), the model and the effort. The Setup pipeline window uses the same values. While a check runs, the line above the findings shows the time that passed and the limit.</li>
             <li>Each finding has a link with the name of its file; a click opens the file in the viewer.</li>

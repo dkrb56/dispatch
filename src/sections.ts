@@ -42,8 +42,8 @@ const DISPATCH_LINES = [
 
 /**
  * A file of a task in a reports folder: brief, plan, report or state, with `/` or `\`. The folder
- * is `.dispatch` in the project, or `<project>-reports` next to it in the old layout. A planned
- * entry in `.dispatch/backlog/` is no task file.
+ * is `.dispatch` in the project, or `<project>-reports` next to it in the old layout. The tickets
+ * file `.dispatch/tickets.jsonl` is no task file.
  */
 const TASK_FILE = new RegExp(`(?:-reports|[\\\\/]\\.dispatch)[\\\\/](?:(?:briefs|plans)[\\\\/])?(${ID})\\.(?:md|state)(?![\\w-])`, "g");
 

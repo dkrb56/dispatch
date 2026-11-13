@@ -5,7 +5,6 @@
 //! (`lib.rs`, `commands.rs`) is that program; the headless host of docs/remote-client.md
 //! (task 3, `remote-host`) is the second one.
 
-pub mod backlog;
 pub mod chats;
 pub mod context;
 pub mod flow;
@@ -18,6 +17,7 @@ pub mod rules;
 pub mod rules_check;
 pub mod status;
 pub mod store;
+pub mod tickets;
 pub mod update;
 
 use std::fs;

@@ -140,7 +140,7 @@ test("a card older than 10 minutes at the restore is dropped: the time counts fr
   assert.deepEqual(restoreCards(stored, T0 + PENDING_MAX_MS + 1), [fresh]);
 });
 
-test("a card keeps the id of its planned entry through the store (overview-backlog)", () => {
+test("a card keeps the id of its ticket through the store (overview-backlog, tickets)", () => {
   const card = pendingCard(P, "fix the bar", [], T0, "2026-11-11-013744-fix-the-bar");
   assert.equal(card.entry, "2026-11-11-013744-fix-the-bar");
   assert.equal(pendingCard(P, "x", [], T0).entry, null);
@@ -191,8 +191,8 @@ test("the cards meet the page: the hook, the four lists, the dashed style and th
   assert.match(MAIN, /noteStatus\(/);
   assert.match(MAIN, /pendingIndex\(/);
   assert.match(MAIN, /function pendingElement\(/);
-  // Since overview-backlog the box gives each message to main.ts first, which makes it a planned entry.
-  assert.match(CHAT, /onMessage\?: \(message: string\) => Promise<boolean>/);
+  // Since ticket tickets the box gives each message to main.ts first, which makes it a ticket.
+  assert.match(CHAT, /onMessage\?: \(message: string\) => Promise<string \| null>/);
   assert.match(CHAT, /options\.onMessage\?\.\(/);
   assert.match(CHAT, /status\(\): string \| null/);
   // say() sends lines of Dispatch: it makes no card and no entry.
@@ -219,7 +219,7 @@ test("the card gives the message the whole width: the time stands on the state l
     assert.match(body, /white-space: pre-line;/);
   }
   assert.match(CSS, /\.task\.pending \.task-status \.task-time \{/);
-  assert.match(HTML, /dashed edge: your message, the time/);
+  assert.match(HTML, /dashed edge: the title of the ticket, the time/);
 });
 
 test("the window keeps the cards in localStorage and reads them at the start", () => {
@@ -262,12 +262,12 @@ test("shell after busy ends the turn of a card like idle; shell before busy chan
 
 test("the rule meets the page: the dispatcher, the chat view, the switch and the Help", () => {
   assert.match(MAIN, /import \{[^}]*\btriageFree\b[^}]*\} from "\.\/pending"/);
-  const dispatcher = MAIN.slice(MAIN.indexOf("async function dispatchEntries("), MAIN.indexOf("function settlePending("));
+  const dispatcher = MAIN.slice(MAIN.indexOf("async function dispatchTickets("), MAIN.indexOf("function settlePending("));
   assert.match(dispatcher, /triageFree\(/);
   assert.doesNotMatch(dispatcher, /!== "idle"/);
   assert.match(MAIN, /"Triage runs a command in the background; the new chat starts after it ends\."/);
   assert.match(CHAT, /statusLine\(reply\.status\)/);
   assert.match(CHAT, /triageFree\(reply\.status\)/);
-  const planned = HTML.slice(HTML.indexOf("<b>Planned messages.</b>"));
-  assert.match(planned.slice(0, planned.indexOf("</li>")), /background/);
+  const queue = HTML.slice(HTML.indexOf("<b>The queue.</b>"));
+  assert.match(queue.slice(0, queue.indexOf("</li>")), /background/);
 });

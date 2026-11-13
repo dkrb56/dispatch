@@ -366,16 +366,17 @@ test("the Overview meets the page", () => {
   assert.match(MAIN, /savedView\(/);
 });
 
-test("the Overview card has three parts with their empty texts (overview-backlog)", () => {
+test("the Overview card has three parts with their empty texts (overview-backlog, tickets)", () => {
   const block = MAIN.slice(MAIN.indexOf("function renderOverview("));
   const body = block.slice(0, block.indexOf("\nfunction "));
   assert.ok(body.length > 0, "src/main.ts has renderOverview");
-  for (const text of ["In work", "Done", "Planned", "Nothing in work", "Nothing done yet", "Nothing planned yet"]) {
+  for (const text of ["In work", "Done", "Tickets", "Nothing in work", "Nothing done yet", "No tickets"]) {
     assert.ok(body.includes(`"${text}"`), `renderOverview has "${text}"`);
   }
   assert.match(body, /listedTasks\(/);
   assert.match(body, /doneTasks\(/);
-  assert.match(body, /plannedItems\(/);
+  assert.match(body, /ticketsLine\(/);
+  assert.doesNotMatch(body, /Planned/);
   assert.match(CSS, /\.overview-part \{/);
 });
 

@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use dispatch_lib::core::{backlog, chats, context, flow, info, pipeline, pty, rules, rules_check, status, store, Core};
+use dispatch_lib::core::{chats, context, flow, info, pipeline, pty, rules, rules_check, status, store, tickets, Core};
 
 use crate::clients::{Clients, Spawn};
 
@@ -128,9 +128,16 @@ pub fn run(
         "set_measure_commands" => json(pipeline::set_measure_commands(a.req("cwd")?, a.req("text")?)?),
         "set_merge_gate" => json(pipeline::set_merge_gate(a.req("cwd")?, a.req("text")?)?),
         "task_list" => json(pipeline::task_list(a.req("cwd")?)?),
-        "backlog_add" => json(backlog::backlog_add(a.req("cwd")?, a.req("text")?)?),
-        "backlog_remove" => json(backlog::backlog_remove(a.req("cwd")?, a.req("id")?)?),
-        "backlog_reorder" => json(backlog::backlog_reorder(a.req("cwd")?, a.req("ids")?)?),
+        "ticket_add" => json(tickets::ticket_add(a.req("cwd")?, a.req("text")?)?),
+        "ticket_update" => json(tickets::ticket_update(
+            a.req("cwd")?,
+            a.req("id")?,
+            a.opt("title")?,
+            a.opt("kind")?,
+            a.opt("task")?,
+            a.opt("note")?,
+        )?),
+        "ticket_move" => json(tickets::ticket_move(a.req("cwd")?, a.req("id")?, a.req("status")?, a.req("ids")?, a.opt("note")?)?),
         "task_approve" => json(pipeline::task_approve(a.req("cwd")?, a.req("id")?)?),
         "task_decide" => json(pipeline::task_decide(a.req("cwd")?, a.req("id")?, a.req("text")?)?),
         "task_reject" => json(pipeline::task_reject(a.req("cwd")?, a.req("id")?, a.req("reason")?)?),

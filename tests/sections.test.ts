@@ -84,8 +84,8 @@ test("a brief, a plan, a report and a state file in .dispatch name their task", 
   assert.deepEqual(ids("tool", "Bash: powershell -ExecutionPolicy Bypass -File D:/dev_projects/dispatch/.dispatch/worker.ps1 plan map-fold-done"), ["map-fold-done"]);
 });
 
-test("a planned entry and the options files in .dispatch name nothing", () => {
-  assert.deepEqual(ids("tool", "Read: D:/dev_projects/dispatch/.dispatch/backlog/2026-11-11-010203-fix-the-bar.md"), []);
+test("the tickets file and the options files in .dispatch name nothing", () => {
+  assert.deepEqual(ids("tool", "Read: D:/dev_projects/dispatch/.dispatch/tickets.jsonl"), []);
   assert.deepEqual(ids("tool", "Read: D:/dev_projects/dispatch/.dispatch/plan-flags.txt"), []);
   assert.deepEqual(ids("tool", "Bash: powershell -ExecutionPolicy Bypass -File D:/dev_projects/dispatch/.dispatch/worker.ps1 status"), []);
 });

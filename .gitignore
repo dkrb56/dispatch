@@ -26,5 +26,5 @@ dist-ssr
 # Working notes of Claude Code for this repo: kept on this computer only
 .claude/
 
-# Task files of Dispatch for this repo (briefs, plans, reports, planned entries): kept on this computer only
+# Task files of Dispatch for this repo (briefs, plans, reports, tickets): kept on this computer only
 .dispatch/

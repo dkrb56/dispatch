@@ -9,6 +9,7 @@ You never sit in a terminal answering prompts: questions, permissions and plans 
 ## What it does
 
 - **Triage chat** as formatted text with a message box: images by paste, questions and permission prompts as coloured buttons, commands in code blocks with a ▶ that runs them in a terminal of the project.
+- **Tickets** for each project: each message that you type into triage becomes a ticket on a board with the columns New, Todo, In progress, Done and Canceled. Dispatch sends the Todo tickets to triage in their order, and a ticket follows its task to Done; a question to triage goes at once. The file is `.dispatch/tickets.jsonl`.
 - **Tasks** for each project: the plan run and the work run of each task, its plan and its report. A plan waits for **Approve all**, **Decisions** (each decision with its options, or your own words) or **Reject**.
 - **Focus mode**: one column per project, side by side, each with its triage chat and its tasks.
 - **Map**: each project as a graph of you, triage, its tasks, their runs and agents; what waits for you is orange. A click on a run opens the **worker view**: its agents, their last tool calls and messages, tokens, files changed and a timeline, read live from the session files.
@@ -61,7 +62,7 @@ With several hosts, each project name gets ` · <host name>` after it, so two pr
 
 All in the open, each step listed before you apply it:
 
-- the folder `.dispatch` inside the project, with the briefs, plans, reports, the state of each task and the worker script `worker.ps1`; git tracks it, Dispatch commits its files itself, and Apply moves the files of an older `<project>-reports` folder there;
+- the folder `.dispatch` inside the project, with the briefs, plans, reports, the state of each task, the tickets file and the worker script `worker.ps1`; git tracks it, Dispatch commits its files itself, and Apply moves the files of an older `<project>-reports` folder there;
 - allow and deny rules, and two read folders, in `.claude/settings.local.json` of the project;
 - worktree isolation off, so workers edit the project itself;
 - optional, off by default: "Measure before the plan" lets the plan run run listed commands first, and "Task branches" gives each task its own branch `task/<task>`, which Dispatch merges on your click after a gate command passed (no push);

@@ -29,7 +29,7 @@ import { Terminal } from "@xterm/xterm";
 import { onReturn } from "./chatend";
 import { markedProject, showMark, watchArea } from "./focusmark";
 import { chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, runStarting, savedView, snapPlace, type ViewMode } from "./overview";
-import { type Entry, goesStraight, movedIds, nextEntry, orderedEntries } from "./backlog";
+import { addedText, columnTickets, COLUMNS, countText, DROP_COLUMNS, endFailed, endWord, goesStraight, isQuestion, movedIds, nextTicket, nextType, type Ticket, ticketCounts, ticketMatches, ticketMessage, type TicketStatus, todoOrder, typeName } from "./tickets";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { MENU_ABOVE_LINES, menuScreen, parseMenu, parseReview, SUBMIT_QUESTION } from "./menu";
 import { type MenuRecord, type ScreenRow } from "./menurecord";
@@ -1687,8 +1687,8 @@ interface TaskListReply {
   autoApprove: boolean;
   /** When the project got its Dispatch setup (the reports folder was made); null without one. */
   setup: number | null;
-  /** The planned entries of the project (overview-backlog), in the order of the files. */
-  backlog: Entry[];
+  /** The tickets of the project (ticket tickets), in the order of the file. */
+  tickets: Ticket[];
   /** The task whose branch Dispatch merges now (ticket task-branches). Absent from an older host. */
   merging?: string | null;
   /** The gate command of the merge step; empty without one. Absent from an older host. */
@@ -1704,8 +1704,8 @@ interface ProjectTasks {
   dirty: string[];
   autoApprove: boolean;
   setup: number | null;
-  /** The planned entries of the project (overview-backlog). */
-  backlog: Entry[];
+  /** The tickets of the project (ticket tickets). */
+  tickets: Ticket[];
   /** The task whose branch Dispatch merges now: Approve waits for it (ticket task-branches). */
   merging: string | null;
   /** The gate command of the merge step; empty without one. */
@@ -1721,7 +1721,7 @@ function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTa
     dirty: reply.dirty,
     autoApprove: reply.autoApprove,
     setup: reply.setup ?? null,
-    backlog: reply.backlog ?? [],
+    tickets: reply.tickets ?? [],
     merging: reply.merging ?? null,
     gate: reply.gate ?? "",
   };
@@ -1865,7 +1865,7 @@ async function refreshTasks(): Promise<void> {
   const focused = focusedPane();
   const cwd = focused?.cwd ?? null;
   const host = focused?.host ?? firstBackend();
-  let reply: TaskListReply = { tasks: [], dirty: [], autoApprove: false, setup: null, backlog: [] };
+  let reply: TaskListReply = { tasks: [], dirty: [], autoApprove: false, setup: null, tickets: [] };
   if (cwd) {
     try {
       reply = await call<TaskListReply>(host, "task_list", { cwd });
@@ -2294,12 +2294,14 @@ async function pollTasks(): Promise<void> {
   setTimeout(() => void pollTasks(), REPORTS_REFRESH_MS);
 }
 
-// The planned entries and the temporary task cards (overview-backlog, pending-task-card): a message
-// of the user to triage is a planned entry first, a file in `.dispatch/backlog/` of the project.
-// Dispatch sends the first entry of a project to triage when triage is free (`triageFree`: idle, or
-// shell with only a background command), one at a time; from then on a temporary card stands for it in the task list. A new task in the list takes its place; the
-// end of the turn of triage without a new task, or the time limit, removes it, and its file goes.
-// The cards are in localStorage `pending-cards` too, so a restart keeps them (pending-card-persist).
+// The tickets and the temporary task cards (ticket tickets, pending-task-card): a message of the
+// user to triage is a ticket in New first, in `.dispatch/tickets.jsonl` of the project. The Todo
+// column of the board is the queue: Dispatch sends the first Todo ticket of a project to triage when
+// triage is free (`triageFree`: idle, or shell with only a background command), one at a time; from
+// then on a temporary card stands for it in the task list. A new task in the list takes its place,
+// and the ticket follows that task; the end of the turn of triage without a new task, or the time
+// limit, moves the ticket to Canceled. The cards are in localStorage `pending-cards` too, so a
+// restart keeps them (pending-card-persist).
 
 /** The temporary cards of all projects, oldest first. */
 let pendingCards: PendingCard[] = [];
@@ -2316,20 +2318,26 @@ function savePending(): void {
   }
 }
 
-/**
- * The entries that went to triage before a restart and whose card is too old now: triage has them,
- * so their files go at the next chance, and Dispatch does not send them a second time. By project key.
- */
-const entriesToDrop: { project: string; entry: string }[] = [];
-/**
- * The entries that went to triage in this run, as `<project key>\n<id>`. A task read that started
- * before the removal of a file can still list it; Dispatch never sends an entry a second time.
- */
-const sentEntries = new Set<string>();
+/** The end word of a ticket whose message triage answered without a task. */
+const NO_TASK = "triage answered without a task";
+/** The end word of a ticket whose card reached its time limit without a task. */
+const NO_TASK_LATE = "no task within 10 minutes";
 
-/** The entry went to triage, or goes now: no second send, and no planned card. */
-function entryGone(key: string, id: string): boolean {
-  return sentEntries.has(`${key}\n${id}`) || entriesToDrop.some((drop) => drop.project === key && drop.entry === id);
+/**
+ * The tickets that went to triage before a restart and whose card is too old now: triage has them,
+ * so Dispatch does not send them a second time, and each one that still stands in Todo goes to
+ * Canceled at the next chance. By project key.
+ */
+const ticketsToSettle: { project: string; ticket: string }[] = [];
+/**
+ * The tickets that went to triage in this run, as `<project key>\n<id>`. A task read that started
+ * before the move of a ticket can still list it in Todo; Dispatch never sends a ticket a second time.
+ */
+const sentTickets = new Set<string>();
+
+/** The ticket went to triage, or goes now: no second send. */
+function ticketSent(key: string, id: string): boolean {
+  return sentTickets.has(`${key}\n${id}`) || ticketsToSettle.some((one) => one.project === key && one.ticket === id);
 }
 
 /** At start, before the first task read: the cards that stood when the window closed, minus the old ones. */
@@ -2340,7 +2348,7 @@ function loadPending(): void {
     for (const item of Array.isArray(saved) ? saved : []) {
       const { project, entry } = (item ?? {}) as Record<string, unknown>;
       if (typeof project !== "string" || typeof entry !== "string") continue;
-      if (!pendingCards.some((card) => card.entry === entry)) entriesToDrop.push({ project: hostedKey(project), entry });
+      if (!pendingCards.some((card) => card.entry === entry)) ticketsToSettle.push({ project: hostedKey(project), ticket: entry });
     }
   } catch {
     // A broken record holds no card.
@@ -2348,7 +2356,7 @@ function loadPending(): void {
   }
 }
 
-/** Reads the task list of one project again, with its planned entries. */
+/** Reads the task list of one project again, with its tickets. */
 async function readProjectTasks(host: HostId, cwd: string): Promise<void> {
   const reply = await call<TaskListReply>(host, "task_list", { cwd });
   projectTasks.set(projectKey(host, cwd), tasksRecord(host, cwd, reply));
@@ -2356,17 +2364,16 @@ async function readProjectTasks(host: HostId, cwd: string): Promise<void> {
 }
 
 /**
- * A message of the user in the box of the triage chat of a project. It becomes a planned entry, and
- * Dispatch sends it when triage is free; gives true then. A command of Claude Code (`/clear`) goes
- * at once: false. A failure throws, and the box keeps the text.
+ * A message of the user in the box of the triage chat of a project. It becomes a ticket in New, and
+ * the text for the line of the chat says so. A question to triage and a command of Claude Code
+ * (`/clear`) go at once: null. A failure throws, and the box keeps the text.
  */
-async function addEntry(host: HostId, project: string, message: string): Promise<boolean> {
-  if (project === "" || goesStraight(message)) return false;
-  await call<Entry>(host, "backlog_add", { cwd: project, text: message });
+async function addTicket(host: HostId, project: string, message: string): Promise<string | null> {
+  if (project === "" || goesStraight(message) || isQuestion(message)) return null;
+  const ticket = await call<Ticket>(host, "ticket_add", { cwd: project, text: message });
   await readProjectTasks(host, project).catch((error) => console.warn("task list read failed", error));
   renderChats();
-  void dispatchEntries();
-  return true;
+  return addedText(ticket);
 }
 
 /** The host and the folder of the record of a project key, or the host and the path of the key itself. */
@@ -2375,33 +2382,75 @@ function projectCwd(key: string): { host: HostId; cwd: string } {
   return record ? { host: record.host, cwd: record.cwd } : { host: keyHost(key, firstBackend()), cwd: keyPath(key) };
 }
 
-/** Removes the file of a planned entry of a project (by its key), reads the list again and goes on with the next entry. */
-async function removeEntry(project: string, entry: string): Promise<boolean> {
-  const { host, cwd } = projectCwd(project);
-  // True only when the list was read after the removal: an old list still holds the entry.
-  let removed = false;
-  try {
-    await call(host, "backlog_remove", { cwd, id: entry });
-    await readProjectTasks(host, cwd);
-    removed = true;
-  } catch (error) {
-    console.error("planned entry not removed", error);
-  }
-  renderChats();
-  void dispatchEntries();
-  return removed;
+/** The tickets of a project (by its key) from its last task read. */
+function projectTickets(key: string): Ticket[] {
+  return projectTasks.get(key)?.tickets ?? [];
 }
 
-/** Saves a new order of the planned entries of a project (by its key). */
-async function moveEntries(project: string, ids: string[]): Promise<void> {
+/** The Todo tickets of a project (by its key) that wait: not the one in flight. */
+function waitingTickets(key: string): Ticket[] {
+  return todoOrder(projectTickets(key)).filter((ticket) => !ticketSent(key, ticket.id));
+}
+
+/** The error of the last ticket action of the board; it shows at its top until the next action. */
+let ticketError = "";
+
+/** Runs a ticket command for a project (by its key), reads the list again and renders. True on success. */
+async function ticketAction(project: string, command: string, args: Record<string, unknown>): Promise<boolean> {
   const { host, cwd } = projectCwd(project);
+  ticketError = "";
   try {
-    await call(host, "backlog_reorder", { cwd, ids });
+    await call(host, command, { cwd, ...args });
     await readProjectTasks(host, cwd);
+    return true;
   } catch (error) {
-    console.error("planned entries not moved", error);
+    ticketError = String(error);
+    console.error(`${command} failed`, error);
+    return false;
+  } finally {
+    renderChats();
+    void dispatchTickets();
   }
-  renderChats();
+}
+
+/** The Todo ids of a project (by its key) without one ticket: the column after that ticket left it. */
+function todoIdsWithout(project: string, id: string): string[] {
+  return todoOrder(projectTickets(project))
+    .map((ticket) => ticket.id)
+    .filter((one) => one !== id);
+}
+
+/** Moves a ticket into New, Todo or Canceled; `ids` is the Todo column after the move. */
+function moveTicket(project: string, id: string, status: TicketStatus, ids: string[], note?: string): Promise<boolean> {
+  return ticketAction(project, "ticket_move", { id, status, ids, note: note ?? null });
+}
+
+/** Changes the title (a rename of the user), the type, the task or the end word of a ticket. */
+function updateTicket(project: string, id: string, fields: { title?: string; kind?: string; task?: string; note?: string }): Promise<boolean> {
+  return ticketAction(project, "ticket_update", { id, title: fields.title ?? null, kind: fields.kind ?? null, task: fields.task ?? null, note: fields.note ?? null });
+}
+
+/**
+ * Ask triage on a card (a wrong guess of the question rule): the words go to triage at once, as a
+ * question goes, and the ticket goes to Canceled with "asked triage". Triage must ask nothing.
+ */
+async function askTriage(project: string, ticket: Ticket): Promise<void> {
+  const pane = triagePane(project);
+  if (!pane?.chat) {
+    ticketError = "Triage does not run in this project. Open its workspace first.";
+    return renderTickets();
+  }
+  if (parseMenu(menuLines(pane.term)) !== null || (await triageStatus(pane).catch(() => null)) === "waiting") {
+    ticketError = "Triage waits for an answer in its chat. Answer it first, then click Ask triage again.";
+    return renderTickets();
+  }
+  try {
+    await pane.chat.deliver(ticket.summary);
+  } catch (error) {
+    ticketError = `Not sent to triage: ${error}`;
+    return renderTickets();
+  }
+  await moveTicket(project, ticket.id, "canceled", todoIdsWithout(project, ticket.id), "asked triage");
 }
 
 /** The status of the session of a triage pane from its session file (`idle`, `shell`, `busy`, `waiting`), or null. */
@@ -2410,29 +2459,34 @@ async function triageStatus(pane: Pane): Promise<string | null> {
   return info.session?.status ?? null;
 }
 
-/** A run of `dispatchEntries` is on its way. */
+/** A run of `dispatchTickets` is on its way. */
 let dispatching = false;
-/** `dispatchEntries` runs this often. It reads nothing for a project without entries and cards. */
-const ENTRY_TICK_MS = 2000;
+/** `dispatchTickets` runs this often. It reads nothing for a project without Todo tickets and cards. */
+const TICKET_TICK_MS = 2000;
 
 /**
- * Sends the first planned entry of each project to its triage chat, verbatim, when triage is free
- * (`triageFree`: idle, or shell with only a background command), shows no question or menu, no
- * switch to a new chat runs and no line of Dispatch waits for it. One entry of a project at a time: its temporary card stands until its task comes. It also notes busy
- * and idle of triage for the cards in flight, in every view, so the end of a turn without a task
- * frees the next entry.
+ * Sends the first Todo ticket of each project to its triage chat when triage is free (`triageFree`:
+ * idle, or shell with only a background command), shows no question or menu, no switch to a new
+ * chat runs and no line of Dispatch waits for it: the image paths, the line `Ticket <id>: <title>`,
+ * then the words of the user. One ticket of a project at a time: its temporary card stands until
+ * its task comes. It also notes busy and idle of triage for the cards in flight, in every view, so
+ * the end of a turn without a task frees the next ticket.
  */
-async function dispatchEntries(): Promise<void> {
+async function dispatchTickets(): Promise<void> {
   if (dispatching) return;
   dispatching = true;
   try {
-    for (const drop of [...entriesToDrop]) {
-      if (!projectTasks.has(drop.project)) continue;
-      // A failed removal stays in the list: the next tick tries again, and the entry is not sent.
-      if (await removeEntry(drop.project, drop.entry)) entriesToDrop.splice(entriesToDrop.indexOf(drop), 1);
+    for (const one of [...ticketsToSettle]) {
+      const record = projectTasks.get(one.project);
+      if (!record) continue;
+      const ticket = record.tickets.find((ticket) => ticket.id === one.ticket);
+      // A ticket that its task moved already, or that is gone, needs nothing. A failed move stays
+      // in the list: the next tick tries again, and the ticket is not sent.
+      if (ticket?.status === "todo" && !(await moveTicket(one.project, one.ticket, "canceled", todoIdsWithout(one.project, one.ticket), NO_TASK_LATE))) continue;
+      ticketsToSettle.splice(ticketsToSettle.indexOf(one), 1);
     }
     for (const [key, record] of projectTasks) {
-      // Only the window that drives the project's host sends its planned entries (remote-shared-state).
+      // Only the window that drives the project's host sends its tickets (remote-shared-state).
       if (!driverOf(record.host)) continue;
       const pane = triagePane(key);
       if (!pane?.chat) continue;
@@ -2442,22 +2496,22 @@ async function dispatchEntries(): Promise<void> {
         if (noteStatus(pendingCards, key, status, Date.now())) savePending();
         continue;
       }
-      const entry = nextEntry(record.backlog.filter((one) => !entryGone(key, one.id)), []);
-      if (!entry) continue;
+      const ticket = nextTicket(record.tickets, [], (id) => ticketSent(key, id));
+      if (!ticket) continue;
       if (switchRuns(key) || triageQueue.some((line) => line.project === key)) continue;
       if (!triageFree(await triageStatus(pane).catch(() => null))) continue;
       if (parseMenu(menuLines(pane.term)) !== null) continue;
       const known = projectTaskList(record).map((task) => task.name);
-      const card = pendingCard(key, entry.text, known, Date.now(), entry.id);
-      sentEntries.add(`${key}\n${entry.id}`);
+      const card = pendingCard(key, ticket.title, known, Date.now(), ticket.id);
+      sentTickets.add(`${key}\n${ticket.id}`);
       pendingCards.push(card);
       savePending();
       renderChats();
       try {
-        await pane.chat.deliver(entry.text);
+        await pane.chat.deliver(ticketMessage(ticket));
       } catch (error) {
-        console.warn("planned entry not sent", error);
-        sentEntries.delete(`${key}\n${entry.id}`);
+        console.warn("ticket not sent", error);
+        sentTickets.delete(`${key}\n${ticket.id}`);
         pendingCards = pendingCards.filter((one) => one !== card);
         savePending();
         renderChats();
@@ -2469,12 +2523,29 @@ async function dispatchEntries(): Promise<void> {
 }
 
 /**
+ * The ticket of a card that went: the new task name links the ticket to its task when triage gave
+ * the task another id (the task read then moves the ticket after the task); without a task, a
+ * ticket that still stands in Todo goes to Canceled with the end word.
+ */
+async function settleTicket(project: string, id: string, task: string | undefined, note: string): Promise<void> {
+  const ticket = projectTickets(project).find((one) => one.id === id);
+  if (!ticket) return;
+  if (task) {
+    if (task !== ticket.id && ticket.task !== task) await updateTicket(project, id, { task });
+    return;
+  }
+  if (ticket.status === "todo") await moveTicket(project, id, "canceled", todoIdsWithout(project, id), note);
+}
+
+/**
  * Checks the cards against the task lists that this round read again, from `readAt` on. A project
  * whose list was not read again keeps its cards until the time limit.
  */
 function settlePending(readAt: number): void {
   if (pendingCards.length === 0) return;
   const now = Date.now();
+  // What each card knew before this read: a name that it did not know is the task of its ticket.
+  const knewBefore = new Map(pendingCards.map((card) => [card, card.known ? [...card.known] : null] as const));
   let cards = pendingCards;
   for (const key of new Set(cards.map((card) => card.project))) {
     const record = projectTasks.get(key);
@@ -2488,10 +2559,16 @@ function settlePending(readAt: number): void {
   savePending();
   if (gone.length === 0) return;
   renderChats();
-  // The task of an entry came, or triage answered without one: its file goes, and the next entry
-  // follows. The drop list keeps the entry from a second send until its file is gone.
-  for (const card of gone) if (card.entry) entriesToDrop.push({ project: card.project, entry: card.entry });
-  void dispatchEntries();
+  // The task of a ticket came, or triage answered without one: the ticket follows, and the next
+  // Todo ticket goes. `sentTickets` keeps the ticket from a second send.
+  for (const card of gone) {
+    if (!card.entry) continue;
+    const record = projectTasks.get(card.project);
+    const knew = knewBefore.get(card) ?? null;
+    const task = knew && record ? projectTaskList(record).map((one) => one.name).find((name) => !knew.includes(name)) : undefined;
+    void settleTicket(card.project, card.entry, task, card.endedAt !== null ? NO_TASK : NO_TASK_LATE);
+  }
+  void dispatchTickets();
 }
 
 /** The cards of a project (by its key), oldest first. */
@@ -2640,7 +2717,7 @@ function askLostQuestions(): void {
 
 // ---------------------------------------------------------------------------------------------
 // The driver lease (remote-shared-state): in the mode "Use a host" one window at a time writes the
-// lines of Dispatch into the triage chats, approves plans by itself and sends the planned entries.
+// lines of Dispatch into the triage chats, approves plans by itself and sends the Todo tickets.
 // The host gives the lease to the window that the user used last (`driver_state`). In the mode
 // "This PC does the work" the one window always drives. The alerts are not part of the lease.
 
@@ -4012,27 +4089,167 @@ function pendingElement(card: PendingCard): HTMLElement {
   return made;
 }
 
-/** A drag of a planned card runs: the renders wait until the drop, so the card stays under the pointer. */
-let entryDragging = false;
+// ---- The tickets board (ticket tickets) ------------------------------------------------------------
+// One window for one project: five columns, the cards with their buttons, a drag between New, Todo
+// and Canceled and inside Todo, and a rename in place. It shows the tickets of the last task read;
+// each button runs a ticket command of the backend and reads the list again.
 
-/** The planned entries of a project (by its key) that still wait, in their order: not the one in flight. */
-function plannedEntries(key: string): Entry[] {
-  const inFlight = pendingCards.filter((card) => card.project === key).map((card) => card.entry);
-  return orderedEntries(projectTasks.get(key)?.backlog ?? []).filter((entry) => !inFlight.includes(entry.id) && !entryGone(key, entry.id));
+const ticketsDialog = document.querySelector<HTMLDialogElement>("#tickets")!;
+const ticketsColumnsEl = document.querySelector<HTMLElement>("#tickets-columns")!;
+const ticketsTitleEl = document.querySelector<HTMLElement>("#tickets-title")!;
+const ticketsCountEl = document.querySelector<HTMLElement>("#tickets-count")!;
+const ticketsPathEl = document.querySelector<HTMLElement>("#tickets-path")!;
+const ticketsErrorEl = document.querySelector<HTMLElement>("#tickets-error")!;
+const ticketsSearchEl = document.querySelector<HTMLInputElement>("#tickets-search")!;
+
+/** The project of the open board, or null. */
+let ticketsRef: ProjectRef | null = null;
+/** A drag of a ticket card runs: the renders wait until the drop, so the card stays under the pointer. */
+let ticketDragging = false;
+/** The ticket whose title the user edits now, or null. */
+let renamingTicket: string | null = null;
+/** The form for a new ticket stands at the top of New; `focusNew` gives it the keyboard once. */
+let newTicketOpen = false;
+let focusNew = false;
+
+/** Opens the board of a project. */
+function openTickets(ref: ProjectRef): void {
+  ticketsRef = ref;
+  ticketError = "";
+  renamingTicket = null;
+  newTicketOpen = false;
+  ticketsSearchEl.value = "";
+  if (!ticketsDialog.open) ticketsDialog.showModal();
+  renderTickets();
+  // A project that no view reads gets its list now; the task poll reads it while the board shows.
+  if (!projectTasks.has(refKey(ref))) {
+    readProjectTasks(ref.host, ref.root)
+      .then(renderTickets)
+      .catch((error) => {
+        ticketError = `The tickets of this project could not be read: ${error}`;
+        renderTickets();
+      });
+  }
 }
 
-/** The cards of the planned entries of a project (by its key), in their order. */
-function plannedItems(project: string): HTMLElement[] {
-  const entries = plannedEntries(project);
-  const ids = entries.map((entry) => entry.id);
-  return entries.map((entry, at) => entryElement(entry, at, ids, project));
+/** Connects the buttons of the board. */
+function initTickets(): void {
+  document.querySelector("#tickets-close")!.addEventListener("click", () => ticketsDialog.close());
+  document.querySelector("#tickets-new")!.addEventListener("click", () => {
+    newTicketOpen = true;
+    focusNew = true;
+    renderTickets();
+  });
+  ticketsSearchEl.addEventListener("input", renderTickets);
+  ticketsDialog.addEventListener("click", (event) => {
+    if (event.target === ticketsDialog) ticketsDialog.close();
+  });
+  ticketsDialog.addEventListener("close", () => {
+    ticketsRef = null;
+    renamingTicket = null;
+    newTicketOpen = false;
+    focusedPane()?.term.focus();
+  });
 }
 
-/** A small button of the tools of a planned card. */
-function entryButton(text: string, title: string, disabled: boolean, click: () => void): HTMLButtonElement {
-  const button = document.createElement("button");
+/** The text of the Tickets button of a project: the tickets that wait for the user or for triage. */
+function showTicketButtons(): void {
+  for (const button of document.querySelectorAll<HTMLButtonElement>(".project-tickets")) {
+    const tickets = projectTickets(button.dataset.project ?? "");
+    const { fresh, todo } = ticketCounts(tickets);
+    button.textContent = fresh + todo > 0 ? `Tickets ${fresh + todo}` : "Tickets";
+    button.title = `The tickets board of this project: ${countText(tickets)}. New tickets wait for you; Dispatch sends the Todo tickets to triage in their order.`;
+  }
+}
+
+/** The path of the tickets file of a project folder, with the separator of the folder. */
+function ticketsFilePath(root: string): string {
+  const sep = root.includes("\\") ? "\\" : "/";
+  return `${root.replace(/[\\/]+$/, "")}${sep}.dispatch${sep}tickets.jsonl`;
+}
+
+/** Draws the board of the open project again. A drag, a rename and a text in the form hold it. */
+function renderTickets(): void {
+  showTicketButtons();
+  if (!ticketsRef || !ticketsDialog.open || ticketDragging) return;
+  const active = document.activeElement;
+  if ((active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) && ticketsColumnsEl.contains(active)) return;
+  const key = refKey(ticketsRef);
+  const record = projectTasks.get(key);
+  const tickets = record?.tickets ?? [];
+  ticketsTitleEl.textContent = `Tickets · ${projectName(ticketsRef)}`;
+  ticketsCountEl.textContent = record ? `${tickets.length} ${tickets.length === 1 ? "ticket" : "tickets"}` : "Reading…";
+  ticketsPathEl.textContent = ticketsFilePath(ticketsRef.root);
+  ticketsErrorEl.textContent = ticketError;
+  ticketsErrorEl.hidden = ticketError === "";
+  const shown = tickets.filter((ticket) => ticketMatches(ticket, ticketsSearchEl.value));
+  const todoIds = todoOrder(tickets).map((ticket) => ticket.id);
+  const columns = COLUMNS.map(({ status, name }) => {
+    const items = columnTickets(shown, status);
+    const column = mapElement("section", "tickets-column");
+    column.dataset.status = status;
+    const head = mapElement("div", "tickets-column-head");
+    head.append(mapElement("b", "", name), mapElement("span", "tickets-column-count", String(items.length)));
+    const list = mapElement("div", "tickets-list");
+    if (status === "new" && newTicketOpen) list.append(newTicketForm(key));
+    list.append(...items.map((ticket) => ticketCard(key, ticket, todoIds, record)));
+    if (items.length === 0 && !(status === "new" && newTicketOpen)) {
+      list.append(mapElement("p", "tickets-none", status === "todo" ? "Move a ticket here: Dispatch sends it to triage." : "No tickets"));
+    }
+    column.append(head, list);
+    return column;
+  });
+  ticketsColumnsEl.replaceChildren(...columns);
+  const focus = ticketsColumnsEl.querySelector<HTMLInputElement | HTMLTextAreaElement>(renamingTicket ? ".ticket-rename" : focusNew ? ".ticket-new textarea" : ":not(*)");
+  if (focus) {
+    focus.focus();
+    if (focus instanceof HTMLInputElement) focus.select();
+  }
+  focusNew = false;
+}
+
+/** The form at the top of New: a new ticket in the words of the user, without the question rule. */
+function newTicketForm(project: string): HTMLElement {
+  const form = mapElement("div", "ticket-new");
+  const box = mapElement("textarea");
+  box.rows = 3;
+  box.placeholder = "What is the ticket about? Enter adds it to New; Shift+Enter makes a new line.";
+  const add = mapElement("button", "", "Add");
+  const cancel = mapElement("button", "", "Cancel");
+  const close = () => {
+    newTicketOpen = false;
+    box.blur();
+    renderTickets();
+  };
+  const save = () => {
+    const text = box.value.trim();
+    if (text === "") return close();
+    newTicketOpen = false;
+    box.blur();
+    void ticketAction(project, "ticket_add", { text });
+  };
+  box.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    } else if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      save();
+    }
+  });
+  add.addEventListener("click", save);
+  cancel.addEventListener("click", close);
+  const buttons = mapElement("div", "ticket-tools");
+  buttons.append(add, cancel);
+  form.append(box, buttons);
+  return form;
+}
+
+/** A small button of a ticket card. */
+function ticketButton(text: string, title: string, click: () => void, disabled = false): HTMLButtonElement {
+  const button = mapElement("button", "", text);
   button.type = "button";
-  button.textContent = text;
   button.title = title;
   button.setAttribute("aria-label", title);
   button.disabled = disabled;
@@ -4043,93 +4260,167 @@ function entryButton(text: string, title: string, disabled: boolean, click: () =
   return button;
 }
 
-/**
- * The card of a planned entry (overview-backlog): a dashed card with the message, "Planned" and the
- * time, a grip to drag it, ▲ ▼ to move it and × to remove it. `ids` is the order of the list.
- */
-function entryElement(entry: Entry, at: number, ids: string[], project: string): HTMLElement {
-  const made = document.createElement("div");
-  made.className = "task planned";
-  made.dataset.entry = entry.id;
-  const head = document.createElement("div");
-  head.className = "task-head";
-  head.title = `Planned. Dispatch sends this message to triage when triage is free, in this order.\n${entry.file.path}\n\n${entry.text}`;
-  const top = document.createElement("span");
-  top.className = "task-top";
-  const grip = document.createElement("span");
-  grip.className = "entry-grip";
-  grip.textContent = "⠿";
-  grip.title = "Drag to change the order";
-  grip.setAttribute("aria-hidden", "true");
-  grip.addEventListener("pointerdown", (event) => startEntryDrag(event, made, entry.id, ids, project));
-  const dot = document.createElement("span");
-  dot.className = "task-dot";
-  dot.setAttribute("aria-hidden", "true");
-  const title = document.createElement("span");
-  title.className = "task-title";
-  title.textContent = pendingLabel(entry.text) || "Message to triage";
-  const tools = document.createElement("span");
-  tools.className = "entry-tools";
-  tools.append(
-    entryButton("▲", "Move up: triage gets it earlier", at === 0, () => void moveEntries(project, movedIds(ids, entry.id, at - 1))),
-    entryButton("▼", "Move down: triage gets it later", at === ids.length - 1, () => void moveEntries(project, movedIds(ids, entry.id, at + 1))),
-    entryButton("×", "Remove this planned message; git keeps the file in its history", false, () => void removeEntry(project, entry.id)),
-  );
-  top.append(grip, dot, title, tools);
-  const state = document.createElement("span");
-  state.className = "task-status";
-  const time = document.createElement("span");
-  time.className = "task-time";
-  time.textContent = chatTime(entry.sent);
-  state.append("Planned · ", time);
-  head.append(top, state);
-  made.append(head);
-  return made;
+/** The state line of a card: its place in the queue, the state of its task, or its end word. */
+function ticketState(project: string, ticket: Ticket, todoIds: string[], record: ProjectTasks | undefined): string {
+  if (ticket.status === "todo") {
+    const card = projectPending(project).find((one) => one.entry === ticket.id);
+    return card ? pendingState(card) : `#${todoIds.indexOf(ticket.id) + 1} in the queue`;
+  }
+  if (ticket.status === "in-progress") {
+    const task = record ? projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id)) : undefined;
+    if (!task) return "In progress";
+    // A run whose worker the list does not show yet: the state file says that it starts.
+    const status = taskStatus(task);
+    const phase = taskPhase(task);
+    if (status.kind === "done" && phase === "planning") return "Plan run starts";
+    if (status.kind === "done" && phase === "starting") return "Work run starts";
+    return status.text;
+  }
+  if (ticket.status === "new") return "New";
+  return endWord(ticket);
 }
 
 /**
- * Drags a planned card with the pointer, as the resize handles do: the HTML drag events do not
- * reach the page while the window of Tauri handles a drop of files. The card under the pointer gets
- * a line at its top; the drop saves the new order.
+ * The card of a ticket: a grip to drag it (New, Todo and Canceled), the title (a click renames it),
+ * the type tag (a click changes it), the date and the state line, and the buttons of its column.
  */
-function startEntryDrag(event: PointerEvent, card: HTMLElement, id: string, ids: string[], project: string): void {
-  if (event.button !== 0 || ids.length < 2) return;
+function ticketCard(project: string, ticket: Ticket, todoIds: string[], record: ProjectTasks | undefined): HTMLElement {
+  const inFlight = projectPending(project).some((card) => card.entry === ticket.id);
+  const card = mapElement("div", `ticket-card ${ticket.status}${inFlight ? " in-flight" : ""}`);
+  card.dataset.ticket = ticket.id;
+  const top = mapElement("div", "ticket-top");
+  if (DROP_COLUMNS.includes(ticket.status) && !inFlight) {
+    const grip = mapElement("span", "entry-grip", "⠿");
+    grip.title = "Drag to another column, or to another place in Todo";
+    grip.setAttribute("aria-hidden", "true");
+    grip.addEventListener("pointerdown", (event) => startTicketDrag(event, card, project, ticket));
+    top.append(grip);
+  }
+  const rename = () => {
+    renamingTicket = ticket.id;
+    renderTickets();
+  };
+  if (renamingTicket === ticket.id) {
+    const input = mapElement("input", "ticket-rename");
+    input.value = ticket.title;
+    input.setAttribute("aria-label", "The new title of the ticket");
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        renamingTicket = null;
+        input.blur();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        const title = input.value.trim();
+        renamingTicket = null;
+        input.blur();
+        if (title !== "" && title !== ticket.title) void updateTicket(project, ticket.id, { title });
+      }
+    });
+    input.addEventListener("blur", () => {
+      if (renamingTicket === ticket.id) renamingTicket = null;
+      renderTickets();
+    });
+    top.append(input);
+  } else {
+    const title = mapElement("button", "ticket-title", ticket.title);
+    title.type = "button";
+    title.title = `${ticket.title}\n${ticket.id}\n\n${ticket.summary}\n\nClick to rename.`;
+    title.addEventListener("click", rename);
+    top.append(title);
+  }
+  const meta = mapElement("div", "ticket-meta");
+  const tag = mapElement("button", `ticket-type type-${ticket.type}`, typeName(ticket.type));
+  tag.type = "button";
+  tag.title = "The type of the ticket. Click for the next type.";
+  tag.addEventListener("click", () => void updateTicket(project, ticket.id, { kind: nextType(ticket.type) }));
+  const state = mapElement("span", `ticket-state${endFailed(ticket) ? " failed" : ""}`, ticketState(project, ticket, todoIds, record));
+  meta.append(tag, mapElement("span", "ticket-date", chatTime(ticket.created)), state);
+  const tools = mapElement("div", "ticket-tools");
+  const at = todoIds.indexOf(ticket.id);
+  const toTodo = ticketButton("→ Todo", "Move to Todo: Dispatch sends it to triage in the order of the column", () => void moveTicket(project, ticket.id, "todo", [...todoIds, ticket.id]));
+  const toNew = ticketButton("← New", "Move back to New: it waits for you", () => void moveTicket(project, ticket.id, "new", todoIdsWithout(project, ticket.id)));
+  const cancel = ticketButton("×", "Cancel this ticket: it goes to Canceled", () => void moveTicket(project, ticket.id, "canceled", todoIdsWithout(project, ticket.id)));
+  if (ticket.status === "new") {
+    tools.append(toTodo, ticketButton("Ask triage", "Not a ticket: send the words to triage at once, as a question; the ticket goes to Canceled", () => void askTriage(project, ticket)), cancel);
+  } else if (ticket.status === "todo" && !inFlight) {
+    tools.append(
+      ticketButton("▲", "Move up: triage gets it earlier", () => void moveTicket(project, ticket.id, "todo", movedIds(todoIds, ticket.id, at - 1)), at <= 0),
+      ticketButton("▼", "Move down: triage gets it later", () => void moveTicket(project, ticket.id, "todo", movedIds(todoIds, ticket.id, at + 1)), at === todoIds.length - 1),
+      toNew,
+      cancel,
+    );
+  } else if (ticket.status === "canceled") {
+    tools.append(toTodo, toNew);
+  }
+  tools.append(ticketButton("✎", "Rename the ticket", rename));
+  card.append(top, meta, tools);
+  return card;
+}
+
+/**
+ * Drags a ticket card with the pointer, as the resize handles do: the HTML drag events do not reach
+ * the page while the window of Tauri handles a drop of files. The column under the pointer takes
+ * the ticket when it is New, Todo or Canceled; in Todo the card under the pointer gets a line at
+ * its top. The drop saves the move and the order.
+ */
+function startTicketDrag(event: PointerEvent, card: HTMLElement, project: string, ticket: Ticket): void {
+  if (event.button !== 0) return;
   event.preventDefault();
   const grip = event.currentTarget as HTMLElement;
   grip.setPointerCapture(event.pointerId);
-  entryDragging = true;
+  ticketDragging = true;
   card.classList.add("dragging");
-  const list = card.parentElement;
-  const cards = () => [...(list?.children ?? [])].filter((one): one is HTMLElement => one instanceof HTMLElement && one.classList.contains("planned"));
-  let target: number | null = null;
-  const mark = (y: number) => {
-    const all = cards();
-    let index = all.length;
-    for (const [at, one] of all.entries()) {
-      const box = one.getBoundingClientRect();
-      if (y < box.top + box.height / 2) {
-        index = at;
-        break;
-      }
-    }
-    for (const one of all) one.classList.remove("drag-over", "drag-after");
-    if (index < all.length) all[index].classList.add("drag-over");
-    else all[all.length - 1]?.classList.add("drag-after");
-    target = index;
+  let target = null as { status: TicketStatus; ids: string[] } | null;
+  const clear = () => {
+    for (const one of ticketsColumnsEl.querySelectorAll(".drag-over, .drag-after, .drop-target")) one.classList.remove("drag-over", "drag-after", "drop-target");
   };
-  const move = (moved: PointerEvent) => mark(moved.clientY);
+  const mark = (x: number, y: number) => {
+    clear();
+    target = null;
+    const column = document.elementFromPoint(x, y)?.closest<HTMLElement>(".tickets-column");
+    const status = column?.dataset.status as TicketStatus | undefined;
+    if (!column || !status || !DROP_COLUMNS.includes(status)) return;
+    column.classList.add("drop-target");
+    // The Todo column after the drop: the shown cards in their new order, then the hidden ones of a search.
+    const all = todoOrder(projectTickets(project)).map((one) => one.id);
+    let ids = all.filter((one) => one !== ticket.id);
+    if (status === "todo") {
+      const cards = [...column.querySelectorAll<HTMLElement>(".ticket-card")];
+      let index = cards.length;
+      for (const [at, one] of cards.entries()) {
+        const box = one.getBoundingClientRect();
+        if (y < box.top + box.height / 2) {
+          index = at;
+          break;
+        }
+      }
+      if (index < cards.length) cards[index].classList.add("drag-over");
+      else cards[cards.length - 1]?.classList.add("drag-after");
+      const shownIds = cards.map((one) => one.dataset.ticket ?? "");
+      const from = shownIds.indexOf(ticket.id);
+      const to = from >= 0 && index > from ? index - 1 : index;
+      const order = movedIds(shownIds, ticket.id, to);
+      ids = [...order, ...ids.filter((one) => !order.includes(one))];
+    }
+    target = { status, ids };
+  };
+  const move = (moved: PointerEvent) => mark(moved.clientX, moved.clientY);
   const end = () => {
     grip.removeEventListener("pointermove", move);
     grip.removeEventListener("pointerup", end);
     grip.removeEventListener("pointercancel", end);
-    entryDragging = false;
+    ticketDragging = false;
     card.classList.remove("dragging");
-    for (const one of cards()) one.classList.remove("drag-over", "drag-after");
-    const from = ids.indexOf(id);
-    // The target counts the dragged card too: a drop below it lands one place higher.
-    const to = target === null ? from : target > from ? target - 1 : target;
-    if (to !== from) void moveEntries(project, movedIds(ids, id, to));
-    else renderChats();
+    clear();
+    const drop = target;
+    const before = todoOrder(projectTickets(project)).map((one) => one.id);
+    if (drop && (drop.status !== ticket.status || (drop.status === "todo" && drop.ids.join("\n") !== before.join("\n")))) {
+      void moveTicket(project, ticket.id, drop.status, drop.ids);
+    } else {
+      renderTickets();
+    }
   };
   grip.addEventListener("pointermove", move);
   grip.addEventListener("pointerup", end);
@@ -4138,7 +4429,7 @@ function startEntryDrag(event: PointerEvent, card: HTMLElement, id: string, ids:
 
 /**
  * Drags a project card of the Overview by its head (overview-drag-cards), with pointer events as the
- * planned cards. The card follows the pointer freely and never goes left of or above the canvas; the
+ * ticket cards. The card follows the pointer freely and never goes left of or above the canvas; the
  * drop snaps it to the grid, puts it on top and saves the places. The project name keeps its click.
  */
 function startCardDrag(event: PointerEvent, card: OverviewCard): void {
@@ -4667,11 +4958,13 @@ function setChatScope(scope: "project" | "all"): void {
 
 /** Shows the chats that agree with the search text and the scope. */
 function renderChats(): void {
-  // A drag of a planned card keeps its cards until the drop, which renders.
-  if (entryDragging) return;
+  // A drag of a ticket card keeps its cards until the drop, which renders.
+  if (ticketDragging) return;
   // The Decisions window shows why Approve waits; a refresh of the tasks can change that.
   updateDecisionsFooter();
   updateQuestionsWindow();
+  // The tickets board and the Tickets buttons (ticket tickets).
+  renderTickets();
   // Focus mode shows the tasks of each project in its column.
   renderFocus();
   renderMap();
@@ -4739,9 +5032,6 @@ function renderChats(): void {
   const tasks = taskList(workers, infos, record);
   const taskItems = withPending(tasks, tasks.map((task) => taskElement(task)), folder);
   if (taskItems.length > 0) items.push(heading("Tasks"), ...taskItems);
-  // The messages that wait for triage (overview-backlog), in the order of the user.
-  const planned = record ? plannedItems(folder) : [];
-  if (planned.length > 0) items.push(heading("Planned"), ...planned);
   // A line that no triage chat took in time. A click on the note removes it.
   for (const line of droppedLines.filter((line) => line.project === project)) {
     items.push(
@@ -5359,8 +5649,8 @@ function createPane(tabId: string, saved: SavedPane): Pane {
           .catch((error) => console.error("triage start failed", error));
       },
       onFocus: () => focusPane(pane),
-      onMessage: (message) => addEntry(pane.host, pane.project ?? pane.cwd ?? "", message),
-      waiting: () => plannedEntries(projectKey(pane.host, pane.project ?? pane.cwd)).length,
+      onMessage: (message) => addTicket(pane.host, pane.project ?? pane.cwd ?? "", message),
+      waiting: () => waitingTickets(projectKey(pane.host, pane.project ?? pane.cwd)).length,
     });
     // The view is on top of the terminal. The terminal keeps its size behind it.
     termEl.append(pane.chat.el);
@@ -5658,7 +5948,7 @@ const FOLDER_ICON =
   '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" /></svg>';
 
 /**
- * The buttons of one project (topbar-projects): Rules, Setup, "N old" and the folder button. They
+ * The buttons of one project (topbar-projects): Tickets (ticket tickets), Rules, Setup, "N old" and the folder button. They
  * stand in the open group of the bar in Details and in the head of the column in Focus. Each acts on
  * this project, not on the focused terminal. "N old" is hidden while the project has no old session.
  */
@@ -5682,6 +5972,9 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
     });
     return button;
   };
+  const tickets = tool("Tickets", `The tickets board of ${name}`, () => openTickets(ref));
+  tickets.classList.add("project-tickets");
+  tickets.dataset.project = key;
   const rules = tool("Rules", `Show the rules that Claude Code gets in ${name}`, () => openRules(ref.host, ref.root));
   const setup = tool("Setup", `Prepare ${name} for triage and workers: the Setup pipeline window`, () => showSetup(ref.host, ref.root));
   const oldEl = tool("", `The worker sessions of ${name} that Claude Code still keeps after their task ended. Click to see them and end each one.`, () => openStale(key));
@@ -5692,8 +5985,9 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   folder.classList.add("project-folder");
   folder.setAttribute("aria-label", `Open the workspace of ${name}`);
   folder.innerHTML = FOLDER_ICON;
-  el.append(rules, setup, oldEl, folder);
+  el.append(tickets, rules, setup, oldEl, folder);
   showOldButton(oldEl, key);
+  showTicketButtons();
   return { el, oldEl };
 }
 
@@ -6099,7 +6393,7 @@ function setWorkersOpen(column: FocusColumn, open: boolean): void {
 
 /** Builds the columns, moves the panes into them and fills the left column of each. */
 function renderFocus(): void {
-  if (!focusOn || entryDragging) return;
+  if (!focusOn || ticketDragging) return;
   // A render replaces the cards. While the user types into one, the render waits for the blur.
   const active = document.activeElement;
   if (active instanceof HTMLTextAreaElement && focusEl.contains(active) && active.closest(".focus-side")) {
@@ -6190,9 +6484,6 @@ function renderFocus(): void {
       items.push(none);
     }
     items.push(...taskItems);
-    // The messages that wait for triage (overview-backlog), in the order of the user.
-    const planned = plannedItems(key);
-    if (planned.length > 0) items.push(heading("Planned"), ...planned);
     column.sideEl.replaceChildren(...items);
   }
   renderPills();
@@ -6285,6 +6576,13 @@ async function refreshFocusTasks(): Promise<void> {
   // The pills of the projects group show the state of their projects in every mode.
   for (const root of focusOn ? focusProjects : mapProjects()) roots.set(refKey(root), root);
   if (overviewOn) for (const root of overviewProjects()) roots.set(refKey(root), root);
+  // The board and the queue of the tickets (ticket tickets): a project with a Todo ticket or a card in flight.
+  if (ticketsRef) roots.set(refKey(ticketsRef), ticketsRef);
+  for (const pane of panes.values()) {
+    if (pane.role !== "triage" || !pane.project) continue;
+    const key = paneKey(pane);
+    if (waitingTickets(key).length > 0 || projectPending(key).length > 0) roots.set(key, { host: pane.host, root: pane.project });
+  }
   for (const pane of panes.values()) {
     if (pane.role === "triage" && pane.project && nightOf(pane.host)) roots.set(paneKey(pane), { host: pane.host, root: pane.project });
   }
@@ -6306,6 +6604,7 @@ async function refreshFocusTasks(): Promise<void> {
   renderFocus();
   renderMap();
   renderOverview();
+  renderTickets();
   approvePlans();
   updateAlerts();
 }
@@ -6592,7 +6891,7 @@ function mapSection(ref: ProjectRef): HTMLElement {
   const graph = mapElement("div", "map-graph");
   const links: Link[] = [];
   // The temporary cards of messages to triage take one row each, where their tasks will stand. Only
-  // the entry in flight has one: the planned entries that wait add no rows (overview-backlog).
+  // the ticket in flight has one: the Todo tickets that wait add no rows (ticket tickets).
   const cards = projectPending(key);
   const cardAt = pendingIndex(tasks, taskWaits);
   const rows = Math.max(1, tasks.length + cards.length + (older > 0 ? 1 : 0));
@@ -6921,7 +7220,7 @@ function overviewCard(ref: ProjectRef): OverviewCard {
 
 /** Draws the cards from the task and worker lists, and puts each triage chat into its card. */
 function renderOverview(): void {
-  if (!overviewOn || entryDragging || cardDragging) return;
+  if (!overviewOn || ticketDragging || cardDragging) return;
   // A render replaces the task cards. While the user types a reason to reject, it waits for the
   // blur. The message box is not in the task place, so typing there needs no wait.
   const active = document.activeElement;
@@ -6946,7 +7245,7 @@ function renderOverview(): void {
       card.tasksEl.replaceChildren(mapElement("p", "overview-none", "Reading the tasks…"));
       continue;
     }
-    // Three parts (overview-backlog): what is in work, the newest finished tasks, what comes next.
+    // Three parts (overview-backlog, tickets): what is in work, the newest finished tasks, the tickets.
     const all = projectTaskList(record);
     const tasks = listedTasks(all, overviewTask);
     const part = (title: string, items: HTMLElement[], none: string, noneClass = "overview-none") => [
@@ -6956,7 +7255,7 @@ function renderOverview(): void {
     card.tasksEl.replaceChildren(
       ...part("In work", withPending(tasks, tasks.map((task) => taskElement(task)), key), "Nothing in work"),
       ...part("Done", doneTasks(all, overviewTask, taskTime).map((task) => taskElement(task)), "Nothing done yet"),
-      ...part("Planned", plannedItems(key), "Nothing planned yet", "overview-none overview-empty"),
+      ...part("Tickets", [ticketsLine(card.host, card.root, record.tickets)], "No tickets"),
     );
   }
   const chats = [...panes.values()].flatMap((pane) => {
@@ -6970,6 +7269,14 @@ function renderOverview(): void {
   );
   for (const card of cards) card.startEl.hidden = !without.includes(projectKey(card.host, card.root));
   placeCards(cards);
+}
+
+/** The line of the Tickets part of an Overview card: the counts as a button that opens the board. */
+function ticketsLine(host: HostId, root: string, tickets: readonly Ticket[]): HTMLElement {
+  const button = mapElement("button", "overview-tickets", countText(tickets));
+  button.title = "Open the tickets board of this project";
+  button.addEventListener("click", () => openTickets({ host, root }));
+  return button;
 }
 
 /** Shows or hides the Overview. Hiding it puts each Chat view back into its pane. */
@@ -7200,6 +7507,7 @@ async function start(): Promise<void> {
   initDecisions();
   initQuestions();
   initStale();
+  initTickets();
   void pollSide();
   // A click on the alert opens the first worker that waits.
   workerAlertEl.addEventListener("click", () => {
@@ -7210,8 +7518,8 @@ async function start(): Promise<void> {
   // The temporary cards of the last run, before the first task read settles them (pending-card-persist).
   loadPending();
   void pollTasks();
-  // The planned entries go to triage one at a time, when triage is free (overview-backlog).
-  setInterval(() => void dispatchEntries(), ENTRY_TICK_MS);
+  // The Todo tickets go to triage one at a time, when triage is free (ticket tickets).
+  setInterval(() => void dispatchTickets(), TICKET_TICK_MS);
   // Before any poll: the record of the last run says which questions were open at its close.
   loadTriageQueue();
   askLostQuestions();

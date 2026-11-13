@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, State};
 
-use crate::core::backlog::{self, Entry};
+use crate::core::tickets::{self, Ticket};
 use crate::core::chats::{self, Chat, ChatView, Worker};
 use crate::core::context::{self, ContextUsage};
 use crate::core::flow::{self, FlowFile};
@@ -208,18 +208,18 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
 }
 
 #[tauri::command(async)]
-pub fn backlog_add(cwd: String, text: String) -> Result<Entry, String> {
-    backlog::backlog_add(cwd, text)
+pub fn ticket_add(cwd: String, text: String) -> Result<Ticket, String> {
+    tickets::ticket_add(cwd, text)
 }
 
 #[tauri::command(async)]
-pub fn backlog_remove(cwd: String, id: String) -> Result<(), String> {
-    backlog::backlog_remove(cwd, id)
+pub fn ticket_update(cwd: String, id: String, title: Option<String>, kind: Option<String>, task: Option<String>, note: Option<String>) -> Result<Ticket, String> {
+    tickets::ticket_update(cwd, id, title, kind, task, note)
 }
 
 #[tauri::command(async)]
-pub fn backlog_reorder(cwd: String, ids: Vec<String>) -> Result<(), String> {
-    backlog::backlog_reorder(cwd, ids)
+pub fn ticket_move(cwd: String, id: String, status: String, ids: Vec<String>, note: Option<String>) -> Result<Vec<Ticket>, String> {
+    tickets::ticket_move(cwd, id, status, ids, note)
 }
 
 #[tauri::command(async)]

@@ -625,42 +625,7 @@ button.chat-note {
   font-size: inherit;
 }
 
-/* A planned entry (overview-backlog): a message that waits for triage. The dashed edge and the
-   whole message of the temporary card, a grip at the left to drag it, and ▲ ▼ × at the right,
-   which show on hover and on keyboard focus. */
-.task.planned {
-  border-style: dashed;
-  border-color: var(--line);
-}
-
-.task.planned .task-title,
-.task.planned .task-status {
-  color: var(--muted);
-}
-
-.task.planned .task-title {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 6;
-  white-space: pre-line;
-  overflow-wrap: anywhere;
-}
-
-.task.planned .task-status .task-time {
-  color: inherit;
-  font-size: inherit;
-}
-
-.task.planned .task-top {
-  align-items: flex-start;
-}
-
-.task.planned .task-dot {
-  margin-top: 6px;
-}
-
-/* The grip stands where a task has its chevron. */
+/* The grip of a card that the pointer drags: a ticket card (ticket tickets) and an Overview card. */
 .entry-grip {
   flex: none;
   width: 12px;
@@ -673,58 +638,6 @@ button.chat-note {
 
 .entry-grip:hover {
   color: var(--text-2);
-}
-
-.task.planned.dragging {
-  opacity: 0.6;
-}
-
-.task.planned.dragging .entry-grip {
-  cursor: grabbing;
-}
-
-/* Where the card lands: a line above the card under the pointer, or below the last one. */
-.task.planned.drag-over {
-  box-shadow: 0 -2px 0 var(--accent);
-}
-
-.task.planned.drag-after {
-  box-shadow: 0 2px 0 var(--accent);
-}
-
-.entry-tools {
-  display: flex;
-  flex: none;
-  gap: 2px;
-  opacity: 0;
-}
-
-.task.planned:hover .entry-tools,
-.entry-tools:focus-within {
-  opacity: 1;
-}
-
-.entry-tools button {
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: 0;
-  border-radius: 4px;
-  background: none;
-  color: var(--text-2);
-  font: inherit;
-  font-size: calc(11px * var(--text-scale));
-  cursor: pointer;
-}
-
-.entry-tools button:hover:not(:disabled) {
-  background: var(--card);
-  color: var(--text);
-}
-
-.entry-tools button:disabled {
-  opacity: 0.35;
-  cursor: default;
 }
 
 .task-head {
@@ -1056,6 +969,341 @@ button.task-head:hover {
 }
 
 /* The window "Old sessions": one row per session, grouped by project. The window "What's new" has the same frame. */
+/* The tickets board (ticket tickets): a wide window with five columns. Each card has the frame of a
+   task card: the title, the type tag, the date and the state line, and the buttons of its column. */
+#tickets {
+  width: 94vw;
+  height: 86vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 50%);
+  color: var(--text);
+  font-size: calc(13px * var(--text-scale));
+}
+
+#tickets[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#tickets::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+#tickets header {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 8px 8px 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+#tickets h2 {
+  margin: 0;
+  font-size: calc(16px * var(--text-scale));
+  font-weight: 600;
+}
+
+#tickets-count {
+  padding: 0 7px;
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text-2);
+  font-size: calc(12px * var(--text-scale));
+}
+
+#tickets-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(11px * var(--text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#tickets-search {
+  width: 200px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+#tickets-new {
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#tickets-close {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: calc(18px * var(--text-scale));
+  cursor: pointer;
+}
+
+#tickets-close:hover {
+  background: var(--card);
+}
+
+#tickets-error {
+  flex: none;
+  margin: 0;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+#tickets-columns {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(5, minmax(180px, 1fr));
+  gap: 10px;
+  min-height: 0;
+  padding: 12px;
+  overflow-x: auto;
+}
+
+.tickets-column {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.tickets-column.drop-target {
+  border-color: var(--accent-line);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+.tickets-column-head {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 12px 7px;
+  color: var(--text-2);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.tickets-column-count {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.tickets-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 40px;
+  padding: 0 8px 10px;
+  overflow-y: auto;
+}
+
+.tickets-none {
+  margin: 4px;
+  color: var(--muted);
+}
+
+.ticket-card {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 8px 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.ticket-card.in-progress,
+.ticket-card.in-flight {
+  border-color: var(--work-line);
+}
+
+.ticket-card.new {
+  border-color: var(--wait-line);
+}
+
+.ticket-card.canceled {
+  opacity: 0.75;
+}
+
+.ticket-card.dragging {
+  opacity: 0.6;
+}
+
+.ticket-card.dragging .entry-grip {
+  cursor: grabbing;
+}
+
+/* Where the card lands in Todo: a line above the card under the pointer, or below the last one. */
+.ticket-card.drag-over {
+  box-shadow: 0 -2px 0 var(--accent);
+}
+
+.ticket-card.drag-after {
+  box-shadow: 0 2px 0 var(--accent);
+}
+
+.ticket-top {
+  display: flex;
+  gap: 4px;
+  align-items: flex-start;
+}
+
+.ticket-title {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: text;
+}
+
+.ticket-rename {
+  flex: 1;
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--accent-line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.ticket-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
+.ticket-type {
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ticket-type.type-fix {
+  border-color: var(--danger-bg);
+  color: var(--danger);
+}
+
+.ticket-type.type-feature {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.ticket-type.type-refactor {
+  border-color: var(--work-line);
+  color: var(--work);
+}
+
+.ticket-type.type-content {
+  border-color: var(--wait-line);
+  color: var(--wait);
+}
+
+.ticket-state {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ticket-state.failed {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.ticket-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+}
+
+.ticket-tools button {
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: calc(11px * var(--text-scale));
+  cursor: pointer;
+}
+
+.ticket-tools button:hover:not(:disabled) {
+  background: var(--card);
+  color: var(--text);
+}
+
+.ticket-tools button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.ticket-new {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px dashed var(--accent-line);
+  border-radius: 10px;
+}
+
+.ticket-new textarea {
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
 #stale,
 #changelog {
   width: min(92vw, 720px);
@@ -5489,12 +5737,23 @@ body.overview-mode .chats-resize {
   margin-top: 0;
 }
 
-/* "Nothing planned yet" stands in an empty dashed card, where the planned cards would stand. */
-.overview-none.overview-empty {
+/* The Tickets part of a card (ticket tickets): the counts as a button that opens the board. */
+.overview-tickets {
   margin: 0 0 6px;
-  padding: 9px 12px;
+  padding: 7px 12px;
   border: 1px dashed var(--line);
   border-radius: 10px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: calc(13px * var(--text-scale));
+  text-align: left;
+  cursor: pointer;
+}
+
+.overview-tickets:hover {
+  border-color: var(--accent-line);
+  color: var(--text);
 }
 
 .overview-card > .focus-start {
