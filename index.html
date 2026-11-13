@@ -197,233 +197,391 @@
         </p>
 
         <h3>Before you start</h3>
+        <p class="tldr">You need Claude Code and a project folder.</p>
         <ul>
           <li>Install Claude Code and sign in. The command <code>claude</code> must start in a terminal.</li>
-          <li>A project that is a git repository is best. Dispatch then uses the top folder of the repository. A folder without git also works.</li>
+          <li>Use a git repository for the project if you can. A folder without git also works.</li>
         </ul>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li>In a git repository, Dispatch uses the top folder of the repository as the project.</li>
+          </ul>
+        </details>
 
         <h3>Set up a project</h3>
-        <p>Do these steps one time for each project.</p>
+        <p class="tldr">Do these steps one time for each project.</p>
         <ol>
           <li>
-            Click <b>+</b> in the projects group of the top bar and select the folder of your project.
-            <span class="does">In the modes Use hosts and This PC and hosts the folder chooser of Dispatch opens; with several hosts, or this PC and a host, it asks for the computer too (see Where the work runs). A project that is not set up shows the Setup pipeline window. A project that is set up opens its workspace at once: go to step 6.</span>
+            Click <b>+</b> in the projects group of the top bar. Select the folder of your project.
+            <span class="does">A new project shows the Setup pipeline window.</span>
           </li>
           <li>
             Read the steps.
-            <span class="does">The window shows the project settings and seven steps. Each step has the mark "To do" or "Done". Nothing changes at this time. Click a step to see its file and the text that it adds. Under the steps the window lists the rules of the project that conflict with the pipeline, each with its file as a link. A click opens the file in the viewer, also for a rule outside the project; <b>Open in editor</b> there lets you change such a rule yourself.</span>
+            <span class="does">Each step shows "To do" or "Done". Nothing changes yet.</span>
           </li>
           <li>
             Click <b>Apply</b>.
-            <span class="does">Dispatch does the steps that are not done. It makes no commit, so you can look at the changes in git first. When all steps are done, the button <b>Commit to git</b> becomes available.</span>
+            <span class="does">Dispatch does the steps that are not done. It makes no commit.</span>
           </li>
           <li>
             Click <b>Commit to git</b>.
-            <span class="does">Dispatch commits the setup files of the project on the current branch: <code>CLAUDE.md</code>, the three files in <code>.claude</code>, and the script, the two options files, the list of the measuring commands and the gate command in <code>.dispatch</code>. Your other changes stay out of the commit, and Dispatch makes no push. The window shows the commit, or the reason when there is no commit: no git repository, nothing to commit, or the error of git. The work run of a task starts only when the project has no uncommitted changes outside <code>.dispatch</code>. Without this commit, the first approval is refused and names the setup files. The task files in <code>.dispatch</code> need no commit from you: Dispatch commits them.</span>
+            <span class="does">Dispatch commits the setup files.</span>
           </li>
           <li>
             Click <b>Close</b>.
-            <span class="does">The workspace opens: a new tab with two terminals, Triage at the left and Workers at the right. Claude Code starts in both. A close with a step still To do adds nothing; click <b>+</b> again to start over.</span>
+            <span class="does">The workspace opens: triage at the left, the workers at the right.</span>
           </li>
           <li>
-            Type your first task in the Triage terminal.
-            <span class="does">Triage starts a worker that writes a plan and tells you when the plan is ready. You approve the plan in the Tasks section of the Chats panel. The same worker then does the work, and triage tells you the result.</span>
+            Type your first task in the triage chat.
+            <span class="does">Triage tells you when the plan is ready.</span>
           </li>
         </ol>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li>In the modes Use hosts and This PC and hosts, the folder chooser of Dispatch opens. With several computers, it asks for the computer too (see Where the work runs).</li>
+            <li>A project that is set up skips the window and opens its workspace: go to step 6.</li>
+            <li>Click a step to see its file and the text that it adds.</li>
+            <li>Under the steps, the window lists the rules of the project that conflict with the pipeline, each with its file as a link. A click opens the file in the viewer, also for a rule outside the project. <b>Open in editor</b> there lets you change the rule yourself.</li>
+            <li>Apply makes no commit, so you can look at the changes in git first. When all steps are done, <b>Commit to git</b> becomes available.</li>
+            <li><b>Commit to git</b> commits on the current branch: <code>CLAUDE.md</code>, the three files in <code>.claude</code>, and the script, the two options files, the measure commands and the gate command in <code>.dispatch</code>. Your other changes stay out of the commit. Dispatch makes no push.</li>
+            <li>The window shows the commit, or the reason for no commit: no git repository, nothing to commit, or the error of git.</li>
+            <li>A work run starts only when the project has no uncommitted changes outside <code>.dispatch</code>. Without the setup commit, the first approval is refused and names the setup files. Dispatch commits the task files in <code>.dispatch</code> itself.</li>
+            <li>The workspace is a new tab with two terminals. Claude Code starts in both.</li>
+            <li>A close with a step still To do adds nothing. Click <b>+</b> again to start over.</li>
+          </ul>
+        </details>
 
         <h3>What Setup pipeline changes</h3>
+        <p class="tldr">Apply writes these files into the project.</p>
         <table>
           <thead>
             <tr><th>Step</th><th>Where</th><th>What it does</th></tr>
           </thead>
           <tbody>
-            <tr>
-              <td>Task files</td>
-              <td>The folder <code>.dispatch</code> in the project</td>
-              <td>Each worker writes its report here, and the state of each task is here. Triage writes its briefs to the folder <code>briefs</code>, and each worker writes its plan to the folder <code>plans</code>. The options of the two runs are in <code>plan-flags.txt</code> and <code>work-flags.txt</code>; the lists above Workers change them. Git tracks the folder, so a clone has the history of the tasks. Dispatch commits its files itself (the commit message starts with "Dispatch:"), except while a work run runs without a report, and Approve does not count them as changes. A project of an older version has the folder <code>&lt;project&gt;-reports</code> next to it: Apply moves its files into <code>.dispatch</code> and overwrites nothing. The step shows the number of files first.</td>
-            </tr>
-            <tr>
-              <td>Allow rules</td>
-              <td><code>.claude/settings.local.json</code></td>
-              <td>Triage can run the worker script and check workers without a permission prompt, except the approve verb of the script: a deny rule keeps it for the Approve button. Each session can read and write the task files in <code>.dispatch</code> without a prompt; Apply removes the rules of an older version that name <code>&lt;project&gt;-reports</code>, and triage can read the job folders of the workers (<code>%USERPROFILE%\.claude\jobs</code>, where a worker keeps the screenshots of its visual test).</td>
-            </tr>
-            <tr>
-              <td>Worktree isolation off</td>
-              <td><code>.claude/settings.json</code></td>
-              <td>Each worker works in the project folder and not in a separate copy. You see its changes at once.</td>
-            </tr>
-            <tr>
-              <td>Section in CLAUDE.md</td>
-              <td><code>CLAUDE.md</code></td>
-              <td>Adds the section "Background workers" with the rules for triage and for the workers: a task is two runs of one worker, the plan run edits nothing, your yes starts the work run, and the worker ends with one local commit and never pushes. A section with an older text is replaced.</td>
-            </tr>
-            <tr>
-              <td>Working rules</td>
-              <td><code>CLAUDE.md</code></td>
-              <td>Adds the section "Working rules": plain words, no duration estimates, only the user's words are approval, reproduce a bug before the fix, scripts write the proof, and more. Each rule has a checkbox. Apply adds the checked rules. With no checked rule, Apply adds no section.</td>
-            </tr>
-            <tr>
-              <td>Worker script</td>
-              <td><code>.dispatch/worker.ps1</code></td>
-              <td>The script that starts, resumes and stops a worker. Triage runs it to start a plan run and to send your follow-ups. Dispatch runs it when you click Approve, Reject, Stop or an answer in the Tasks section. It refuses to start the work run when the project has uncommitted changes, when the worker still runs, or when the task was stopped.</td>
-            </tr>
-            <tr>
-              <td>Measure before the plan</td>
-              <td><code>.dispatch/measure-commands.txt</code></td>
-              <td>Off: done, and nothing changes. On: the plan run may run the commands of the box under the switch, and no other command, through the worker script. Each command runs with cmd.exe in the project folder, one at a time in the project, and stops after 10 minutes (a first line <code># limit &lt;seconds&gt;</code> changes that). The output and the throw-away scripts go into <code>.dispatch/measure/&lt;task&gt;/</code>, which git ignores: Apply adds the line <code>measure/</code> to <code>.dispatch/.gitignore</code>. The step is done when the box has a command. When a command changed files of the project, the task card says so.</td>
-            </tr>
-            <tr>
-              <td>Task branches</td>
-              <td><code>.dispatch/merge-gate.txt</code></td>
-              <td>Off: done, and nothing changes. On: each task works on its own branch <code>task/&lt;task&gt;</code>, made at Approve from the branch that the project was on when the plan run started (the base). The worker commits there and never merges or pushes. When the report is written, Dispatch switches the project back to the base and commits the task files there. Then the task card shows <b>Merge</b>. The gate command of the box under the switch runs on the merged code first, for at most 4 hours (a first line <code># limit &lt;seconds&gt;</code> changes that); its log goes into <code>.dispatch/merge/</code>, which git ignores: Apply adds the line <code>merge/</code> to <code>.dispatch/.gitignore</code>. The step "Allow rules" adds a deny rule, so triage cannot merge.</td>
-            </tr>
-            <tr>
-              <td>Triage role</td>
-              <td><code>.claude/triage.md</code></td>
-              <td>Tells the session in the Triage terminal that it is triage: it plans and checks, and it does no implementation. The project settings change this text.</td>
-            </tr>
+            <tr><td>Task files</td><td><code>.dispatch</code></td><td>Holds the briefs, plans, reports and the state of each task.</td></tr>
+            <tr><td>Allow rules</td><td><code>.claude/settings.local.json</code></td><td>Triage runs the worker script without a permission prompt.</td></tr>
+            <tr><td>Worktree isolation off</td><td><code>.claude/settings.json</code></td><td>Workers work in the project folder, so you see their changes.</td></tr>
+            <tr><td>Section in CLAUDE.md</td><td><code>CLAUDE.md</code></td><td>Adds the rules for triage and the workers.</td></tr>
+            <tr><td>Working rules</td><td><code>CLAUDE.md</code></td><td>Adds rules for the work, for example plain words.</td></tr>
+            <tr><td>Worker script</td><td><code>.dispatch/worker.ps1</code></td><td>Starts, resumes and stops a worker.</td></tr>
+            <tr><td>Measure before the plan</td><td><code>.dispatch/measure-commands.txt</code></td><td>Optional: commands that the plan run may run.</td></tr>
+            <tr><td>Task branches</td><td><code>.dispatch/merge-gate.txt</code></td><td>Optional: each task gets its own git branch.</td></tr>
+            <tr><td>Triage role</td><td><code>.claude/triage.md</code></td><td>Tells triage to plan and check, not to implement.</td></tr>
           </tbody>
         </table>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li><b>Task files.</b> Each worker writes its report and the state of its task into <code>.dispatch</code>. Triage writes its briefs to <code>briefs</code>, and each worker writes its plan to <code>plans</code>.</li>
+            <li>The options of the two runs are in <code>plan-flags.txt</code> and <code>work-flags.txt</code>. The lists above Workers change them.</li>
+            <li>Git tracks the folder, so a clone has the history of the tasks. Dispatch commits these files itself (the commit message starts with "Dispatch:"), except while a work run runs without a report. Approve does not count them as changes.</li>
+            <li>A project of an older version has the folder <code>&lt;project&gt;-reports</code> next to it. Apply moves its files into <code>.dispatch</code> and overwrites nothing. The step shows the number of files first.</li>
+            <li><b>Allow rules.</b> Triage can run the worker script and check workers without a prompt. A deny rule keeps the approve verb of the script for the Approve button. Each session can read and write the task files in <code>.dispatch</code> without a prompt.</li>
+            <li>Apply removes the rules of an older version that name <code>&lt;project&gt;-reports</code>. Triage can also read the job folders of the workers (<code>%USERPROFILE%\.claude\jobs</code>), where a worker keeps the screenshots of its visual test.</li>
+            <li><b>Worktree isolation off.</b> A worker works in the project folder, not in a separate copy.</li>
+            <li><b>Section in CLAUDE.md.</b> The section "Background workers": a task is two runs of one worker, the plan run edits nothing, your yes starts the work run, and the worker ends with one local commit and never pushes. Apply replaces a section with an older text.</li>
+            <li><b>Working rules.</b> The section "Working rules": plain words, no duration estimates, only the user's words are approval, reproduce a bug before the fix, scripts write the proof, and more. Each rule has a checkbox. Apply adds the checked rules. With no checked rule, Apply adds no section.</li>
+            <li><b>Worker script.</b> Triage runs it to start a plan run and to send your follow-ups. Dispatch runs it when you click Approve, Reject, Stop or an answer. It refuses to start the work run when the project has uncommitted changes, when the worker still runs, or when the task was stopped.</li>
+            <li><b>Measure before the plan.</b> Off: the step is done, and nothing changes. On: the plan run may run the commands of the box under the switch, and no other command, through the worker script. The step is done when the box has a command.</li>
+            <li>Each command runs with cmd.exe in the project folder, one at a time in the project. It stops after 10 minutes; a first line <code># limit &lt;seconds&gt;</code> changes that. The output and the throw-away scripts go into <code>.dispatch/measure/&lt;task&gt;/</code>, which git ignores (Apply adds <code>measure/</code> to <code>.dispatch/.gitignore</code>). When a command changed files of the project, the task card says so.</li>
+            <li><b>Task branches.</b> Off: the step is done, and nothing changes. On: each task works on its own branch <code>task/&lt;task&gt;</code>. Approve makes it from the branch that the project was on when the plan run started (the base). The worker commits there and never merges or pushes.</li>
+            <li>When the report is written, Dispatch switches the project back to the base and commits the task files there. Then the task card shows <b>Merge</b>. The gate command of the box under the switch runs on the merged code first, for at most 4 hours; a first line <code># limit &lt;seconds&gt;</code> changes that.</li>
+            <li>The log of the gate goes into <code>.dispatch/merge/</code>, which git ignores (Apply adds <code>merge/</code> to <code>.dispatch/.gitignore</code>). The step "Allow rules" adds a deny rule, so triage cannot merge.</li>
+            <li><b>Triage role.</b> The text tells the session in the Triage terminal that it is triage: it plans and checks, and it does no implementation. The project settings change this text.</li>
+          </ul>
+        </details>
 
         <h3>Project settings</h3>
-        <p>The settings are in the Setup pipeline window. The first two are on for a new project, the other three are off.</p>
+        <p class="tldr">Switches in the Setup pipeline window for this project.</p>
         <ul>
           <li><b>Short reports.</b> Triage tells you the result and your decisions in a few lines. It gives details when you ask.</li>
           <li><b>Fixed title.</b> A new triage chat has the name "Triage" in the chat list.</li>
-          <li><b>Approve plans automatically.</b> Dispatch starts the work run as soon as a plan is ready, the project has no uncommitted changes and no other work run runs. A plan whose Decisions section has a decision with the mark <code>HOLD:</code> waits for your click. The line in the triage chat then says "approved automatically". The setting applies at once.</li>
-          <li><b>Measure before the plan.</b> The plan run may run the commands that you write in the box under the switch before it writes the plan: the tests, a browser test, a measuring script. The plan then has a section "Measured" with each command, what it showed and what it means; a fault that the plan run did not reproduce says "not reproduced". The plan run still edits no file, starts no agent and asks you nothing. After a change, click <b>Apply</b>: the options of the plan run and the section in <code>CLAUDE.md</code> change with the switch. A project that was set up before stays off.</li>
-          <li><b>Task branches.</b> Each task works on its own git branch, so your branch stays clean until you merge. Approve makes the branch <code>task/&lt;task&gt;</code> from the branch that the project was on at the plan run, and the worker commits there. When the worker is done, Dispatch switches the project back to that branch; the task card then shows <b>Merge into &lt;branch&gt;</b>. Write a gate command into the box under the switch, for example your test suite: Merge runs it on the merged code and makes the merge commit only when it passes. Night mode does not merge. After a change, click <b>Apply</b>. A project that was set up before stays off.</li>
+          <li><b>Approve plans automatically.</b> Dispatch starts the work run when a plan is ready.</li>
+          <li><b>Measure before the plan.</b> The plan run may run your commands before it writes the plan.</li>
+          <li><b>Task branches.</b> Each task works on its own git branch.</li>
+          <li>After a change, click <b>Apply</b>.</li>
         </ul>
-        <p>After a change of Short reports, click <b>Apply</b>. The next start of the workspace (the folder button of the project, or the start of the app) then opens a new triage chat, because a chat keeps the role with which it started.</p>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li>Short reports and Fixed title are on for a new project. The other three are off. A project that was set up before stays off for Measure before the plan and Task branches.</li>
+            <li>A change of Short reports applies to a new triage chat only, because a chat keeps the role with which it started. The next start of the workspace (the folder button of the project, or the start of the app) opens a new triage chat.</li>
+            <li><b>Approve plans automatically</b> applies at once. It waits when the project has uncommitted changes or another work run runs. A plan with a decision marked <code>HOLD:</code> waits for your click. The line in the triage chat says "approved automatically".</li>
+            <li><b>Measure before the plan.</b> Write the commands into the box under the switch: the tests, a browser test, a measuring script. The plan then has a section "Measured" with each command, what it showed and what it means. A fault that the plan run did not reproduce says "not reproduced".</li>
+            <li>The plan run still edits no file, starts no agent and asks you nothing. Apply changes the options of the plan run and the section in <code>CLAUDE.md</code> with the switch.</li>
+            <li><b>Task branches.</b> Your branch stays clean until you merge. Approve makes the branch <code>task/&lt;task&gt;</code> from the branch that the project was on at the plan run, and the worker commits there.</li>
+            <li>When the worker is done, Dispatch switches the project back to that branch. The task card then shows <b>Merge into &lt;branch&gt;</b>.</li>
+            <li>Write a gate command into the box under the switch, for example your test suite. Merge runs it on the merged code and makes the merge commit only when it passes. Night mode does not merge.</li>
+          </ul>
+        </details>
 
         <h3>The workspace</h3>
+        <p class="tldr">The triage chat at the left, the workers at the right.</p>
         <ul>
-          <li><b>Triage</b> (left). Type your tasks here. For each task, triage writes a brief, starts the plan run of a worker and tells you when the plan is ready. You approve the plan in the Tasks section of the Chats panel, the worker does the work, and triage reports to you. A message that you send from the Chat view is a <b>planned message</b> first: Dispatch keeps it as a file in <code>.dispatch/backlog/</code> of the project and sends it to triage when triage is free, one at a time, in your order. A message that starts with <code>/</code> (a command of Claude Code) goes at once. The Overview and the Tasks section below tell more. Dispatch writes one line into this chat when a worker is done, blocked or failed, and when you approved, rejected, stopped or answered in the Tasks section. You can click Approve also while another work run edits the project or the project has uncommitted changes: the card then says "Approved · waits for the project", and Dispatch starts the work run when the project is free. <b>Cancel approval</b> takes it back.</li>
-          <li><b>Chat</b> and <b>Terminal</b> above Triage select its view. Chat shows the messages as formatted text, with a box for your message. Enter sends the message. Ctrl+V adds an image from the clipboard. A question of triage shows its options as buttons: click one, or press Ctrl+Enter for the first. A permission prompt of triage ("Allow this read …?", "Do you want to proceed?") shows the same way, marked Permission. <b>Other…</b> opens the terminal for an answer in your words. <b>Cancel</b> at the right end leaves a question without an answer, like Esc in Claude Code; triage then waits for your message. A permission prompt has no Cancel: use its No. Terminal shows Claude Code itself. Use it for a menu or a slash command.</li>
-          <li><b>Commands in the chat.</b> A code block has a copy button at its top right. A one-line command also has <b>▶</b>: it runs the command in a <b>Commands</b> terminal of the project, in the project folder, below the triage chat. The terminal stays for the next command; while a program still runs in it, the next command gets a second one. A command with a part in <code>&lt;…&gt;</code> goes into the terminal without Enter: fill in that part, then press Enter. The × of its bar closes a Commands terminal.</li>
-          <li><b>Workers</b> (right). This is the agent view of Claude Code. It lists the workers of the project. Select a worker here to look at its work or to answer a permission prompt.</li>
-          <li><b>Environment</b> in the side panel of a terminal shows the shell, the folder, the branch, the changes and the Claude Code session that runs there. The row <b>Remote Control</b> has a switch: a click on off types <code>/remote-control</code> into that session, on this PC or on its host, and the row says "turning on …" until Claude Code confirms; then it shows the real state again. A click on on types <code>/remote-control</code> too and chooses <b>Disconnect this session</b> in the menu that Claude Code shows; the row says "turning off …" meanwhile. When the menu does not show as expected, Dispatch closes it with Esc and changes nothing. The switch is grey while the session works or waits for an answer.</li>
-          <li><b>Model and effort.</b> The two lists above Triage apply at the next start of triage. Above Workers there are two pairs: <b>plan</b> for the plan run and <b>work</b> for the work run. They apply to the next run that triage starts.</li>
-          <li><b>Agents.</b> A worker can start agents for parts of its task in its work run. The fifth list above Workers sets the maximum number of agents that one worker runs at the same time. An agent is a helper that a worker starts; the worker itself does not count as an agent. The number next to the list is the sum of the agents that the workers of the project started; it shows only when a worker started an agent. A plan run starts no agent.</li>
+          <li><b>Triage</b> (left). Type your tasks here. Triage plans each task with a worker and tells you when the plan is ready.</li>
+          <li>Approve the plan in the task card. The worker does the work, and triage reports the result.</li>
+          <li>A message waits as a <b>planned message</b> until triage is free. Dispatch sends them one at a time, in your order.</li>
+          <li><b>Chat</b> and <b>Terminal</b> above Triage select its view. Chat shows formatted messages. Terminal shows Claude Code itself.</li>
+          <li><b>Workers</b> (right). This is the agent view of Claude Code. Select a worker to see its work or answer a prompt.</li>
+          <li><b>Environment</b> in the side panel shows the shell, folder, branch and session of a terminal. Its <b>Remote Control</b> switch turns Remote Control on or off.</li>
           <li><b>The yellow button</b> in the top bar shows when a worker waits for you. Click it to open that worker.</li>
-          <li><b>Old sessions.</b> Claude Code keeps a worker session open after its turn ended, and the agent view lists it under "Needs input" for days. When such a session belongs to a finished task (done, failed or stopped), or a newer run of its task took over (Approve and each answer start a new run), the button <b>N old</b> shows among the buttons of its project: in the group of the project in the top bar in Details, and in the head of its column in Focus. It counts the old sessions of that project only, and it opens a window with the rows of that project. In the Map and the Overview the top bar keeps the button <b>N old sessions</b> for all projects; its window has one row per session, grouped by project. Each row shows the session name, its state, why it counts as old, what Claude Code still keeps (it lists the session as waiting for input, or its process still runs), and when it started and ended. <b>End</b> closes that one session with <code>claude stop</code>, on the computer that runs it; its conversation is kept. The task, its report and its state file do not change, and the triage chat gets no line. A task that works, waits at a permission prompt, or waits for your Approve, answer or Continue is never in the list, and neither is a session that you started by hand. The list covers the projects that Dispatch shows: the pills, Focus, the Map and the Overview.</li>
-          <li>The folder button of the project (the folder icon in its group in the bar in Details, and in the head of its column in Focus) continues your last triage chat of the project at a later time. A later <b>Setup pipeline</b> changes the settings and does the steps that are not done.</li>
-          <li><b>A new triage chat at a limit.</b> The third list above Triage, <b>new chat at …</b>, sets how much context the triage chat may have (100k to 400k tokens, 200k at the start; <b>no new chat</b> turns it off). It applies per project. At the limit Dispatch waits for a quiet moment: triage does not work and asks nothing, the Chat view shows with an empty message box, no line of Dispatch waits, night mode is off, and for 2 minutes there was no turn of triage and no key or click in Dispatch. Then Dispatch closes the chat with <code>/exit</code> and starts a new triage chat in the same pane, with the model and effort above Triage. In the Terminal view the new chat does not start, because Dispatch cannot see what you type there.</li>
-          <li><b>The hand-off.</b> The first message of the new chat comes from Dispatch: the open tasks and their state, how many are finished, and where the briefs, plans, reports and state files are. It holds nothing of the old chat. The lines of Dispatch that came during the switch go to the new chat after it. From then on Focus, the Map, the task cards and Project use the new chat. The old chat stays in the chat list as "earlier triage"; nothing is deleted.</li>
-          <li>If Claude Code does not end within 30 seconds after <code>/exit</code>, the old chat stays the triage chat, and Dispatch tries again after the next turn of triage. If Dispatch closes during the switch, the next start of triage starts the new chat and gives it the hand-off.</li>
-          <li>A project that has a workspace opens it by itself: at the start of the app, triage continues its chat and the agent view starts; the folder button of the project shows the workspace and starts what does not run.</li>
+          <li><b>Old sessions.</b> The button <b>N old</b> lists finished worker sessions that Claude Code still keeps open. <b>End</b> closes one.</li>
+          <li>The folder button of a project opens its workspace again and continues its last triage chat.</li>
         </ul>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li>For each task, triage writes a brief and starts the plan run of a worker. Dispatch writes one line into the triage chat when a worker is done, blocked or failed, and when you approved, rejected, stopped or answered in the Tasks section.</li>
+            <li>A planned message is a file in <code>.dispatch/backlog/</code> of the project. A message that starts with <code>/</code> (a command of Claude Code) goes at once. The Overview and the Tasks section tell more.</li>
+            <li>You can click Approve also while another work run edits the project or the project has uncommitted changes. The card then says "Approved · waits for the project", and Dispatch starts the work run when the project is free. <b>Cancel approval</b> takes it back.</li>
+            <li>A question of triage shows its options as buttons. Click one, or press Ctrl+Enter for the first.</li>
+            <li>In the Chat view, Enter sends the message and Ctrl+V adds an image from the clipboard. A permission prompt of triage ("Allow this read …?", "Do you want to proceed?") shows as buttons too, marked Permission.</li>
+            <li><b>Other…</b> opens the terminal for an answer in your words. <b>Cancel</b> at the right end leaves a question without an answer, like Esc in Claude Code; triage then waits for your message. A permission prompt has no Cancel: use its No.</li>
+            <li>Use the Terminal view for a menu or a slash command.</li>
+            <li><b>Commands in the chat.</b> A code block has a copy button at its top right. A one-line command also has <b>▶</b>: it runs the command in a <b>Commands</b> terminal of the project, in the project folder, below the triage chat.</li>
+            <li>The Commands terminal stays for the next command. While a program still runs in it, the next command gets a second one. A command with a part in <code>&lt;…&gt;</code> goes in without Enter: fill in that part, then press Enter. The × of its bar closes it.</li>
+            <li><b>Remote Control.</b> A click on off types <code>/remote-control</code> into that session, on this PC or on its host. The row says "turning on …" until Claude Code confirms; then it shows the real state again.</li>
+            <li>A click on on types <code>/remote-control</code> too and chooses <b>Disconnect this session</b> in the menu of Claude Code. The row says "turning off …" meanwhile. When the menu does not show as expected, Dispatch closes it with Esc and changes nothing. The switch is grey while the session works or waits for an answer.</li>
+            <li><b>Model and effort.</b> The two lists above Triage apply at the next start of triage. Above Workers, <b>plan</b> sets the plan run and <b>work</b> the work run; they apply to the next run that triage starts.</li>
+            <li><b>Agents.</b> A worker can start agents for parts of its task in its work run. The fifth list above Workers sets the maximum number of agents that one worker runs at the same time. A plan run starts no agent.</li>
+            <li>The number next to that list is the sum of the agents that the workers of the project started; it shows only when a worker started an agent.</li>
+            <li><b>N old</b> shows when a session belongs to a finished task (done, failed or stopped), or a newer run of its task took over (Approve and each answer start a new run). It stands among the buttons of its project and counts that project only. In the Map and the Overview the top bar has <b>N old sessions</b> for all projects.</li>
+            <li>Each row of the window shows the session name, its state, why it counts as old, what Claude Code still keeps, and when it started and ended. <b>End</b> runs <code>claude stop</code> on the computer that runs the session; its conversation is kept. The task, its report and its state file do not change, and the triage chat gets no line.</li>
+            <li>A task that works or waits for you is never in that list, and neither is a session that you started by hand. The list covers the projects that Dispatch shows.</li>
+            <li>A later <b>Setup pipeline</b> changes the settings and does the steps that are not done.</li>
+            <li><b>A new triage chat at a limit.</b> The third list above Triage, <b>new chat at …</b>, sets how much context the triage chat may have: 100k to 400k tokens, 200k at the start. <b>no new chat</b> turns it off. It applies per project.</li>
+            <li>At the limit Dispatch waits for a quiet moment: triage does not work and asks nothing, the Chat view shows an empty message box, no line of Dispatch waits, night mode is off, and for 2 minutes there was no turn of triage and no key or click in Dispatch.</li>
+            <li>Then Dispatch closes the chat with <code>/exit</code> and starts a new triage chat in the same pane, with the model and effort above Triage. In the Terminal view the new chat does not start, because Dispatch cannot see what you type there.</li>
+            <li><b>The hand-off.</b> The first message of the new chat comes from Dispatch: the open tasks and their state, how many are finished, and where the task files are. It holds nothing of the old chat. The lines of Dispatch that came during the switch follow it.</li>
+            <li>The old chat stays in the chat list as "earlier triage"; nothing is deleted. If Claude Code does not end within 30 seconds after <code>/exit</code>, the old chat stays, and Dispatch tries again after the next turn. If Dispatch closes during the switch, the next start of triage starts the new chat with the hand-off.</li>
+            <li>At the start of the app, a project with a workspace opens it by itself: triage continues its chat and the agent view starts.</li>
+          </ul>
+        </details>
 
         <h3>Focus mode</h3>
+        <p class="tldr">One column for each project, side by side, with its chat and tasks.</p>
         <ul>
-          <li><b>Focus</b> at the left of the bar shows one column for each project, side by side: its triage chat with its tasks at the left. <b>Details</b> goes back to the terminal tabs and the chat list. <b>Overview</b> shows less: for each project only the tasks in work and a message box.</li>
-          <li>The <b>Triage</b> card at the top of the left panel shows how full the triage chat is: the tokens in use, the size of the window and the share, with a thin bar (it updates within about 10 seconds after a turn). At the limit of the list above Triage it says "new chat when quiet", and "starting a new chat…" during the switch. Its tooltip says what the new chat waits for.</li>
-          <li>The first time, focus mode takes the projects whose workspace is open. The projects group with its pills and <b>+</b> stands in the bar in Details, Focus and Map; the Overview hides it. <b>+</b> adds a project folder: a project that is not set up shows the Setup pipeline window first, then its workspace starts and the project joins focus mode; in Details it also shows the workspace of the new project. The × of a column removes the project from focus mode; its workspace stays in Details.</li>
-          <li>Drag the right edge of a column to give that project or the next one more room, and the edge between the left panel and the chat to widen the panel. Each project remembers its sizes; a double-click on an edge goes back to the usual size.</li>
-          <li>Each project has a pill in the bar: green while a worker works, orange while something waits for you. The pills show the projects of focus mode, or the projects with an open workspace when focus mode has none. A click on a pill goes to the project: in Focus to its column, in the Map to its graph, and in Details to its workspace tab (a project without a workspace gets one). In Details the current project is an open group with a blue frame: its dot, its name and its state, then the buttons <b>Rules</b>, <b>Setup</b>, <b>N old</b> (only when the project has old sessions) and the folder button. The current project is the one of the focused terminal, else the one you clicked or typed in last. The other projects are closed pills: a green number while workers work, "waits" in orange while something waits for you. A click on a closed pill makes that project the current one, and its group opens; one group is open at a time. In Focus the bar shows closed pills only.</li>
-          <li><b>Workers</b> in the head of a column opens the agent view of that project below its chat, and a second click closes it. It is closed at the start. A click on a worker row opens it too. The <b>×</b> at the right of the bar of the agent view closes it as well. The workers go on working while it is closed.</li>
-          <li>With two or more projects each project has a thin grey frame, and a blue frame marks the project you work in: the one you clicked or typed in last. The head of each column has the buttons of its project in a frame: <b>Rules</b>, <b>Setup</b>, <b>N old</b> (only when the project has old sessions) and the folder button; then Map, Workers and ×. Dispatch remembers focus mode and its projects at the next start.</li>
+          <li><b>Focus</b> at the left of the bar opens it. <b>Details</b> goes back to the terminal tabs and the chat list.</li>
+          <li>Each project has a pill in the bar: green while a worker works, orange while something waits for you.</li>
+          <li>The head of each column has the buttons of its project: <b>Rules</b>, <b>Setup</b>, <b>N old</b> and the folder button.</li>
+          <li><b>Workers</b> in the head of a column opens the agent view of that project. A second click closes it.</li>
+          <li>With two or more projects, a blue frame marks the project you work in.</li>
         </ul>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li><b>Overview</b> shows less: for each project only the tasks in work and a message box.</li>
+            <li>The <b>Triage</b> card at the top of the left panel shows how full the triage chat is: the tokens in use, the size of the window and the share, with a thin bar. It updates within about 10 seconds after a turn. At the limit it says "new chat when quiet", and "starting a new chat…" during the switch. Its tooltip says what the new chat waits for.</li>
+            <li>The first time, focus mode takes the projects whose workspace is open. The projects group with its pills and <b>+</b> stands in the bar in Details, Focus and Map; the Overview hides it.</li>
+            <li><b>+</b> adds a project folder. The × of a column removes the project from focus mode only.</li>
+            <li>A project that is not set up shows the Setup pipeline window first after <b>+</b>. Then its workspace starts and the project joins focus mode. A removed project keeps its workspace in Details.</li>
+            <li>Drag the right edge of a column to give a project more room. Drag the edge between the left panel and the chat to widen the panel. Each project remembers its sizes; a double-click on an edge goes back to the usual size.</li>
+            <li>The pills show the projects of focus mode, or the projects with an open workspace when focus mode has none. A click goes in Focus to the column, in the Map to the graph, and in Details to the workspace tab (a project without a workspace gets one).</li>
+            <li>In Details the current project is an open group with a blue frame: its dot, its name, its state and its buttons. The current project is the one of the focused terminal, else the one you clicked or typed in last.</li>
+            <li>The other projects are closed pills: a green number while workers work, "waits" in orange while something waits for you. A click on a closed pill opens its group; one group is open at a time. In Focus the bar shows closed pills only.</li>
+            <li><b>N old</b> shows only when the project has old sessions. After the buttons of the project come Map, Workers and ×.</li>
+            <li>The agent view is closed at the start. A click on a worker row opens it too, and the <b>×</b> of its bar closes it. The workers go on working while it is closed.</li>
+            <li>With two or more projects each project has a thin grey frame, and a blue frame marks the project you work in: the one you clicked or typed in last. Dispatch remembers focus mode and its projects at the next start.</li>
+          </ul>
+        </details>
 
         <h3>The Map</h3>
+        <p class="tldr">Each project as a graph: what runs and what waits for you.</p>
         <ul>
-          <li><b>Map</b> at the left of the bar shows each project of focus mode as a graph: you, triage, one row per task with its plan run and its work run, and the agents of the work run. Green works, orange waits for you, a dashed box starts when you approve. The wires show what passes: tasks to triage, briefs to the plan runs, the approved plan to the work run.</li>
-          <li>A click on something orange shows its card at the right: the plan with Decide, Approve and Reject, or the question of a worker. A click on a run or on the agents opens the <b>worker view</b>.</li>
-          <li>The worker view shows the worker, the agents it started, the last three tool calls and the last message of each, the tokens they wrote and their context, the tool calls by tool, the files they changed, a timeline of all tool calls, and under the run box what the task is about and what it did or does. Dispatch reads the session files twice a second; Claude Code writes a line when a tool call starts and ends, so a message shows when it is complete. <b>Pause</b> stops the updates while you read. <b>Map</b> goes back.</li>
-          <li>The Map shows every task that waits or runs, and the 5 newest finished ones; the others fold into "N more tasks", a click shows them. With many rows, You and Triage stand at the top. In focus mode, <b>Map</b> in the head of a column opens the Map at that project.</li>
+          <li><b>Map</b> at the left of the bar opens it. Each task is one row with its runs and agents.</li>
+          <li>Green works, orange waits for you. Click something orange to decide, approve or answer.</li>
+          <li>Click a run to open the <b>worker view</b>: what the worker and its agents do now.</li>
         </ul>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li>The graph shows you, triage, the tasks and the agents of the work run. A dashed box starts when you approve. The wires show what passes: tasks to triage, briefs to the plan runs, the approved plan to the work run.</li>
+            <li>A click on something orange shows its card at the right: the plan with Decide, Approve and Reject, or the question of a worker.</li>
+            <li>The worker view shows the worker, its agents, the last three tool calls and the last message of each, the tokens and the context, the tool calls by tool, the changed files, and a timeline of all tool calls. Under the run box it says what the task is about and what it did or does.</li>
+            <li>Dispatch reads the session files twice a second. Claude Code writes a line when a tool call starts and ends, so a message shows when it is complete. <b>Pause</b> stops the updates while you read. <b>Map</b> goes back.</li>
+            <li>The Map shows every task that waits or runs, and the 5 newest finished ones; the others fold into "N more tasks". With many rows, You and Triage stand at the top. In focus mode, <b>Map</b> in the head of a column opens the Map at that project.</li>
+          </ul>
+        </details>
 
         <h3>Overview</h3>
+        <p class="tldr">One small card for each project.</p>
         <ul>
-          <li><b>Overview</b> at the left of the bar shows one card for each project with an open workspace. Drag a card by the grip ⠿ at the left of its name, or anywhere on its head but the name, to any place; when you let go, the card snaps to a 50 px grid. The dots on the canvas are that grid: the top left corner of a card lands on a dot. Dispatch keeps the places on this computer, so a restart shows them again. The card of a new project takes the first free place. A card that you drop on another lies on top of it; the card you moved last is always on top.</li>
-          <li>A card has three parts. <b>In work</b> lists the tasks in work: a worker that runs, a plan that waits for Approve, a question or a permission of a worker, a worker at a prompt, a plan that you approved until its work run starts, and the message that triage reads now (a temporary card with a dashed edge); without one it says "Nothing in work". <b>Done</b> shows the 5 newest tasks that ended (done, failed or stopped), newest first; without one it says "Nothing done yet". <b>Planned</b> shows your messages that wait for triage, in the order in which triage gets them; without one it shows an empty card with "Nothing planned yet". The tasks have the same buttons as in the Tasks section: Approve, Decisions, Reject, the answers, Continue, Stop. Each task shows the same two lines as in the Tasks section.</li>
-          <li><b>Planned messages.</b> Each message that you send from the box is a planned card first, also when triage is free; you can type many in a row. Drag a card by its grip at the left, or click ▲ or ▼, to change the order; × removes the message. Dispatch keeps each one as a Markdown file in <code>.dispatch/backlog/</code> of the project, so it stays after a restart. You can edit or delete a file in an editor; Dispatch follows within a few seconds. When triage is idle and asks nothing, Dispatch sends the first message, word for word. A command that triage runs in the background after its answer does not hold the message. Until then the message waits while triage works, also during a long command of its turn, and the line above the message box says how many messages wait. Its card then stands under In work and says "Sent to triage"; when triage starts the plan run, the task card takes its place and the file goes. A message that gives no task goes after the answer of triage. Focus and the Tasks section show the same cards under <b>Planned</b>. Dispatch commits each change of these files at once, with only these files (the commit message starts with "Backlog:"), so a clone has them and Approve still finds a clean project; an edit in an editor is committed within a few seconds.</li>
-          <li>The box at the bottom of a card is the message box of the triage chat of that project, with the same keys: Enter sends, Shift+Enter makes a new line, Ctrl+V adds an image. A text that you began in Focus stands in it too.</li>
-          <li>No message of the chat shows, also not your own. The line above the box says when triage works or waits. While triage asks a question, the question shows above the box with its buttons; <b>Other…</b> opens the project with its terminal.</li>
-          <li><b>Record of a question from the screen.</b> Claude Code writes a question into the chat only after your answer, so Dispatch reads the open question from the terminal. Each time it does, it saves what it read in a file: the folder <code>menu-reads</code> in the data folder of Dispatch (on Windows <code>%APPDATA%\com.dani.dispatch\menu-reads</code>), named <code>menu-&lt;date&gt;-&lt;time&gt;-&lt;pane&gt;.json</code>. The file holds the text of the terminal screen at each read, which lines the terminal wrapped, the question and the options that Dispatch made of it, and the times. Dispatch keeps the newest 50 files. When a question shows with a wrong text or wrong buttons, give the newest file to triage with your report. The file holds only what the terminal showed.</li>
-          <li>A click on the name of a project opens it in Focus, or in its tab when focus mode does not have it. A click on a run opens the agent view of the project the same way. Dispatch remembers the Overview at the next start.</li>
+          <li><b>Overview</b> at the left of the bar opens it.</li>
+          <li>Drag a card by its grip ⠿ to any place. It snaps to a 50 px grid; the dots show the grid.</li>
+          <li>Each card has <b>In work</b>, <b>Done</b> and <b>Planned</b>. The tasks have the same buttons as in the Tasks section.</li>
+          <li>The box at the bottom sends a message to the triage chat of the project. The chat itself does not show.</li>
         </ul>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li>The Overview shows each project with an open workspace. You can also drag a card anywhere on its head but the name. The top left corner of a card lands on a dot.</li>
+            <li>Dispatch keeps the places on this computer, so a restart shows them again. The card of a new project takes the first free place. A card that you drop on another lies on top of it; the card you moved last is always on top.</li>
+            <li><b>In work</b> lists a worker that runs, a plan that waits for Approve, a question or a permission of a worker, a worker at a prompt, a plan that you approved until its work run starts, and the message that triage reads now. Without one it says "Nothing in work".</li>
+            <li><b>Done</b> shows the 5 newest tasks that ended (done, failed or stopped), newest first. <b>Planned</b> shows your messages that wait for triage, in their order. Each task shows the same two lines as in the Tasks section.</li>
+            <li><b>Planned messages.</b> Each message that you send from the box is a planned card first, also when triage is free; you can type many in a row. Drag a card by its grip, or click ▲ or ▼, to change the order; × removes it. When triage is idle and asks nothing, Dispatch sends the first message, word for word. A command that triage runs in the background after its answer does not hold the message.</li>
+            <li>Until then the message waits while triage works, also during a long command of its turn. The line above the box says how many messages wait. Its card then stands under In work and says "Sent to triage". When triage starts the plan run, the task card takes its place. A message that gives no task goes after the answer of triage.</li>
+            <li>Each planned message is a Markdown file in <code>.dispatch/backlog/</code> of the project, so it stays after a restart. You can edit or delete a file in an editor; Dispatch follows within a few seconds. Dispatch commits each change of these files at once, with only these files (the commit message starts with "Backlog:"). Focus and the Tasks section show the same cards under <b>Planned</b>.</li>
+            <li>The message box has the keys of the chat: Enter sends, Shift+Enter makes a new line, Ctrl+V adds an image. A text that you began in Focus stands in it too.</li>
+            <li>The line above the box says when triage works or waits. While triage asks a question, the question shows above the box with its buttons; <b>Other…</b> opens the project with its terminal.</li>
+            <li><b>Record of a question from the screen.</b> Claude Code writes a question into the chat only after your answer, so Dispatch reads the open question from the terminal. Each read goes into a file in the folder <code>menu-reads</code> in the data folder of Dispatch, named <code>menu-&lt;date&gt;-&lt;time&gt;-&lt;pane&gt;.json</code>.</li>
+            <li>The file holds the screen text of each read, which lines the terminal wrapped, the question and the options that Dispatch made of it, and the times. Dispatch keeps the newest 50 files. When a question shows a wrong text or wrong buttons, give the newest file to triage with your report.</li>
+            <li>A click on the name of a project opens it in Focus, or in its tab when focus mode does not have it. A click on a run opens the agent view of the project the same way. Dispatch remembers the Overview at the next start.</li>
+          </ul>
+        </details>
 
         <h3>Night mode</h3>
+        <p class="tldr">The work goes on while you are away.</p>
         <ul>
-          <li>The <b>Nightmode</b> switch in the bar (left of the pane buttons) is green while night mode is on. Turn it on when you go away: the work goes on, and each decision that would wait for you takes its recommended option.</li>
-          <li>The switch is the one state of night mode. The program that does the work keeps it: Dispatch in the mode This PC does the work, each host in the mode Use hosts. In the mode This PC and hosts, Dispatch keeps the switch of this PC and each host keeps its own; the one switch in the bar shows them together. So a restart brings it back as you left it, and every window of a host shows the same switch.</li>
-          <li><b>With several hosts</b> each host has its own switch. The one switch in the bar is on when every host is on and off when every host is off. When the hosts differ, it shows a third look: the knob in the middle and half the green; its tooltip names the hosts that are on and off. A click on the third look turns night mode on for every host; a click on on turns it off for every host. A host that is not reachable keeps its own switch and is left out of the look until it is back.</li>
-          <li>While the switch is on, the computer that does the work does not go to sleep by itself: this PC in the mode This PC does the work, and each host whose switch is on in the mode Use hosts. In the mode This PC and hosts, this PC stays awake while its own switch is on, and each host while its switch is on. The display may turn off. When the switch goes off, or the program ends (also at a crash), the computer sleeps as before. A computer that only shows a window may sleep. Keep a window open on a computer that stays awake, because the automatic actions of night mode run in a window; the window on the host's PC takes over within about 30 s when the other window sleeps. On a Mac, Dispatch runs the system tool <code>caffeinate</code> for this.</li>
-          <li>On and off send <code>/nightmode start</code> and <code>/nightmode end</code> and a Dispatch line to the triage chat of each project with a workspace. Triage keeps the list of the defaults and writes the morning file (your <code>nightmode</code> skill).</li>
-          <li>The triage chat follows the switch. At each start and each new triage chat, Dispatch compares the switch with the chat's night file (<code>.claude/state/night/night-mode.json</code>) and sends the command again when the chat is behind. The chat never changes the switch.</li>
-          <li>While it is on, Dispatch approves a plan whose decisions all have a default (it writes them into the plan), and answers a question of a worker with its recommended option. Triage hears each default. A plan with a HOLD decision and a report that needs a permission wait for you; triage puts them under Reminders.</li>
-          <li>In focus mode a project whose triage wrote a morning file (<code>.claude/state/night/morning-&lt;date&gt;.md</code>) gets a <b>Morning</b> button at the top of its column. It opens the newest one: the defaults night mode took with their options, what was built, and what waits for you.</li>
-          <li>A question of triage about the night defaults (its text names the night and the defaults) has <b>View defaults</b> in the Chat view. It opens the same morning list in the viewer, and the question stays open: close the viewer, then answer or cancel. Without a morning list the button says "No morning list found".</li>
+          <li>Turn on the <b>Nightmode</b> switch in the bar when you go away. It is green while night mode is on.</li>
+          <li>Dispatch approves plans and answers questions with their recommended option. A HOLD decision and a permission still wait for you.</li>
+          <li>The computer that does the work stays awake while the switch is on.</li>
+          <li>In the morning, <b>Morning</b> at the top of a column shows the defaults that night mode took.</li>
         </ul>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li>The switch is the one state of night mode. The program that does the work keeps it: Dispatch in the mode This PC does the work, each host in the mode Use hosts. In the mode This PC and hosts, Dispatch keeps the switch of this PC and each host keeps its own; the one switch in the bar shows them together. So a restart brings it back as you left it, and every window of a host shows the same switch.</li>
+            <li><b>With several hosts</b> each host has its own switch. The switch in the bar is on when every host is on, and off when every host is off. When the hosts differ, the knob stands in the middle; its tooltip names the hosts that are on and off. A click on that look turns night mode on for every host.</li>
+            <li>A host that is not reachable keeps its own switch and is left out of the look until it is back.</li>
+            <li>The display may turn off. When the switch goes off, or the program ends (also at a crash), the computer sleeps as before. A computer that only shows a window may sleep.</li>
+            <li>Keep a window open on a computer that stays awake, because the automatic actions of night mode run in a window. The window on the host's PC takes over within about 30 s when the other window sleeps. On a Mac, Dispatch runs the system tool <code>caffeinate</code>.</li>
+            <li>On and off send <code>/nightmode start</code> and <code>/nightmode end</code> and a Dispatch line to the triage chat of each project with a workspace. Triage keeps the list of the defaults and writes the morning file (your <code>nightmode</code> skill).</li>
+            <li>The triage chat follows the switch. At each start and each new triage chat, Dispatch compares the switch with the night file of the chat (<code>.claude/state/night/night-mode.json</code>) and sends the command again when the chat is behind. The chat never changes the switch.</li>
+            <li>Dispatch writes the chosen defaults into the plan, and triage hears each default. A plan with a HOLD decision and a report that needs a permission wait; triage puts them under Reminders.</li>
+            <li>The morning file is <code>.claude/state/night/morning-&lt;date&gt;.md</code>. <b>Morning</b> opens the newest one: the defaults with their options, what was built, and what waits for you.</li>
+            <li>A question of triage about the night defaults has <b>View defaults</b> in the Chat view. It opens the morning list in the viewer, and the question stays open: close the viewer, then answer or cancel. Without a morning list the button says "No morning list found".</li>
+          </ul>
+        </details>
 
         <h3>The Chats panel</h3>
+        <p class="tldr">The triage chat, the tasks and your other chats.</p>
         <ul>
-          <li><b>Triage</b> at the top shows the triage chat of the project. Click it to open it. A triage chat that Dispatch replaced with a new one stands under Chats with the mark "earlier triage".</li>
-          <li><b>Older chats</b> at the end of the chat list holds the chats that started before the Dispatch setup of the project (when Apply first made its folder <code>.dispatch</code>, or the older reports folder whose files it moved there), also when Claude Code still has them open. A project without the setup has no Older chats. Click it to show or hide them. A search shows them.</li>
-          <li><b>Tasks</b> shows each task of the project with its worker, its plan and its report. A worker row says <b>Plan run</b> (it reads the code and writes the plan) or <b>Work run</b> (it executes the approved plan; Approve starts it as a copy of the plan run), and shows the state, how long the worker took ("42 s", "4 min", "1 h 12 min"; it counts on while the worker runs) and, when the worker started agents, their number ("3 agents"; "3 agents, 2 active" while some of them work). A row without a number means that the worker does the work itself. The start and the end stand in the tooltip of the row. Dispatch reads the end from the files of Claude Code; a row whose end it cannot read shows the start time instead. The Map shows the same durations. In the agent view of Claude Code (Workers, at the right) the two runs are named <code>&lt;task&gt; [plan]</code> and <code>&lt;task&gt; [work]</code>; a project gets these names after Setup pipeline → Apply. Click the worker to open it. Click the plan or the report to read it. The files of the <code>files:</code> line of a report show as a row of links at the top of the viewer, and a file name in code in the text of a report or a plan is a link; a click opens that file. A name whose file is not there gets a mark and opens nothing. <b>Open in editor</b> at the top of the viewer opens the shown file in the program of this computer for that file type, only for a file of this PC.The plan row shows when the plan file changed and has no state chip, so it does not look like a run; the state of the task stands in the header of the card and in the tooltip of the row. The report row shows the state from the first line of the report. Under the state each task shows two short lines: what it is about (the title of its brief, else your words in the brief, else the title of the plan), and what was done or is in work (the first Summary line of the plan, the first line of the report, or the open question). A long line ends in “…”; its tooltip has both lines in full. Dispatch writes nothing itself: the text is cut from the brief, the plan and the report. A task that you approved while the project was not free shows under its state, with an eye before it, which work run it waits for or how many changed files wait for a commit; its tooltip and the open card have the full reason. A message that you send to triage in the Chat view is a planned card under <b>Planned</b> first (see the Overview). When Dispatch sends it to triage, it shows as a <b>temporary card</b> with a dashed edge: your message, the time, and "Sent to triage", then "Triage reads" while triage works on it. It stands where the new task will stand, after the tasks that wait for you. When triage starts the plan run, the real task card takes its place; a message that gives two tasks gives two task cards. When triage answers without a task, the card goes a few seconds after the answer. A card goes at the latest after 10 minutes, for example when you watch triage in the Terminal view, where Dispatch does not see the end of its turn. The card stays when you close and open Dispatch; its 10 minutes count from your message. The card is not a task: it has no buttons and starts no worker.</li>
-          <li><b>Plan ready.</b> A task whose plan run is done shows the Summary section of the plan (or its Goal) and its buttons. <b>Approve all</b> takes the recommended option of every decision of the plan (the HOLD ones too), writes them into the plan under "User decisions", and starts the work run of the same worker; a plan without decisions shows <b>Approve</b>. <b>Decisions</b> opens a window with every decision and its options, the ones that wait for you first. The window starts with your words from the brief and the Goal of the plan, so you can weigh each option against them; a long text scrolls inside its box. Under the box stands the <b>TL;DR</b> of the plan: a few lines in plain words that say what changes for you and why, when the plan has one. In the window,click an option, or type your own answer under Other, then <b>Approve with these decisions</b>, or <b>Send back to the planner</b> to have the plan revised with them. It is grey while the project has uncommitted changes or while another work run of the project runs, and the reason shows below it. <b>Reject</b> asks for a reason and sends the planner back with it. A task that waits for you is first in the list.</li>
-          <li><b>Questions.</b> A worker that needs your decision writes the question into its report with its options, the recommended one first. The task shows the options as buttons. Your click goes to the worker word for word, with the number of the question in front. With several questions each click is a choice: the chosen option is marked, the title counts the questions with a choice, and another click changes it. When every question has a choice, the answers go to the worker together in one reply. A new question also opens a window by itself, like the Decisions window of a plan; <b>Answer in a window</b> in the card opens it again. The window shows every question of the report with its options, the recommended one selected; click another option, then <b>Send the answers</b> sends all answers in one reply. The window does not open by itself in night mode, at the start of Dispatch, or while another window is open. A worker that stopped at a refused step says so in its report; the task shows <b>Continue</b>. Change the rule first, then click it.</li>
-          <li><b>Merge.</b> With the setting Task branches, the open task shows a row with its branch, the branch it came from, and where it stands: checked out, waits for Merge, or merged. When the worker is done, the task shows the card "Branch task/&lt;task&gt; · waits for Merge" with <b>Merge into &lt;branch&gt;</b>. A click merges the branch with a merge commit, after the gate command of the project passed; it says "merging" meanwhile, and the Approve of another task waits. A failed gate, a conflict in your code or uncommitted changes merge nothing; the card shows why until the next click. A conflict only in the task files of <code>.dispatch</code> takes the version of your branch. Dispatch deletes the merged branch and writes one line into the triage chat. Dispatch makes no push. When the worker left uncommitted changes, the project stays on the task branch, and the branch row says so.</li>
-          <li><b>Stop.</b> A task whose plan run or work run works, or waits at a prompt, shows <b>Stop</b> under its rows. The first click asks; <b>Stop now</b> ends the worker through the worker script, and <b>Keep running</b> lets it go on. The task then says "stopped", and Dispatch writes one line into the triage chat. A stopped task cannot be resumed: the rest of the work needs a new task, which starts clean.</li>
-          <li><b>Chats</b> shows your Claude Code chats. Click a chat to continue it in a new tab.</li>
-          <li><b>This project</b> and <b>All projects</b> select the chats that the list shows. The search field finds a chat by its title or by its folder.</li>
-          <li>Drag the right edge of the panel to make it wider or narrower; the terminals keep at least 360 pixels. Dispatch remembers the width, and it is also the usual width of the left panel of each project in focus mode (a panel that you dragged there keeps its own width). A double-click on the edge goes back to the usual width.</li>
+          <li><b>Triage</b> at the top opens the triage chat of the project.</li>
+          <li><b>Tasks</b> shows each task with its worker rows, its plan and its report. Click a row to open it.</li>
+          <li>Each task shows two short lines: what it is about, and what was done or is in work.</li>
+          <li><b>Plan ready.</b> Click <b>Approve all</b> to take the recommended options. Click <b>Decisions</b> to choose each option.</li>
+          <li><b>Reject</b> sends the plan back with your reason.</li>
+          <li><b>Questions.</b> A question of a worker shows its options as buttons. Click one for each question.</li>
+          <li><b>Merge.</b> With Task branches on, a finished task shows <b>Merge into &lt;branch&gt;</b>.</li>
+          <li><b>Stop.</b> Ends a worker that runs. A stopped task cannot go on.</li>
+          <li><b>Chats</b> lists your Claude Code chats. Click one to continue it in a new tab.</li>
         </ul>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li>A triage chat that Dispatch replaced with a new one stands under Chats with the mark "earlier triage".</li>
+            <li><b>Older chats</b> at the end of the list holds the chats that started before the Dispatch setup of the project, also when Claude Code still has them open. A project without the setup has no Older chats. Click it to show or hide them. A search shows them.</li>
+            <li>A worker row says <b>Plan run</b> (it reads the code and writes the plan) or <b>Work run</b> (it executes the approved plan). Approve starts the work run as a copy of the plan run.</li>
+            <li>A worker row shows the state, how long the worker took ("42 s", "4 min", "1 h 12 min") and, when the worker started agents, their number ("3 agents"; "3 agents, 2 active"). The start and the end stand in its tooltip. The Map shows the same durations.</li>
+            <li>In the agent view the two runs are named <code>&lt;task&gt; [plan]</code> and <code>&lt;task&gt; [work]</code>; a project gets these names after Setup pipeline → Apply.</li>
+            <li>The files of the <code>files:</code> line of a report show as a row of links at the top of the viewer, and a file name in code in the text of a report or a plan is a link. A name whose file is not there gets a mark. <b>Open in editor</b> opens the shown file in the program of this computer, only for a file of this PC.</li>
+            <li>The plan row shows when the plan file changed and has no state chip, so it does not look like a run; the state of the task stands in the header of the card and in the tooltip of the row. The report row shows the state from the first line of the report.</li>
+            <li>The two lines come from the title of its brief (else your words in the brief, else the title of the plan), and from the first Summary line of the plan, the first line of the report, or the open question. Dispatch writes nothing itself: the text is cut from the brief, the plan and the report. A long line ends in “…”; its tooltip has both lines in full.</li>
+            <li>A task that you approved while the project was not free shows under its state, with an eye before it, which work run it waits for or how many changed files wait for a commit.</li>
+            <li>A message that you send to triage is a planned card under <b>Planned</b> first (see the Overview). When Dispatch sends it, it shows as a <b>temporary card</b> with a dashed edge: your message, the time, and "Sent to triage", then "Triage reads" while triage works on it.</li>
+            <li>The temporary card stands where the new task will stand. When triage starts the plan run, the real task card takes its place. When triage answers without a task, the card goes a few seconds after the answer, or at the latest after 10 minutes. The card stays when you close and open Dispatch. It has no buttons and starts no worker.</li>
+            <li><b>Approve all</b> also takes the HOLD decisions, writes the options into the plan under "User decisions", and starts the work run. A plan without decisions shows <b>Approve</b>. A task that waits for you is first in the list.</li>
+            <li>The Decisions window starts with your words from the brief, the Goal and the <b>TL;DR</b> of the plan. Click an option, or type your own answer under Other. Then click <b>Approve with these decisions</b>, or <b>Send back to the planner</b> to revise the plan with them.</li>
+            <li>Approve is grey while the project has uncommitted changes or another work run of the project runs; the reason shows below it.</li>
+            <li>Your answer goes to the worker word for word, with the number of the question in front. With several questions each click is a choice: the chosen option is marked, and another click changes it. When every question has a choice, the answers go to the worker together in one reply.</li>
+            <li>A new question also opens a window by itself; <b>Answer in a window</b> in the card opens it again. Click the options, then <b>Send the answers</b>. The window does not open by itself in night mode, at the start of Dispatch, or while another window is open.</li>
+            <li>A worker that stopped at a refused step says so in its report, and the task shows <b>Continue</b>. Change the rule first, then click it.</li>
+            <li><b>Merge.</b> The task shows its branch, the branch it came from, and where it stands. A click merges with a merge commit after the gate command passed, and the Approve of another task waits meanwhile. A failed gate, a conflict in your code or uncommitted changes merge nothing; the card shows why.</li>
+            <li>A conflict only in the task files of <code>.dispatch</code> takes the version of your branch. Dispatch deletes the merged branch and writes one line into the triage chat. It makes no push. When the worker left uncommitted changes, the project stays on the task branch.</li>
+            <li><b>Stop</b> asks first: <b>Stop now</b> ends the worker through the worker script, and <b>Keep running</b> lets it go on. Dispatch writes one line into the triage chat. The rest of the work needs a new task.</li>
+            <li><b>This project</b> and <b>All projects</b> select the chats that the list shows. The search field finds a chat by its title or its folder.</li>
+            <li>Drag the right edge of the panel to change its width; the terminals keep at least 360 pixels. The width is also the usual width of the left panel in focus mode. A double-click on the edge goes back to the usual width.</li>
+          </ul>
+        </details>
 
         <h3>Where the work runs</h3>
+        <p class="tldr">Do the work on this PC, or on other computers (hosts).</p>
         <ul>
-          <li>Options has three modes. <b>This PC does the work</b>: Dispatch runs the terminals, Claude Code and the workers on this computer, and nothing listens on the network. <b>Use hosts</b>: one or more computers run the program <code>dispatch-host</code>, and this window shows and controls them; nothing runs on this computer. <b>This PC and hosts</b>: Dispatch runs the work of this computer itself and shows and controls the hosts of the list too; no host program runs on this computer. The computers find each other over Tailscale.</li>
-          <li>A change of the mode or of the host list takes effect at the next start of Dispatch.</li>
+          <li>Options has three modes. <b>This PC does the work</b> is the default.</li>
+          <li><b>Use hosts</b>: other computers do the work, and this window controls them.</li>
+          <li><b>This PC and hosts</b>: this PC works, and this window controls the hosts too.</li>
         </ul>
         <p>To work from a second computer, do these steps one time.</p>
         <ol>
           <li>
-            On the computer that does the work, open Options and click <b>Start the host</b> in <b>Run the host on this PC</b>.
-            <span class="does">The host listens on the Tailscale address of this computer and on 127.0.0.1, never on all addresses. The Key box shows its key. Dispatch adds the row 127.0.0.1 with the name "This PC" to the host list, switches this window to Use hosts and starts again. On Windows, <b>Start the host at each Windows sign-in</b> starts the host after each sign-in.</span>
+            On the computer that does the work, open Options. Click <b>Start the host</b> in <b>Run the host on this PC</b>.
+            <span class="does">The Key box shows the key of the host.</span>
           </li>
           <li>
             On the other computer, open Options, select <b>Use hosts</b> and click <b>Add host</b>.
-            <span class="does">A new row shows: Name, Address, Port, Key and Remove.</span>
+            <span class="does">A new row shows.</span>
           </li>
           <li>
-            Fill in the row.
-            <span class="does">Name: your name for the computer. Address: its Tailscale name (<code>name.tailnet.ts.net</code>) or its <code>100.x</code> address. Port: empty is 7470. Key: copy it from the Key box of the other computer, or from the file <code>host-key.txt</code> in the data folder of the host.</span>
+            Fill in the name, the Tailscale address and the key.
           </li>
           <li>
             Close Dispatch and start it again.
-            <span class="does">The window connects to every host of the list. The title says "Dispatch · host &lt;name&gt;" with one host and "Dispatch · hosts &lt;name&gt;, &lt;name&gt;" with more.</span>
+            <span class="does">The window connects to the host.</span>
           </li>
           <li>
-            Click <b>+</b> and select a folder of a host.
-            <span class="does">Its workspace opens on that host, as in Set up a project.</span>
+            Click <b>+</b> and select a folder of the host.
           </li>
         </ol>
-        <ul>
-          <li><b>Several hosts.</b> One window shows the projects of every host. With more than one host, each project name gets " · &lt;host name&gt;" after it: in the pills, the Focus columns, the Map, the Overview cards, the chat groups of All projects and the tab labels. So two projects with the same folder name on two computers stay apart. With one host the names do not change.</li>
-          <li><b>This PC and hosts.</b> This computer counts as one more computer named "This PC", first in the list. The title says "Dispatch · This PC + host &lt;name&gt;" (or "+ hosts &lt;name&gt;, &lt;name&gt;"), each project name gets " · This PC" or " · &lt;host name&gt;" after it, the bar at the bottom names "This PC" or the host of the focused terminal, and the folder chooser lists "This PC" first. The first tab at a start without saved tabs runs on this PC, and a tab or a project saved in the mode This PC does the work stays on this PC. The bar below the top bar has rows only for hosts that are gone; the terminals of this PC keep working. Nothing on this computer listens on the network. <b>Start the host</b> in Run the host on this PC switches the window to Use hosts, because the host then does the work of this PC.</li>
-          <li><b>Where a new terminal runs.</b> The first tab at a start without saved tabs runs on the first host of the list. A split runs on the host of the focused terminal. A chat or a worker opens on its own host.</li>
-          <li><b>The folder chooser.</b> In the modes Use hosts and This PC and hosts, <b>+</b> opens a folder chooser inside the window. It lists the folders of a host. It starts at the home folder of the host. Click a folder to go into it, or type a path and press Enter, then click <b>Choose</b>. With several hosts a list box at its top selects the host; the host of the focused terminal comes first. In the mode This PC does the work the usual folder dialog of the system opens.</li>
-          <li><b>A host that is gone.</b> A bar below the top bar shows one row for each host that is not reachable: "Host &lt;name&gt; (&lt;address&gt;:&lt;port&gt;) is not reachable. Dispatch tries again…". Dispatch tries again after 1 second, then after 2, 4, 8 and 10 seconds. The projects and terminals of the other hosts keep working. Typing into a terminal of the gone host goes nowhere, and nothing on that computer stops. When the host is back, a terminal that still runs there continues; a terminal that ended gets a new shell.</li>
-          <li><b>A host that refused the window</b>, for example with "the key is wrong", gets a row with its reason and <b>Try again</b>. Dispatch does not try again by itself. Correct the key in Options and start Dispatch again; Try again connects once more with the same key.</li>
-          <li><b>What travels between the computers.</b> Only the window and its hosts talk, and only on the tailnet; Tailscale encrypts the traffic. At the start of each connection the window sends the key, the versions and the id of the window. Then your keystrokes and the terminal output, the chats, the task files, the files that the window shows, and a pasted image as bytes travel. The window keeps its tabs, its saved terminal screens, its theme and its other choices on its own computer. The host keeps the terminals of a closed window, and the Nightmode switch and the triage chats of its projects. A file of a host opens in the viewer only; <b>Open in editor</b> shows for a file of this PC.</li>
-          <li><b>Run the host on this PC</b> in Options. <b>Start the host</b>: see step 1. <b>Stop the host</b> ends the host and its terminals and removes the row 127.0.0.1 from the list and starts Dispatch again; with an empty list this window goes back to This PC does the work. <b>New key</b> starts the host again with a new key; every other window needs the new key in its row.</li>
-        </ul>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li>A change of the mode or the hosts applies at the next start of Dispatch.</li>
+            <li><b>This PC does the work</b>: Dispatch runs the terminals, Claude Code and the workers here, and nothing listens on the network. <b>Use hosts</b>: the hosts run the program <code>dispatch-host</code>, and nothing runs on this computer. <b>This PC and hosts</b>: no host program runs on this computer.</li>
+            <li><b>Start the host</b>: the host listens on the Tailscale address of this computer and on 127.0.0.1, never on all addresses. Dispatch adds the row 127.0.0.1 with the name "This PC", switches this window to Use hosts and starts again. On Windows, <b>Start the host at each Windows sign-in</b> starts it after each sign-in.</li>
+            <li>The row has Name, Address, Port, Key and Remove. Address: the Tailscale name (<code>name.tailnet.ts.net</code>) or the <code>100.x</code> address. Port: empty is 7470. Key: copy it from the Key box, or from <code>host-key.txt</code> in the data folder of the host.</li>
+            <li>The window connects to every host of the list. The title says "Dispatch · host &lt;name&gt;" with one host and "Dispatch · hosts &lt;name&gt;, &lt;name&gt;" with more. The workspace of a host folder opens on that host.</li>
+            <li><b>Several hosts.</b> One window shows the projects of every host. With more than one host, each project name gets " · &lt;host name&gt;" after it, so two projects with the same folder name stay apart. With one host the names do not change.</li>
+            <li><b>This PC and hosts.</b> This computer counts as one more computer named "This PC", first in the list. The title says "Dispatch · This PC + host &lt;name&gt;", and each project name gets " · This PC" or " · &lt;host name&gt;". The bar at the bottom names the computer of the focused terminal.</li>
+            <li>A tab or a project saved in the mode This PC does the work stays on this PC. Nothing on this computer listens on the network. <b>Start the host</b> switches the window to Use hosts, because the host then does the work of this PC.</li>
+            <li><b>Where a new terminal runs.</b> The first tab at a start without saved tabs runs on the first computer of the list. A split runs on the computer of the focused terminal. A chat or a worker opens on its own computer.</li>
+            <li><b>The folder chooser.</b> In the modes Use hosts and This PC and hosts, <b>+</b> opens a folder chooser inside the window. It starts at the home folder of the host. Click a folder to go into it, or type a path and press Enter, then click <b>Choose</b>. With several hosts a list box at its top selects the host. In the mode This PC does the work the folder dialog of the system opens.</li>
+            <li><b>A host that is gone.</b> A bar below the top bar shows one row for each host that is not reachable. Dispatch tries again after 1, 2, 4, 8 and 10 seconds. The other hosts keep working. Typing into a terminal of the gone host goes nowhere, and nothing on that computer stops. When the host is back, a terminal that still runs there continues.</li>
+            <li><b>A host that refused the window</b>, for example with "the key is wrong", gets a row with its reason and <b>Try again</b>. Correct the key in Options and start Dispatch again.</li>
+            <li><b>What travels between the computers.</b> Only the window and its hosts talk, only on the tailnet, and Tailscale encrypts the traffic. The window sends the key, the versions and its id first. Then your keystrokes, the terminal output, the chats, the task files, the shown files and pasted images travel.</li>
+            <li>The window keeps its tabs, saved screens, theme and other choices on its own computer. The host keeps the terminals of a closed window, the Nightmode switch and the triage chats of its projects. A file of a host opens in the viewer only.</li>
+            <li><b>Run the host on this PC</b> in Options: <b>Stop the host</b> ends the host and its terminals, removes the row 127.0.0.1 and starts Dispatch again; with an empty list this window goes back to This PC does the work. <b>New key</b> starts the host again with a new key; every other window needs the new key.</li>
+          </ul>
+        </details>
 
         <h3>Other buttons</h3>
+        <p class="tldr">The rest of the buttons.</p>
         <ul>
-          <li><b>The four icons</b> split the terminal to the right, split it down, close it, and show or hide the side panels.</li>
-          <li><b>The buttons of a project.</b> Each project has four buttons, in this order: <b>Rules</b> opens the Rules window of the project, <b>Setup</b> opens its Setup pipeline window, <b>N old</b> opens the window Old sessions with the old sessions of the project (it shows only when the project has one), and the folder button opens the workspace of the project (a project that is not set up shows the Setup pipeline window first). In Details they stand in the group of the current project in the bar; in Focus in the head of each column. In the Map and the Overview the right side of the top bar keeps <b>Rules</b>, <b>Setup pipeline</b> and <b>N old sessions</b>: Rules and Setup pipeline act on the project of the focused terminal there, and N old sessions shows the old sessions of all projects.</li>
-          <li><b>Rules</b> shows all the rules that Claude Code gets in the project. <b>Copy all</b> puts them into the clipboard as text. <b>Analyse rules</b> asks Claude Code which rules are obsolete or problematic; the three lists left of it set the time limit of the check (3 to 30 minutes, Dispatch stops the check after it), the model and the effort. Dispatch keeps the choice on this computer, and the check of the Setup pipeline window uses the same values. While a check runs, the line above the findings shows the time that passed and the limit. Each finding has a link with the name of its file; a click opens the file in the viewer.</li>
-          <li>Each rule of a Markdown file has two buttons. <b>Off</b> takes the rule out of the file; the list keeps it with a line through it, and <b>On</b> puts it back at the end of its group. <b>Remove</b> deletes the rule after a second click. The rules that are off are kept on this computer only. A rule of the triage role comes back with the next Apply of Setup pipeline. The settings in JSON files have no buttons.</li>
-          <li><b>Update to …</b> shows when a new version is available. A click saves your tabs, downloads the installer and installs in one step: Dispatch closes, a progress bar runs, and the new version opens with your tabs. On a Mac the click downloads the disk image and opens it, and Dispatch closes: drag Dispatch to Applications and start it again; the app is not signed, so run <code>xattr -cr /Applications/Dispatch.app</code> in Terminal once before that start. The check reads the public releases on GitHub and needs no login and no extra tool. The line below the title of this window shows the version and the result of the check. Dispatch checks once an hour; <b>Check for update</b> next to that line checks now, and after it found a new version it installs it.</li>
-          <li><b>Options</b> (the gear next to <b>?</b>) opens the Options window. It holds where the work runs (see Where the work runs above), the alerts, the colour theme of the window and the terminals (Slate, or Graphite with a blue, indigo, teal or amber accent) and the size of the text in the window and in the terminals (90 to 150 percent). A change applies at once, and Dispatch keeps the choices on this computer.</li>
-          <li><b>Alerts.</b> When a task starts to wait for you, Dispatch alerts you one time: a plan is ready, a report has a question or needs a permission, or a worker waits at a prompt. Each alert has its own switch in Options: a system <b>notification</b> that names the task and what it waits for, a short, quiet <b>chime</b>, and the Dispatch button in the taskbar that <b>blinks</b> until you open the window. The tasks that already wait when Dispatch starts give no alert. The chime plays only after your first key or click in Dispatch since its start, because the window may play sound only then. While night mode is on, only a plan with a HOLD decision, a permission and a prompt alert, because night mode takes the other decisions itself. A test build that runs with <code>npm run tauri dev</code> shows the notification as from PowerShell.</li>
-          <li><b>The bar at the bottom</b> shows on its right side "Claude account:" with the email of the Claude account that Claude Code is signed in with on the computer that does the work, then the weekly usage of that account for all models and for Fable, the version of Claude Code and the version of Dispatch. The computer that does the work is this PC, or the computer of the focused terminal in the modes Use hosts and This PC and hosts. With several hosts the name of that host stands in front of the account, and a click in a terminal of another host shows the values of that host. When the versions of this window and a host differ, the version part shows both versions in the wait colour; with several hosts it names the host. Dispatch reads the account and the versions at the start and then once a minute, so a new login or an update of Claude Code shows within a minute. The email stays on this computer. Without a login the bar says "Not signed in to Claude Code"; without Claude Code it says "Claude Code not found".</li>
-          <li><b>The weekly usage</b> in the bar, for example "Week: all models 41 % · Fable 7 %", is the percent of the weekly limits of your subscription that is used, as <code>/usage</code> of Claude Code shows it. After it the bar shows when the week starts again, for example "Resets Jan 1, 9:00am": one time when both limits reset together, and each with its name when they differ; the tooltip adds the time zone. Dispatch reads it at the start and then every 5 minutes; each read starts Claude Code for a moment without a window, and Claude Code asks Anthropic for the numbers. The tooltip of each value says when the week starts again and when Dispatch read it. The numbers stay on this computer. When they cannot be read the bar says "Usage not known" and keeps the last values; an account without a weekly limit shows "No weekly limit", and "Fable: no weekly limit" when the usage screen has no line for Fable. Without a login or without Claude Code the two values are empty. In a narrow window the email is cut first, then the versions.</li>
-          <li><b>What's new</b> next to Check for update lists what each version of Dispatch brought, newest first. After an update the list opens once by itself with the versions since the one you had before; close it, and it stays closed until the next update. The text is the file CHANGELOG.md in the repository of Dispatch.</li>
+          <li><b>The four icons</b> split the terminal right or down, close it, and show or hide the side panels.</li>
+          <li><b>The buttons of a project.</b> <b>Rules</b>, <b>Setup</b>, <b>N old</b> and the folder button act on that project.</li>
+          <li><b>Rules</b> shows all the rules that Claude Code gets in the project. <b>Analyse rules</b> finds old or bad rules.</li>
+          <li><b>Update to …</b> shows when a new version is ready. Click it to install the update.</li>
+          <li><b>Options</b> (the gear) holds the mode, the alerts, the colour theme and the size of the text.</li>
+          <li><b>Alerts.</b> Dispatch tells you when a task waits: a <b>notification</b>, a <b>chime</b>, and a taskbar button that <b>blinks</b>.</li>
+          <li><b>The bar at the bottom</b> shows your Claude account, its weekly usage and the versions.</li>
+          <li><b>What's new</b> next to Check for update lists what each version brought.</li>
           <li><b>?</b> opens this help.</li>
         </ul>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li>In Details the buttons of a project stand in the group of the current project in the bar; in Focus in the head of each column. <b>Setup</b> opens the Setup pipeline window. <b>N old</b> shows only when the project has old sessions. The folder button opens the workspace; a project that is not set up shows the Setup pipeline window first.</li>
+            <li>In the Map and the Overview the right side of the top bar keeps <b>Rules</b>, <b>Setup pipeline</b> and <b>N old sessions</b>. Rules and Setup pipeline act on the project of the focused terminal there, and N old sessions shows the old sessions of all projects.</li>
+            <li><b>Copy all</b> puts the rules into the clipboard as text. The three lists left of <b>Analyse rules</b> set the time limit of the check (3 to 30 minutes), the model and the effort. The Setup pipeline window uses the same values. While a check runs, the line above the findings shows the time that passed and the limit.</li>
+            <li>Each finding has a link with the name of its file; a click opens the file in the viewer.</li>
+            <li>Each rule of a Markdown file has two buttons. <b>Off</b> takes the rule out of the file; the list keeps it with a line through it, and <b>On</b> puts it back at the end of its group. <b>Remove</b> deletes the rule after a second click. The rules that are off are kept on this computer only.</li>
+            <li>A rule of the triage role comes back with the next Apply of Setup pipeline. The settings in JSON files have no buttons.</li>
+            <li>The update saves your tabs, downloads the installer and installs: Dispatch closes, a progress bar runs, and the new version opens with your tabs. The check reads the public releases on GitHub and needs no login.</li>
+            <li>On a Mac the click downloads the disk image and opens it, and Dispatch closes. Drag Dispatch to Applications. The app is not signed, so run <code>xattr -cr /Applications/Dispatch.app</code> in Terminal once before the next start.</li>
+            <li>The line below the title of this window shows the version and the result of the check. Dispatch checks once an hour; <b>Check for update</b> checks now, and installs a new version that it found.</li>
+            <li>The Options window holds where the work runs (see Where the work runs), the alerts, the colour theme of the window and the terminals (Slate, or Graphite with a blue, indigo, teal or amber accent) and the size of the text (90 to 150 percent). A change applies at once, and Dispatch keeps the choices on this computer.</li>
+            <li>An alert comes one time when a plan is ready, a report has a question or needs a permission, or a worker waits at a prompt. Each alert has its own switch in Options. The notification names the task and what it waits for. The button blinks until you open the window.</li>
+            <li>The tasks that already wait when Dispatch starts give no alert. The chime plays only after your first key or click in Dispatch, because the window may play sound only then. In night mode only a plan with a HOLD decision, a permission and a prompt alert. A test build that runs with <code>npm run tauri dev</code> shows the notification as from PowerShell.</li>
+            <li>The bar at the bottom shows "Claude account:" with the email of the account that Claude Code uses on the computer that does the work. Then come the weekly usage for all models and for Fable, the version of Claude Code and the version of Dispatch. The email stays on this computer.</li>
+            <li>The computer that does the work is this PC, or the computer of the focused terminal with hosts. With several hosts the host name stands in front of the account. When the versions of this window and a host differ, the bar shows both in the wait colour.</li>
+            <li>Dispatch reads the account and the versions at the start and then once a minute. Without a login the bar says "Not signed in to Claude Code"; without Claude Code it says "Claude Code not found".</li>
+            <li><b>The weekly usage</b>, for example "Week: all models 41 % · Fable 7 %", is the used percent of the weekly limits of your subscription, as <code>/usage</code> of Claude Code shows it. After it the bar shows when the week starts again, for example "Resets Jan 1, 9:00am"; the tooltip adds the time zone and when Dispatch read it.</li>
+            <li>Dispatch reads the usage at the start and then every 5 minutes. Each read starts Claude Code for a moment without a window, and Claude Code asks Anthropic for the numbers. The numbers stay on this computer.</li>
+            <li>When the usage cannot be read, the bar says "Usage not known" and keeps the last values. An account without a weekly limit shows "No weekly limit", and "Fable: no weekly limit" when the usage screen has no line for Fable. In a narrow window the email is cut first, then the versions.</li>
+            <li>After an update, <b>What's new</b> opens once by itself with the versions since the one you had before. The text is the file CHANGELOG.md in the repository of Dispatch.</li>
+          </ul>
+        </details>
       </div>
     </dialog>
     <dialog id="options">

@@ -1894,6 +1894,26 @@ button.task-head:hover {
   font-weight: 600;
 }
 
+/* The short text under each heading of the Help (ticket help-short). */
+#help-body .tldr {
+  margin: 6px 0 4px;
+  color: var(--text);
+}
+
+/* The folded details of a Help section: a text line, not a box. */
+#help-body details.help-more {
+  margin: 6px 0 0;
+  border: 0;
+  background: none;
+}
+
+#help-body details.help-more summary {
+  color: var(--text-2);
+  font-size: calc(12px * var(--text-scale));
+  font-weight: 600;
+  cursor: pointer;
+}
+
 /* The dialog of the Setup pipeline button. */
 #setup {
   width: min(90vw, 760px);

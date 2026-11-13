@@ -15,6 +15,8 @@ export function showVersion(text: string): void {
 const SEEN_KEY = "help-seen";
 
 function open(): void {
+  // The Help opens short: every folded Details block of a section starts closed (ticket help-short).
+  for (const block of bodyEl.querySelectorAll<HTMLDetailsElement>("details[open]")) block.open = false;
   dialog.showModal();
   bodyEl.scrollTop = 0;
 }

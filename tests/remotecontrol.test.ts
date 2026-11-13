@@ -123,7 +123,8 @@ test("main.ts builds the row as a switch and types the command on the host of th
 
 test("the Help names the switch of the Environment panel and its wait text", () => {
   const start = HTML.indexOf("<h3>The workspace</h3>");
-  const section = HTML.slice(start, HTML.indexOf("</ul>", start));
+  // The whole section, with its folded details (help-short).
+  const section = HTML.slice(start, HTML.indexOf("<h3>Focus mode</h3>", start));
   assert.match(section, /<b>Environment<\/b>/);
   assert.match(section, /Remote Control/);
   assert.match(section, /\/remote-control/);

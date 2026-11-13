@@ -431,7 +431,8 @@ test("the moved card gets its place and lies on top", () => {
 test("the cards stand free on the page, and the Help says they can be dragged", () => {
   const card = rules(CSS).filter((rule) => rule.selectors.includes(".overview-card") && rule.condition === "");
   assert.ok(card.some((rule) => rule.declarations.some(([name, value]) => name === "position" && value === "absolute")));
-  const help = /<h3>Overview<\/h3>\s*<ul>([\s\S]*?)<\/ul>/.exec(HTML)?.[1] ?? "";
+  // The first list of the section; the TL;DR line stands before it (help-short).
+  const help = /<h3>Overview<\/h3>[\s\S]*?<ul>([\s\S]*?)<\/ul>/.exec(HTML)?.[1] ?? "";
   assert.match(help, /drag/i);
   assert.match(help, /snaps to a 50 px grid/);
   assert.match(MAIN, /startCardDrag\(/);
@@ -464,6 +465,6 @@ test("the canvas shows one dot per slot of the grid, under the corner of each ca
   const scrolling = all.filter((rule) => rule.declarations.some(([name]) => name === "background-attachment"));
   assert.deepEqual(scrolling.flatMap((rule) => rule.selectors), ["#overview"]);
   // The Help says what the dots are.
-  const help = /<h3>Overview<\/h3>\s*<ul>([\s\S]*?)<\/ul>/.exec(HTML)?.[1] ?? "";
+  const help = /<h3>Overview<\/h3>[\s\S]*?<ul>([\s\S]*?)<\/ul>/.exec(HTML)?.[1] ?? "";
   assert.match(help, /dots/);
 });
