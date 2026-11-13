@@ -1,4 +1,5 @@
 import { call, type HostId } from "./backend";
+import { openViewer, statFile } from "./files";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import {
@@ -211,8 +212,20 @@ async function updateFinding(finding: Finding): Promise<void> {
 /** Shows the result of the check above the groups. */
 async function showFindings(check: RulesCheck): Promise<void> {
   const state = stateLine(checkText(check, "all"));
+  // The link of a finding shows its file in the viewer, above this popup.
+  const openFinding = async (finding: Finding) => {
+    try {
+      const entry = await statFile(folderHost, folder, finding.file);
+      if (entry) await openViewer(entry);
+      else state.textContent = `The file ${finding.file} was not found.`;
+    } catch (error) {
+      state.textContent = `Could not open ${finding.file}: ${error}`;
+    }
+  };
   const rows = new Map<Finding, HTMLElement>();
-  for (const finding of check.findings) rows.set(finding, await findingElement(finding, removeFinding, updateFinding));
+  for (const finding of check.findings) {
+    rows.set(finding, await findingElement(finding, removeFinding, updateFinding, (target) => void openFinding(target)));
+  }
   const all = removeAllButton(
     check.findings,
     async (finding) => {

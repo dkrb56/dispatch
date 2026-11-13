@@ -1,5 +1,6 @@
 import DOMPurify from "dompurify";
 import { marked } from "marked";
+import { findingOpen } from "./filelinks";
 
 /** One rule that the check found not fine (the `check_rules` command, ticket rules-check). */
 export interface Finding {
@@ -166,12 +167,14 @@ function button(text: string, title: string, onClick: () => void): HTMLButtonEle
  * The row of one finding: the rule, the verdict with the reason, the recommended text, and the
  * buttons. `onRemove` and `onUpdate` give a promise; the buttons stay off while it runs, and the
  * row leaves the list when it ends well. A rule outside the project gets a warning and no button.
- * Without `onUpdate` the row has no Update button.
+ * Without `onUpdate` the row has no Update button. With `onOpen` the row has a link with the name
+ * of its file: after the source line, or under the warning for a rule outside the project.
  */
 export async function findingElement(
   finding: Finding,
   onRemove: (finding: Finding) => Promise<void>,
   onUpdate?: (finding: Finding) => Promise<void>,
+  onOpen?: (finding: Finding) => void,
 ): Promise<HTMLElement> {
   const row = document.createElement("div");
   row.className = `finding ${finding.verdict}${finding.outside ? " outside" : ""}`;
@@ -181,6 +184,10 @@ export async function findingElement(
   const where = document.createElement("p");
   where.className = "where";
   where.textContent = `${finding.source} · ${finding.group}`;
+  const link = findingOpen(finding);
+  const open = onOpen ? button(link.label, link.title, () => onOpen(finding)) : null;
+  open?.classList.add("open");
+  if (open && !finding.outside) where.append(" · ", open);
   const reason = document.createElement("p");
   reason.className = "reason";
   reason.textContent = finding.reason;
@@ -196,6 +203,12 @@ export async function findingElement(
     warning.className = "warning";
     warning.textContent = "Outside this project: this rule holds for all your projects. Dispatch does not change it here.";
     row.append(warning);
+    if (open) {
+      const line = document.createElement("p");
+      line.className = "open-line";
+      line.append(open);
+      row.append(line);
+    }
     return row;
   }
   const buttons = document.createElement("div");

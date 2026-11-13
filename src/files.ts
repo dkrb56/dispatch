@@ -1,9 +1,10 @@
 // The gallery of thumbnails in the side panel, and the viewer for one file.
 
-import { call, type HostId } from "./backend";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { call, type HostId, LOCAL } from "./backend";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
+import { linkBase, linkPath, reportFiles } from "./filelinks";
 
 /** A file as the backend gives it (`file_stat`, `pane_info`, `night_morning`). */
 export interface FileInfo {
@@ -27,8 +28,11 @@ export function onHost(host: HostId, files: readonly FileInfo[]): FileEntry[] {
 const MAX_THUMBNAIL_BYTES = 20 * 1024 * 1024;
 const SNIPPET_CHARS = 400;
 
-const viewerEl = document.querySelector<HTMLElement>("#viewer")!;
+/** A modal dialog, so it lies above the Setup pipeline window and the Rules popup (ticket open-files-from-windows). */
+const viewerEl = document.querySelector<HTMLDialogElement>("#viewer")!;
 const viewerPathEl = document.querySelector<HTMLElement>("#viewer-path")!;
+const viewerNoteEl = document.querySelector<HTMLElement>("#viewer-note")!;
+const viewerOpenEl = document.querySelector<HTMLButtonElement>("#viewer-open")!;
 const viewerBodyEl = document.querySelector<HTMLElement>("#viewer-body")!;
 const viewerCloseEl = document.querySelector<HTMLButtonElement>("#viewer-close")!;
 
@@ -131,8 +135,11 @@ export function showGallery(
 }
 
 export function closeViewer(): void {
-  if (viewerEl.hidden) return;
-  viewerEl.hidden = true;
+  if (viewerEl.open) viewerEl.close();
+}
+
+/** Runs on the `close` event of the dialog: Esc, the close button and a click on the dark area. */
+function viewerClosed(): void {
   viewerBodyEl.replaceChildren();
   for (const url of viewerUrls) URL.revokeObjectURL(url);
   viewerUrls = [];
@@ -140,12 +147,47 @@ export function closeViewer(): void {
   onViewerClose();
 }
 
-/** Shows an image, a Markdown file or a text file on top of the terminals. */
+/** Marks each code span of a Markdown file whose whole text is a path as a link. */
+function markPaths(content: HTMLElement): void {
+  for (const code of content.querySelectorAll("code")) {
+    if (code.closest("pre")) continue;
+    const path = linkPath(code.textContent ?? "");
+    if (!path) continue;
+    code.classList.add("path");
+    code.dataset.path = path;
+    code.title = `Open ${path}`;
+  }
+}
+
+/** The row of the files of the `files:` line of a report, above its text. Null without such files. */
+function filesRow(text: string): HTMLElement | null {
+  const files = reportFiles(text);
+  if (files.length === 0) return null;
+  const row = document.createElement("div");
+  row.className = "viewer-files";
+  const label = document.createElement("span");
+  label.textContent = "Files:";
+  row.append(label);
+  for (const path of files) {
+    const link = document.createElement("button");
+    link.className = "path";
+    link.dataset.path = path;
+    link.title = `Open ${path}`;
+    link.textContent = path;
+    row.append(link);
+  }
+  return row;
+}
+
+/** Shows an image, a Markdown file or a text file on top of the terminals and of the open windows. */
 export async function openViewer(entry: FileEntry): Promise<void> {
   viewerEntry = entry;
   viewerPathEl.textContent = entry.path;
+  viewerNoteEl.textContent = "";
+  // The program of the system opens only a file of this PC (user decision 2).
+  viewerOpenEl.hidden = entry.host !== LOCAL;
   viewerBodyEl.replaceChildren();
-  viewerEl.hidden = false;
+  if (!viewerEl.open) viewerEl.showModal();
   // The keys must not go to the terminal while the viewer is open.
   viewerCloseEl.focus();
 
@@ -165,6 +207,9 @@ export async function openViewer(entry: FileEntry): Promise<void> {
         content.className = "markdown";
         // The file is not trusted. The sanitizer removes scripts and event handlers.
         content.innerHTML = DOMPurify.sanitize(await marked.parse(text));
+        markPaths(content);
+        const files = filesRow(text);
+        if (files) content.prepend(files);
       } else {
         content = document.createElement("pre");
         content.textContent = text;
@@ -190,13 +235,56 @@ async function followViewerLink(href: string): Promise<void> {
   if (target) await openViewer(target);
 }
 
+/**
+ * Opens the file of a path link (a code span or the files row). A relative path counts from the
+ * project for a task file. A path that is not there marks the link, and the view stays.
+ */
+async function followPathLink(link: HTMLElement): Promise<void> {
+  const entry = viewerEntry;
+  const path = link.dataset.path;
+  if (!entry || !path) return;
+  let target: FileEntry | null = null;
+  try {
+    target = await statFile(entry.host, linkBase(entry.path), path);
+  } catch (error) {
+    viewerNoteEl.textContent = `Could not look for ${path}: ${error}`;
+    return;
+  }
+  if (target) {
+    await openViewer(target);
+    return;
+  }
+  link.classList.add("missing");
+  link.title = `Not found: ${path}`;
+}
+
+/** Opens the shown file in the program of this PC for its type. */
+async function openInEditor(): Promise<void> {
+  const entry = viewerEntry;
+  if (!entry || entry.host !== LOCAL) return;
+  viewerNoteEl.textContent = "";
+  try {
+    await openPath(entry.path);
+  } catch (error) {
+    if (viewerEntry === entry) viewerNoteEl.textContent = `Could not open the file: ${error}`;
+  }
+}
+
 /** `onClose` runs after the viewer closes. */
 export function initViewer(onClose: () => void): void {
   onViewerClose = onClose;
+  viewerEl.addEventListener("close", viewerClosed);
   viewerCloseEl.addEventListener("click", closeViewer);
+  viewerOpenEl.addEventListener("click", () => void openInEditor());
   // A click on the dark area around the content closes the viewer.
   viewerBodyEl.addEventListener("click", (event) => {
     if (event.target === viewerBodyEl) closeViewer();
+    const pathLink = (event.target as HTMLElement).closest<HTMLElement>("[data-path]");
+    if (pathLink) {
+      event.preventDefault();
+      void followPathLink(pathLink);
+      return;
+    }
     const link = (event.target as HTMLElement).closest("a");
     if (!link) return;
     event.preventDefault();
@@ -205,7 +293,8 @@ export function initViewer(onClose: () => void): void {
   document.addEventListener(
     "keydown",
     (event) => {
-      if (event.key !== "Escape" || viewerEl.hidden) return;
+      // Esc closes only the viewer, also above another window, and reaches no other handler.
+      if (event.key !== "Escape" || !viewerEl.open) return;
       event.preventDefault();
       event.stopPropagation();
       closeViewer();

@@ -1,4 +1,5 @@
 import { call, type HostId } from "./backend";
+import { openViewer, statFile } from "./files";
 import { checkText, type Finding, findingElement, optionsText, type RulesCheck, removeAllButton, savedOptions, tick } from "./rulecheck";
 
 /** One change that the setup makes in a project. */
@@ -77,11 +78,24 @@ async function removeFinding(finding: Finding): Promise<void> {
   await call(folderHost, "set_rule", { cwd: folder, file: finding.file, group: finding.group, text: finding.text, state: "off" });
 }
 
-/** Shows the conflicts of the rules with the pipeline, with Remove and Remove all. */
+/** Shows the file of a finding in the viewer, above this window; the state line says when it is not there. */
+async function openFinding(finding: Finding): Promise<void> {
+  try {
+    const entry = await statFile(folderHost, folder, finding.file);
+    if (entry) await openViewer(entry);
+    else checkStateEl.textContent = `The file ${finding.file} was not found.`;
+  } catch (error) {
+    checkStateEl.textContent = `Could not open ${finding.file}: ${error}`;
+  }
+}
+
+/** Shows the conflicts of the rules with the pipeline, with Remove and Remove all, and a link to each file. */
 async function showConflicts(check: RulesCheck): Promise<void> {
   checkStateEl.textContent = checkText(check, "pipeline");
   const rows = new Map<Finding, HTMLElement>();
-  for (const finding of check.findings) rows.set(finding, await findingElement(finding, removeFinding));
+  for (const finding of check.findings) {
+    rows.set(finding, await findingElement(finding, removeFinding, undefined, (target) => void openFinding(target)));
+  }
   const all = removeAllButton(
     check.findings,
     async (finding) => {

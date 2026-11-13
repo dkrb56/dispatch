@@ -10,6 +10,10 @@
     "core:window:allow-set-title",
     "core:window:allow-request-user-attention",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "**" }, { "path": "**/.*" }, { "path": "**/.*/**" }]
+    },
     "dialog:allow-open",
     "notification:default"
   ]

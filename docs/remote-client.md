@@ -99,7 +99,7 @@ Some actions run in the page today, on a timer: the lines that Dispatch writes i
 | Paste an image | Works. The image goes from the laptop clipboard to a file in the host's `pasted` folder, and Claude Code gets that path. |
 | Paste text, type, keys | Work as today. Each keystroke makes one round trip on the tailnet, so a slow network shows as typing lag. |
 | Project button and focus mode folder | The native folder dialog would show the laptop's folders. A folder chooser inside the page lists the desktop's folders through `dir_list` instead. A text box for a path is in the same chooser. Local mode keeps the native dialog. |
-| Links | `http` and `mailto` links open in the laptop's browser. A file link opens the viewer with the desktop's file. A file cannot open in a desktop program from the laptop. |
+| Links | `http` and `mailto` links open in the laptop's browser. A file link opens the viewer with the desktop's file. A file cannot open in a desktop program from the laptop. Since ticket `open-files-from-windows` the viewer has "Open in editor"; it shows only for a file of this PC, not for a file of a host. |
 | Update | The laptop's Dispatch checks and installs its own update. The hello compares versions, and the status bar warns when the window and the host differ. On the desktop, an update first stops the host, because the installer cannot replace a running program, and starts it again after. |
 | Notifications, chime, blink | On the laptop, for the tasks of the desktop. |
 | Status bar | The Claude account and the weekly usage of the desktop. |
