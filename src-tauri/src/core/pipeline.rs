@@ -2143,6 +2143,10 @@ pub struct TaskInfo {
     /// The tokens of the sessions of `<ticket>.session` per model, each reply once (ticket
     /// task-tokens). Empty without the file or without a transcript.
     tokens: Vec<crate::core::flow::ModelUsage>,
+    /// The Bash commands of the plan run and the work run with their exit codes and output tails,
+    /// from the transcripts of the sessions of `<ticket>.session` (ticket task-evidence). Empty
+    /// without the file or without a transcript.
+    evidence: Vec<crate::core::flow::Evidence>,
 }
 
 /// The branch of a task (ticket task-branches): from its branch file and from git.
@@ -2184,15 +2188,22 @@ fn read_branch_file(path: &Path) -> Option<BranchInfo> {
 /// `work <id>`, in order, each id once. An id of other characters than letters, digits and hyphens
 /// is left out: it becomes a part of a path. Empty without the file.
 fn read_session_file(path: &Path) -> Vec<String> {
-    let mut ids: Vec<String> = Vec::new();
+    read_session_runs(path).into_iter().map(|(_, id)| id).collect()
+}
+
+/// The `(run, session id)` lines of a session file, with the checks of `read_session_file`: the run
+/// is `plan` or `work`, the id can be a part of a path, and an id counts once, under its first run
+/// (ticket task-evidence: the run gives the stage of a command).
+fn read_session_runs(path: &Path) -> Vec<(String, String)> {
+    let mut runs: Vec<(String, String)> = Vec::new();
     for line in fs::read_to_string(path).unwrap_or_default().lines() {
         let mut words = line.split_whitespace();
-        let (Some("plan" | "work"), Some(id), None) = (words.next(), words.next(), words.next()) else { continue };
-        if id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') && !ids.iter().any(|known| known == id) {
-            ids.push(id.to_string());
+        let (Some(run @ ("plan" | "work")), Some(id), None) = (words.next(), words.next(), words.next()) else { continue };
+        if id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') && !runs.iter().any(|(_, known)| known == id) {
+            runs.push((run.to_string(), id.to_string()));
         }
     }
-    ids
+    runs
 }
 
 /// The folder of the Claude Code transcripts: `.claude/projects` in the home folder of the user
@@ -2360,6 +2371,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
             measure_changed: Vec::new(),
             branch: None,
             tokens: Vec::new(),
+            evidence: Vec::new(),
         });
         tasks.len() - 1
     }
@@ -2394,12 +2406,14 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
         let note = project.measure_dir().join(&task.name).join("changed.txt");
         task.measure_changed = fs::read_to_string(note).unwrap_or_default().lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect();
     }
-    // The tokens of each task from the transcripts of its sessions (ticket task-tokens).
+    // The tokens of each task from the transcripts of its sessions (ticket task-tokens), and the
+    // Bash commands of its runs (ticket task-evidence).
     if let Some(projects) = claude_projects_dir() {
         for task in tasks.iter_mut() {
             let sessions = read_session_file(&project.session_file(&task.name));
             if !sessions.is_empty() {
                 task.tokens = crate::core::flow::token_usage(&projects, &sessions);
+                task.evidence = crate::core::flow::evidence_of(&projects, &read_session_runs(&project.session_file(&task.name)));
             }
         }
     }
@@ -3186,6 +3200,10 @@ mod tests {
         write_file(&project.session_file("t-1"), text).unwrap();
         assert_eq!(read_session_file(&project.session_file("t-1")), ["00000000-0000-4000-8000-00000000aaaa", "00000000-0000-4000-8000-00000000bbbb", "00000000-0000-4000-8000-00000000cccc"]);
         assert!(read_session_file(&project.session_file("t-2")).is_empty());
+        // The runs keep the run of each id, the first one for an id that repeats.
+        let runs = read_session_runs(&project.session_file("t-1"));
+        let pairs: Vec<(&str, &str)> = runs.iter().map(|(run, id)| (run.as_str(), id.as_str())).collect();
+        assert_eq!(pairs, [("plan", "00000000-0000-4000-8000-00000000aaaa"), ("work", "00000000-0000-4000-8000-00000000bbbb"), ("work", "00000000-0000-4000-8000-00000000cccc")]);
         // A session file makes no task; a task with sessions but no transcript counts no tokens.
         write_file(&project.reports.join("t-1.state"), "working\n").unwrap();
         write_file(&project.session_file("t-9"), "plan 00000000-0000-4000-8000-00000000dddd\n").unwrap();
@@ -3195,6 +3213,8 @@ mod tests {
         assert!(list.tasks[0].tokens.is_empty());
         let json = serde_json::to_value(&list.tasks[0]).unwrap();
         assert_eq!(json["tokens"], serde_json::json!([]));
+        assert!(list.tasks[0].evidence.is_empty());
+        assert_eq!(json["evidence"], serde_json::json!([]));
     }
 
     /// The proof of ticket task-tokens: the token rows of each task of the project in
@@ -3210,6 +3230,31 @@ mod tests {
             for usage in &task.tokens {
                 let total = usage.input + usage.cache_write + usage.cache_read + usage.output;
                 println!("  {}: input {}, cache write {}, cache read {}, output {}, total {}", usage.model, usage.input, usage.cache_write, usage.cache_read, usage.output, total);
+            }
+        }
+    }
+
+    /// The proof of ticket task-evidence: the evidence lines of each task of the project in
+    /// DISPATCH_PROOF_CWD, with the texts of the task card (stage, time, exit, first command line),
+    /// then the full command and the output tail of each. Without the variable it does nothing.
+    #[test]
+    #[ignore]
+    fn evidence_of_the_project_for_the_proof() {
+        let Ok(cwd) = std::env::var("DISPATCH_PROOF_CWD") else { return };
+        let list = task_list(cwd).unwrap();
+        for task in list.tasks.iter().filter(|task| !task.evidence.is_empty()) {
+            let count = |stage: &str| task.evidence.iter().filter(|item| item.stage == stage).count();
+            // cargo writes the name of the test without a line end before this output.
+            println!("\ntask {}: {} commands, PLAN {}, WORK {}", task.name, task.evidence.len(), count("PLAN"), count("WORK"));
+            for item in &task.evidence {
+                let first = item.command.lines().next().unwrap_or_default();
+                println!("  {} | {} | exit {} | {}", item.stage, item.time.as_deref().unwrap_or("-"), item.exit, first);
+            }
+            for item in &task.evidence {
+                println!("\n--- {} {} exit {}\nCOMMAND:\n{}\nOUTPUT ({} lines):", item.stage, item.time.as_deref().unwrap_or("-"), item.exit, item.command, item.output_tail.len());
+                for line in &item.output_tail {
+                    println!("    {line}");
+                }
             }
         }
     }
@@ -3328,6 +3373,7 @@ mod tests {
             measure_changed: Vec::new(),
             branch: None,
             tokens: Vec::new(),
+            evidence: Vec::new(),
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };

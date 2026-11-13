@@ -1654,6 +1654,24 @@ interface TaskInfo {
   branch?: BranchInfo | null;
   /** The tokens of the sessions of the task per model, each reply once (ticket task-tokens). Absent from an older host. */
   tokens?: ModelUsage[];
+  /** The Bash commands of the plan run and the work run from the transcripts (ticket task-evidence). Absent from an older host. */
+  evidence?: Evidence[];
+}
+
+/** One Bash command of a task with its result, from the transcripts (ticket task-evidence). */
+interface Evidence {
+  /** The id of the tool call; the open state of the row is kept by it. */
+  id: string;
+  /** The time of the call, RFC 3339. */
+  time: string | null;
+  /** `PLAN` or `WORK`. */
+  stage: string;
+  /** The command, uncut. */
+  command: string;
+  /** `0`, the number of `Exit code N`, or `unknown`. */
+  exit: string;
+  /** The last 20 lines of the output, each cut to 200 characters. */
+  outputTail: string[];
 }
 
 /** The tokens of a task for one model: the plan run, the work run and their agents together (ticket task-tokens). */
@@ -3969,6 +3987,51 @@ function tokenRow(usage: ModelUsage): HTMLElement {
   return row;
 }
 
+/** The open evidence rows, by task key and tool call id (ticket task-evidence): a re-render keeps them. */
+const evidenceOpen = new Set<string>();
+
+/**
+ * The evidence row of one Bash command of a task (ticket task-evidence): the stage, the first line
+ * of the command, the exit code and the time; the full command in the tooltip. A click shows the
+ * full command and the last lines of its output under the row.
+ */
+function evidenceRow(key: string, item: Evidence): HTMLElement {
+  const openKey = `${key}|${item.id}`;
+  const open = evidenceOpen.has(openKey);
+  const made = document.createElement("div");
+  made.className = `task-evidence${open ? " open" : ""}`;
+  const row = document.createElement("button");
+  row.className = "task-evidence-row";
+  row.setAttribute("aria-expanded", String(open));
+  row.title = `${item.command}\n\n${open ? "Hide" : "Show"} the output. The line comes from the transcript of the ${item.stage === "PLAN" ? "plan run" : "work run"}, not from the report.`;
+  const lines = item.command.split("\n");
+  const command = document.createElement("span");
+  command.className = "task-evidence-command";
+  command.textContent = `${item.stage} ${lines[0]}${lines.length > 1 ? " …" : ""}`;
+  const when = document.createElement("span");
+  when.className = "when";
+  const exit = document.createElement("span");
+  exit.className = `exit${item.exit === "0" ? "" : " failed"}`;
+  exit.textContent = `exit ${item.exit}`;
+  const time = item.time ? Date.parse(item.time) : NaN;
+  when.append(exit, document.createTextNode(Number.isNaN(time) ? "" : ` ${chatTime(time)}`));
+  row.append(command, when);
+  row.addEventListener("click", () => {
+    if (open) evidenceOpen.delete(openKey);
+    else evidenceOpen.add(openKey);
+    renderChats();
+  });
+  made.append(row);
+  if (open) {
+    const tail = document.createElement("pre");
+    tail.className = "task-evidence-tail";
+    const output = item.outputTail.length > 0 ? item.outputTail.join("\n") : "no output";
+    tail.textContent = `$ ${item.command}\n${output}`;
+    made.append(tail);
+  }
+  return made;
+}
+
 /**
  * The Stop row of a task whose worker works or waits at a prompt, or null. The first click arms
  * it; "Stop now" ends the worker through the script, "Keep running" steps back. A task without
@@ -4579,6 +4642,8 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     if (info?.report) body.append(fileRow("Report", info.report, info.header?.state ?? null, null));
     // What the task cost: one row per model under the report (ticket task-tokens).
     body.append(...(info?.tokens ?? []).map(tokenRow));
+    // What the task ran: one row per Bash command from the transcripts (ticket task-evidence).
+    body.append(...(info?.evidence ?? []).map((item) => evidenceRow(key, item)));
     if (info?.branch) body.append(branchRow(info.branch));
     // Stop stands under the runs that it stops.
     const stop = stopRow(task);

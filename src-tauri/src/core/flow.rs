@@ -19,6 +19,10 @@ const MAIN_KEY: &str = "main";
 const TEXT_CHARS: usize = 400;
 /// The most characters of the detail of a tool call: a path, a command, a pattern.
 const DETAIL_CHARS: usize = 160;
+/// The last lines of the output of a command that its evidence keeps (ticket task-evidence).
+const TAIL_LINES: usize = 20;
+/// The most characters of one line of the output tail (decision 1 of task-evidence).
+const TAIL_CHARS: usize = 200;
 
 /// One thing that happened in a transcript.
 #[derive(Serialize, Default, Debug, PartialEq)]
@@ -87,6 +91,25 @@ pub struct ModelUsage {
     pub cache_write: u64,
     pub cache_read: u64,
     pub output: u64,
+}
+
+/// One Bash command of a task with its result, from the transcripts (ticket task-evidence).
+#[derive(Serialize, Default, Debug, PartialEq, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Evidence {
+    /// The id of the tool call; the task card keeps its open state by it.
+    pub id: String,
+    /// The time of the tool call, RFC 3339.
+    pub time: Option<String>,
+    /// `PLAN` or `WORK`: the run of the session the call came from.
+    pub stage: String,
+    /// The command, uncut.
+    pub command: String,
+    /// `0` without the error flag, the number of `Exit code N` on the first line of an error,
+    /// else `unknown`; also `unknown` for a call without a result.
+    pub exit: String,
+    /// The last lines of the result text, each cut to `TAIL_CHARS`.
+    pub output_tail: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -324,48 +347,137 @@ struct Reply {
     output: u64,
 }
 
-/// The reply of an assistant line with a message id and a usage, else none. The lines of the agents
-/// in the transcript of a session (`isSidechain`) count too: the message id removes the line that
-/// the agent file also has.
-fn reply_of_line(line: &str) -> Option<Reply> {
-    if !line.contains("\"type\":\"assistant\"") {
-        return None;
-    }
-    let entry = serde_json::from_str::<FlowLine>(line).ok()?;
-    if entry.kind != "assistant" {
-        return None;
-    }
-    let message = entry.message?;
-    let usage = message.usage?;
-    Some(Reply {
-        id: message.id?,
-        model: message.model,
-        input: usage.input_tokens.unwrap_or(0),
-        cache_write: usage.cache_creation_input_tokens.unwrap_or(0),
-        cache_read: usage.cache_read_input_tokens.unwrap_or(0),
-        output: usage.output_tokens.unwrap_or(0),
-    })
+/// A Bash call of a transcript, for the evidence of a task (ticket task-evidence).
+#[derive(Clone)]
+struct BashUse {
+    id: String,
+    command: String,
+    time: Option<String>,
 }
 
-/// What the token sum knows of one transcript: where the last read ended, the modification time,
-/// and the replies of the complete lines before it.
-struct ReadReplies {
+/// The result of a Bash call: its exit code and the last lines of its text.
+#[derive(Clone)]
+struct BashResult {
+    exit: String,
+    tail: Vec<String>,
+}
+
+/// What the task list takes from one transcript: the replies for the token sum, the Bash calls and
+/// their results (by tool call id) for the evidence.
+#[derive(Clone, Default)]
+struct Transcript {
+    replies: Vec<Reply>,
+    uses: Vec<BashUse>,
+    results: Vec<(String, BashResult)>,
+}
+
+/// A line of a text cut to `max` characters; unlike `one_line` it keeps the spaces.
+fn cut_line(line: &str, max: usize) -> String {
+    match line.char_indices().nth(max) {
+        Some((end, _)) => format!("{}…", &line[..end]),
+        None => line.to_string(),
+    }
+}
+
+/// The text of a tool result: the `content` string, or the `text` parts of a `content` list.
+fn result_text(part: &Value) -> String {
+    match part.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter(|part| part.get("type").and_then(Value::as_str) == Some("text"))
+            .filter_map(|part| part.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// The exit code of a Bash result (decision 2 of the series): `0` without the error flag, the
+/// number of `Exit code N` on the first line of an error text, else `unknown`.
+fn exit_of(error: bool, text: &str) -> String {
+    if !error {
+        return "0".to_string();
+    }
+    text.lines()
+        .next()
+        .and_then(|first| first.trim().strip_prefix("Exit code "))
+        .and_then(|number| number.trim().parse::<i64>().ok())
+        .map_or_else(|| "unknown".to_string(), |number| number.to_string())
+}
+
+/// The last `TAIL_LINES` lines of a text, each cut to `TAIL_CHARS`.
+fn tail_of(text: &str) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(TAIL_LINES)..].iter().map(|line| cut_line(line, TAIL_CHARS)).collect()
+}
+
+/// Adds what one transcript line gives: the reply of an assistant line with a message id and a
+/// usage, its Bash calls, and the results of the Bash calls of the file. The lines of the agents in
+/// the transcript of a session (`isSidechain`) count too: the message id and the tool call id
+/// remove the line that the agent file also has.
+fn read_transcript_line(line: &str, read: &mut Transcript) {
+    if !line.contains("\"type\":\"assistant\"") && !line.contains("\"type\":\"user\"") {
+        return;
+    }
+    let Ok(entry) = serde_json::from_str::<FlowLine>(line) else { return };
+    let Some(message) = entry.message else { return };
+    let parts = message.content.as_array().map(Vec::as_slice).unwrap_or_default();
+    let text_of = |part: &Value, key: &str| part.get(key).and_then(Value::as_str).map(str::to_string);
+    match entry.kind.as_str() {
+        "assistant" => {
+            for part in parts.iter().filter(|part| text_of(part, "type").as_deref() == Some("tool_use") && text_of(part, "name").as_deref() == Some("Bash")) {
+                let command = part.get("input").and_then(|input| text_of(input, "command"));
+                if let (Some(id), Some(command)) = (text_of(part, "id"), command) {
+                    read.uses.push(BashUse { id, command, time: entry.timestamp.clone() });
+                }
+            }
+            if let (Some(id), Some(usage)) = (message.id, message.usage) {
+                read.replies.push(Reply {
+                    id,
+                    model: message.model,
+                    input: usage.input_tokens.unwrap_or(0),
+                    cache_write: usage.cache_creation_input_tokens.unwrap_or(0),
+                    cache_read: usage.cache_read_input_tokens.unwrap_or(0),
+                    output: usage.output_tokens.unwrap_or(0),
+                });
+            }
+        }
+        "user" => {
+            for part in parts.iter().filter(|part| text_of(part, "type").as_deref() == Some("tool_result")) {
+                let Some(id) = text_of(part, "tool_use_id") else { continue };
+                // Claude Code writes the call and its result into the same file.
+                if !read.uses.iter().any(|bash| bash.id == id) {
+                    continue;
+                }
+                let error = part.get("is_error").and_then(Value::as_bool).unwrap_or(false);
+                let text = result_text(part);
+                read.results.push((id, BashResult { exit: exit_of(error, &text), tail: tail_of(&text) }));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// What the task list knows of one transcript: where the last read ended, the modification time,
+/// and what the complete lines before it gave.
+struct ReadTranscript {
     next: u64,
     modified: Option<std::time::SystemTime>,
-    replies: Vec<Reply>,
+    transcript: Transcript,
 }
 
-/// The replies of each transcript by path. The task list asks every 5 s; a transcript that did not
+/// The reads of each transcript by path. The task list asks every 5 s; a transcript that did not
 /// change is not read again, and one that grew is read from where the last read ended.
-static REPLIES: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, ReadReplies>>> = std::sync::OnceLock::new();
+static TRANSCRIPTS: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, ReadTranscript>>> = std::sync::OnceLock::new();
 
-/// The replies of a transcript, through the cache. A file that is now shorter is read from the start.
-fn replies_of(path: &Path) -> Vec<Reply> {
-    let Ok(meta) = fs::metadata(path) else { return Vec::new() };
+/// What a transcript gives, through the cache. A file that is now shorter is read from the start.
+fn transcript_of(path: &Path) -> Transcript {
+    let Ok(meta) = fs::metadata(path) else { return Transcript::default() };
     let (len, modified) = (meta.len(), meta.modified().ok());
-    let mut cache = REPLIES.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = TRANSCRIPTS.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let known = cache.remove(path).filter(|known| known.next <= len);
-    let mut read = known.unwrap_or(ReadReplies { next: 0, modified: None, replies: Vec::new() });
+    let mut read = known.unwrap_or(ReadTranscript { next: 0, modified: None, transcript: Transcript::default() });
     if read.modified != modified || read.next == 0 {
         if let Ok(mut file) = fs::File::open(path) {
             let mut bytes = Vec::new();
@@ -373,8 +485,8 @@ fn replies_of(path: &Path) -> Vec<Reply> {
                 // Claude Code can be in the middle of a line. Use complete lines only.
                 if let Some(end) = bytes.iter().rposition(|&byte| byte == b'\n') {
                     for line in bytes[..end].split(|&byte| byte == b'\n') {
-                        if let Some(reply) = std::str::from_utf8(line).ok().and_then(reply_of_line) {
-                            read.replies.push(reply);
+                        if let Ok(line) = std::str::from_utf8(line) {
+                            read_transcript_line(line, &mut read.transcript);
                         }
                     }
                     read.next += end as u64 + 1;
@@ -383,9 +495,28 @@ fn replies_of(path: &Path) -> Vec<Reply> {
             }
         }
     }
-    let replies = read.replies.clone();
+    let transcript = read.transcript.clone();
     cache.insert(path.to_path_buf(), read);
-    replies
+    transcript
+}
+
+/// An id that can be a part of a path.
+fn valid_session(session: &str) -> bool {
+    !session.is_empty() && session.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// The transcripts of a session in every folder of `projects`, and the agents beside them.
+fn transcripts_of(projects: &Path, session: &str) -> Vec<PathBuf> {
+    let paths = find_transcripts(projects, session);
+    let mut files = paths.clone();
+    for path in &paths {
+        let agents = fs::read_dir(path.with_extension("").join("subagents")).into_iter().flatten().flatten().map(|entry| entry.path());
+        files.extend(agents.filter(|agent| {
+            let name = agent.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+            name.starts_with("agent-") && name.ends_with(".jsonl")
+        }));
+    }
+    files
 }
 
 /// The tokens of the sessions of a task per model (ticket task-tokens): the transcripts of each
@@ -397,20 +528,11 @@ pub fn token_usage(projects: &Path, sessions: &[String]) -> Vec<ModelUsage> {
     let mut seen = std::collections::HashSet::new();
     let mut sums: std::collections::BTreeMap<String, ModelUsage> = std::collections::BTreeMap::new();
     for session in sessions {
-        if session.is_empty() || !session.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        if !valid_session(session) {
             continue;
         }
-        let paths = find_transcripts(projects, session);
-        let mut files = paths.clone();
-        for path in &paths {
-            let agents = fs::read_dir(path.with_extension("").join("subagents")).into_iter().flatten().flatten().map(|entry| entry.path());
-            files.extend(agents.filter(|agent| {
-                let name = agent.file_name().and_then(|name| name.to_str()).unwrap_or_default();
-                name.starts_with("agent-") && name.ends_with(".jsonl")
-            }));
-        }
-        for file in files {
-            for reply in replies_of(&file) {
+        for file in transcripts_of(projects, session) {
+            for reply in transcript_of(&file).replies {
                 if !seen.insert(reply.id.clone()) {
                     continue;
                 }
@@ -424,6 +546,50 @@ pub fn token_usage(projects: &Path, sessions: &[String]) -> Vec<ModelUsage> {
         }
     }
     sums.into_values().collect()
+}
+
+/// The Bash commands of the runs of a task with their results (ticket task-evidence): `runs` are
+/// the `(run, session id)` lines of the session file, in its order. The transcripts of each session
+/// and its agents count (decision 3). A tool call counts once over all sessions, under the first
+/// run that has it: a work run that resumes the plan session as a copy repeats its lines. A call
+/// without a result has the exit `unknown` and no output. Sorted by the time of the call; an id
+/// that is no session id is left out.
+pub fn evidence_of(projects: &Path, runs: &[(String, String)]) -> Vec<Evidence> {
+    let mut seen = std::collections::HashSet::new();
+    let mut uses: Vec<(String, BashUse)> = Vec::new();
+    let mut results: HashMap<String, BashResult> = HashMap::new();
+    for (run, session) in runs {
+        if !valid_session(session) {
+            continue;
+        }
+        for file in transcripts_of(projects, session) {
+            let transcript = transcript_of(&file);
+            for bash in transcript.uses {
+                if seen.insert(bash.id.clone()) {
+                    uses.push((run.to_uppercase(), bash));
+                }
+            }
+            for (id, result) in transcript.results {
+                results.entry(id).or_insert(result);
+            }
+        }
+    }
+    let mut list: Vec<Evidence> = uses
+        .into_iter()
+        .map(|(stage, bash)| {
+            let result = results.remove(&bash.id);
+            Evidence {
+                exit: result.as_ref().map_or_else(|| "unknown".to_string(), |result| result.exit.clone()),
+                output_tail: result.map(|result| result.tail).unwrap_or_default(),
+                id: bash.id,
+                time: bash.time,
+                stage,
+                command: bash.command,
+            }
+        })
+        .collect();
+    list.sort_by(|a, b| a.time.cmp(&b.time));
+    list
 }
 
 /// What a session and its agents did since the last read: the worker view of the Map asks
@@ -579,6 +745,118 @@ mod tests {
         let usage = token_usage(&projects, &sessions);
         assert_eq!(usage[2], ModelUsage { model: "claude-opus-5-5".into(), input: 4, cache_write: 31, cache_read: 301, output: 8 });
         assert!(token_usage(&projects, &[]).is_empty());
+        fs::remove_dir_all(&projects).unwrap();
+    }
+
+    /// An assistant line with one tool call.
+    fn tool_use(id: &str, name: &str, input: Value, time: &str) -> String {
+        serde_json::json!({"type": "assistant", "timestamp": time, "message": {"id": format!("msg_{id}"), "content": [{"type": "tool_use", "id": id, "name": name, "input": input}]}}).to_string()
+    }
+
+    /// A Bash call with its command.
+    fn bash_use(id: &str, command: &str, time: &str) -> String {
+        tool_use(id, "Bash", serde_json::json!({"command": command, "description": "x"}), time)
+    }
+
+    /// A user line with the result of a tool call; `error` is the `is_error` flag, absent with none.
+    fn tool_result(id: &str, content: Value, error: Option<bool>, time: &str) -> String {
+        let mut part = serde_json::json!({"tool_use_id": id, "type": "tool_result", "content": content});
+        if let Some(error) = error {
+            part["is_error"] = Value::Bool(error);
+        }
+        serde_json::json!({"type": "user", "timestamp": time, "message": {"role": "user", "content": [part]}}).to_string()
+    }
+
+    /// One line of the evidence for an assert: id, stage, exit, tail.
+    fn row(evidence: &Evidence) -> (&str, &str, &str, Vec<&str>) {
+        (evidence.id.as_str(), evidence.stage.as_str(), evidence.exit.as_str(), evidence.output_tail.iter().map(String::as_str).collect())
+    }
+
+    #[test]
+    fn a_bash_call_and_its_result_make_one_evidence_line() {
+        let projects = scratch_projects("evidence");
+        let session = "33333333-0000-0000-0000-000000000001";
+        let long_output: Vec<String> = (1..=25).map(|n| format!("line {n}")).collect();
+        // A command longer than the 160 characters of the Map, on two lines.
+        let long_command = format!("cd src-tauri && cargo test --lib \\\n  {}", "x".repeat(180));
+        let wide = "w".repeat(250);
+        let lines = [
+            bash_use("toolu_b1", "cargo test --lib", "2026-11-13T10:00:01Z"),
+            tool_result("toolu_b1", Value::String(long_output.join("\n")), None, "2026-11-13T10:00:02Z"),
+            bash_use("toolu_b2", &long_command, "2026-11-13T10:00:03Z"),
+            tool_result("toolu_b2", Value::String("Exit code 1\nerror: boom".into()), Some(true), "2026-11-13T10:00:04Z"),
+            bash_use("toolu_b3", "rm -rf build", "2026-11-13T10:00:05Z"),
+            tool_result("toolu_b3", Value::String("Permission to use Bash has been denied.".into()), Some(true), "2026-11-13T10:00:06Z"),
+            bash_use("toolu_b4", "npm run build", "2026-11-13T10:00:07Z"),
+            tool_result("toolu_b4", serde_json::json!([{"type": "text", "text": format!("a\n{wide}")}, {"type": "image", "source": {}}]), Some(false), "2026-11-13T10:00:08Z"),
+            // A Read call and its result are no evidence.
+            tool_use("toolu_r1", "Read", serde_json::json!({"file_path": "x"}), "2026-11-13T10:00:09Z"),
+            tool_result("toolu_r1", Value::String("text".into()), None, "2026-11-13T10:00:10Z"),
+        ];
+        fs::write(projects.join("D--project").join(format!("{session}.jsonl")), format!("{}\n", lines.join("\n"))).unwrap();
+
+        let list = evidence_of(&projects, &[("plan".to_string(), session.to_string())]);
+        let tail: Vec<&str> = long_output[5..].iter().map(String::as_str).collect();
+        let cut = format!("{}…", "w".repeat(200));
+        assert_eq!(
+            list.iter().map(row).collect::<Vec<_>>(),
+            [
+                ("toolu_b1", "PLAN", "0", tail),
+                ("toolu_b2", "PLAN", "1", vec!["Exit code 1", "error: boom"]),
+                ("toolu_b3", "PLAN", "unknown", vec!["Permission to use Bash has been denied."]),
+                ("toolu_b4", "PLAN", "0", vec!["a", cut.as_str()]),
+            ]
+        );
+        assert_eq!(list[1].command, long_command, "the command stays uncut");
+        assert_eq!((list[0].command.as_str(), list[0].time.as_deref()), ("cargo test --lib", Some("2026-11-13T10:00:01Z")));
+        let json = serde_json::to_value(&list[0]).unwrap();
+        assert_eq!((json["stage"].as_str(), json["outputTail"].as_array().map(Vec::len)), (Some("PLAN"), Some(20)));
+        fs::remove_dir_all(&projects).unwrap();
+    }
+
+    #[test]
+    fn the_evidence_of_a_task_takes_both_runs_once_and_in_order() {
+        let projects = scratch_projects("evidence-runs");
+        let folder = projects.join("D--project");
+        let (plan, work) = ("44444444-0000-0000-0000-00000000000a", "44444444-0000-0000-0000-00000000000b");
+        let plan_lines = [bash_use("toolu_p1", "git status", "2026-11-13T09:00:00Z"), tool_result("toolu_p1", Value::String("ok".into()), None, "2026-11-13T09:00:01Z")];
+        fs::write(folder.join(format!("{plan}.jsonl")), format!("{}\n", plan_lines.join("\n"))).unwrap();
+        // The work run is a copy of the plan session: it repeats the plan lines, then adds its own.
+        let work_lines = [
+            bash_use("toolu_w1", "cargo test --lib", "2026-11-13T09:10:00Z"),
+            tool_result("toolu_w1", Value::String("Exit code 2\nfail".into()), Some(true), "2026-11-13T09:10:01Z"),
+            // Still running: no result yet.
+            bash_use("toolu_w2", "npm run build", "2026-11-13T09:20:00Z"),
+        ];
+        fs::write(folder.join(format!("{work}.jsonl")), format!("{}\n{}\n", plan_lines.join("\n"), work_lines.join("\n"))).unwrap();
+        // An agent of the work run ran a command too.
+        let agents = folder.join(work).join("subagents");
+        fs::create_dir_all(&agents).unwrap();
+        let agent_lines = [bash_use("toolu_a1", "node --test", "2026-11-13T09:15:00Z"), tool_result("toolu_a1", Value::String("agent ok".into()), None, "2026-11-13T09:15:01Z")];
+        fs::write(agents.join("agent-x.jsonl"), format!("{}\n", agent_lines.join("\n"))).unwrap();
+
+        let runs = [("plan".to_string(), plan.to_string()), ("work".to_string(), work.to_string()), ("work".to_string(), "../x".to_string())];
+        let list = evidence_of(&projects, &runs);
+        assert_eq!(
+            list.iter().map(row).collect::<Vec<_>>(),
+            [
+                ("toolu_p1", "PLAN", "0", vec!["ok"]),
+                ("toolu_w1", "WORK", "2", vec!["Exit code 2", "fail"]),
+                ("toolu_a1", "WORK", "0", vec!["agent ok"]),
+                ("toolu_w2", "WORK", "unknown", vec![]),
+            ]
+        );
+
+        // The command ends: the next read gives its result; a half line at the end waits.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut file = fs::OpenOptions::new().append(true).open(folder.join(format!("{work}.jsonl"))).unwrap();
+        writeln!(file, "{}", tool_result("toolu_w2", Value::String("built".into()), None, "2026-11-13T09:20:30Z")).unwrap();
+        write!(file, "{}", &bash_use("toolu_w3", "git log", "2026-11-13T09:30:00Z")[..40]).unwrap();
+        drop(file);
+        let list = evidence_of(&projects, &runs);
+        assert_eq!(list.len(), 4);
+        assert_eq!(row(&list[3]), ("toolu_w2", "WORK", "0", vec!["built"]));
+        assert!(evidence_of(&projects, &[]).is_empty());
         fs::remove_dir_all(&projects).unwrap();
     }
 }

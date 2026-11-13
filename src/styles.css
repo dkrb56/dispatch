@@ -939,6 +939,53 @@ button.task-head:hover {
   color: var(--muted);
 }
 
+/* The Bash commands of a task (ticket task-evidence): rows like the token rows; a click opens the output. */
+.task-evidence .task-evidence-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: calc(12px * var(--text-scale));
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-evidence .task-evidence-command {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.task-evidence .when {
+  color: var(--muted);
+}
+
+.task-evidence .exit {
+  color: var(--muted);
+}
+
+.task-evidence .exit.failed {
+  color: var(--danger);
+}
+
+.task-evidence-tail {
+  margin: 0 8px 4px 16px;
+  color: var(--muted);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(11px * var(--text-scale));
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .task-stop .task-stop-text {
   flex-basis: 100%;
   color: var(--muted);
