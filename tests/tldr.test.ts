@@ -24,7 +24,7 @@ function lines(phase: TaskPhase, change: Partial<TldrInput> = {}) {
 }
 
 test("the about line is the same in every phase", () => {
-  for (const phase of ["planning", "plan-ready", "working", "done", "failed", "stopped", "none"] as const) {
+  for (const phase of ["planning", "plan-ready", "working", "done", "unverified", "failed", "stopped", "none"] as const) {
     assert.equal(lines(phase).about, ABOUT);
   }
 });
@@ -55,6 +55,9 @@ test("a question and a refused step", () => {
 test("done: the first line of the report body", () => {
   assert.equal(lines("done").now, "Done: New Tauri command `task_stop` in `pipeline.rs`.");
   assert.equal(lines("done", { did: "" }).now, "");
+  // A done report without evidence for its claims (ticket report-check): the reason, not "Done".
+  const reason = "The report says done, but 1 Verification claim matches no command of the transcript.";
+  assert.equal(lines("unverified", { did: reason }).now, `Not verified: ${reason}`);
 });
 
 test("failed, with a report and without one", () => {

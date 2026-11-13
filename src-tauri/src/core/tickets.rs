@@ -521,7 +521,9 @@ pub(crate) struct TaskFacts<'a> {
     pub(crate) name: &'a str,
     /// The state file of the script: `planning`, `approved`, `working`, `stopped` or empty.
     pub(crate) state: &'a str,
-    /// The `state` line of the report, when the task has a report with a header.
+    /// The `state` line of the report, when the task has a report with a header. `working` stands
+    /// for a done report whose Verification claims the task list did not find in the transcript
+    /// (ticket report-check): such a ticket stays In progress.
     pub(crate) report: Option<&'a str>,
     /// The title of the brief, else the user's words of the brief; empty without a brief.
     pub(crate) brief: &'a str,
@@ -823,7 +825,7 @@ mod tests {
     fn a_ticket_follows_its_task() {
         let (project, base) = scratch("follow");
         let mut tickets = Vec::new();
-        for (text, status) in [("one", TODO), ("two", IN_PROGRESS), ("three", TODO), ("four", NEW), ("five", TODO), ("six", TODO), ("seven", TODO)] {
+        for (text, status) in [("one", TODO), ("two", IN_PROGRESS), ("three", TODO), ("four", NEW), ("five", TODO), ("six", TODO), ("seven", TODO), ("eight", TODO)] {
             let ticket = ticket_add(cwd(&project), text.into()).unwrap();
             if status != NEW {
                 ticket_move(cwd(&project), ticket.id.clone(), TODO.into(), vec![ticket.id.clone()], None).unwrap();
@@ -845,6 +847,8 @@ mod tests {
             TaskFacts { name: "t-other", state: "stopped", report: None, brief: "" },
             TaskFacts { name: "six", state: "planning", report: None, brief: "" },
             TaskFacts { name: "seven", state: "planning", report: None, brief: "" },
+            // A done report without evidence for its claims (ticket report-check) does not reach Done.
+            TaskFacts { name: "eight", state: "working", report: Some("working"), brief: "" },
         ];
         follow(&project, &mut list, &facts).unwrap();
         let shown: Vec<(&str, &str, &str)> = list.iter().map(|t| (t.title.as_str(), t.status.as_str(), t.note.as_str())).collect();
@@ -859,6 +863,7 @@ mod tests {
                 ("Five", CANCELED, "stopped"),
                 ("Six", IN_PROGRESS, ""),
                 ("Seven", CANCELED, "canceled"),
+                ("Eight", IN_PROGRESS, ""),
             ]
         );
         assert_eq!(read(&project), list, "the file has the moves");

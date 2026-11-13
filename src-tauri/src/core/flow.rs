@@ -519,6 +519,13 @@ fn transcripts_of(projects: &Path, session: &str) -> Vec<PathBuf> {
     files
 }
 
+/// Whether one of the sessions has a transcript in a folder of `projects` (ticket report-check): a
+/// task without one on this machine has no evidence to check its report against. An id that is no
+/// session id counts as none.
+pub fn has_transcript(projects: &Path, sessions: &[String]) -> bool {
+    sessions.iter().any(|session| valid_session(session) && !find_transcripts(projects, session).is_empty())
+}
+
 /// The tokens of the sessions of a task per model (ticket task-tokens): the transcripts of each
 /// session in every folder of `projects`, and the agents beside them. A reply counts once over all
 /// files of all sessions: Claude Code writes one reply on several lines, and a work run that

@@ -14,6 +14,7 @@ export type TaskPhase =
   | "question"
   | "permission"
   | "done"
+  | "unverified"
   | "failed"
   | "stopped"
   | "merge"
@@ -75,6 +76,9 @@ export function taskTldr(input: TldrInput): Tldr {
         return prefixed("Stopped at a refused step: ", did);
       case "done":
         return prefixed("Done: ", did);
+      case "unverified":
+        // A done report without evidence for its claims (ticket report-check): `did` is the reason.
+        return prefixed("Not verified: ", did);
       case "failed":
         return did ? `Failed: ${did}` : "Failed, no report.";
       case "stopped":

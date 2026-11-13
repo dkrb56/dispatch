@@ -1574,9 +1574,15 @@ button.task-head:hover {
 }
 
 .chip.blocked,
-.chip.needs-decision {
+.chip.needs-decision,
+.chip.unverified {
   background: var(--wait-bg);
   color: var(--wait);
+}
+
+/* The count of the unverified claims is no state word: it keeps its case (ticket report-check). */
+.chip.unverified {
+  text-transform: none;
 }
 
 .chip.failed,
@@ -4487,6 +4493,7 @@ body:not(.map-mode):not(.overview-mode) #stale-alert {
 .chip.working,
 .chip.blocked,
 .chip.needs-decision,
+.chip.unverified,
 .chip.failed,
 .chip.stopped {
   padding: 0;

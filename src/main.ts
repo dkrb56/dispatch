@@ -1656,6 +1656,11 @@ interface TaskInfo {
   tokens?: ModelUsage[];
   /** The Bash commands of the plan run and the work run from the transcripts (ticket task-evidence). Absent from an older host. */
   evidence?: Evidence[];
+  /**
+   * The Verification claims of a done report that no Bash command of the evidence matches (ticket
+   * report-check). Such a report has the header state `working`, and `did` gives the reason. Absent from an older host.
+   */
+  unverified?: string[];
 }
 
 /** One Bash command of a task with its result, from the transcripts (ticket task-evidence). */
@@ -1887,6 +1892,21 @@ function fileRow(label: string, file: FileEntry, chip: string | null, state: str
   row.append(name, when);
   row.addEventListener("click", () => void openViewer(file));
   return row;
+}
+
+/**
+ * Adds the chip of the unverified claims after the state chip of a report row (ticket report-check):
+ * the count, the reason and each claim in its tooltip.
+ */
+function addUnverifiedChip(row: HTMLElement, text: string, title: string): void {
+  const made = document.createElement("span");
+  made.className = "chip unverified";
+  made.textContent = text;
+  made.title = title;
+  const when = row.querySelector(".when");
+  const state = when?.querySelector(".chip");
+  if (state) state.after(made);
+  else when?.prepend(made);
 }
 
 /** Reads the tasks of the project of the focused terminal and shows them in the chat panel. */
@@ -4102,8 +4122,23 @@ function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"
   if (mergeWaits(task)) return { kind: "waits", text: mergeRunning(task) ? "merging its branch" : "branch waits for Merge" };
   if (task.info?.state === "stopped") return { kind: "failed", text: "stopped" };
   if (!task.info?.report && task.workers.some((worker) => worker.state === "failed")) return { kind: "failed", text: "failed" };
+  if (reportUnverified(task)) return { kind: "waits", text: `report not verified · ${unverifiedText(task.info?.unverified ?? [], "status")}` };
   const state = task.info?.header?.state ?? (task.info?.report ? "done" : task.info?.plan ? `plan ${task.info.state || "written"}` : (task.workers[0]?.state ?? ""));
   return { kind: /fail|stop/.test(state) ? "failed" : "done", text: state || "done" };
+}
+
+/**
+ * A done report that the report check sent back (ticket report-check): the task list gives it the
+ * header state `working`, while a report of a worker says done, needs-decision or failed.
+ */
+function reportUnverified(task: Task): boolean {
+  return Boolean(task.info?.report) && task.info?.header?.state === "working";
+}
+
+/** The count of the unverified claims in words, for the chip of the report row or for the status line. */
+function unverifiedText(claims: string[], place: "chip" | "status"): string {
+  if (claims.length === 0) return place === "chip" ? "no Verification" : "no command in its Verification";
+  return place === "chip" ? `${claims.length} unverified` : `${claims.length} claim${claims.length === 1 ? "" : "s"} without evidence`;
 }
 
 /** The run of a worker that works or waits now: from its name, else from the state of the script. */
@@ -4127,6 +4162,7 @@ function taskPhase(task: Task): TaskPhase {
   if (info.state === "stopped") return "stopped";
   if (!info.report && task.workers.some((worker) => worker.state === "failed")) return "failed";
   if (info.header?.state === "failed") return "failed";
+  if (reportUnverified(task)) return "unverified";
   if (info.report) return "done";
   if (info.state === "approved" || info.state === "working") return "starting";
   if (info.state === "planning") return "planning";
@@ -4639,7 +4675,15 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     // The state of the script stands in the header of the card and in the tooltip of the plan row.
     // The report row carries the report's state.
     if (info?.plan) body.append(fileRow("Plan", info.plan, null, info.state || null));
-    if (info?.report) body.append(fileRow("Report", info.report, info.header?.state ?? null, null));
+    if (info?.report) {
+      const report = fileRow("Report", info.report, info.header?.state ?? null, null);
+      // A done report without evidence for its claims gets a second chip with their count (ticket report-check).
+      if (reportUnverified(task)) {
+        const claims = info.unverified ?? [];
+        addUnverifiedChip(report, unverifiedText(claims, "chip"), [info.did, ...claims.map((claim) => `No command: ${claim}`)].join("\n"));
+      }
+      body.append(report);
+    }
     // What the task cost: one row per model under the report (ticket task-tokens).
     body.append(...(info?.tokens ?? []).map(tokenRow));
     // What the task ran: one row per Bash command from the transcripts (ticket task-evidence).
