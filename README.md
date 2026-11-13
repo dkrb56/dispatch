@@ -14,7 +14,7 @@ You never sit in a terminal answering prompts: questions, permissions and plans 
 - **Map**: each project as a graph of you, triage, its tasks, their runs and agents; what waits for you is orange. A click on a run opens the **worker view**: its agents, their last tool calls and messages, tokens, files changed and a timeline, read live from the session files.
 - **Nightmode**: work goes on while you are away; each decision takes its recommended option, and you get a list of every default in the morning; each PC that does the work stays awake.
 - **Hosts**: one window shows and controls the projects of one or more other computers over Tailscale, each project with the name of its computer.
-- **Setup pipeline**: prepares a project in one click (see below). **Rules** shows every rule that Claude Code gets in the project.
+- **Setup pipeline**: prepares a project in one click (see below). **Rules** shows every rule that Claude Code gets in the project. Both stand among the buttons of each project: in its group in the top bar in **Details**, and in the head of its column in Focus, next to the old sessions of that project and a folder button that opens its workspace.
 - Terminal tabs and split panes, a side panel per terminal (git state, session, context use, outputs), and a chat list of all your Claude Code chats.
 
 ## Requirements
@@ -40,7 +40,7 @@ Dispatch looks for a new release once an hour (**?** → **Check for update** ch
 
 ## First steps
 
-1. Click **Project** in the top bar and select your project folder. The Setup pipeline window opens for a project that is not set up.
+1. Click **+** in the projects group of the top bar and select your project folder. The Setup pipeline window opens for a project that is not set up.
 2. Read the steps, click **Apply**, then **Close**. Commit the change to `CLAUDE.md`.
 3. The workspace opens: triage on the left, the agent view of the workers on the right.
 4. Give triage a task in its chat. Approve the plan when it is ready.
@@ -53,7 +53,7 @@ Options → **Where the work runs** has three modes. **This PC does the work** i
 
 1. On the computer that does the work: Options → **Run the host on this PC** → **Start the host**. The Key box shows its key. That window switches to **Use hosts** with the row `127.0.0.1`.
 2. On the other computer: Options → **Use hosts** → **Add host**. Fill in a name, the Tailscale name or `100.x` address, the port (empty is 7470) and the key. The key is also in `host-key.txt` in the data folder of the host.
-3. Start Dispatch again; a change of the host list counts at the next start. **Project** then opens a folder chooser with the folders of a host.
+3. Start Dispatch again; a change of the host list counts at the next start. **+** then opens a folder chooser with the folders of a host.
 
 With several hosts, each project name gets ` · <host name>` after it, so two projects with the same folder name stay apart. Each host keeps its own Nightmode switch; the one switch in the top bar shows a third look when the hosts differ. A host that is not reachable gets its own row in a bar below the top bar, and the other hosts keep working. Use **This PC and hosts** to work on this computer and see the projects of your other computers in the same window; no host program runs on this computer then. **?** → **Where the work runs** has the details.
 

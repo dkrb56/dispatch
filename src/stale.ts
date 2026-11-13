@@ -116,3 +116,18 @@ export function rowTexts(row: StaleRow, now: number): { run: string; reason: str
 export function staleButtonText(count: number): string {
   return `${count} old ${count === 1 ? "session" : "sessions"}`;
 }
+
+/** The text of the button "N old" of one project, in its group in the bar and in its column head (topbar-projects). */
+export function oldButtonText(count: number): string {
+  return `${count} old`;
+}
+
+/** The number of rows of each project: the key of a row comes from `keyOf`. A project without rows is not in the map. */
+export function staleCounts<T>(rows: readonly T[], keyOf: (row: T) => string): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const key = keyOf(row);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}

@@ -282,6 +282,11 @@ function open(host: HostId, target: string | null): void {
   } else messageEl.textContent = "The focused terminal has no folder.";
 }
 
+/** Shows the Setup pipeline window for a folder of a host: the Setup button of each project (topbar-projects). */
+export function showSetup(host: HostId, target: string): void {
+  open(host, target);
+}
+
 /** Whether a project has a step of the setup that is not done. It changes no file. */
 export async function setupNeeded(host: HostId, root: string): Promise<boolean> {
   const plan = await call<Plan>(host, "pipeline_plan", { cwd: root, rules: [] });

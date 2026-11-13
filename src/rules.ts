@@ -241,6 +241,28 @@ async function showFindings(check: RulesCheck): Promise<void> {
 }
 
 /**
+ * Opens the Rules popup for the folder of a host: the Rules button of the bar (the focused
+ * terminal) and the Rules button of each project (topbar-projects).
+ */
+export function openRules(host: HostId, target: string | null | undefined): void {
+  folder = target ?? null;
+  folderHost = host;
+  projectEl.textContent = folder ?? "The focused terminal has no folder.";
+  bodyEl.replaceChildren();
+  shownText = "";
+  copyEl.disabled = true;
+  copyEl.textContent = "Copy all";
+  checkRun += 1;
+  findingsEl.replaceChildren();
+  analyseEl.disabled = !folder;
+  dialog.showModal();
+  if (!folder) return;
+  call<Rules>(folderHost, "project_rules", { cwd: folder })
+    .then(show)
+    .catch((error) => (bodyEl.textContent = String(error)));
+}
+
+/**
  * Connects the Rules button and its popup. `currentFolder` gives the folder of the focused
  * terminal. `onClose` runs when the popup closes.
  */
@@ -271,21 +293,7 @@ export function initRules(currentFolder: () => { host: HostId; folder: string | 
   analyseEl.before(limitEl, modelEl, effortEl);
   document.querySelector("#show-rules")!.addEventListener("click", () => {
     const current = currentFolder();
-    folder = current.folder ?? null;
-    folderHost = current.host;
-    projectEl.textContent = folder ?? "The focused terminal has no folder.";
-    bodyEl.replaceChildren();
-    shownText = "";
-    copyEl.disabled = true;
-    copyEl.textContent = "Copy all";
-    checkRun += 1;
-    findingsEl.replaceChildren();
-    analyseEl.disabled = !folder;
-    dialog.showModal();
-    if (!folder) return;
-    call<Rules>(folderHost, "project_rules", { cwd: folder })
-      .then(show)
-      .catch((error) => (bodyEl.textContent = String(error)));
+    openRules(current.host, current.folder);
   });
   document.querySelector("#rules-close")!.addEventListener("click", () => dialog.close());
   analyseEl.addEventListener("click", () => {

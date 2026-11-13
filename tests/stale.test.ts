@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ageText, belongsTo, rowTexts, sessionRun, type StaleSession, staleButtonText, staleSessions, type StaleTask } from "../src/stale.ts";
+import { ageText, belongsTo, oldButtonText, rowTexts, sessionRun, type StaleSession, staleButtonText, staleCounts, staleSessions, type StaleTask } from "../src/stale.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const DAY = 86_400_000;
@@ -100,6 +100,18 @@ test("the row texts: the run, the reason with what Claude Code keeps, and the ag
   assert.equal(ageText(26 * 3_600_000), "1 d 2 h");
   assert.equal(staleButtonText(1), "1 old session");
   assert.equal(staleButtonText(3), "3 old sessions");
+});
+
+test("the old sessions per project: the button text and the count of each project (topbar-projects)", () => {
+  assert.equal(oldButtonText(1), "1 old");
+  assert.equal(oldButtonText(2), "2 old");
+  const rows = [{ project: "a" }, { project: "b" }, { project: "a" }];
+  const counts = staleCounts(rows, (row) => row.project);
+  assert.equal(counts.get("a"), 2);
+  assert.equal(counts.get("b"), 1);
+  // A project without old sessions is not in the map: its button is absent.
+  assert.equal(counts.get("c"), undefined);
+  assert.equal(staleCounts([], (row: { project: string }) => row.project).size, 0);
 });
 
 test("the newest session comes first", () => {

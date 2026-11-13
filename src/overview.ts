@@ -150,7 +150,7 @@ export function chatPlacer<N extends ChatNode>(): ChatPlacer<N> {
 /** The four views of Dispatch. */
 export type ViewMode = "focus" | "tabs" | "map" | "overview";
 
-/** The view of the next start, from the saved text: an unknown text gives Tabs. */
+/** The view of the next start, from the saved text: an unknown text gives Details. */
 export function savedView(text: string | null | undefined): ViewMode {
   return text === "overview" || text === "map" || text === "focus" ? text : "tabs";
 }

@@ -197,7 +197,6 @@ summary:focus-visible {
 
 /* The buttons with an outline open a panel or a popup. */
 #bar #toggle-chats,
-#bar #select-project,
 #bar #show-rules,
 #bar #setup-pipeline,
 #bar #show-options,
@@ -3446,7 +3445,6 @@ button.task-head:hover {
 body.focus-mode #toggle-chats,
 body.focus-mode #tabs,
 body.focus-mode #pane-tools,
-body.focus-mode #select-project,
 body.focus-mode #chats {
   display: none;
 }
@@ -3792,20 +3790,22 @@ body {
   color: var(--text);
 }
 
-/* The projects in the bar: a dot, the name, a quiet status. */
+/* The projects in the bar (topbar-projects): closed pills with a frame, a dot, the name and a short
+   state; the current project in Details is an open group with its buttons. */
 #focus-projects {
   flex: 0 1 auto;
-  gap: 2px;
+  align-items: center;
+  gap: 6px;
 }
 
 .focus-pill,
 #bar .focus-pill {
   gap: 8px;
-  height: 26px;
+  height: 30px;
   padding: 0 10px;
-  border: 0;
-  border-radius: 5px;
-  background: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
   color: var(--text);
 }
 
@@ -3813,28 +3813,114 @@ body {
   font-weight: 500;
 }
 
-.focus-pill .count,
-.focus-pill .count.working,
-.focus-pill .count.waits {
+.focus-pill .count {
   padding: 0;
   background: none;
   color: var(--muted);
   font-size: calc(12.5px * var(--text-scale));
 }
 
+/* An idle closed pill shows no state. */
+.focus-pill .count:empty {
+  display: none;
+}
+
 #focus-add,
 #bar #focus-add {
   justify-content: center;
   width: 30px;
-  height: 26px;
+  height: 30px;
   padding: 0;
-  border: 0;
-  border-radius: 5px;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
   color: var(--muted);
 }
 
 #bar #focus-add:hover {
   color: var(--text);
+}
+
+/* In Details the projects group keeps its width, so the open group and every pill stay visible; the
+   terminal tabs shrink instead (they cut their names). */
+body:not(.focus-mode):not(.map-mode):not(.overview-mode) #bar-projects,
+body:not(.focus-mode):not(.map-mode):not(.overview-mode) #focus-projects {
+  flex-shrink: 0;
+}
+
+/* The open group of the current project in Details: a frame in the accent colour, the head of the
+   pill, a divider, and the buttons Rules, Setup, N old and the folder. */
+.project-group {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  box-sizing: border-box;
+  height: 30px;
+  padding: 0 2px 0 0;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+#bar .project-group-head {
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px 0 10px;
+  border-radius: 7px;
+  color: var(--text);
+}
+
+/* The group has the surface of a hover already: a hover takes the soft accent. */
+#bar .project-group-head:hover,
+#bar .project-group .project-tool:hover {
+  background: var(--accent-bg);
+  color: var(--text);
+}
+
+.project-group-head .name {
+  font-weight: 600;
+}
+
+.project-group-head .count {
+  color: var(--muted);
+  font-size: calc(12.5px * var(--text-scale));
+}
+
+.project-group-head .count.working {
+  color: var(--work);
+}
+
+.project-group-head .count.waits {
+  color: var(--wait);
+}
+
+.project-divider {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  background: var(--line);
+}
+
+.project-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+}
+
+#bar .project-group .project-tool {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-2);
+}
+
+#bar .project-group .project-folder {
+  justify-content: center;
+  width: 28px;
+  padding: 0;
 }
 
 /* The projects and the setup buttons: framed groups, like the pane buttons. */
@@ -3853,6 +3939,13 @@ body {
 /* The pane buttons take the same visible frame as the other groups. */
 #pane-tools {
   border-color: var(--group-line);
+}
+
+/* In Details and Focus each project has its own Rules, Setup and N old (topbar-projects); the bar keeps
+   them for the Map and the Overview. */
+body:not(.map-mode):not(.overview-mode) #bar-setup,
+body:not(.map-mode):not(.overview-mode) #stale-alert {
+  display: none;
 }
 
 .focus-dot {
@@ -3937,6 +4030,46 @@ body {
 
 .focus-close {
   color: var(--faint);
+}
+
+/* The buttons of the project in the head of a column (topbar-projects): one quiet frame, then a
+   divider before Map, Workers and ×. */
+.focus-head .project-tools {
+  padding: 2px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+
+.focus-head .project-tool {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: calc(12px * var(--text-scale));
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.focus-head .project-tool:hover {
+  background: var(--card);
+  color: var(--text);
+}
+
+.focus-head .project-folder {
+  width: 26px;
+  padding: 0;
+}
+
+.focus-head .project-folder svg {
+  width: 14px;
+  height: 14px;
 }
 
 .focus-side {
@@ -4046,7 +4179,6 @@ body {
 
 /* The bar buttons of the calm look: no frames, quiet text until hovered. */
 #bar #toggle-chats,
-#bar #select-project,
 #bar #show-rules,
 #bar #setup-pipeline,
 #bar #show-options,
@@ -4056,7 +4188,6 @@ body {
 }
 
 #bar #toggle-chats:hover,
-#bar #select-project:hover,
 #bar #show-rules:hover,
 #bar #setup-pipeline:hover,
 #bar #show-options:hover,
@@ -4432,7 +4563,6 @@ body:not(.focus-mode) .pane-bar .workers-hide {
 body.map-mode #toggle-chats,
 body.map-mode #tabs,
 body.map-mode #pane-tools,
-body.map-mode #select-project,
 body.map-mode #chats {
   display: none;
 }
@@ -5217,7 +5347,6 @@ body.overview-mode #bar-projects,
 body.overview-mode #toggle-chats,
 body.overview-mode #tabs,
 body.overview-mode #pane-tools,
-body.overview-mode #select-project,
 body.overview-mode #chats,
 body.overview-mode .chats-resize {
   display: none;

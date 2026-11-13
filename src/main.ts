@@ -37,20 +37,21 @@ import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, type FileInfo, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
 import { agentsText, fileRowTitle, rowParts } from "./workerrow";
-import { rowTexts, staleButtonText, staleSessions, type StaleRow } from "./stale";
+import { oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
+import { currentProject, groupCount, pillCount } from "./topbar";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
 import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards, triageFree } from "./pending";
 import { type FlowView, openFlow } from "./flow";
 import { drawLinks, type Link } from "./links";
-import { initPipeline, openSetup, setupNeeded } from "./pipeline";
+import { initPipeline, openSetup, setupNeeded, showSetup } from "./pipeline";
 import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersion } from "./help";
 import { lastRunVersion, newEntries } from "./changelog";
 import { alertActions, alertState, CHIME, newWaits, notificationText, type Wait } from "./alerts";
 import { alertOptions, initOptions } from "./options";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
-import { initRules } from "./rules";
+import { initRules, openRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
 import { terminalTheme, themeName, themeTokens } from "./theme";
 import { nightAtStart, nightLines, nightSyncLines } from "./night";
@@ -1065,7 +1066,7 @@ function fillPaneBar(pane: Pane): void {
   model.before(runLabel("plan", "The plan run reads the code and writes the plan"));
   effort.after(runLabel("work", "The work run executes the approved plan"), workModel, workEffort, agents, count);
   showAgentCount(pane);
-  // In focus mode the pane closes from its own bar too. In Tabs the style hides this button.
+  // In focus mode the pane closes from its own bar too. In Details the style hides this button.
   const hide = document.createElement("button");
   hide.className = "workers-hide";
   hide.textContent = "×";
@@ -1149,16 +1150,13 @@ async function askFolder(title: string, start?: { host: HostId; path: string | n
 }
 
 /**
- * Asks the user for a project folder and opens its workspace: triage and the agent view. A
- * project that is not set up shows the Setup pipeline window first; a close without Apply adds
- * nothing. A project with a workspace shows it and starts what does not run.
+ * The folder button of a project (topbar-projects): opens its workspace, triage and the agent view,
+ * as the Project button of the bar did for a chosen folder. A project that is not set up shows the
+ * Setup pipeline window first; a close without Apply opens nothing. A project with a workspace
+ * shows it and starts what does not run.
  */
-async function selectProject(): Promise<void> {
-  const focused = focusedPane();
-  const chosen = await askFolder("Select the project folder", focused ? { host: focused.host, path: focused.cwd } : undefined);
-  if (!chosen) return;
-  const { host } = chosen;
-  const { root } = await call<ProjectRoot>(host, "project_root", { cwd: chosen.folder });
+async function openProject(ref: ProjectRef): Promise<void> {
+  const { host, root } = ref;
   if (!hasWorkspace(host, root) && !(await setupProject(host, root))) return;
   await openWorkspace(host, root);
 }
@@ -2120,6 +2118,15 @@ const endingSessions = new Set<string>();
 const staleErrors = new Map<string, string>();
 const staleDialog = document.querySelector<HTMLDialogElement>("#stale")!;
 let staleShown: StaleEntry[] = [];
+/** The project whose rows the window shows after a click on its "N old" button; null shows every project (topbar-projects). */
+let staleFilter: string | null = null;
+/** The number of old sessions of each project, by project key, from the last `updateStaleAlert`. */
+let staleByProject = new Map<string, number>();
+
+/** The project key of a stale session. */
+function staleKey(entry: StaleEntry): string {
+  return projectKey(entry.project.host, entry.project.cwd);
+}
 
 /** The stale sessions of every project whose task list the window has, each session once. */
 function staleEntries(): StaleEntry[] {
@@ -2142,13 +2149,27 @@ function updateStaleAlert(): void {
   const count = staleShown.length;
   staleAlertEl.hidden = count === 0;
   staleAlertEl.textContent = staleButtonText(count);
+  // The "N old" button of each project: in the head of its column and in its group in the bar.
+  staleByProject = staleCounts(staleShown, staleKey);
+  for (const column of focusColumns.values()) showOld(column);
+  renderPills();
   if (staleDialog.open) renderStale();
+}
+
+/** Opens the window "Old sessions" with the rows of one project (topbar-projects, decision 1). */
+function openStale(key: string): void {
+  staleFilter = key;
+  updateStaleAlert();
+  renderStale();
+  staleDialog.showModal();
 }
 
 /** Draws the rows of the window, grouped by project. */
 function renderStale(): void {
   const body = document.querySelector<HTMLElement>("#stale-body")!;
-  if (staleShown.length === 0) {
+  // After a click on "N old" of a project, only the rows of that project (topbar-projects).
+  const shown = staleFilter === null ? staleShown : staleShown.filter((entry) => staleKey(entry) === staleFilter);
+  if (shown.length === 0) {
     const none = document.createElement("p");
     none.className = "stale-none";
     none.textContent = "No old session. Every worker session that Claude Code still keeps belongs to a task that works or waits for you.";
@@ -2156,8 +2177,8 @@ function renderStale(): void {
     return;
   }
   const groups = new Map<string, StaleEntry[]>();
-  for (const entry of staleShown) {
-    const key = projectKey(entry.project.host, entry.project.cwd);
+  for (const entry of shown) {
+    const key = staleKey(entry);
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(entry);
   }
@@ -2248,6 +2269,8 @@ async function endSession(worker: Worker): Promise<void> {
 
 function initStale(): void {
   staleAlertEl.addEventListener("click", () => {
+    // The button of the bar (Map and Overview) shows every project.
+    staleFilter = null;
     updateStaleAlert();
     renderStale();
     staleDialog.showModal();
@@ -5008,6 +5031,8 @@ function activate(id: string): void {
   // The tab shows: at the start, at a click on the tab, back from Focus or the Map. In Focus the
   // triage panes stand in their columns, and `moveInto` puts their chats at the end.
   if (!focusOn) for (const pane of tabPanes(id)) pane.chat?.toEnd();
+  // In Details the open group of the bar follows the focused terminal (topbar-projects).
+  renderPills();
 }
 
 /** Runs when a terminal gets the keyboard focus. */
@@ -5375,7 +5400,7 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
   fitPane(pane);
   // A pane that is hidden now (a project added in the Overview or the Map) cannot be fitted, and xterm
   // would start the shell at 80 x 24: Claude Code then draws a question menu taller than the screen
-  // (ticket chat-question-unseen). The first fit in Focus or Tabs gives the real size. No `pty_resize`
+  // (ticket chat-question-unseen). The first fit in Focus or Details gives the real size. No `pty_resize`
   // goes out here: the resize handler below comes later, and `pty_spawn` takes this size.
   if (pane.termEl.clientWidth < MIN_FIT_PX || pane.termEl.clientHeight < MIN_FIT_PX) term.resize(HIDDEN_COLS, HIDDEN_ROWS);
   term.textarea?.addEventListener("focus", () => {
@@ -5623,8 +5648,66 @@ interface FocusColumn {
   morning: FileEntry | null;
   /** When the app last looked for the morning list (ms). */
   morningChecked: number;
+  /** The button "N old" of the project in the head of the column; hidden without old sessions (topbar-projects). */
+  oldEl: HTMLButtonElement;
 }
 const focusColumns = new Map<string, FocusColumn>();
+
+/** The folder icon of the folder button of a project: the icon of the former Project button. */
+const FOLDER_ICON =
+  '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" /></svg>';
+
+/**
+ * The buttons of one project (topbar-projects): Rules, Setup, "N old" and the folder button. They
+ * stand in the open group of the bar in Details and in the head of the column in Focus. Each acts on
+ * this project, not on the focused terminal. "N old" is hidden while the project has no old session.
+ */
+function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElement } {
+  const key = refKey(ref);
+  const name = projectName(ref);
+  const el = document.createElement("div");
+  el.className = "project-tools";
+  el.setAttribute("role", "group");
+  el.setAttribute("aria-label", `Buttons of ${name}`);
+  const tool = (text: string, title: string, action: () => void): HTMLButtonElement => {
+    const button = document.createElement("button");
+    button.className = "project-tool";
+    button.textContent = text;
+    button.title = title;
+    button.addEventListener("click", (event) => {
+      // A click in the open group is not a click on its pill.
+      event.stopPropagation();
+      setFocusCurrent(key);
+      action();
+    });
+    return button;
+  };
+  const rules = tool("Rules", `Show the rules that Claude Code gets in ${name}`, () => openRules(ref.host, ref.root));
+  const setup = tool("Setup", `Prepare ${name} for triage and workers: the Setup pipeline window`, () => showSetup(ref.host, ref.root));
+  const oldEl = tool("", `The worker sessions of ${name} that Claude Code still keeps after their task ended. Click to see them and end each one.`, () => openStale(key));
+  oldEl.classList.add("project-old");
+  const folder = tool("", `Open the workspace of ${name}: triage and the agent view. A project that is not set up shows the Setup pipeline window first.`, () => {
+    openProject(ref).catch((error) => console.error("project open failed", error));
+  });
+  folder.classList.add("project-folder");
+  folder.setAttribute("aria-label", `Open the workspace of ${name}`);
+  folder.innerHTML = FOLDER_ICON;
+  el.append(rules, setup, oldEl, folder);
+  showOldButton(oldEl, key);
+  return { el, oldEl };
+}
+
+/** Sets the text of an "N old" button from the count of its project, and hides it at 0. */
+function showOldButton(button: HTMLButtonElement, key: string): void {
+  const count = staleByProject.get(key) ?? 0;
+  button.hidden = count === 0;
+  button.textContent = oldButtonText(count);
+}
+
+/** The "N old" button in the head of a column. */
+function showOld(column: FocusColumn): void {
+  showOldButton(column.oldEl, projectKey(column.host, column.root));
+}
 
 function saveFocus(): void {
   try {
@@ -5696,11 +5779,11 @@ const FOCUS_COL_MIN = 360;
 const FOCUS_SIDE_MIN = 180;
 const FOCUS_SIDE_MAX = 640;
 /**
- * The width of the chat panel in Tabs that the user dragged, in pixels. It is also the usual width
+ * The width of the chat panel in Details that the user dragged, in pixels. It is also the usual width
  * of the left panel of each project in focus mode. In localStorage `chats-width`.
  */
 const CHATS_WIDTH_KEY = "chats-width";
-/** The room that the terminals in Tabs keep when the chat panel gets wider. */
+/** The room that the terminals in Details keep when the chat panel gets wider. */
 const CHATS_PANES_MIN = 360;
 
 function focusSizes(): Record<string, FocusSize> {
@@ -5778,7 +5861,7 @@ function dragSide(handle: HTMLElement, key: string, sideEl: HTMLElement): void {
 }
 
 /**
- * Sets the width of the chat panel in Tabs, and with it the usual width of the left panels in
+ * Sets the width of the chat panel in Details, and with it the usual width of the left panels in
  * focus mode; null gives both their usual width back. A left panel that the user dragged in focus
  * mode keeps its own width.
  */
@@ -5789,7 +5872,7 @@ function setChatsWidth(width: number | null): void {
   document.body.classList.toggle("chats-sized", width !== null);
 }
 
-/** The handle on the right of the chat panel in Tabs: its width. The terminals keep `CHATS_PANES_MIN`. */
+/** The handle on the right of the chat panel in Details: its width. The terminals keep `CHATS_PANES_MIN`. */
 function dragChats(handle: HTMLElement): void {
   let width = 0;
   let max = FOCUS_SIDE_MAX;
@@ -5886,7 +5969,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   const close = document.createElement("button");
   close.className = "focus-close";
   close.textContent = "×";
-  close.title = "Remove this project from focus mode; its workspace stays in Tabs";
+  close.title = "Remove this project from focus mode; its workspace stays in Details";
   close.setAttribute("aria-label", `Remove ${projectName(ref)} from focus mode`);
   // The Map of this project: who works on what, and the worker view of each run.
   const mapButton = document.createElement("button");
@@ -5903,7 +5986,12 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   morningEl.className = "focus-workers-button";
   morningEl.textContent = "Morning";
   morningEl.hidden = true;
-  head.append(dotEl, name, pathEl, spacer, morningEl, mapButton, workersEl, close);
+  // The buttons of this project (topbar-projects), then a divider before Map, Workers and ×.
+  const tools = projectTools(ref);
+  const divider = document.createElement("span");
+  divider.className = "project-divider";
+  divider.setAttribute("aria-hidden", "true");
+  head.append(dotEl, name, pathEl, spacer, morningEl, tools.el, divider, mapButton, workersEl, close);
   const body = document.createElement("div");
   body.className = "focus-body";
   const sideEl = document.createElement("aside");
@@ -5927,7 +6015,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   applyFocusSizes(key, el, sideEl);
   dragSide(sideHandle, key, sideEl);
   dragColumns(colHandle, key, el);
-  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, commandsEl, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0 };
+  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, commandsEl, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl };
   morningEl.addEventListener("click", () => {
     if (column.morning) void openViewer(column.morning);
   });
@@ -6056,6 +6144,7 @@ function renderFocus(): void {
     column.commandsEl.hidden = commands.length === 0;
     if (agents) moveInto(agents, column.agentsEl);
     showWorkers(column);
+    showOld(column);
     if (column.workersOpen && agents) requestAnimationFrame(() => fitPane(agents));
 
     // The left column: the triage chat, then the tasks with their cards.
@@ -6110,19 +6199,31 @@ function renderFocus(): void {
 }
 
 /**
- * Fills the projects group of the bar with one pill per project, in Tabs, Focus and Map
+ * Fills the projects group of the bar with one pill per project, in Details, Focus and Map
  * (projects-group-tabs); the Overview hides the group by CSS (overview-no-projects-group).
  * Focus shows its projects; the other modes show the projects of the Map.
+ * In Details the current project is an open group with its own buttons (topbar-projects): the
+ * project of the focused terminal, else the one clicked or typed in last, else the first.
  * A click goes to the project: its column in Focus, its graph in the Map, its workspace tab in
- * Tabs. The Overview branch stays, but no click reaches it while the group is hidden there.
+ * Details. The Overview branch stays, but no click reaches it while the group is hidden there.
  */
 function renderPills(): void {
   const roots = focusOn ? focusProjects : mapProjects();
+  const keys = roots.map(refKey);
+  let open: string | null = null;
+  if (!focusOn && !mapOn && !overviewOn) {
+    const pane = focusedPane();
+    const at = pane ? { host: pane.host, cwd: pane.project ?? pane.cwd ?? null } : null;
+    const focusedKey = at ? (keys.find((key) => inProject(at, key)) ?? "") : "";
+    open = currentProject(keys, focusedKey, focusCurrent);
+  }
   const pills = roots.map((root) => {
     const key = refKey(root);
-    const badge = focusBadge(focusState(root));
+    const state = focusState(root);
+    const isOpen = key === open;
+    const badge = isOpen ? groupCount(state) : pillCount(state);
     const pill = document.createElement("button");
-    pill.className = "focus-pill";
+    pill.className = isOpen ? "project-group-head" : "focus-pill";
     pill.title = backends().length > 1 ? `${root.root}\non ${backendName(root.host)}` : root.root;
     const dot = document.createElement("span");
     dot.className = `focus-dot ${badge.kind}`;
@@ -6134,6 +6235,8 @@ function renderPills(): void {
     count.textContent = badge.text;
     pill.append(dot, name, count);
     pill.addEventListener("click", () => {
+      // The clicked project becomes the current one; in Details its group opens.
+      setFocusCurrent(key);
       if (focusOn) {
         focusColumns.get(key)?.el.scrollIntoView({ behavior: "smooth", inline: "nearest" });
         setFocusCurrent(key);
@@ -6148,9 +6251,19 @@ function renderPills(): void {
           activate(triage.tabId);
           triage.term.focus();
         } else void openWorkspace(root.host, root.root).then(renderPills);
+        renderPills();
       }
     });
-    return pill;
+    if (!isOpen) return pill;
+    // The open group: the head of the pill, a divider, and the buttons of the project.
+    const group = document.createElement("div");
+    group.className = "project-group";
+    group.dataset.project = key;
+    const divider = document.createElement("span");
+    divider.className = "project-divider";
+    divider.setAttribute("aria-hidden", "true");
+    group.append(pill, divider, projectTools(root).el);
+    return group;
   });
   focusProjectsEl.replaceChildren(...pills);
 }
@@ -6188,12 +6301,12 @@ async function refreshFocusTasks(): Promise<void> {
       }
     }),
   );
+  // First the old sessions per project: their count stands in the columns and the pills.
+  updateStaleAlert();
   renderFocus();
   renderMap();
   renderOverview();
-  renderPills();
   approvePlans();
-  updateStaleAlert();
   updateAlerts();
 }
 
@@ -6209,7 +6322,7 @@ async function addFocusProject(): Promise<void> {
   if (!focusProjects.some((known) => refKey(known) === refKey(ref))) focusProjects.push(ref);
   saveFocus();
   await ensureWorkspace(ref);
-  // In Tabs the workspace of the new project shows; the other modes keep their view.
+  // In Details the workspace of the new project shows; the other modes keep their view.
   if (!focusOn && !mapOn && !overviewOn) {
     const { triage } = workspacePanes(ref);
     if (triage) activate(triage.tabId);
@@ -7093,9 +7206,6 @@ async function start(): Promise<void> {
     if (blockedWorkers.length > 0) void openWorker(blockedWorkers[0]);
   });
   void pollChats();
-  document.querySelector("#select-project")!.addEventListener("click", () => {
-    selectProject().catch((error) => console.error("project selection failed", error));
-  });
   void pollWorkers();
   // The temporary cards of the last run, before the first task read settles them (pending-card-persist).
   loadPending();
