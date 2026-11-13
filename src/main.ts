@@ -1652,6 +1652,17 @@ interface TaskInfo {
   measureChanged?: string[];
   /** The branch of the task with "Task branches" on (ticket task-branches); null or absent without one. */
   branch?: BranchInfo | null;
+  /** The tokens of the sessions of the task per model, each reply once (ticket task-tokens). Absent from an older host. */
+  tokens?: ModelUsage[];
+}
+
+/** The tokens of a task for one model: the plan run, the work run and their agents together (ticket task-tokens). */
+interface ModelUsage {
+  model: string;
+  input: number;
+  cacheWrite: number;
+  cacheRead: number;
+  output: number;
 }
 
 /** The branch of a task (ticket task-branches), from its branch file and from git. */
@@ -3938,6 +3949,26 @@ function branchRow(branch: BranchInfo): HTMLElement {
   return row;
 }
 
+/** The token row of a task for one model (ticket task-tokens): the short counts, the exact ones in the tooltip. */
+function tokenRow(usage: ModelUsage): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "task-tokens";
+  const name = document.createElement("span");
+  name.className = "task-tokens-model";
+  name.textContent = `Tokens ${usage.model}`;
+  const when = document.createElement("span");
+  when.className = "when";
+  when.textContent = `in ${tokenText(usage.input)} · cache write ${tokenText(usage.cacheWrite)} · cache read ${tokenText(usage.cacheRead)} · out ${tokenText(usage.output)}`;
+  const total = usage.input + usage.cacheWrite + usage.cacheRead + usage.output;
+  const exact = (count: number) => count.toLocaleString();
+  row.title = [
+    `${usage.model}: input ${exact(usage.input)}, cache write ${exact(usage.cacheWrite)}, cache read ${exact(usage.cacheRead)}, output ${exact(usage.output)}; total ${exact(total)}.`,
+    "The plan run, the work run and their agents count together, each reply once.",
+  ].join("\n");
+  row.append(name, when);
+  return row;
+}
+
 /**
  * The Stop row of a task whose worker works or waits at a prompt, or null. The first click arms
  * it; "Stop now" ends the worker through the script, "Keep running" steps back. A task without
@@ -4546,6 +4577,8 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     // The report row carries the report's state.
     if (info?.plan) body.append(fileRow("Plan", info.plan, null, info.state || null));
     if (info?.report) body.append(fileRow("Report", info.report, info.header?.state ?? null, null));
+    // What the task cost: one row per model under the report (ticket task-tokens).
+    body.append(...(info?.tokens ?? []).map(tokenRow));
     if (info?.branch) body.append(branchRow(info.branch));
     // Stop stands under the runs that it stops.
     const stop = stopRow(task);

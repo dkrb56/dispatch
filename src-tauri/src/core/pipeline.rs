@@ -354,6 +354,11 @@ impl Project {
         self.reports.join(format!("{ticket}.branch"))
     }
 
+    /// The session file of a ticket (ticket task-tokens): the Claude sessions of its runs.
+    fn session_file(&self, ticket: &str) -> PathBuf {
+        self.reports.join(format!("{ticket}.session"))
+    }
+
     /// The gate command: the first line of the gate file that is not empty and not a comment.
     fn merge_gate(&self) -> String {
         fs::read_to_string(self.merge_gate_file())
@@ -657,19 +662,51 @@ function Resume-Target {
 # it starts in, not of the folder the caller is in. A failure sets the state back to $StateOnFailure
 # when one is given, so the task card of Dispatch comes back with the error, and ends the script
 # with the exit code of claude; a claude that is not found counts as exit code 1. A failure also
-# checks out $BranchOnFailure again when one is given: the branch before the task branch.
+# checks out $BranchOnFailure again when one is given: the branch before the task branch. Gives the
+# lines that claude printed (claude --bg prints the job id) and writes them on to the caller.
 function Run-Claude([string[]]$Arguments, [string]$StateOnFailure, [string]$BranchOnFailure) {
   Push-Location -LiteralPath $Project
   $global:LASTEXITCODE = 0
-  & claude @Arguments
+  $printed = @(& claude @Arguments)
   $ok = $?
   $code = $LASTEXITCODE
   Pop-Location
-  if ($ok -and $code -eq 0) { return }
+  foreach ($line in $printed) { [Console]::Out.WriteLine("$line") }
+  if ($ok -and $code -eq 0) { return ,$printed }
   if ($code -eq 0) { $code = 1 }
   if ($StateOnFailure) { Set-State $StateOnFailure }
   if ($BranchOnFailure) { Invoke-Git @('checkout', '-q', $BranchOnFailure) | Out-Null }
   exit $code
+}
+
+# The session file of a ticket (ticket task-tokens): one line "<run> <session id>" per Claude session
+# of the task, in order. Dispatch sums the tokens of these sessions for the task card. The worker of
+# the job id that claude printed gives the session id; without it, the newest worker of the run name.
+# A resume of the same session adds nothing; a resume that starts a copy adds the copy. A missing id
+# is a warning, no refusal: the run has started.
+function Session-Path { Join-Path $Reports "$Id.session" }
+function Save-Session([string]$Run, [string[]]$Printed) {
+  $words = @($Printed | ForEach-Object { "$_" -split '\s+' } | Where-Object { $_ })
+  $workers = @()
+  try {
+    $text = (& claude agents --json --all) -join "`n"
+    if ($LASTEXITCODE -eq 0) { $workers = @($text | ConvertFrom-Json | ForEach-Object { $_ }) }
+  } catch { }
+  $worker = @($workers | Where-Object { $_.id -and $words -contains "$($_.id)" }) | Select-Object -First 1
+  if ($null -eq $worker) {
+    $named = @($workers | Where-Object { $_.name -eq (Run-Name $Run) } | Sort-Object { $_.startedAt })
+    if ($named.Count -gt 0) { $worker = $named[$named.Count - 1] }
+  }
+  if ($null -eq $worker -or -not $worker.sessionId) {
+    [Console]::Error.WriteLine("warning: no session id for $(Run-Name $Run); the task card counts no tokens of this run")
+    return
+  }
+  $session = "$($worker.sessionId)"
+  $file = Session-Path
+  $known = if (Test-Path -LiteralPath $file) { @(Get-Content -LiteralPath $file) } else { @() }
+  if (@($known | Where-Object { (("$_".Trim()) -split '\s+')[-1] -eq $session }).Count -eq 0) {
+    [IO.File]::AppendAllText($file, "$Run $session`n")
+  }
 }
 
 # The setting "Measure before the plan" of the project in options.json; off without the file or the field.
@@ -912,7 +949,8 @@ switch ($Verb) {
     if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
     if (Measure-On) { $prompt += " Measure before the plan is on: first run the listed measuring commands as the section Background workers says, and write the section Measured." }
     Set-State 'planning'
-    Run-Claude (@($prompt, '--bg', '--name', (Run-Name 'plan')) + $flags)
+    $printed = Run-Claude (@($prompt, '--bg', '--name', (Run-Name 'plan')) + $flags)
+    Save-Session 'plan' $printed
   }
   'approve' {
     Need-Id
@@ -939,8 +977,9 @@ switch ($Verb) {
     # A resume with other options than the saved ones of the session starts a copy of it (Claude
     # Code 2.1.319). The name keeps the copy with the task and marks it as the work run: Dispatch and
     # this script find a worker by its name.
-    Run-Claude (@($prompt, '--resume', $worker.sessionId, '--bg', '--name', (Run-Name 'work')) + $flags) 'planning' $back
+    $printed = Run-Claude (@($prompt, '--resume', $worker.sessionId, '--bg', '--name', (Run-Name 'work')) + $flags) 'planning' $back
     Set-State 'working'
+    Save-Session 'work' $printed
   }
   'reply' {
     Need-Id
@@ -956,7 +995,8 @@ switch ($Verb) {
     $branch = if ($run -eq 'work' -and (Branches-On)) { Read-BranchFile $Id } else { $null }
     $tracked = $null -ne $branch -and -not $branch.merge
     $back = if ($tracked) { Enter-TaskBranch } else { '' }
-    Run-Claude (@($text, '--resume', $worker.sessionId, '--bg', '--name', (Run-Name $run)) + $flags) '' $back
+    $printed = Run-Claude (@($text, '--resume', $worker.sessionId, '--bg', '--name', (Run-Name $run)) + $flags) '' $back
+    Save-Session $run $printed
     # The state file is newer than the report now: Dispatch keeps the checkout on the task branch
     # until the worker writes its report again.
     if ($tracked) { Set-State (Get-State) }
@@ -2100,6 +2140,9 @@ pub struct TaskInfo {
     measure_changed: Vec<String>,
     /// The branch of the task with "Task branches" on (`<ticket>.branch`), else none.
     branch: Option<BranchInfo>,
+    /// The tokens of the sessions of `<ticket>.session` per model, each reply once (ticket
+    /// task-tokens). Empty without the file or without a transcript.
+    tokens: Vec<crate::core::flow::ModelUsage>,
 }
 
 /// The branch of a task (ticket task-branches): from its branch file and from git.
@@ -2135,6 +2178,29 @@ fn read_branch_file(path: &Path) -> Option<BranchInfo> {
         }
     }
     (!info.name.is_empty() && !info.base.is_empty()).then_some(info)
+}
+
+/// Reads a session file (ticket task-tokens): the session id of each line `plan <id>` or
+/// `work <id>`, in order, each id once. An id of other characters than letters, digits and hyphens
+/// is left out: it becomes a part of a path. Empty without the file.
+fn read_session_file(path: &Path) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for line in fs::read_to_string(path).unwrap_or_default().lines() {
+        let mut words = line.split_whitespace();
+        let (Some("plan" | "work"), Some(id), None) = (words.next(), words.next(), words.next()) else { continue };
+        if id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') && !ids.iter().any(|known| known == id) {
+            ids.push(id.to_string());
+        }
+    }
+    ids
+}
+
+/// The folder of the Claude Code transcripts: `.claude/projects` in the home folder of the user
+/// (`USERPROFILE`, else `HOME`). The task list has no `Core`, so it takes the home folder from the
+/// environment, as `extra_directories` does.
+fn claude_projects_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
+    Some(PathBuf::from(home).join(".claude").join("projects"))
 }
 
 /// The modification time of a file.
@@ -2293,6 +2359,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
             tldr: Vec::new(),
             measure_changed: Vec::new(),
             branch: None,
+            tokens: Vec::new(),
         });
         tasks.len() - 1
     }
@@ -2326,6 +2393,15 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
     for task in tasks.iter_mut() {
         let note = project.measure_dir().join(&task.name).join("changed.txt");
         task.measure_changed = fs::read_to_string(note).unwrap_or_default().lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect();
+    }
+    // The tokens of each task from the transcripts of its sessions (ticket task-tokens).
+    if let Some(projects) = claude_projects_dir() {
+        for task in tasks.iter_mut() {
+            let sessions = read_session_file(&project.session_file(&task.name));
+            if !sessions.is_empty() {
+                task.tokens = crate::core::flow::token_usage(&projects, &sessions);
+            }
+        }
     }
     // A brief alone makes no task; a task that exists gets its brief. The title of the brief is
     // what the ticket of the task takes (ticket tickets).
@@ -3102,6 +3178,43 @@ mod tests {
     }
 
     #[test]
+    fn a_session_file_gives_the_ids_of_the_runs() {
+        let project = scratch("sessions");
+        apply(&project, &[]).unwrap();
+        // The lines of the script, a copy of the work run, a repeated id, a bad id and other lines.
+        let text = "plan 00000000-0000-4000-8000-00000000aaaa\nwork 00000000-0000-4000-8000-00000000bbbb\r\nwork 00000000-0000-4000-8000-00000000cccc\nwork 00000000-0000-4000-8000-00000000aaaa\nwork ../x\nnote abc\nplan\nplan a b\n";
+        write_file(&project.session_file("t-1"), text).unwrap();
+        assert_eq!(read_session_file(&project.session_file("t-1")), ["00000000-0000-4000-8000-00000000aaaa", "00000000-0000-4000-8000-00000000bbbb", "00000000-0000-4000-8000-00000000cccc"]);
+        assert!(read_session_file(&project.session_file("t-2")).is_empty());
+        // A session file makes no task; a task with sessions but no transcript counts no tokens.
+        write_file(&project.reports.join("t-1.state"), "working\n").unwrap();
+        write_file(&project.session_file("t-9"), "plan 00000000-0000-4000-8000-00000000dddd\n").unwrap();
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        let names: Vec<&str> = list.tasks.iter().map(|task| task.name.as_str()).collect();
+        assert_eq!(names, ["t-1"]);
+        assert!(list.tasks[0].tokens.is_empty());
+        let json = serde_json::to_value(&list.tasks[0]).unwrap();
+        assert_eq!(json["tokens"], serde_json::json!([]));
+    }
+
+    /// The proof of ticket task-tokens: the token rows of each task of the project in
+    /// DISPATCH_PROOF_CWD, from the function of the task card. Without the variable it does nothing.
+    #[test]
+    #[ignore]
+    fn tokens_of_the_project_for_the_proof() {
+        let Ok(cwd) = std::env::var("DISPATCH_PROOF_CWD") else { return };
+        let list = task_list(cwd).unwrap();
+        for task in list.tasks.iter().filter(|task| !task.tokens.is_empty()) {
+            // cargo writes the name of the test without a line end before this output.
+            println!("\ntask {}", task.name);
+            for usage in &task.tokens {
+                let total = usage.input + usage.cache_write + usage.cache_read + usage.output;
+                println!("  {}: input {}, cache write {}, cache read {}, output {}, total {}", usage.model, usage.input, usage.cache_write, usage.cache_read, usage.output, total);
+            }
+        }
+    }
+
+    #[test]
     fn a_brief_gives_its_title_and_a_report_its_first_line() {
         // The title line of a brief, as triage writes it.
         let brief = "# task-stop: a Stop button for a running task\n\n## The user's words\n\"stop it\"\n";
@@ -3214,6 +3327,7 @@ mod tests {
             tldr: Vec::new(),
             measure_changed: Vec::new(),
             branch: None,
+            tokens: Vec::new(),
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };
@@ -3268,9 +3382,11 @@ mod tests {
             "const fs = require('fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(__dirname + '/args.txt', JSON.stringify(args) + '\\n');
-fs.writeFileSync(__dirname + '/cwd.txt', process.cwd());
+// The folder of a run; the script lists the workers from the folder of its caller.
+if (args[0] !== 'agents') fs.writeFileSync(__dirname + '/cwd.txt', process.cwd());
 if (args[0] === 'agents') {
-  const worker = { id: 'bg-1', name: process.env.FAKE_NAME || 't-1', sessionId: 'sess-1', startedAt: 1, state: process.env.FAKE_STATE };
+  const copy = __dirname + '/copy.txt';
+  const worker = { id: 'bg-1', name: process.env.FAKE_NAME || 't-1', sessionId: fs.existsSync(copy) ? fs.readFileSync(copy, 'utf8') : 'sess-1', startedAt: 1, state: process.env.FAKE_STATE };
   if (process.env.FAKE_STATUS) worker.status = process.env.FAKE_STATUS;
   process.stdout.write(JSON.stringify([worker]));
 } else if (fs.existsSync(__dirname + '/fail.txt')) {
@@ -3278,6 +3394,8 @@ if (args[0] === 'agents') {
 } else if (args[0] === 'stop') {
   process.stdout.write('stopped ' + args[1] + '\\n');
 } else {
+  // A resume on other options starts a copy with its own session id (FAKE_COPY): the agents list gives it from now on.
+  if (process.env.FAKE_COPY) fs.writeFileSync(__dirname + '/copy.txt', process.env.FAKE_COPY);
   const plan = /Write the plan to (.+?) with the sections/.exec(args[0]);
   let text = 'plan\\n';
   if (plan && args[0].includes('Measure before the plan is on')) {
@@ -3341,7 +3459,9 @@ if (args[0] === 'agents') {
     /// The arguments of the last `claude` call that the fake recorded.
     fn last_call(fake: &Path) -> Vec<String> {
         let calls = read(&fake.join("args.txt"));
-        serde_json::from_str(calls.lines().last().unwrap()).unwrap()
+        // The script lists the workers after a run to save its session (ticket task-tokens); that call is no run.
+        let calls: Vec<Vec<String>> = calls.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        calls.into_iter().rev().find(|call| call.first().map(String::as_str) != Some("agents")).unwrap()
     }
 
     /// The expected `plan-flags.txt` with "Measure before the plan" on: the lines of `plan_lines`
@@ -3502,7 +3622,7 @@ if (args[0] === 'agents') {
         let (code, out) = run_script(&project, &fake, "done", &["plan", "t-1"]);
         assert_eq!(code, 0, "{out}");
         let calls = read(&fake.join("args.txt"));
-        let start: Vec<String> = serde_json::from_str(calls.lines().rev().nth(1).unwrap()).unwrap();
+        let start: Vec<String> = serde_json::from_str(calls.lines().rev().filter(|line| !line.starts_with("[\"agents\"")).nth(1).unwrap()).unwrap();
         assert!(start[0].ends_with("Then end your turn. Measure before the plan is on: first run the listed measuring commands as the section Background workers says, and write the section Measured."), "{start:?}");
         assert_eq!(last_call(&fake), ["(planner)", "measure", "t-1", "1", "0"]);
         let plan_text = read(&project.plans().join("t-1.md"));
@@ -3648,6 +3768,9 @@ if (args[0] === 'agents') {
         assert_eq!(&start[1..6], ["--bg", "--name", "t-1 [plan]", "--model", "fable"]);
         assert_eq!(start[start.len() - 3], "Read,Grep,Glob,Bash,Write");
         assert_eq!(start.last().unwrap(), &format!("Bash(git status*),Bash(git log *),Bash(git diff *),Write({}/plans/**)", project.rule_path().unwrap()));
+        // The session file names the session of the plan run (ticket task-tokens); claude printed bg-1.
+        assert!(out.contains("bg-1"), "the script writes the output of claude on: {out}");
+        assert_eq!(read(&project.session_file("t-1")), "plan sess-1\n");
 
         // approve: refused while the worker runs or waits at a prompt, then resumed on the work options.
         let (code, out) = run_script(&project, &fake, "working", &["approve", "t-1"]);
@@ -3667,9 +3790,13 @@ if (args[0] === 'agents') {
         assert_eq!(code, 3, "{out}");
         assert_eq!(read(&project.reports.join("t-1.state")), "planning\n");
         fs::remove_file(fake.join("fail.txt")).unwrap();
-        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
+        assert_eq!(read(&project.session_file("t-1")), "plan sess-1\n", "a failed start adds no session");
+        // The resume on the work options starts a copy with its own session: the file gets its line.
+        let (code, out) = run_script_env(&project, &fake, "done", &["approve", "t-1"], &[("FAKE_COPY", "sess-2")]);
         assert_eq!(code, 0, "{out}");
         assert_eq!(read(&project.reports.join("t-1.state")), "working\n");
+        assert_eq!(read(&project.session_file("t-1")), "plan sess-1\nwork sess-2\n");
+        fs::remove_file(fake.join("copy.txt")).unwrap();
         let resume = last_call(&fake);
         assert!(resume[0].starts_with("Plan approved: "), "{resume:?}");
         // The name goes with the resume: a resume on other options starts a copy of the session.
@@ -3683,6 +3810,8 @@ if (args[0] === 'agents') {
         let reply = last_call(&fake);
         assert_eq!(reply[0], "yes, go on");
         assert_eq!(&reply[1..7], ["--resume", "sess-1", "--bg", "--name", "t-1 [work]", "--model"]);
+        // A resume of a session that the file has already adds nothing.
+        assert_eq!(read(&project.session_file("t-1")), "plan sess-1\nwork sess-2\n");
 
         // A text with double quotes and line breaks reaches claude as one argument, quotes as
         // apostrophes and breaks as spaces, and the arguments after it stay whole.

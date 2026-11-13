@@ -921,6 +921,24 @@ button.task-head:hover {
   flex-basis: 100%;
 }
 
+/* The tokens of a task for one model (ticket task-tokens): a row like the branch row. */
+.task-tokens {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 3px 8px;
+  font-size: calc(12px * var(--text-scale));
+}
+
+.task-tokens .task-tokens-model {
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.task-tokens .when {
+  color: var(--muted);
+}
+
 .task-stop .task-stop-text {
   flex-basis: 100%;
   color: var(--muted);

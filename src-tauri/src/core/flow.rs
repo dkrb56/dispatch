@@ -53,6 +53,9 @@ pub struct FlowEvent {
     added: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     removed: Option<usize>,
+    /// The model of the reply, for `tokens`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<String>,
 }
 
 /// The new events of one transcript.
@@ -74,6 +77,18 @@ pub struct FlowFile {
     events: Vec<FlowEvent>,
 }
 
+/// The tokens of a task for one model (ticket task-tokens): each reply of the plan run, the work
+/// run and their agents counts once.
+#[derive(Serialize, Default, Debug, PartialEq, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelUsage {
+    pub model: String,
+    pub input: u64,
+    pub cache_write: u64,
+    pub cache_read: u64,
+    pub output: u64,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FlowLine {
@@ -90,6 +105,7 @@ struct FlowLine {
 #[derive(Deserialize)]
 struct FlowMessage {
     id: Option<String>,
+    model: Option<String>,
     content: Value,
     usage: Option<Usage>,
 }
@@ -199,7 +215,7 @@ fn read_flow_line(line: &str, main: bool, events: &mut Vec<FlowEvent>) {
                     .sum();
                 // Claude Code can write one reply on several lines, each with its usage. The id lets
                 // the caller count a reply once.
-                events.push(FlowEvent { kind: "tokens", time, id: message.id, context: Some(context), output: usage.output_tokens, ..FlowEvent::default() });
+                events.push(FlowEvent { kind: "tokens", time, id: message.id, context: Some(context), output: usage.output_tokens, model: message.model, ..FlowEvent::default() });
             }
         }
         "user" => {
@@ -297,6 +313,119 @@ fn flow_of(projects: &Path, session: &str, from: &HashMap<String, u64>) -> Resul
     Ok(files)
 }
 
+/// One reply of a transcript, for the token sum of a task.
+#[derive(Clone)]
+struct Reply {
+    id: String,
+    model: Option<String>,
+    input: u64,
+    cache_write: u64,
+    cache_read: u64,
+    output: u64,
+}
+
+/// The reply of an assistant line with a message id and a usage, else none. The lines of the agents
+/// in the transcript of a session (`isSidechain`) count too: the message id removes the line that
+/// the agent file also has.
+fn reply_of_line(line: &str) -> Option<Reply> {
+    if !line.contains("\"type\":\"assistant\"") {
+        return None;
+    }
+    let entry = serde_json::from_str::<FlowLine>(line).ok()?;
+    if entry.kind != "assistant" {
+        return None;
+    }
+    let message = entry.message?;
+    let usage = message.usage?;
+    Some(Reply {
+        id: message.id?,
+        model: message.model,
+        input: usage.input_tokens.unwrap_or(0),
+        cache_write: usage.cache_creation_input_tokens.unwrap_or(0),
+        cache_read: usage.cache_read_input_tokens.unwrap_or(0),
+        output: usage.output_tokens.unwrap_or(0),
+    })
+}
+
+/// What the token sum knows of one transcript: where the last read ended, the modification time,
+/// and the replies of the complete lines before it.
+struct ReadReplies {
+    next: u64,
+    modified: Option<std::time::SystemTime>,
+    replies: Vec<Reply>,
+}
+
+/// The replies of each transcript by path. The task list asks every 5 s; a transcript that did not
+/// change is not read again, and one that grew is read from where the last read ended.
+static REPLIES: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, ReadReplies>>> = std::sync::OnceLock::new();
+
+/// The replies of a transcript, through the cache. A file that is now shorter is read from the start.
+fn replies_of(path: &Path) -> Vec<Reply> {
+    let Ok(meta) = fs::metadata(path) else { return Vec::new() };
+    let (len, modified) = (meta.len(), meta.modified().ok());
+    let mut cache = REPLIES.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let known = cache.remove(path).filter(|known| known.next <= len);
+    let mut read = known.unwrap_or(ReadReplies { next: 0, modified: None, replies: Vec::new() });
+    if read.modified != modified || read.next == 0 {
+        if let Ok(mut file) = fs::File::open(path) {
+            let mut bytes = Vec::new();
+            if file.seek(SeekFrom::Start(read.next)).is_ok() && file.read_to_end(&mut bytes).is_ok() {
+                // Claude Code can be in the middle of a line. Use complete lines only.
+                if let Some(end) = bytes.iter().rposition(|&byte| byte == b'\n') {
+                    for line in bytes[..end].split(|&byte| byte == b'\n') {
+                        if let Some(reply) = std::str::from_utf8(line).ok().and_then(reply_of_line) {
+                            read.replies.push(reply);
+                        }
+                    }
+                    read.next += end as u64 + 1;
+                }
+                read.modified = modified;
+            }
+        }
+    }
+    let replies = read.replies.clone();
+    cache.insert(path.to_path_buf(), read);
+    replies
+}
+
+/// The tokens of the sessions of a task per model (ticket task-tokens): the transcripts of each
+/// session in every folder of `projects`, and the agents beside them. A reply counts once over all
+/// files of all sessions: Claude Code writes one reply on several lines, and a work run that
+/// resumes the plan session as a copy repeats its replies. A reply without a model counts under
+/// `unknown`. Sorted by model; an id that is no session id is left out.
+pub fn token_usage(projects: &Path, sessions: &[String]) -> Vec<ModelUsage> {
+    let mut seen = std::collections::HashSet::new();
+    let mut sums: std::collections::BTreeMap<String, ModelUsage> = std::collections::BTreeMap::new();
+    for session in sessions {
+        if session.is_empty() || !session.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            continue;
+        }
+        let paths = find_transcripts(projects, session);
+        let mut files = paths.clone();
+        for path in &paths {
+            let agents = fs::read_dir(path.with_extension("").join("subagents")).into_iter().flatten().flatten().map(|entry| entry.path());
+            files.extend(agents.filter(|agent| {
+                let name = agent.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+                name.starts_with("agent-") && name.ends_with(".jsonl")
+            }));
+        }
+        for file in files {
+            for reply in replies_of(&file) {
+                if !seen.insert(reply.id.clone()) {
+                    continue;
+                }
+                let model = reply.model.unwrap_or_else(|| "unknown".to_string());
+                let sum = sums.entry(model.clone()).or_insert_with(|| ModelUsage { model, ..ModelUsage::default() });
+                sum.input += reply.input;
+                sum.cache_write += reply.cache_write;
+                sum.cache_read += reply.cache_read;
+                sum.output += reply.output;
+            }
+        }
+    }
+    sums.into_values().collect()
+}
+
 /// What a session and its agents did since the last read: the worker view of the Map asks
 /// again and again with the positions it got.
 pub fn session_flow(core: &Core, session: String, from: HashMap<String, u64>) -> Result<Vec<FlowFile>, String> {
@@ -309,7 +438,7 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    const ASSISTANT: &str = r#"{"type":"assistant","timestamp":"2026-11-09T10:00:00Z","message":{"id":"msg_1","content":[{"type":"text","text":"Setting the\nthreshold."},{"type":"tool_use","id":"toolu_1","name":"Edit","input":{"file_path":"config/raid.json","old_string":"a\nb","new_string":"a\nb\nc"}}],"usage":{"input_tokens":2,"cache_creation_input_tokens":100,"cache_read_input_tokens":1000,"output_tokens":50}}}"#;
+    const ASSISTANT: &str = r#"{"type":"assistant","timestamp":"2026-11-09T10:00:00Z","message":{"id":"msg_1","model":"claude-fable-5-1","content":[{"type":"text","text":"Setting the\nthreshold."},{"type":"tool_use","id":"toolu_1","name":"Edit","input":{"file_path":"config/raid.json","old_string":"a\nb","new_string":"a\nb\nc"}}],"usage":{"input_tokens":2,"cache_creation_input_tokens":100,"cache_read_input_tokens":1000,"output_tokens":50}}}"#;
     const RESULT: &str = r#"{"type":"user","timestamp":"2026-11-09T10:00:03Z","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"ok","is_error":true}]}}"#;
     const SIDE: &str = r#"{"type":"assistant","isSidechain":true,"timestamp":"t","message":{"id":"msg_2","content":[{"type":"tool_use","id":"toolu_2","name":"Read","input":{"file_path":"x"}}]}}"#;
     const OTHER: &str = r#"{"type":"api-request-blob","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_9","name":"Read","input":{}}]}}"#;
@@ -327,6 +456,7 @@ mod tests {
         assert_eq!((tool.kind, tool.name.as_deref(), tool.detail.as_deref()), ("tool", Some("Edit"), Some("config/raid.json")));
         assert_eq!((tool.file.as_deref(), tool.added, tool.removed), (Some("config/raid.json"), Some(3), Some(2)));
         assert_eq!((events[2].kind, events[2].id.as_deref(), events[2].context, events[2].output), ("tokens", Some("msg_1"), Some(1102), Some(50)));
+        assert_eq!(events[2].model.as_deref(), Some("claude-fable-5-1"));
         assert_eq!((events[3].kind, events[3].id.as_deref(), events[3].error), ("result", Some("toolu_1"), true));
     }
 
@@ -381,6 +511,74 @@ mod tests {
         let keys: Vec<&str> = files.iter().map(|file| file.key.as_str()).collect();
         assert_eq!(keys, ["main", "abc", "xyz"]);
         assert_eq!(files[0].events.len(), 1, "the newer transcript has one result");
+        fs::remove_dir_all(&projects).unwrap();
+    }
+
+    /// A scratch folder of transcripts for one test.
+    fn scratch_projects(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let projects = std::env::temp_dir().join(format!("dispatch-tokens-{name}-{nanos}"));
+        fs::create_dir_all(projects.join("D--project")).unwrap();
+        projects
+    }
+
+    /// An assistant line of a reply with its id, model and usage.
+    fn reply_line(id: &str, model: &str, input: u64, write: u64, read: u64, output: u64) -> String {
+        format!(
+            r#"{{"type":"assistant","timestamp":"t","message":{{"id":"{id}","model":"{model}","content":[{{"type":"text","text":"x"}}],"usage":{{"input_tokens":{input},"cache_creation_input_tokens":{write},"cache_read_input_tokens":{read},"output_tokens":{output}}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn a_reply_on_two_lines_counts_once() {
+        let projects = scratch_projects("twice");
+        let session = "11111111-0000-0000-0000-000000000001";
+        let line = reply_line("msg_a", "claude-fable-5-1", 2, 100, 1000, 50);
+        // Claude Code writes the text and the tool call of one reply as two lines with the same id.
+        fs::write(projects.join("D--project").join(format!("{session}.jsonl")), format!("{line}\n{line}\n{RESULT}\n")).unwrap();
+        let usage = token_usage(&projects, &[session.to_string()]);
+        assert_eq!(usage, [ModelUsage { model: "claude-fable-5-1".into(), input: 2, cache_write: 100, cache_read: 1000, output: 50 }]);
+        fs::remove_dir_all(&projects).unwrap();
+    }
+
+    #[test]
+    fn the_tokens_of_a_task_sum_both_sessions_and_their_agents_per_model() {
+        let projects = scratch_projects("task");
+        let folder = projects.join("D--project");
+        let (plan, work) = ("22222222-0000-0000-0000-00000000000a", "22222222-0000-0000-0000-00000000000b");
+        let first = reply_line("msg_1", "claude-fable-5-1", 1, 10, 100, 5);
+        let second = reply_line("msg_2", "claude-fable-5-1", 2, 20, 200, 6);
+        fs::write(folder.join(format!("{plan}.jsonl")), format!("{first}\n{second}\n")).unwrap();
+        // The work run is a copy of the plan session: it repeats the plan replies, then adds its own.
+        let third = reply_line("msg_3", "claude-opus-5-5", 3, 30, 300, 7);
+        fs::write(folder.join(format!("{work}.jsonl")), format!("{first}\n{second}\n{third}\n")).unwrap();
+        // An agent of the work run, with a reply that the session transcript does not have.
+        let agents = folder.join(work).join("subagents");
+        fs::create_dir_all(&agents).unwrap();
+        fs::write(agents.join("agent-x.jsonl"), format!("{}\n", reply_line("msg_4", "claude-haiku-5-5", 4, 40, 400, 8))).unwrap();
+        fs::write(agents.join("agent-x.meta.json"), r#"{"description":"search"}"#).unwrap();
+
+        let sessions = [plan.to_string(), work.to_string(), "../x".to_string()];
+        let usage = token_usage(&projects, &sessions);
+        assert_eq!(
+            usage,
+            [
+                ModelUsage { model: "claude-fable-5-1".into(), input: 3, cache_write: 30, cache_read: 300, output: 11 },
+                ModelUsage { model: "claude-haiku-5-5".into(), input: 4, cache_write: 40, cache_read: 400, output: 8 },
+                ModelUsage { model: "claude-opus-5-5".into(), input: 3, cache_write: 30, cache_read: 300, output: 7 },
+            ]
+        );
+
+        // The work run goes on: the next read gives the new reply, also with an unchanged length elsewhere.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let mut file = fs::OpenOptions::new().append(true).open(folder.join(format!("{work}.jsonl"))).unwrap();
+        writeln!(file, "{}", reply_line("msg_5", "claude-opus-5-5", 1, 1, 1, 1)).unwrap();
+        // A half line at the end waits for the next read.
+        write!(file, "{}", &third[..20]).unwrap();
+        drop(file);
+        let usage = token_usage(&projects, &sessions);
+        assert_eq!(usage[2], ModelUsage { model: "claude-opus-5-5".into(), input: 4, cache_write: 31, cache_read: 301, output: 8 });
+        assert!(token_usage(&projects, &[]).is_empty());
         fs::remove_dir_all(&projects).unwrap();
     }
 }
