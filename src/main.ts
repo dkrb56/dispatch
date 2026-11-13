@@ -1661,6 +1661,8 @@ interface TaskInfo {
    * report-check). Such a report has the header state `working`, and `did` gives the reason. Absent from an older host.
    */
   unverified?: string[];
+  /** The log of the task in `.dispatch/logs` (ticket task-log); null or absent without one. */
+  log?: FileEntry | null;
 }
 
 /** One Bash command of a task with its result, from the transcripts (ticket task-evidence). */
@@ -4684,6 +4686,8 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
       }
       body.append(report);
     }
+    // The log of the task: the plan, each command with its output, the report (ticket task-log).
+    if (info?.log) body.append(fileRow("Log", info.log, null, null));
     // What the task cost: one row per model under the report (ticket task-tokens).
     body.append(...(info?.tokens ?? []).map(tokenRow));
     // What the task ran: one row per Bash command from the transcripts (ticket task-evidence).

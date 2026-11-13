@@ -359,6 +359,11 @@ impl Project {
         self.reports.join(format!("{ticket}.session"))
     }
 
+    /// The log of a ticket (ticket task-log): the plan, the commands of its runs and the report.
+    fn log_file(&self, ticket: &str) -> PathBuf {
+        self.reports.join("logs").join(format!("{ticket}.md"))
+    }
+
     /// The gate command: the first line of the gate file that is not empty and not a comment.
     fn merge_gate(&self) -> String {
         fs::read_to_string(self.merge_gate_file())
@@ -1831,20 +1836,21 @@ fn section_lines(text: &str, title: &str) -> Vec<String> {
 /// the command showed and may hold code spans too. A span of several backticks ends at the same
 /// number of backticks; an empty or unclosed span is no claim.
 fn verification_claims(text: &str) -> Vec<String> {
-    section_lines(text, "Verification")
-        .iter()
-        .filter_map(|line| {
-            let ticks = line.chars().take_while(|&c| c == '`').count();
-            if ticks == 0 {
-                return None;
-            }
-            let fence = "`".repeat(ticks);
-            let rest = &line[ticks..];
-            let end = rest.find(&fence)?;
-            let claim = rest[..end].trim();
-            (!claim.is_empty()).then(|| claim.to_string())
-        })
-        .collect()
+    section_lines(text, "Verification").iter().filter_map(|line| claim_of(line)).collect()
+}
+
+/// The claim of one line of the Verification section without its list mark: the trimmed text of
+/// the code span at its start, or none (see `verification_claims`).
+fn claim_of(line: &str) -> Option<String> {
+    let ticks = line.chars().take_while(|&c| c == '`').count();
+    if ticks == 0 {
+        return None;
+    }
+    let fence = "`".repeat(ticks);
+    let rest = &line[ticks..];
+    let end = rest.find(&fence)?;
+    let claim = rest[..end].trim();
+    (!claim.is_empty()).then(|| claim.to_string())
 }
 
 /// A `## ` heading with the title (the case does not matter) stands in the text.
@@ -1982,6 +1988,162 @@ fn report_gist(text: &str) -> String {
         _ => item,
     };
     item.trim().to_string()
+}
+
+/// The lines of a `## ` section of a Markdown text as they stand, with their list marks and
+/// indents (ticket task-log): from the heading with the title (the case does not matter) to the
+/// next `## ` heading, without the empty lines at its start and its end. Empty without the section.
+fn section_text(text: &str, title: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut in_section = false;
+    for line in text.lines() {
+        if let Some(heading) = line.trim().strip_prefix("## ") {
+            in_section = heading.trim().eq_ignore_ascii_case(title);
+            continue;
+        }
+        if in_section && !(lines.is_empty() && line.trim().is_empty()) {
+            lines.push(line.trim_end().to_string());
+        }
+    }
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    lines
+}
+
+/// What the log of a task is made of (ticket task-log). `report`, `header`, `did` and `questions`
+/// come from the report as the task list shows it, after the report check.
+struct LogInput<'a> {
+    id: &'a str,
+    title: &'a str,
+    /// `YYYY-MM-DD`.
+    date: &'a str,
+    plan: &'a str,
+    report: Option<&'a str>,
+    header: Option<&'a ReportHeader>,
+    did: &'a str,
+    questions: &'a [Question],
+    evidence: &'a [crate::core::flow::Evidence],
+    tokens: &'a [crate::core::flow::ModelUsage],
+}
+
+/// The report sections that the log takes, in its order (decision 4 of the series).
+const LOG_SECTIONS: [&str; 5] = ["What changed", "Why", "Files", "Verification", "Follow-ups"];
+
+/// The log of a task in the format of the illspace project (ticket task-log): the plan verbatim,
+/// one EVIDENCE block per Bash command of each stage, the numbered stage entries, the report
+/// sections with `evidence: yes|no` after each Verification claim, and the token table. Lines end
+/// with `\n`.
+fn task_log_text(input: &LogInput) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let title = if input.title.is_empty() { input.id } else { input.title };
+    out.push(format!("# {title} ({}) — {}", input.id, input.date));
+    out.push(String::new());
+    out.push("## Plan approved".to_string());
+    out.extend(input.plan.replace("\r\n", "\n").trim_end().lines().map(str::to_string));
+    out.push(String::new());
+    out.push("## Stages".to_string());
+    out.push(String::new());
+
+    // The stage of the plan run: blocked while a HOLD decision waits for the user (user decision 2).
+    let (summary, hold) = parse_plan(input.plan);
+    let plan_word = if hold && !has_heading(input.plan, "User decisions") { "blocked" } else { "ok" };
+    let decisions: Vec<String> = parse_decisions(input.plan).into_iter().map(|decision| decision.title).collect();
+    let plan_entry = [
+        format!("### 1. PLAN — {plan_word}"),
+        summary.first().cloned().unwrap_or_else(|| "The plan has no Summary.".to_string()),
+        format!("Files: .dispatch/plans/{}.md", input.id),
+        format!("Blockers: {}", if decisions.is_empty() { "none".to_string() } else { decisions.join("; ") }),
+    ];
+    stage_lines(&mut out, "PLAN", input.evidence, &plan_entry);
+
+    // The stage of the work run: ok for done, blocked for a question, a permission, a failure or a
+    // report check that failed, nothing-to-do without a command and without a changed file.
+    let state = input.header.map_or("", |header| header.state.as_str());
+    let needs = input.header.map_or("", |header| header.needs.as_str());
+    let files = input.header.map(|header| header.files.trim()).filter(|files| !files.is_empty()).unwrap_or("none");
+    let work_commands = input.evidence.iter().any(|item| item.stage == "WORK");
+    let work_word = if matches!(state, "needs-decision" | "failed" | "working") || needs == "permission" {
+        "blocked"
+    } else if !work_commands && files == "none" {
+        "nothing-to-do"
+    } else if state == "done" {
+        "ok"
+    } else {
+        "blocked"
+    };
+    let gist = if input.report.is_none() { "No report yet." } else if input.did.is_empty() { "The report has no text." } else { input.did };
+    let questions: Vec<String> = input.questions.iter().map(|question| format!("{}. {}", question.number, question.text)).collect();
+    let work_entry = [
+        format!("### 2. WORK — {work_word}"),
+        gist.to_string(),
+        format!("Files: {files}"),
+        format!("Blockers: {}", if questions.is_empty() { "none".to_string() } else { questions.join("; ") }),
+    ];
+    stage_lines(&mut out, "WORK", input.evidence, &work_entry);
+
+    let report = input.report.unwrap_or_default().replace("\r\n", "\n");
+    for title in LOG_SECTIONS {
+        out.push(format!("## {title}"));
+        let lines = section_text(&report, title);
+        if lines.is_empty() {
+            out.push("none".to_string());
+        }
+        for line in lines {
+            // A claim has evidence when a Bash command matches it, by the rule of the report check.
+            let claim = (title == "Verification").then(|| {
+                let item = line.trim();
+                claim_of(item.strip_prefix("- ").or_else(|| item.strip_prefix("* ")).unwrap_or(item))
+            });
+            out.push(line);
+            if let Some(Some(claim)) = claim {
+                let found = input.evidence.iter().any(|item| without_cd(&item.command) == without_cd(&claim));
+                out.push(format!("evidence: {}", if found { "yes" } else { "no" }));
+            }
+        }
+        out.push(String::new());
+    }
+
+    out.push("### Token usage".to_string());
+    out.push("| Model | Input | Cache write | Cache read | Output | Total |".to_string());
+    out.push("|---|---|---|---|---|---|".to_string());
+    for usage in input.tokens {
+        let total = usage.input + usage.cache_write + usage.cache_read + usage.output;
+        out.push(format!("| {} | {} | {} | {} | {} | {total} |", usage.model, usage.input, usage.cache_write, usage.cache_read, usage.output));
+    }
+    let mut text = out.join("\n");
+    text.push('\n');
+    text
+}
+
+/// One stage of the log: its marker, one EVIDENCE block per command of the stage, and its entry.
+/// A line of a command after its first and each output line get an indent of 4 spaces.
+fn stage_lines(out: &mut Vec<String>, stage: &str, evidence: &[crate::core::flow::Evidence], entry: &[String]) {
+    out.push(format!("### STAGE: {stage}"));
+    for item in evidence.iter().filter(|item| item.stage == stage) {
+        out.push(format!("### EVIDENCE: {stage} {}", item.time.as_deref().unwrap_or("unknown")));
+        let mut command = item.command.lines();
+        out.push(format!("COMMAND: {}", command.next().unwrap_or_default()));
+        out.extend(command.map(|line| format!("    {line}")));
+        out.push(format!("EXIT: {}", item.exit));
+        out.push("OUTPUT:".to_string());
+        out.extend(item.output_tail.iter().map(|line| format!("    {line}")));
+        out.push(String::new());
+    }
+    if evidence.iter().all(|item| item.stage != stage) {
+        out.push(String::new());
+    }
+    out.extend(entry.iter().cloned());
+    out.push(String::new());
+}
+
+/// Whether the task list writes the log of a task (ticket task-log), on the modification times in
+/// milliseconds: a first log when the plan is there, a new one when the report or the plan is newer
+/// than the log (user decision 1). Never without a plan, and not when nothing is newer.
+fn log_needed(plan: Option<u64>, report: Option<u64>, log: Option<u64>) -> bool {
+    let Some(plan) = plan else { return false };
+    let Some(log) = log else { return true };
+    plan > log || report.is_some_and(|report| report > log)
 }
 
 /// One decision of a plan: a numbered item of the section `Decisions` with its options as list
@@ -2230,6 +2392,8 @@ pub struct TaskInfo {
     /// (ticket report-check). With a claim here, or without a Verification section, the header
     /// says `working` and `did` gives the reason. Empty when the report passes or is not checked.
     unverified: Vec<String>,
+    /// The log of the task in `.dispatch/logs` (ticket task-log), when it exists.
+    log: Option<FileEntry>,
 }
 
 /// The branch of a task (ticket task-branches): from its branch file and from git.
@@ -2456,6 +2620,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
             tokens: Vec::new(),
             evidence: Vec::new(),
             unverified: Vec::new(),
+            log: None,
         });
         tasks.len() - 1
     }
@@ -2552,6 +2717,35 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
         if let Some(ticket) = tickets.iter().find(|ticket| ticket.task_name() == task.name) {
             task.about = ticket.title.clone();
         }
+    }
+    // The log of each task with a plan (ticket task-log): a first one with the plan, a new one when
+    // the report or the plan is newer than the log, before the commit of the task files.
+    for task in tasks.iter_mut() {
+        let path = project.log_file(&task.name);
+        let plan = task.plan.as_ref().map(|entry| entry.modified);
+        let report = task.report.as_ref().map(|entry| entry.modified);
+        if log_needed(plan, report, file_entry(&path).map(|entry| entry.modified)) {
+            let plan_text = fs::read_to_string(project.plans().join(format!("{}.md", task.name))).unwrap_or_default();
+            let report_text = task.report.is_some().then(|| fs::read_to_string(project.reports.join(format!("{}.md", task.name))).unwrap_or_default());
+            let newest = plan.into_iter().chain(report).max().unwrap_or(0);
+            let date = crate::core::tickets::iso(newest)[..10].to_string();
+            let text = task_log_text(&LogInput {
+                id: &task.name,
+                title: &task.about,
+                date: &date,
+                plan: &plan_text,
+                report: report_text.as_deref(),
+                header: task.header.as_ref(),
+                did: &task.did,
+                questions: &task.questions,
+                evidence: &task.evidence,
+                tokens: &task.tokens,
+            });
+            if let Err(error) = write_file(&path, &text) {
+                eprintln!("task log not written for {}: {error}", task.name);
+            }
+        }
+        task.log = file_entry(&path);
     }
     // Dispatch commits the task files, but not while a work run may commit itself: a task approved
     // or working without a report. A failure (an index lock of a git command of the user, no git
@@ -3398,6 +3592,27 @@ mod tests {
         }
     }
 
+    /// The proof of ticket task-log: runs the task list on the project in DISPATCH_PROOF_CWD, which
+    /// writes the logs, then prints the number of logs and the first 40 lines of the log of the task
+    /// in DISPATCH_PROOF_TASK. Without the variables it does nothing.
+    #[test]
+    #[ignore]
+    fn task_log_of_the_project_for_the_proof() {
+        let (Ok(cwd), Ok(ticket)) = (std::env::var("DISPATCH_PROOF_CWD"), std::env::var("DISPATCH_PROOF_TASK")) else { return };
+        let project = Project::find(&cwd).unwrap();
+        let list = task_list(cwd).unwrap();
+        let logs = files_with(&project.reports.join("logs"), "md").len();
+        let plans = list.tasks.iter().filter(|task| task.plan.is_some()).count();
+        // cargo writes the name of the test without a line end before this output.
+        println!("\nlogs {logs} | tasks with a plan {plans}");
+        let text = read(&project.log_file(&ticket));
+        println!("--- first 40 lines of .dispatch/logs/{ticket}.md");
+        for line in text.lines().take(40) {
+            println!("{line}");
+        }
+        println!("--- end");
+    }
+
     /// An evidence line of a Bash command, for the tests of the report check.
     fn bash(command: &str) -> crate::core::flow::Evidence {
         crate::core::flow::Evidence { command: command.to_string(), stage: "WORK".to_string(), exit: "0".to_string(), ..Default::default() }
@@ -3486,6 +3701,189 @@ mod tests {
         let section = "state: done\n\n## What I did\n- x\n\n## Verification\n- `cargo test`: ok.\n";
         assert_eq!(check_report(section, &[bash("cargo test")], true), None);
         assert_eq!(check_report(section, &[], true).map(|(_, claims)| claims), Some(vec!["cargo test".to_string()]));
+    }
+
+    /// An evidence line of a stage with its time, exit code and output, for the tests of the log.
+    fn evidence(stage: &str, time: &str, command: &str, exit: &str, tail: &[&str]) -> crate::core::flow::Evidence {
+        crate::core::flow::Evidence {
+            stage: stage.to_string(),
+            time: Some(time.to_string()),
+            command: command.to_string(),
+            exit: exit.to_string(),
+            output_tail: tail.iter().map(|line| line.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_log_of_a_task_matches_the_fixture_line_by_line() {
+        let plan = "# t-1: a log\r\n\r\n## Summary\r\n- One file changes.\r\n\r\n## Decisions\r\n1. Which way?\r\n   - Default: this way. Recommended: short.\r\n   - Other: that way. Not recommended: long.\r\n";
+        let report = "state: done\nneeds: nothing\nfiles: a.rs\nplan: .dispatch/plans/t-1.md\n\n## What changed\n- A log.\n\n## Why\n- The brief.\n\n## Files\n- `a.rs`: the log.\n\n## Verification\n- `cargo test --lib`: ok.\n  - `npm run build`: exit 0.\n\n## Follow-ups\n- none\n";
+        let (header, questions) = parse_report(report);
+        let evidence = [
+            evidence("PLAN", "2026-11-14T10:00:00.000Z", "git status --porcelain", "0", &[]),
+            evidence("WORK", "2026-11-14T10:05:00.000Z", "cd /d/p && cargo test --lib", "0", &["running 2 tests", "test result: ok. 2 passed"]),
+            evidence("WORK", "2026-11-14T10:06:00.000Z", "echo a\necho b", "1", &[]),
+        ];
+        let tokens = [crate::core::flow::ModelUsage { model: "claude-x".to_string(), input: 1, cache_write: 2, cache_read: 3, output: 4 }];
+        let did = report_gist(report);
+        let text = task_log_text(&LogInput {
+            id: "t-1",
+            title: "A log",
+            date: "2026-11-14",
+            plan,
+            report: Some(report),
+            header: header.as_ref(),
+            did: &did,
+            questions: &questions,
+            evidence: &evidence,
+            tokens: &tokens,
+        });
+        let expected = "# A log (t-1) — 2026-11-14
+
+## Plan approved
+# t-1: a log
+
+## Summary
+- One file changes.
+
+## Decisions
+1. Which way?
+   - Default: this way. Recommended: short.
+   - Other: that way. Not recommended: long.
+
+## Stages
+
+### STAGE: PLAN
+### EVIDENCE: PLAN 2026-11-14T10:00:00.000Z
+COMMAND: git status --porcelain
+EXIT: 0
+OUTPUT:
+
+### 1. PLAN — ok
+One file changes.
+Files: .dispatch/plans/t-1.md
+Blockers: Which way?
+
+### STAGE: WORK
+### EVIDENCE: WORK 2026-11-14T10:05:00.000Z
+COMMAND: cd /d/p && cargo test --lib
+EXIT: 0
+OUTPUT:
+    running 2 tests
+    test result: ok. 2 passed
+
+### EVIDENCE: WORK 2026-11-14T10:06:00.000Z
+COMMAND: echo a
+    echo b
+EXIT: 1
+OUTPUT:
+
+### 2. WORK — ok
+A log.
+Files: a.rs
+Blockers: none
+
+## What changed
+- A log.
+
+## Why
+- The brief.
+
+## Files
+- `a.rs`: the log.
+
+## Verification
+- `cargo test --lib`: ok.
+evidence: yes
+  - `npm run build`: exit 0.
+evidence: no
+
+## Follow-ups
+- none
+
+### Token usage
+| Model | Input | Cache write | Cache read | Output | Total |
+|---|---|---|---|---|---|
+| claude-x | 1 | 2 | 3 | 4 | 10 |
+";
+        let got: Vec<&str> = text.split('\n').collect();
+        let want: Vec<&str> = expected.split('\n').collect();
+        for (number, (got, want)) in got.iter().zip(&want).enumerate() {
+            assert_eq!(got, want, "line {}", number + 1);
+        }
+        assert_eq!(got.len(), want.len(), "{text}");
+
+        // A stage without a command keeps its marker and its entry; a HOLD plan without the user
+        // decisions is blocked, a question blocks the work, and no report gives no sections.
+        let hold = "# t-2: hold\n\n## Decisions\n1. Ask?\n   - HOLD: the user. Recommended: theirs.\n   - Other: me. Not recommended: mine.\n";
+        let asks = "state: needs-decision\nneeds: decision\nfiles: none\nplan: p\n\n## Questions\n1. Which one?\n   - A\n";
+        let (header, questions) = parse_report(asks);
+        let text = task_log_text(&LogInput { id: "t-2", title: "", date: "2026-11-14", plan: hold, report: Some(asks), header: header.as_ref(), did: "", questions: &questions, evidence: &[], tokens: &[] });
+        assert!(text.starts_with("# t-2 (t-2) — 2026-11-14\n"), "{text}");
+        // Without a Summary the gist is what the task card shows: the first line of the plan body.
+        assert!(text.contains("### STAGE: PLAN\n\n### 1. PLAN — blocked\n1. Ask?\nFiles: .dispatch/plans/t-2.md\nBlockers: Ask?\n"), "{text}");
+        assert!(text.contains("### STAGE: WORK\n\n### 2. WORK — blocked\nThe report has no text.\nFiles: none\nBlockers: 1. Which one?\n"), "{text}");
+        let decided = with_user_decisions(hold, "1. Ask?: the user");
+        let text = task_log_text(&LogInput { id: "t-2", title: "", date: "d", plan: &decided, report: None, header: None, did: "", questions: &[], evidence: &[], tokens: &[] });
+        assert!(text.contains("### 1. PLAN — ok\n") && text.contains("### 2. WORK — nothing-to-do\nNo report yet.\nFiles: none\n"), "{text}");
+        assert!(text.contains("## Verification\nnone\n") && text.ends_with("|---|---|---|---|---|---|\n"), "{text}");
+    }
+
+    /// Sets the modification time of a file to a moment in milliseconds since the Unix epoch.
+    fn set_modified_ms(path: &Path, millis: u64) {
+        let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(UNIX_EPOCH + std::time::Duration::from_millis(millis)).unwrap();
+    }
+
+    fn modified_ms(path: &Path) -> u64 {
+        file_entry(path).unwrap().modified
+    }
+
+    #[test]
+    fn the_log_is_written_with_the_plan_and_renewed_by_a_newer_report_only() {
+        assert!(!log_needed(None, Some(5), None));
+        assert!(log_needed(Some(1), None, None) && log_needed(Some(3), None, Some(2)) && log_needed(Some(1), Some(3), Some(2)));
+        assert!(!log_needed(Some(1), Some(2), Some(2)) && !log_needed(Some(2), None, Some(2)));
+
+        let project = scratch("task-log");
+        apply(&project, &[]).unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        let log = project.log_file("t-1");
+        // A state file without a plan gives no log.
+        write_file(&project.reports.join("t-0.state"), "planning\n").unwrap();
+        write_file(&project.plans().join("t-1.md"), "# t-1: one\n\n## Summary\n- The plan gist.\n\n## Decisions\n1. Ask?\n   - HOLD: the user. Recommended: theirs.\n   - Other: me. Not recommended: mine.\n").unwrap();
+        let list = task_list(cwd.clone()).unwrap();
+        assert!(!project.log_file("t-0").exists());
+        let text = read(&log);
+        assert!(text.starts_with("# one (t-1) — ") && text.contains("### 1. PLAN — blocked\nThe plan gist.\n") && text.contains("No report yet."), "{text}");
+        assert!(list.tasks.iter().find(|task| task.name == "t-1").unwrap().log.is_some());
+
+        // A poll that finds nothing newer leaves the log.
+        let plan_time = modified_ms(&project.plans().join("t-1.md"));
+        set_modified_ms(&log, plan_time + 1000);
+        task_list(cwd.clone()).unwrap();
+        assert_eq!(modified_ms(&log), plan_time + 1000);
+
+        // The user decisions make the plan newer: the log takes them (user decision 1).
+        task_decide(cwd.clone(), "t-1".to_string(), "1. Ask?: the user".to_string()).unwrap();
+        set_modified_ms(&project.plans().join("t-1.md"), plan_time + 2000);
+        task_list(cwd.clone()).unwrap();
+        let text = read(&log);
+        assert!(text.contains("## User decisions") && text.contains("### 1. PLAN — ok\n"), "{text}");
+        set_modified_ms(&log, plan_time + 3000);
+
+        // A newer report renews the log, once.
+        let report = project.reports.join("t-1.md");
+        write_file(&report, "state: done\nneeds: nothing\nfiles: a.rs\nplan: p\n\n## What changed\n- Done the work.\n").unwrap();
+        set_modified_ms(&report, plan_time + 4000);
+        task_list(cwd.clone()).unwrap();
+        let text = read(&log);
+        assert!(text.contains("### 2. WORK — ok\nDone the work.\nFiles: a.rs\n") && text.contains("## What changed\n- Done the work.\n"), "{text}");
+        set_modified_ms(&log, plan_time + 5000);
+        task_list(cwd).unwrap();
+        assert_eq!(modified_ms(&log), plan_time + 5000);
+        clean(&project);
     }
 
     #[test]
@@ -3604,6 +4002,7 @@ mod tests {
             tokens: Vec::new(),
             evidence: Vec::new(),
             unverified: Vec::new(),
+            log: None,
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };
@@ -4267,7 +4666,7 @@ if (args[0] === 'agents') {
         let files: Vec<&str> = files.lines().filter(|line| !line.is_empty()).collect();
         assert!(files.iter().all(|file| file.starts_with(".dispatch/")), "{files:?}");
         assert_eq!(list.tickets.len(), 1);
-        for file in [".dispatch/briefs/t-1.md", ".dispatch/t-1.state", ".dispatch/plans/t-1.md", ".dispatch/worker.ps1", ".dispatch/tickets.jsonl", ".dispatch/backlog/e-1.md"] {
+        for file in [".dispatch/briefs/t-1.md", ".dispatch/t-1.state", ".dispatch/plans/t-1.md", ".dispatch/logs/t-1.md", ".dispatch/worker.ps1", ".dispatch/tickets.jsonl", ".dispatch/backlog/e-1.md"] {
             assert!(files.contains(&file), "{file} missing: {files:?}");
         }
         let status = git(&["status", "--porcelain"]);
@@ -4278,10 +4677,11 @@ if (args[0] === 'agents') {
         task_list(cwd.clone()).unwrap();
         assert_eq!(git(&["log", "--format=%s"]).lines().count(), 2);
         assert!(git(&["status", "--porcelain", "--", ".dispatch"]).contains("t-1.state"));
-        // The report is there: the next read commits.
+        // The report is there: the next read writes the log again and commits (ticket task-log).
         write_file(&project.reports.join("t-1.md"), "state: done\nneeds: nothing\n\ndone\n").unwrap();
         task_list(cwd.clone()).unwrap();
-        assert_eq!(git(&["log", "-1", "--format=%s"]).trim(), "Dispatch: 2 task files");
+        assert_eq!(git(&["log", "-1", "--format=%s"]).trim(), "Dispatch: 3 task files");
+        assert!(git(&["show", "--name-only", "--format=", "HEAD"]).lines().any(|file| file == ".dispatch/logs/t-1.md"));
         assert_eq!(git(&["status", "--porcelain", "--", ".dispatch"]), "");
         // Nothing changed: no empty commit.
         assert_eq!(keep_tasks_committed(&project), Ok(0));

@@ -78,7 +78,8 @@ fn now() -> u64 {
 }
 
 /// A moment in milliseconds as `YYYY-MM-DDTHH:MM:SS.mmmZ` (UTC), as the starminer file writes it.
-fn iso(millis: u64) -> String {
+/// The task log takes its date from it (ticket task-log).
+pub(crate) fn iso(millis: u64) -> String {
     let secs = millis / 1000;
     let days = (secs / 86_400) as i64;
     let rest = secs % 86_400;
