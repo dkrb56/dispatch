@@ -37,6 +37,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, type FileInfo, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
 import { agentsText, fileRowTitle, rowParts } from "./workerrow";
+import { announcements, parseEnded, serializeEnded } from "./announce";
 import { oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
 import { currentProject, groupCount, pillCount } from "./topbar";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
@@ -2935,8 +2936,17 @@ const WORKER_STATES_KEY = "worker-states";
 let lastWorkerStates: Map<string, string | null> | null = loadWorkerStates();
 /** True until the first poll after the start: its changes happened while Dispatch was closed. */
 let workerStatesFromLastRun = lastWorkerStates !== null;
-/** The states that triage hears about. `working` is the start, not news. */
-const ANNOUNCED_STATES = new Set(["done", "blocked", "failed", "stopped"]);
+/** The jobs whose end triage heard about, also saved: the end of a job is told once (done-line-repeats). */
+const WORKER_ENDS_KEY = "worker-ends-told";
+let toldWorkerEnds: Set<string> = loadWorkerEnds();
+
+function loadWorkerEnds(): Set<string> {
+  try {
+    return parseEnded(localStorage.getItem(WORKER_ENDS_KEY));
+  } catch {
+    return new Set();
+  }
+}
 
 function loadWorkerStates(): Map<string, string | null> | null {
   try {
@@ -2947,9 +2957,10 @@ function loadWorkerStates(): Map<string, string | null> | null {
   }
 }
 
-function saveWorkerStates(states: Map<string, string | null>): void {
+function saveWorkerStates(states: Map<string, string | null>, ends: Set<string>): void {
   try {
     localStorage.setItem(WORKER_STATES_KEY, JSON.stringify(Object.fromEntries(states)));
+    localStorage.setItem(WORKER_ENDS_KEY, serializeEnded(ends));
   } catch (error) {
     console.warn("worker states not saved", error);
   }
@@ -2957,36 +2968,36 @@ function saveWorkerStates(states: Map<string, string | null>): void {
 
 /** Tells the triage chat of each project which of its workers changed to a state that needs it. */
 function announceWorkerChanges(workers: Worker[]): void {
-  const states = new Map(workers.map((worker) => [workerKey(worker), worker.state]));
   const whileClosed = workerStatesFromLastRun;
   workerStatesFromLastRun = false;
   // Every window records the states; only the window that drives a host tells triage (remote-shared-state).
-  if (lastWorkerStates) {
-    const lines = new Map<string, string[]>();
-    for (const worker of workers) {
-      if (!driverOf(worker.host)) continue;
-      // An old session that the user ended in the list of old sessions: its task ended long ago.
-      if (endingSessions.has(workerKey(worker))) continue;
-      const before = lastWorkerStates.get(workerKey(worker));
-      const now = worker.state;
-      if (before === now || !now || !ANNOUNCED_STATES.has(now)) continue;
-      // A finished worker that shows for the first time is old news, unless it waits for the user.
-      if (before === undefined && now !== "blocked") continue;
-      const name = worker.name ?? worker.id;
-      const when = whileClosed ? " (this happened while Dispatch was closed)" : "";
-      const line = now === "blocked" ? `Worker ${name} is blocked${when}${worker.waitingFor ? `: ${worker.waitingFor}` : ""}.` : `Worker ${name} is ${now}${when}.`;
-      const project = projectFor(worker.host, worker.cwd);
-      if (!lines.has(project)) lines.set(project, []);
-      lines.get(project)!.push(line);
-    }
-    for (const [project, text] of lines) tellTriage(project, text.join(" "));
+  // An old session that the user ended in the list of old sessions is quiet too: its task ended long ago.
+  // The rule is in src/announce.ts: the end of a job is told once, a prompt each time.
+  const polled = workers.map((worker) => ({
+    key: workerKey(worker),
+    state: worker.state,
+    quiet: !driverOf(worker.host) || endingSessions.has(workerKey(worker)),
+    worker,
+  }));
+  const { told, states, ended } = announcements(lastWorkerStates, polled, toldWorkerEnds);
+  const lines = new Map<string, string[]>();
+  for (const { worker } of told) {
+    const now = worker.state;
+    const name = worker.name ?? worker.id;
+    const when = whileClosed ? " (this happened while Dispatch was closed)" : "";
+    const line = now === "blocked" ? `Worker ${name} is blocked${when}${worker.waitingFor ? `: ${worker.waitingFor}` : ""}.` : `Worker ${name} is ${now}${when}.`;
+    const project = projectFor(worker.host, worker.cwd);
+    if (!lines.has(project)) lines.set(project, []);
+    lines.get(project)!.push(line);
   }
+  for (const [project, text] of lines) tellTriage(project, text.join(" "));
   // An ended session leaves the quiet set once Claude Code reports it stopped or lists it no more.
   for (const key of endingSessions) {
     if (states.get(key) === undefined || states.get(key) === "stopped") endingSessions.delete(key);
   }
   lastWorkerStates = states;
-  saveWorkerStates(states);
+  toldWorkerEnds = ended;
+  saveWorkerStates(states, ended);
 }
 
 /** The workers that wait for the user are first, then the workers that run, then the others. */
