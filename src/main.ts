@@ -43,6 +43,7 @@ import { oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, t
 import { currentProject, groupCount, pillCount } from "./topbar";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
+import { chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
 import { type CheckInfo, checkRows, checksSentence, checksText, choiceNames, defaultChoice } from "./checks";
@@ -1964,9 +1965,11 @@ async function refreshTasks(): Promise<void> {
   const host = focused?.host ?? firstBackend();
   let reply: TaskListReply = { tasks: [], dirty: [], autoApprove: false, setup: null, tickets: [] };
   if (cwd) {
+    // The time the read began: a read that began during a start shows the state before it (ticket one-work-run-race).
+    const readAt = Date.now();
     try {
       reply = await call<TaskListReply>(host, "task_list", { cwd });
-      taskReadTimes.set(projectKey(host, cwd), Date.now());
+      taskReadTimes.set(projectKey(host, cwd), readAt);
     } catch {
       // A folder that is no project has no tasks.
     }
@@ -1992,7 +1995,8 @@ async function refreshTasks(): Promise<void> {
  * Starts the work run of a plan that the user approved while the project was not free. Else
  * approves the plans that wait, when the setting of the project or night mode is on: a plan without
  * a HOLD decision, a clean tree, no other work run, and no earlier try for the same plan file. One
- * plan per call: the first approval starts a work run, which holds the others until it ends.
+ * start per project: it claims the start lease before its call, so the next poll waits for it
+ * (ticket one-work-run-race), and the work run then holds the others until it ends.
  */
 function approvePlans(): void {
   for (const project of projectTasks.values()) {
@@ -2001,22 +2005,33 @@ function approvePlans(): void {
     const night = nightOf(project.host);
     const tasks = projectTaskList(project);
     if (night) nightDefaults(project, tasks);
-    // A merge holds the main checkout and runs its gate there (ticket task-branches).
-    if (project.dirty.length > 0 || workRun(tasks) || project.merging) continue;
+    // A merge holds the main checkout and runs its gate there (ticket task-branches). A start in
+    // flight holds the project like a running work run.
+    const busy = { dirty: project.dirty.length, merging: project.merging, running: workRun(tasks)?.name ?? null, leased: startHolder(project.host, project.cwd) };
     // A plan that the user approved while the project was not free starts first.
-    const queued = nextQueued(project, tasks);
-    if (queued?.info?.plan) {
-      queuedApprovals.delete(queueKey(queued));
-      saveQueued();
-      autoApproved.set(queued.name, queued.info.plan.modified);
-      void taskAction(queued, "task_approve", { id: queued.name }, `Plan ${queued.name}, approved earlier by the user in Dispatch: the project is free now, and the work run started.`);
-      continue;
-    }
-    if (!project.autoApprove && !night) continue;
-    const task = tasks.find((task) => planReady(task) && !task.info?.hold && !busyTasks.has(task.name) && autoApproved.get(task.name) !== task.info?.plan?.modified);
-    if (!task?.info?.plan) continue;
+    const queued = projectBusy(busy) ? undefined : nextQueued(project, tasks);
+    const choice = chooseStart({
+      ...busy,
+      queued: queued?.name ?? null,
+      auto: project.autoApprove,
+      night,
+      tasks: tasks.map((task) => ({
+        name: task.name,
+        ready: planReady(task),
+        hold: !!task.info?.hold,
+        busy: busyTasks.has(task.name),
+        planTime: task.info?.plan?.modified ?? null,
+        tried: autoApproved.get(task.name),
+      })),
+    });
+    const task = choice ? tasks.find((task) => task.name === choice.task) : undefined;
+    if (!choice || !task?.info?.plan) continue;
     autoApproved.set(task.name, task.info.plan.modified);
-    if (night) {
+    if (choice.kind === "queued") {
+      queuedApprovals.delete(queueKey(task));
+      saveQueued();
+      void leasedStart(task, () => taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name}, approved earlier by the user in Dispatch: the project is free now, and the work run started.`));
+    } else if (choice.kind === "night") {
       // Night mode: every decision takes its recommended option, and the plan records it.
       const decisions = task.info.decisions ?? [];
       const choices = decisions.map((decision) => ({ decision, answer: decision.options[0]?.choice ?? "" }));
@@ -2024,11 +2039,52 @@ function approvePlans(): void {
     } else {
       // The checks of the plan with their default choice go into the plan first (ticket task-checks).
       const checks = checksSentence(task.info.checks ?? [], checkChoice(task));
-      void writeDecisions(task, []).then((written) => {
-        if (written !== null) void taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name} approved automatically in Dispatch.${checks} The work run started.`);
+      void leasedStart(task, async () => {
+        if ((await writeDecisions(task, [])) === null) return false;
+        return taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name} approved automatically in Dispatch.${checks} The work run started.`);
       });
     }
   }
+}
+
+/**
+ * The start leases of the projects (ticket one-work-run-race): a start counts from the moment
+ * Dispatch calls it until the task list and the worker list show the work run.
+ */
+const startLeases = new StartLeases();
+
+/** The times the last task read of a project and the last worker read of its host began. */
+function leaseReads(host: HostId, project: string): ReadTimes {
+  return { tasks: taskReadTimes.get(project) ?? 0, workers: workerReadTimes.get(host) ?? 0 };
+}
+
+/** The task whose start holds a project now, or null. */
+function startHolder(host: HostId, cwd: string): string | null {
+  const project = projectKey(host, cwd);
+  return startLeases.holder(project, leaseReads(host, project));
+}
+
+/**
+ * Runs the start of the work run of a task under the start lease of its project. The claim comes
+ * before any await, so a second start in the same poll or the next one is refused. A start that
+ * ended well keeps the lease until the next reads; a failed one frees the project at once.
+ */
+async function leasedStart(task: Task, start: () => Promise<boolean>): Promise<boolean> {
+  const host = taskHost(task);
+  const project = projectKey(host, taskCwd(task));
+  if (!startLeases.claim(project, task.name, leaseReads(host, project))) {
+    actionErrors.set(task.name, `Not started: the work run of ${startHolder(host, taskCwd(task))} starts in this project now.`);
+    renderChats();
+    return false;
+  }
+  let started = false;
+  try {
+    started = await start();
+  } finally {
+    if (started) startLeases.settle(project, task.name, Date.now());
+    else startLeases.release(project, task.name);
+  }
+  return started;
 }
 
 /**
@@ -2415,7 +2471,7 @@ async function pollTasks(): Promise<void> {
 
 /** The temporary cards of all projects, oldest first. */
 let pendingCards: PendingCard[] = [];
-/** When the task list of each project was read last with success, by project key. */
+/** When the last task read of each project with success began, by project key. */
 const taskReadTimes = new Map<string, number>();
 const PENDING_CARDS_KEY = "pending-cards";
 
@@ -2468,9 +2524,10 @@ function loadPending(): void {
 
 /** Reads the task list of one project again, with its tickets. */
 async function readProjectTasks(host: HostId, cwd: string): Promise<void> {
+  const readAt = Date.now();
   const reply = await call<TaskListReply>(host, "task_list", { cwd });
   projectTasks.set(projectKey(host, cwd), tasksRecord(host, cwd, reply));
-  taskReadTimes.set(projectKey(host, cwd), Date.now());
+  taskReadTimes.set(projectKey(host, cwd), readAt);
 }
 
 /**
@@ -3215,7 +3272,8 @@ function planReady(task: Task): boolean {
 /**
  * The task whose work run edits the project now: its script state is `approved` or `working` and
  * a worker of it runs or waits. A task just approved has no worker in the list yet; until its
- * report exists it counts too. One work run at a time: Approve waits while it runs.
+ * report exists it counts too. One work run at a time: Approve waits while it runs. Before the
+ * lists show it, the start lease of the project holds it (`startHolder`, ticket one-work-run-race).
  */
 function workRun(tasks: Task[]): Task | undefined {
   return tasks.find((task) => {
@@ -3449,7 +3507,8 @@ function planCard(task: Task): HTMLElement {
   actions.append(reject);
   card.append(actions);
   // The script refuses an approval while the project has uncommitted changes, and one work run
-  // edits at a time. An Approve then waits; the card says for what.
+  // edits at a time, counted from the start of its call (the start lease). An Approve then waits;
+  // the card says for what.
   if (wait) {
     const reason = document.createElement("div");
     reason.className = "card-reason";
@@ -3523,10 +3582,13 @@ function decisionLines(choices: DecisionAnswer[]): string[] {
  * Without decisions it only approves.
  */
 async function approveWithDecisions(task: Task, choices: DecisionAnswer[], how: string): Promise<boolean> {
-  const checks = checksSentence(task.info?.checks ?? [], checkChoice(task));
-  if ((await writeDecisions(task, choices)) === null) return false;
-  const line = `Plan ${task.name} approved in Dispatch${how ? ` ${how}` : ""}.${checks} The work run started.`;
-  return taskAction(task, "task_approve", { id: task.name }, line);
+  // The start counts from here: the lease holds the project for this work run (ticket one-work-run-race).
+  return leasedStart(task, async () => {
+    const checks = checksSentence(task.info?.checks ?? [], checkChoice(task));
+    if ((await writeDecisions(task, choices)) === null) return false;
+    const line = `Plan ${task.name} approved in Dispatch${how ? ` ${how}` : ""}.${checks} The work run started.`;
+    return taskAction(task, "task_approve", { id: task.name }, line);
+  });
 }
 
 /**
@@ -3622,11 +3684,14 @@ function approveWait(task: Task): string {
   return waitReason(waitFacts(task))?.full ?? "";
 }
 
-/** What holds the work run of a task back: another work run of its project, and its uncommitted lines. */
+/**
+ * What holds the work run of a task back: another work run of its project, also one whose start is
+ * in flight (the start lease, ticket one-work-run-race), and its uncommitted lines.
+ */
 function waitFacts(task: Task): WaitFacts {
-  const editing = workRun(task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos));
+  const editing = workRun(task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos))?.name ?? startHolder(taskHost(task), taskCwd(task));
   const merging = task.project ? task.project.merging : mergingTask;
-  return { editing: editing && editing.name !== task.name ? editing.name : null, dirty: task.project?.dirty ?? dirtyLines, merging };
+  return { editing: editing && editing !== task.name ? editing : null, dirty: task.project?.dirty ?? dirtyLines, merging };
 }
 
 /** Opens the Decisions window of a task: each decision with its options as buttons and an Other box. */
@@ -4987,14 +5052,19 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   return made;
 }
 
+/** When the last worker read of each host with success began: the start lease waits for it (ticket one-work-run-race). */
+const workerReadTimes = new Map<HostId, number>();
+
 /** Reads the worker list and shows it in the chat panel. */
 async function refreshWorkers(): Promise<void> {
   // The alert must show also when the chat panel is hidden. Thus this runs always. Every host gives
   // its workers; a host that does not answer keeps its last list (remote-multi-host).
+  const readAt = Date.now();
   const replies = await Promise.allSettled(backends().map((host) => call<Omit<Worker, "host">[]>(host, "worker_list")));
   if (replies.every((reply) => reply.status === "rejected")) throw (replies[0] as PromiseRejectedResult).reason;
   const byHost = backends().map((host, at) => {
     const reply = replies[at];
+    if (reply.status === "fulfilled") workerReadTimes.set(host, readAt);
     return [host, reply.status === "fulfilled" ? reply.value : null] as const;
   });
   const workers = mergeLists(byHost, workerList, (worker) => worker.startedAt ?? 0);
@@ -7046,10 +7116,12 @@ async function refreshFocusTasks(): Promise<void> {
   if (roots.size === 0) return;
   await Promise.all(
     [...roots.values()].map(async ({ host, root }) => {
+      // The time the read began (ticket one-work-run-race).
+      const readAt = Date.now();
       try {
         const reply = await call<TaskListReply>(host, "task_list", { cwd: root });
         projectTasks.set(projectKey(host, root), tasksRecord(host, root, reply));
-        taskReadTimes.set(projectKey(host, root), Date.now());
+        taskReadTimes.set(projectKey(host, root), readAt);
       } catch {
         // A folder that is no project has no tasks.
         projectTasks.delete(projectKey(host, root));
