@@ -7,11 +7,12 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { agentsText, fileRowTitle, rowParts, runTokensText, runTokensTitle, tokenText } from "../src/workerrow.ts";
+import { agentsText, fileRowTitle, rowParts, runCostText, runModelText, runTokensText, runTokensTitle, tokenText } from "../src/workerrow.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const HTML = read("../index.html");
 const MAIN = read("../src/main.ts");
+const CSS = read("../src/styles.css");
 
 /** The text after the state chip, as the row shows it. */
 function row(waitingFor: string | null, time: string | null, agents: number, active = 0): string {
@@ -109,20 +110,54 @@ test("the tooltip of a run: one line per model with the exact numbers, then the 
   );
 });
 
-test("the tokens stand after the duration and before the agents; without tokens the row is as before", () => {
-  const withTokens = (tokens: string, agents = 0) => rowParts(null, "2 min", agents, 0, tokens).join(" · ");
-  assert.equal(withTokens("3.2M tokens"), "2 min · 3.2M tokens");
-  assert.equal(withTokens("3.2M tokens", 3), "2 min · 3.2M tokens · 3 agents");
-  assert.equal(rowParts("a permission", "4 min", 1, 1, "950 tokens").join(" · "), "a permission · 4 min · 950 tokens · 1 agent, 1 active");
-  assert.equal(withTokens(""), "2 min");
-  assert.equal(withTokens(runTokensText(undefined), 3), "2 min · 3 agents");
+// Ticket card-run-rows: the first line of a run row has no tokens; a second line shows the tokens of
+// the run and its model in one word, the model with the most tokens (user decisions 1 and 2).
+test("the first line of a run row has no tokens: the cause of a wait, the time, the agents", () => {
+  assert.equal(rowParts(null, "2 min", 3, 0).join(" · "), "2 min · 3 agents");
+  assert.equal(rowParts("a permission", "4 min", 1, 1).join(" · "), "a permission · 4 min · 1 agent, 1 active");
 });
 
-test("the run row meets the page: one formatter, the tokens of the run by its session id", () => {
+test("the model of a run in one word: the model with the most tokens", () => {
+  assert.equal(runModelText(undefined), "");
+  assert.equal(runModelText([]), "");
+  assert.equal(runModelText([fable]), "fable");
+  // fable 3,191,806 against opus 5,064,075: opus wins, in either order.
+  assert.equal(runModelText([fable, opus]), "opus");
+  assert.equal(runModelText([opus, fable]), "opus");
+  const haiku = { model: "claude-haiku-5-5", input: 10, cacheWrite: 90, cacheRead: 900, output: 0 };
+  assert.equal(runModelText([haiku, fable]), "fable");
+  // A name without the form claude-<family>-<rest> stays as it is.
+  assert.equal(runModelText([{ model: "gpt-x", input: 1, cacheWrite: 0, cacheRead: 0, output: 0 }]), "gpt-x");
+});
+
+test("the second line of a run row: the cards of the screenshot of the ticket", () => {
+  // Card search-recent: the work run on opus, the plan run on fable.
+  const searchWork = [{ model: "claude-opus-5-5", input: 17, cacheWrite: 387_400, cacheRead: 1_700_000, output: 8_100 }];
+  const searchPlan = [{ model: "claude-fable-5-1", input: 290, cacheWrite: 136_300, cacheRead: 904_800, output: 17_400 }];
+  assert.equal(runCostText(searchWork), "2.1M tokens · opus");
+  assert.equal(runCostText(searchPlan), "1.1M tokens · fable");
+  // Card continue-watched: the plan run on fable.
+  const watchedPlan = [{ model: "claude-fable-5-1", input: 322, cacheWrite: 147_400, cacheRead: 978_000, output: 19_900 }];
+  assert.equal(runCostText(watchedPlan), "1.1M tokens · fable");
+  // Two models: the sum of both, the larger model by name.
+  assert.equal(runCostText([fable, opus]), "8.3M tokens · opus");
+  // A run without tokens has no second line.
+  assert.equal(runCostText(undefined), "");
+  assert.equal(runCostText([]), "");
+});
+
+test("the run row meets the page: a second line with the tokens and the model; no token blocks and no command lines", () => {
   assert.doesNotMatch(MAIN, /function tokenText\(/);
-  assert.match(MAIN, /rowParts\(worker\.waitingFor, [^)]*runTokensText\(models\)\)/);
+  assert.match(MAIN, /rowParts\(worker\.waitingFor, time\.textContent \? time : null, worker\.agents, worker\.agentsActive\)/);
+  assert.match(MAIN, /runCostText\(models\)/);
+  assert.match(MAIN, /className = "run-cost"/);
   assert.match(MAIN, /runTokensTitle\(models\)/);
   assert.match(MAIN, /run\.session === worker\.sessionId/);
+  assert.doesNotMatch(MAIN, /tokenRow|evidenceRow|evidenceOpen/);
+  // A class name in quotes; the ticket names task-tokens and task-evidence stay in doc comments.
+  assert.doesNotMatch(MAIN, /["`]task-(tokens|evidence)/);
+  assert.match(CSS, /\.task \.chat \.run-cost \{/);
+  assert.doesNotMatch(CSS, /\.task-tokens|\.task-evidence/);
 });
 
 test("the Help says that the plan row has no state chip and where the state stands", () => {

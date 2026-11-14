@@ -32,6 +32,26 @@ export function runTokensText(models: RunModelUsage[] | undefined): string {
   return `${tokenText(models.reduce((sum, usage) => sum + totalOf(usage), 0))} tokens`;
 }
 
+/**
+ * The model of a run in one word (ticket card-run-rows, user decision 1): the model with the largest
+ * total of the run; for a name `claude-<family>-<rest>` the family word, another name as it is.
+ * Empty without models. The full ids stand in the tooltip.
+ */
+export function runModelText(models: RunModelUsage[] | undefined): string {
+  if (!models || models.length === 0) return "";
+  const main = models.reduce((best, usage) => (totalOf(usage) > totalOf(best) ? usage : best));
+  return /^claude-([^-]+)-/.exec(main.model)?.[1] ?? main.model;
+}
+
+/**
+ * The second line of a run row (ticket card-run-rows): the tokens of the run and its model, as
+ * "2.1M tokens · opus". Empty without models, so the row keeps one line.
+ */
+export function runCostText(models: RunModelUsage[] | undefined): string {
+  const tokens = runTokensText(models);
+  return tokens ? `${tokens} · ${runModelText(models)}` : "";
+}
+
 /** The tooltip lines of a run row for its tokens: one line per model with the exact numbers, then the rule. Empty without models. */
 export function runTokensTitle(models: RunModelUsage[] | undefined): string {
   if (!models || models.length === 0) return "";
@@ -52,13 +72,14 @@ export function agentsText(all: number, active: number): string {
 
 /**
  * The parts of a worker row after its state chip, in their order: the cause of a wait, the time
- * (the duration, or the start time when the end is not known), the tokens of the run (ticket
- * run-tokens), the agents. Empty parts are left out; the row joins the rest with " · ". The agents
- * show only when the worker started one: a zero read as "nothing works" next to a working worker.
+ * (the duration, or the start time when the end is not known), the agents. Empty parts are left
+ * out; the row joins the rest with " · ". The agents show only when the worker started one: a zero
+ * read as "nothing works" next to a working worker. The tokens and the model of the run stand on
+ * the second line of the row (runCostText, ticket card-run-rows).
  * The time goes through as it is, so the row can hand in the element that the ticker moves on.
  */
-export function rowParts<T>(waitingFor: string | null, time: T | null, agents: number, active: number, tokens = ""): (string | T)[] {
-  const parts: (string | T | null)[] = [waitingFor, time, tokens, agentsText(agents, active)];
+export function rowParts<T>(waitingFor: string | null, time: T | null, agents: number, active: number): (string | T)[] {
+  const parts: (string | T | null)[] = [waitingFor, time, agentsText(agents, active)];
   return parts.filter((part): part is string | T => part !== null && part !== "");
 }
 

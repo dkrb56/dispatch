@@ -837,10 +837,12 @@ button.task-head:hover {
   border-left: 1px solid var(--hairline);
 }
 
+/* A run row wraps only for its second line (ticket card-run-rows); the other rows keep one line. */
 .task .chat {
   flex-direction: row;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 0 8px;
   padding: 3px 8px;
 }
 
@@ -859,6 +861,15 @@ button.task-head:hover {
   flex: 1;
   align-items: center;
   gap: 6px;
+}
+
+/* The tokens and the model of a run (ticket card-run-rows): a second line across the row, under
+   the text of the name (after the eye and its margin). The tooltip has the exact numbers. */
+.task .chat .run-cost {
+  flex-basis: 100%;
+  padding-left: calc(13px * var(--text-scale) + 5px);
+  color: var(--text-2);
+  font-size: calc(12px * var(--text-scale));
 }
 
 /* The card of a task that waits for the user: a plan to approve, or a question to answer. */
@@ -1029,25 +1040,7 @@ button.task-head:hover {
   flex-basis: 100%;
 }
 
-/* The tokens of a task for one model (ticket task-tokens): a row like the branch row. */
-.task-tokens {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 6px;
-  padding: 3px 8px;
-  font-size: calc(12px * var(--text-scale));
-}
-
-.task-tokens .task-tokens-model {
-  font-family: "Cascadia Mono", Consolas, monospace;
-}
-
-.task-tokens .when {
-  color: var(--muted);
-}
-
-/* The checks that the user chose for a task at Approve (ticket task-checks): a row like the token rows. */
+/* The checks that the user chose for a task at Approve (ticket task-checks): a row like the branch row. */
 .task-checks {
   display: flex;
   flex-wrap: wrap;
@@ -1059,53 +1052,6 @@ button.task-head:hover {
 
 .task-checks .when {
   color: var(--muted);
-}
-
-/* The Bash commands of a task (ticket task-evidence): rows like the token rows; a click opens the output. */
-.task-evidence .task-evidence-row {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 6px;
-  width: 100%;
-  padding: 3px 8px;
-  border: none;
-  background: none;
-  color: inherit;
-  font: inherit;
-  font-size: calc(12px * var(--text-scale));
-  text-align: left;
-  cursor: pointer;
-}
-
-.task-evidence .task-evidence-command {
-  flex: 1 1 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: "Cascadia Mono", Consolas, monospace;
-}
-
-.task-evidence .when {
-  color: var(--muted);
-}
-
-.task-evidence .exit {
-  color: var(--muted);
-}
-
-.task-evidence .exit.failed {
-  color: var(--danger);
-}
-
-.task-evidence-tail {
-  margin: 0 8px 4px 16px;
-  color: var(--muted);
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: calc(11px * var(--text-scale));
-  white-space: pre-wrap;
-  word-break: break-all;
 }
 
 .task-stop .task-stop-text {

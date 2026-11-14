@@ -38,7 +38,7 @@ import { agentListShown, asksAgain, backKey, BACK_TITLE, LIST_TITLE } from "./ag
 import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, type FileInfo, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
-import { agentsText, fileRowTitle, rowParts, runTokensText, runTokensTitle, tokenText } from "./workerrow";
+import { agentsText, fileRowTitle, rowParts, runCostText, runTokensTitle, tokenText } from "./workerrow";
 import { announcements, parseEnded, serializeEnded } from "./announce";
 import { oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
 import { currentProject, groupCount, pillCount } from "./topbar";
@@ -1716,11 +1716,18 @@ interface TaskInfo {
   measureChanged?: string[];
   /** The branch of the task with "Task branches" on (ticket task-branches); null or absent without one. */
   branch?: BranchInfo | null;
-  /** The tokens of the sessions of the task per model, each reply once (ticket task-tokens). Absent from an older host. */
+  /**
+   * The tokens of the sessions of the task per model, each reply once (ticket task-tokens). Absent
+   * from an older host. The card no longer shows them (ticket card-run-rows); the task log of the host uses them.
+   */
   tokens?: ModelUsage[];
   /** The tokens of each run with a transcript, by session id, each reply once under its first run (ticket run-tokens). Absent from an older host. */
   runTokens?: RunUsage[];
-  /** The Bash commands of the plan run and the work run from the transcripts (ticket task-evidence). Absent from an older host. */
+  /**
+   * The Bash commands of the plan run and the work run from the transcripts (ticket task-evidence).
+   * Absent from an older host. The card no longer shows them (ticket card-run-rows); the task log,
+   * the report check and the hand-off of the host use them.
+   */
   evidence?: Evidence[];
   /**
    * The Verification claims of a done report that no Bash command of the evidence matches (ticket
@@ -3361,17 +3368,25 @@ function workerRow(worker: Worker, run?: "plan" | "work", models?: ModelUsage[])
     time.textContent = chatTime(worker.startedAt);
   }
   // The agents that the worker started show only when it started one; else the row ends after the time.
-  // The tokens of the run (ticket run-tokens) stand after the time, the exact numbers in the tooltip.
-  const parts = rowParts(worker.waitingFor, time.textContent ? time : null, worker.agents, worker.agentsActive, runTokensText(models));
-  if (runTokensText(models)) row.title += `\n${runTokensTitle(models)}`;
+  const parts = rowParts(worker.waitingFor, time.textContent ? time : null, worker.agents, worker.agentsActive);
   parts.forEach((part, at) => details.append(...(at > 0 ? [" · ", part] : [part])));
   state.append(chip, details);
+  // The tokens of the run and its model stand on a second line across the row (ticket
+  // card-run-rows); the exact numbers per model stand in the tooltip (ticket run-tokens).
+  const costText = runCostText(models);
+  const cost = document.createElement("span");
+  if (costText) {
+    cost.className = "run-cost";
+    cost.textContent = costText;
+    row.title += `\n${runTokensTitle(models)}`;
+  }
   if (worker.startedAt) {
     const ended = Date.parse(worker.endedAt ?? "");
     const end = running ? "" : took !== null ? ` · ended ${chatTime(ended)}` : "; the end is not known";
     row.title += `\nStarted ${chatTime(worker.startedAt)}${end}`;
   }
   row.append(name, state);
+  if (costText) row.append(cost);
   row.addEventListener("click", () => void openWorker(worker));
   return row;
 }
@@ -4458,71 +4473,6 @@ function branchRow(branch: BranchInfo): HTMLElement {
   return row;
 }
 
-/** The token row of a task for one model (ticket task-tokens): the short counts, the exact ones in the tooltip. */
-function tokenRow(usage: ModelUsage): HTMLElement {
-  const row = document.createElement("div");
-  row.className = "task-tokens";
-  const name = document.createElement("span");
-  name.className = "task-tokens-model";
-  name.textContent = `Tokens ${usage.model}`;
-  const when = document.createElement("span");
-  when.className = "when";
-  when.textContent = `in ${tokenText(usage.input)} · cache write ${tokenText(usage.cacheWrite)} · cache read ${tokenText(usage.cacheRead)} · out ${tokenText(usage.output)}`;
-  const total = usage.input + usage.cacheWrite + usage.cacheRead + usage.output;
-  const exact = (count: number) => count.toLocaleString();
-  row.title = [
-    `${usage.model}: input ${exact(usage.input)}, cache write ${exact(usage.cacheWrite)}, cache read ${exact(usage.cacheRead)}, output ${exact(usage.output)}; total ${exact(total)}.`,
-    "The plan run, the work run and their agents count together, each reply once.",
-  ].join("\n");
-  row.append(name, when);
-  return row;
-}
-
-/** The open evidence rows, by task key and tool call id (ticket task-evidence): a re-render keeps them. */
-const evidenceOpen = new Set<string>();
-
-/**
- * The evidence row of one Bash command of a task (ticket task-evidence): the stage, the first line
- * of the command, the exit code and the time; the full command in the tooltip. A click shows the
- * full command and the last lines of its output under the row.
- */
-function evidenceRow(key: string, item: Evidence): HTMLElement {
-  const openKey = `${key}|${item.id}`;
-  const open = evidenceOpen.has(openKey);
-  const made = document.createElement("div");
-  made.className = `task-evidence${open ? " open" : ""}`;
-  const row = document.createElement("button");
-  row.className = "task-evidence-row";
-  row.setAttribute("aria-expanded", String(open));
-  row.title = `${item.command}\n\n${open ? "Hide" : "Show"} the output. The line comes from the transcript of the ${item.stage === "PLAN" ? "plan run" : "work run"}, not from the report.`;
-  const lines = item.command.split("\n");
-  const command = document.createElement("span");
-  command.className = "task-evidence-command";
-  command.textContent = `${item.stage} ${lines[0]}${lines.length > 1 ? " …" : ""}`;
-  const when = document.createElement("span");
-  when.className = "when";
-  const exit = document.createElement("span");
-  exit.className = `exit${item.exit === "0" ? "" : " failed"}`;
-  exit.textContent = `exit ${item.exit}`;
-  const time = item.time ? Date.parse(item.time) : NaN;
-  when.append(exit, document.createTextNode(Number.isNaN(time) ? "" : ` ${chatTime(time)}`));
-  row.append(command, when);
-  row.addEventListener("click", () => {
-    if (open) evidenceOpen.delete(openKey);
-    else evidenceOpen.add(openKey);
-    renderChats();
-  });
-  made.append(row);
-  if (open) {
-    const tail = document.createElement("pre");
-    tail.className = "task-evidence-tail";
-    const output = item.outputTail.length > 0 ? item.outputTail.join("\n") : "no output";
-    tail.textContent = `$ ${item.command}\n${output}`;
-    made.append(tail);
-  }
-  return made;
-}
-
 /**
  * The Stop row of a task whose worker works or waits at a prompt, or null. The first click arms
  * it; "Stop now" ends the worker through the script, "Keep running" steps back. A task without
@@ -5243,10 +5193,6 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     // The checks that the user chose at Approve (ticket task-checks).
     const checks = checksRow(info?.checks ?? []);
     if (checks) body.append(checks);
-    // What the task cost: one row per model under the report (ticket task-tokens).
-    body.append(...(info?.tokens ?? []).map(tokenRow));
-    // What the task ran: one row per Bash command from the transcripts (ticket task-evidence).
-    body.append(...(info?.evidence ?? []).map((item) => evidenceRow(key, item)));
     if (info?.branch) body.append(branchRow(info.branch));
     // Stop stands under the runs that it stops.
     const stop = stopRow(task);

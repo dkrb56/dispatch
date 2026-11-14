@@ -61,7 +61,7 @@ test("the line for triage names the ticket, the branch, the base and the merge c
 
 test("main.ts: the branch row, the task lists and the refusal rule use the module", () => {
   assert.match(MAIN, /import \{ mergedWords, outsideLine, refusalGoes \} from "\.\/merged";/);
-  const row = MAIN.slice(MAIN.indexOf("function branchRow("), MAIN.indexOf("function tokenRow("));
+  const row = MAIN.slice(MAIN.indexOf("function branchRow("), MAIN.indexOf("function stopRow("));
   assert.match(row, /mergedWords\(branch\.merge\)/);
   const store = MAIN.slice(MAIN.indexOf("function storeProjectTasks("), MAIN.indexOf("/** The last reply of the `task_list` command"));
   assert.match(store, /refusalGoes\(error, \{ merged: Boolean\(branch\.merge\), dirty: record\.dirty \}\)/);
