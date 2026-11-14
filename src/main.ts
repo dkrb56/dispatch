@@ -42,6 +42,7 @@ import { oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, t
 import { currentProject, groupCount, pillCount } from "./topbar";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
+import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
 import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards, triageFree } from "./pending";
 import { type FlowView, openFlow } from "./flow";
@@ -4064,6 +4065,52 @@ function mergeCard(task: Task): HTMLElement {
     note.className = "card-reason";
     note.textContent = branch.note;
     card.append(note);
+  }
+  // A failed gate: the first line, one line per failed check, and the whole log behind a click
+  // (ticket merge-fail-list). Every other refusal keeps its one text.
+  const refusal = gateRefusal(actionErrors.get(task.name) ?? "");
+  if (refusal) {
+    const head = document.createElement("div");
+    head.className = "card-reason";
+    head.textContent = refusalHeadline(refusal);
+    const list = document.createElement("ul");
+    list.className = "merge-fails";
+    for (const line of failLines(refusal.tail)) {
+      const item = document.createElement("li");
+      item.textContent = line.text;
+      if (line.text !== line.full) item.title = line.full;
+      list.append(item);
+    }
+    const row = document.createElement("button");
+    row.className = "chat report merge-log";
+    row.title = `Open the whole gate log: ${refusal.log}`;
+    const name = document.createElement("span");
+    name.textContent = "Gate log";
+    name.prepend(eyeIcon());
+    const where = document.createElement("span");
+    where.className = "when";
+    where.textContent = logName(refusal.log);
+    row.append(name, where);
+    row.addEventListener("click", () => {
+      void (async () => {
+        let entry: FileEntry | null = null;
+        try {
+          entry = await statFile(taskHost(task), null, refusal.log);
+        } catch {
+          entry = null;
+        }
+        if (entry) {
+          await openViewer(entry);
+          return;
+        }
+        const missing = document.createElement("div");
+        missing.className = "card-reason";
+        missing.textContent = `The log is not there: ${refusal.log}`;
+        row.replaceWith(missing);
+      })();
+    });
+    card.append(head, list, row);
+    return card;
   }
   const error = actionError(task);
   if (error) card.append(error);

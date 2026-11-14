@@ -327,7 +327,7 @@
             <li>The plan run still edits no file, starts no agent and asks you nothing. Apply changes the options of the plan run and the section in <code>CLAUDE.md</code> with the switch.</li>
             <li><b>Task branches.</b> Your branch stays clean until you merge. Approve makes the branch <code>task/&lt;task&gt;</code> from the branch that the project was on at the plan run, and the worker commits there.</li>
             <li>When the worker is done, Dispatch switches the project back to that branch. The task card then shows <b>Merge into &lt;branch&gt;</b>.</li>
-            <li>Write a gate command into the box under the switch, for example your test suite. Merge runs it on the merged code and makes the merge commit only when it passes. Night mode does not merge.</li>
+            <li>Write a gate command into the box under the switch, for example your test suite. Merge runs it on the merged code and makes the merge commit only when it passes; a failed gate lists the lines of its log that say FAIL. Night mode does not merge.</li>
           </ul>
         </details>
 
@@ -529,7 +529,7 @@
             <li>When a worker leaves an answered question in its report, the card shows no buttons for it again. It says what you answered and offers <b>Continue</b>, <b>Send the answer again</b> or <b>Stop</b>. Triage hears about your answer once. A changed question or a new question shows its buttons as before.</li>
             <li>A new question also opens a window by itself; <b>Answer in a window</b> in the card opens it again. Click the options, then <b>Send the answers</b>. The window does not open by itself in night mode, at the start of Dispatch, or while another window is open.</li>
             <li>A worker that stopped at a refused step says so in its report, and the task shows <b>Continue</b>. Change the rule first, then click it.</li>
-            <li><b>Merge.</b> The task shows its branch, the branch it came from, and where it stands. A click merges with a merge commit after the gate command passed, and the Approve of another task waits meanwhile. A failed gate, a conflict in your code or uncommitted changes merge nothing; the card shows why.</li>
+            <li><b>Merge.</b> The task shows its branch, the branch it came from, and where it stands. A click merges with a merge commit after the gate command passed, and the Approve of another task waits meanwhile. A failed gate, a conflict in your code or uncommitted changes merge nothing; the card shows why. A failed gate lists the checks that failed, and a click on <b>Gate log</b> opens the whole log.</li>
             <li>A conflict only in the task files of <code>.dispatch</code> takes the version of your branch. Dispatch deletes the merged branch and writes one line into the triage chat. It makes no push. When the worker left uncommitted changes, the project stays on the task branch.</li>
             <li><b>Stop</b> asks first: <b>Stop now</b> ends the worker through the worker script, and <b>Keep running</b> lets it go on. Dispatch writes one line into the triage chat. The rest of the work needs a new task.</li>
             <li><b>This project</b> and <b>All projects</b> select the chats that the list shows. The search field finds a chat by its title or its folder.</li>

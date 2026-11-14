@@ -890,6 +890,32 @@ button.task-head:hover {
   white-space: pre-wrap;
 }
 
+/* The failed checks of a refused merge (ticket merge-fail-list): one line per check, no marks. */
+.task-card .merge-fails {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--danger);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.task-card .merge-fails li {
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+/* The row that opens the whole gate log: the look of the report row in the card body. */
+.task-card button.merge-log {
+  margin-top: 6px;
+  padding: 5px 8px;
+  border: 0;
+  background: none;
+}
+
+.task-card button.merge-log:hover {
+  background: var(--card);
+}
+
 /* The Stop row of a running task: on the guide line under its runs. The first click arms it. */
 .task-stop {
   display: flex;

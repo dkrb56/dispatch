@@ -1,0 +1,12 @@
+behind: ok 0 commits behind origin/main cd9a453
+merged: ok open merge of 6b6de895a into main
+gate: auto -> fit (7 of 10 changed files off the light paths)
+fresh: FAIL no time for the end of the net test, the start of the net test
+build: ok ok true, config Development, at 2026-11-13T22:22:05.8480351Z
+tests: ok filter Starminer, 271 passed, 0 failed, 0 not run, at 2026-11-13T22:24:32.5465636Z
+cases: ok required Rocks, Routes, Flight, Base, Credits, Fight, Npc (all cases: core or unmapped paths: Config/DefaultGame.ini; 3 smaller merges in a row on origin/main (limit 3); the log says all; count 3 of 3)
+nettest: FAIL no readable last-nettest.json (a gate run removes it at its start, so no gate run has ended)
+retries: ok no retried case
+review: FAIL the log has no "## Review"
+log-check: FAIL "## Results" is missing or empty | "## Review" is missing (the review agent's VERDICT, or a Self-check list for a small task) | "### Token usage" with its table is missing | line 273: unfinished-work word or template marker | line 416: unfinished-work word or template marker | gate fit: no EVIDENCE of nettest.ps1 -Mode Both -Gate
+FAIL

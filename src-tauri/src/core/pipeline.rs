@@ -4986,4 +4986,43 @@ if (args[0] === 'agents') {
         set_branches(&off, false);
         apply(&off, &[]).unwrap();
     }
+
+    /// Builds the scratch project of the proof of ticket merge-fail-list when the variable
+    /// MERGE_FAIL_PROOF_DIR names an empty folder: `<dir>/proj` with Task branches on, the ticket t-1
+    /// through plan, approve and report with the fake worker, the checkout back on the base, and a gate
+    /// command that prints the fixture `tests/fixtures/merge-gate-fail.txt` and ends with exit code 1.
+    /// It merges nothing; the Merge button of the test copy does that in the proof.
+    #[test]
+    #[ignore]
+    fn merge_fail_proof_project() {
+        let Ok(dir) = std::env::var("MERGE_FAIL_PROOF_DIR") else { return };
+        let dir = PathBuf::from(dir);
+        let root = dir.join("proj");
+        fs::create_dir_all(&root).unwrap();
+        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false };
+        git_init(&project);
+        project.in_git = true;
+        write_file(&project.root.join("README.md"), "scratch project of the merge-fail-list proof\n").unwrap();
+        apply(&project, &[0]).unwrap();
+        set_branches(&project, true);
+        apply(&project, &[]).unwrap();
+        git_out(&project, &["add", "--all"]);
+        git_out(&project, &["commit", "-q", "-m", "scratch setup"]);
+        let fake = fake_claude(&dir);
+        write_file(&fake.join("work.txt"), "the work of the task\n").unwrap();
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        let cwd = project.root.to_string_lossy().into_owned();
+        // The task read switches the checkout back to the base and commits the task files there.
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.exists && !branch.checked_out, "{branch:?}");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("tests").join("fixtures").join("merge-gate-fail.txt");
+        fs::copy(&fixture, project.root.join("merge-gate-fail.txt")).unwrap();
+        git_out(&project, &["add", "merge-gate-fail.txt"]);
+        git_out(&project, &["commit", "-q", "-m", "the gate log of the proof"]);
+        set_merge_gate(cwd.clone(), "type merge-gate-fail.txt & exit 1\n".to_string()).unwrap();
+        task_list(cwd.clone()).unwrap();
+        fs::write(dir.join("project.txt"), &cwd).unwrap();
+        fs::write(dir.join("base.txt"), &branch.base).unwrap();
+    }
 }
