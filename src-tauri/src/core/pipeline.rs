@@ -1226,12 +1226,12 @@ switch ($Verb) {
     # Task branches: a work run goes on on the branch of its task, also after Dispatch switched back.
     $branch = if ($run -eq 'work' -and (Branches-On)) { Read-BranchFile $Id } else { $null }
     $tracked = $null -ne $branch -and -not $branch.merge
+    # The state file is newer than the report before the checkout: Dispatch keeps the checkout on the
+    # task branch until the worker writes its report again, also while Claude Code starts.
+    if ($tracked) { Set-State (Get-State) }
     $back = if ($tracked) { Enter-TaskBranch } else { '' }
     $printed = Run-Claude (@($text, '--resume', $worker.sessionId, '--bg', '--name', (Run-Name $run)) + $flags) '' $back
     Save-Session $run $printed
-    # The state file is newer than the report now: Dispatch keeps the checkout on the task branch
-    # until the worker writes its report again.
-    if ($tracked) { Set-State (Get-State) }
   }
   'status' {
     $workers = Get-Workers
@@ -2851,10 +2851,13 @@ fn modified(path: &Path) -> Option<std::time::SystemTime> {
 
 /// Switches the main checkout back to the base of a task whose work run has ended (decision 3 of
 /// task-branches): the report is newer than the state file (a reply makes the state newer), or the
-/// task was stopped. Only with a clean tree outside `.dispatch`. Then every task file that the task
-/// branch changed in `.dispatch` comes onto the base in one commit, so the files of all tasks stay
-/// readable and end on the base; the merge brings the rest. Gives the note when it did not switch.
-fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<(), String> {
+/// task was stopped. Only with a clean tree outside `.dispatch`. Then the newer report of the task
+/// comes from the branch (`report_from_branch`, ticket stale-report-loop), and every task file that
+/// the task branch changed in `.dispatch` comes onto the base, all in one commit, so the files of all
+/// tasks stay readable and end on the base; the merge brings the rest. A task file that git cannot
+/// take does not stop the others; the note names it. Gives whether it switched and that note, or the
+/// note when it did not switch.
+fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<(bool, String), String> {
     let report = project.reports.join(format!("{ticket}.md"));
     let state_path = project.reports.join(format!("{ticket}.state"));
     let state = fs::read_to_string(&state_path).unwrap_or_default();
@@ -2862,7 +2865,7 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
         || matches!((modified(&report), modified(&state_path)), (Some(report), Some(state)) if report >= state)
         || (report.is_file() && !state_path.is_file());
     if !ended {
-        return Ok(());
+        return Ok((false, String::new()));
     }
     let dirty = run_git(&project.root, &["status", "--porcelain", "--", ".", NOT_TASKS])?;
     if !dirty.trim().is_empty() {
@@ -2872,47 +2875,110 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
         ));
     }
     run_git(&project.root, &["checkout", "-q", &info.base])?;
+    let mut paths = Vec::new();
+    let mut failed = Vec::new();
+    // The newer report first: after a merge by hand the diff below no longer lists it.
+    let report_path = format!("{TASKS_DIR}/{ticket}.md");
+    match report_from_branch(project, ticket, info) {
+        Ok(true) => paths.push(report_path),
+        Ok(false) => {}
+        Err(error) => failed.push(format!("{report_path} ({error})")),
+    }
     // The task files that the branch changed since it left the base.
     let range = format!("{}...{}", info.base, info.name);
     let changed = run_git(&project.root, &["diff", "--name-status", "--no-renames", &range, "--", TASKS_DIR])?;
-    let mut paths = Vec::new();
     for line in changed.lines() {
         let Some((status, path)) = line.split_once('\t') else { continue };
         let path = path.trim().trim_matches('"').to_string();
+        if paths.contains(&path) {
+            continue;
+        }
         if status.starts_with('D') {
             let _ = run_git(&project.root, &["rm", "-q", "--ignore-unmatch", "--", &path]);
-        } else {
-            run_git(&project.root, &["checkout", &info.name, "--", &path])?;
+        } else if let Err(error) = run_git(&project.root, &["checkout", &info.name, "--", &path]) {
+            failed.push(format!("{path} ({error})"));
+            continue;
         }
         paths.push(path);
     }
+    let note = if failed.is_empty() {
+        String::new()
+    } else {
+        format!("Dispatch switched back to {}, but could not take these task files from {}: {}", info.base, info.name, failed.join("; "))
+    };
     // A later return (after a reply) finds the files of the first one on the base already. With
     // "Task files local only" on, git tracks no task file, so the diff above is empty and `paths`
     // too: the return ends here without a commit (ticket ignore-tasks).
     let mut status = vec!["status", "--porcelain", "--"];
     status.extend(paths.iter().map(String::as_str));
     if paths.is_empty() || run_git(&project.root, &status)?.trim().is_empty() {
-        return Ok(());
+        return Ok((true, note));
     }
     let message = format!("Dispatch: task files of {ticket}");
     let mut commit = vec!["commit", "-q", "-m", &message, "--"];
     commit.extend(paths.iter().map(String::as_str));
-    run_git(&project.root, &commit).map(|_| ())
+    run_git(&project.root, &commit).map(|_| (true, note))
+}
+
+/// Takes the report of a ticket from its task branch into the checkout of the base when the two
+/// copies differ and the last commit of the report on the branch is as new as the one on the base or
+/// newer (ticket stale-report-loop). After a merge by hand that kept the copy of the base, git lists
+/// the report in no diff from the merge-base, and an old question would stand on the base for ever.
+/// A report with an uncommitted change in the checkout, a newer copy on the base, and a branch
+/// without the report stay as they are. It commits nothing; gives whether it took the file.
+fn report_from_branch(project: &Project, ticket: &str, info: &BranchInfo) -> Result<bool, String> {
+    let path = format!("{TASKS_DIR}/{ticket}.md");
+    if run_git(&project.root, &["diff", "--name-only", &info.base, &info.name, "--", &path])?.trim().is_empty() {
+        return Ok(false);
+    }
+    if git(&project.root, &["cat-file", "-e", &format!("{}:{path}", info.name)]).is_none() {
+        return Ok(false);
+    }
+    let time = |rev: &str| git(&project.root, &["log", "-1", "--format=%ct", rev, "--", &path]).and_then(|time| time.trim().parse::<u64>().ok());
+    let Some(branch) = time(&info.name) else { return Ok(false) };
+    if time(&info.base).is_some_and(|base| base > branch) {
+        return Ok(false);
+    }
+    if !run_git(&project.root, &["status", "--porcelain", "--", &path])?.trim().is_empty() {
+        return Ok(false);
+    }
+    run_git(&project.root, &["checkout", &info.name, "--", &path])?;
+    Ok(true)
 }
 
 /// The branch of a task for the task list, after the return to the base when its work run has ended.
 /// With `check_merged`, a branch that waits for Merge but that the base already holds (the user
 /// merged it with git, ticket merged-outside) gets the merge line `outside <what> <time>` in its
-/// branch file; the next task read commits it with the task files.
-fn task_branch(project: &Project, ticket: &str, current: &str, check_merged: bool) -> Option<BranchInfo> {
+/// branch file; the next task read commits it with the task files. While the checkout is on the base,
+/// a newer report of the branch comes onto the base in one commit (ticket stale-report-loop). The
+/// flag says that the checkout or a task file changed, so the task read reads the files again.
+fn task_branch(project: &Project, ticket: &str, current: &str, check_merged: bool) -> Option<(BranchInfo, bool)> {
     let mut info = read_branch_file(&project.branch_file(ticket))?;
     let exists = |name: &str| git(&project.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_some();
     info.exists = info.merge.is_empty() && exists(&info.name);
     info.checked_out = current == info.name;
+    let mut changed = false;
     if info.checked_out && info.merge.is_empty() {
         match return_to_base(project, ticket, &info) {
-            Ok(()) => info.checked_out = current_branch(project).as_deref() == Some(info.name.as_str()),
+            Ok((switched, note)) => {
+                changed = switched;
+                info.note = note;
+                info.checked_out = current_branch(project).as_deref() == Some(info.name.as_str());
+            }
             Err(note) => info.note = note,
+        }
+    } else if info.exists && !info.checked_out && current == info.base {
+        match report_from_branch(project, ticket, &info) {
+            Ok(true) => {
+                changed = true;
+                let message = format!("Dispatch: report of {ticket} from {}", info.name);
+                let path = format!("{TASKS_DIR}/{ticket}.md");
+                if let Err(error) = run_git(&project.root, &["commit", "-q", "-m", &message, "--", &path]) {
+                    eprintln!("report of {ticket} taken from {} but not committed: {error}", info.name);
+                }
+            }
+            Ok(false) => {}
+            Err(error) => eprintln!("report of {ticket} not taken from {}: {error}", info.name),
         }
     }
     if check_merged && info.exists && !info.checked_out {
@@ -2926,7 +2992,7 @@ fn task_branch(project: &Project, ticket: &str, current: &str, check_merged: boo
             }
         }
     }
-    Some(info)
+    Some((info, changed))
 }
 
 /// The tips of the branch and of the base that a check found unmerged, by project root and branch
@@ -3037,6 +3103,20 @@ fn setup_time(project: &Project) -> Option<u64> {
 /// The briefs and the options files are not tasks.
 pub fn task_list(cwd: String) -> Result<TaskList, String> {
     let project = Project::find(&cwd)?;
+    // The files are read before the branch step. When that step switched the checkout back or took
+    // a newer report from a task branch, the files of this read are old: the same read reads them
+    // again, so no window shows an old question for one poll (ticket stale-report-loop). Two reads
+    // at most.
+    let (list, moved) = read_tasks(&project)?;
+    if !moved {
+        return Ok(list);
+    }
+    read_tasks(&project).map(|(list, _)| list)
+}
+
+/// One read of the tasks of a project for `task_list`, and whether the branch step changed the
+/// checkout or a task file.
+fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     let mut tasks: Vec<TaskInfo> = Vec::new();
     // The position of the task with a name; a new task when none has it.
     fn task_at(tasks: &mut Vec<TaskInfo>, name: &str) -> usize {
@@ -3207,7 +3287,9 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
     }
     // Task branches: the branch of each task, and the way back to the base after a work run. Only
     // the task branch that is checked out can switch back; a merge in progress keeps the checkout.
+    // A switch back or a report taken from a branch sets `moved`: `task_list` reads again.
     let merging = project.merging();
+    let mut moved = false;
     if project.in_git && (project.options().task_branches || tasks.iter().any(|task| project.branch_file(&task.name).is_file())) {
         let current = if merging.is_none() { current_branch(&project).unwrap_or_default() } else { String::new() };
         for task in tasks.iter_mut() {
@@ -3218,7 +3300,10 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
             let header = task.header.as_ref();
             let waits = header.is_some_and(|header| matches!(header.needs.as_str(), "decision" | "permission") || header.state == "needs-decision");
             let check = merging.is_none() && ((task.report.is_some() && !waits) || task.state == "stopped");
-            task.branch = task_branch(&project, &task.name, &current, check);
+            if let Some((branch, changed)) = task_branch(project, &task.name, &current, check) {
+                task.branch = Some(branch);
+                moved |= changed;
+            }
         }
     }
     // The script refuses an approval for these lines; the task files do not count.
@@ -3229,7 +3314,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
     };
     let setup = setup_time(&project);
     let options = project.options();
-    Ok(TaskList { tasks, dirty, auto_approve: options.auto_approve, paused: options.paused, setup, tickets, merging, gate: project.merge_gate() })
+    Ok((TaskList { tasks, dirty, auto_approve: options.auto_approve, paused: options.paused, setup, tickets, merging, gate: project.merge_gate() }, moved))
 }
 
 /// At most this many open tasks get their own part in the hand-off; the rest are counted.
@@ -4771,7 +4856,15 @@ if (args[0] === 'agents') {
 } else {
   // A resume on other options starts a copy with its own session id (FAKE_COPY): the agents list gives it from now on.
   if (process.env.FAKE_COPY) fs.writeFileSync(__dirname + '/copy.txt', process.env.FAKE_COPY);
-  const plan = /Write the plan to (.+?) with the sections/.exec(args[0]);
+  // The start of a run (ticket stale-report-loop): the branch of the checkout and the times of the
+  // report and the state file of the ticket that watch.txt names.
+  if (fs.existsSync(__dirname + '/watch.txt')) {
+    const ticket = fs.readFileSync(__dirname + '/watch.txt', 'utf8').trim();
+    const head = require('child_process').execFileSync('git', ['symbolic-ref', '--short', 'HEAD'], { encoding: 'utf8' }).trim();
+    const time = (name) => fs.statSync('.dispatch/' + name).mtimeMs;
+    fs.appendFileSync(__dirname + '/starts.txt', JSON.stringify({ branch: head, report: time(ticket + '.md'), state: time(ticket + '.state') }) + '\\n');
+  }
+  const plan =/Write the plan to (.+?) with the sections/.exec(args[0]);
   let text = 'plan\\n';
   if (plan && args[0].includes('Measure before the plan is on')) {
     const path = require('path');
@@ -5815,6 +5908,134 @@ if (args[0] === 'agents') {
         clean(&project);
     }
 
+    /// The task of the Starminer screenshot (ticket stale-report-loop).
+    const GATERECORDS: &str = "t-20261114T163252000Z-f6580960";
+    /// The report with the question of the Starminer card, as the worker wrote it at 17:10.
+    const GATE_QUESTION: &str = "state: needs-decision\nneeds: decision\nfiles: none\nplan: p\n\n## Questions\n1. Run the gate on the merged code now, or stop here?\n   - Run the gate now\n   - Stop here; the branch stays as committed\n";
+    /// The report of the work run after the answer "Stop here", at 18:03.
+    const STOPPED_HERE: &str = "state: done\nneeds: nothing\nfiles: none\nplan: p\n\nStopped here as the user answered; the branch stays as committed.\n";
+
+    /// Sets the modification time of a scratch file to 2026-11-14 <hour>:<minute> UTC.
+    fn set_time(path: &Path, hour: u64, minute: u64) {
+        // 2026-11-14T00:00:00Z in seconds since the Unix epoch.
+        const DAY: u64 = 1_794_614_400;
+        let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(DAY + hour * 3600 + minute * 60);
+        assert_eq!(&crate::core::tickets::iso((DAY + hour * 3600 + minute * 60) * 1000)[..16], format!("2026-11-14T{hour:02}:{minute:02}"));
+        fs::File::options().write(true).open(path).unwrap().set_modified(time).unwrap();
+    }
+
+    /// The blob of the report of a ticket on a branch.
+    fn report_blob(project: &Project, rev: &str, ticket: &str) -> String {
+        git_out(project, &["rev-parse", &format!("{rev}:{TASKS_DIR}/{ticket}.md")])
+    }
+
+    /// The task of a ticket in a fresh task list of the project.
+    fn listed_task(project: &Project, ticket: &str) -> TaskInfo {
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        list.tasks.into_iter().find(|task| task.name == ticket).expect("the task is listed")
+    }
+
+    /// The state of Starminer at 18:14: the worker asked at 17:10 and the switch back put the question
+    /// onto the base; after the answer the work run wrote done on the task branch; triage merged the
+    /// branch by hand and kept the report of the base. The checkout is on the base. Gives the base.
+    fn stale_base_after_a_merge_by_hand(project: &Project, fake: &Path, ticket: &str) -> String {
+        plan_and_approve(project, fake, ticket);
+        let report = project.reports.join(format!("{ticket}.md"));
+        write_file(&report, GATE_QUESTION).unwrap();
+        set_time(&report, 17, 10);
+        set_time(&project.reports.join(format!("{ticket}.state")), 16, 33);
+        // The task read switches back and brings the question onto the base.
+        let branch = listed_branch(project, ticket);
+        assert!(branch.exists && !branch.checked_out && branch.note.is_empty(), "{branch:?}");
+        let base = branch.base;
+        let name = format!("task/{ticket}");
+        assert_eq!(report_blob(project, &base, ticket), report_blob(project, &name, ticket));
+        assert_eq!(git_out(project, &["status", "--porcelain"]), "");
+        // The work run after the answer writes done on the branch and commits it.
+        git_out(project, &["checkout", "-q", &name]);
+        write_file(&report, STOPPED_HERE).unwrap();
+        set_time(&report, 18, 3);
+        let path = format!("{TASKS_DIR}/{ticket}.md");
+        git_out(project, &["add", "--", &path]);
+        git_out(project, &["commit", "-q", "-m", &format!("{ticket} done")]);
+        // Triage merges the branch by hand and keeps the report of the base.
+        git_out(project, &["checkout", "-q", &base]);
+        let _ = run_git(&project.root, &["merge", "--no-ff", "--no-commit", &name]);
+        git_out(project, &["checkout", "HEAD", "--", &path]);
+        git_out(project, &["commit", "-q", "-m", "merge by hand"]);
+        assert!(read(&report).contains("state: needs-decision"));
+        assert!(git_out(project, &["merge-base", "--is-ancestor", &name, &base]).is_empty());
+        base
+    }
+
+    #[test]
+    fn a_stale_report_on_the_base_gives_way_to_the_newer_report_of_the_branch() {
+        let (project, fake, _) = branch_project("stale-report");
+        let base = stale_base_after_a_merge_by_hand(&project, &fake, GATERECORDS);
+        let name = format!("task/{GATERECORDS}");
+        // One task read: the base takes the newer report of the branch, and the same read gives it.
+        let task = listed_task(&project, GATERECORDS);
+        let header = task.header.as_ref().expect("the report has a header");
+        assert_eq!(header.state, "done", "the task read gave the old copy of the base");
+        assert!(task.questions.is_empty(), "{:?}", task.questions);
+        assert_eq!(report_blob(&project, &base, GATERECORDS), report_blob(&project, &name, GATERECORDS));
+        let subjects = git_out(&project, &["log", "--format=%s", "-6", &base]);
+        assert!(subjects.lines().any(|line| line == format!("Dispatch: report of {GATERECORDS} from {name}")), "{subjects}");
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        let branch = task.branch.as_ref().expect("the task has a branch");
+        assert!(branch.merge.starts_with("outside "), "{branch:?}");
+        assert!(handoff_state(&task, false, false).is_none_or(|state| !state.contains("asks a question")));
+        // A second read finds nothing to copy.
+        let head = git_out(&project, &["rev-parse", &base]);
+        assert_eq!(listed_task(&project, GATERECORDS).header.map(|header| header.state).as_deref(), Some("done"));
+        let after = git_out(&project, &["log", "--format=%s", &format!("{head}..{base}")]);
+        assert!(!after.contains("Dispatch: report of"), "{after}");
+        clean(&project);
+    }
+
+    #[test]
+    fn the_poll_that_switches_back_already_returns_the_repaired_report() {
+        let (project, fake, _) = branch_project("stale-return");
+        let base = stale_base_after_a_merge_by_hand(&project, &fake, GATERECORDS);
+        let name = format!("task/{GATERECORDS}");
+        // A reply puts the checkout on the branch again; the worker ends its turn with its report.
+        git_out(&project, &["checkout", "-q", &name]);
+        let first = listed_task(&project, GATERECORDS);
+        assert_eq!(first.header.map(|header| header.state).as_deref(), Some("done"));
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()), "the read did not switch back");
+        assert_eq!(report_blob(&project, &base, GATERECORDS), report_blob(&project, &name, GATERECORDS), "the switch back kept the old copy on the base");
+        let next = listed_task(&project, GATERECORDS);
+        assert_eq!(next.header.map(|header| header.state).as_deref(), Some("done"));
+        assert!(next.questions.is_empty(), "{:?}", next.questions);
+        clean(&project);
+    }
+
+    #[test]
+    fn the_reply_writes_the_state_before_it_checks_out_the_branch() {
+        let (project, fake, base) = branch_project("stale-reply");
+        plan_and_approve(&project, &fake, "t-1");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        write_file(&project.reports.join("t-1.md"), GATE_QUESTION).unwrap();
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        // A later return (after an answer) copies only the report: the reply wrote the state with the
+        // same text, so git copies no state file and the report on the base is the newer file.
+        set_time(&project.reports.join("t-1.md"), 17, 10);
+        set_time(&project.reports.join("t-1.state"), 16, 33);
+        write_file(&fake.join("watch.txt"), "t-1").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let (code, out) = run_script(&project, &fake, "done", &["reply", "t-1", "Answer to question 1: Stop here; the branch stays as committed"]);
+        assert_eq!(code, 0, "{out}");
+        let starts = read(&fake.join("starts.txt"));
+        let start: serde_json::Value = serde_json::from_str(starts.lines().last().unwrap()).unwrap();
+        assert_eq!(start["branch"], json!("task/t-1"), "{start}");
+        // At the start of Claude Code the state is newer than the report: a poll now keeps the branch.
+        assert!(start["state"].as_f64().unwrap() > start["report"].as_f64().unwrap(), "the state was older than the report at the start: {start}");
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.checked_out, "{branch:?}");
+        clean(&project);
+    }
+
     /// Builds the scratch projects of the proof script of ticket task-branches when the variable
     /// BRANCHES_PROOF_DIR names an empty folder: `on` runs a scratch ticket through plan, approve,
     /// report, return and merge and writes the task list as JSON; `off` gets Apply with the switch
@@ -5976,5 +6197,46 @@ if (args[0] === 'agents') {
         assert!(list.tickets.iter().any(|one| one.id == ticket.id && one.status == crate::core::tickets::DONE), "{:?}", list.tickets);
         fs::write(dir.join("project.txt"), &cwd).unwrap();
         fs::write(dir.join("base.txt"), &branch.base).unwrap();
+    }
+
+    /// Builds the scratch project of the proof of ticket stale-report-loop when the variable
+    /// STALE_REPORT_PROOF_DIR names an empty folder: `<dir>/proj` with Task branches on. Scene B, t-2:
+    /// the worker asked the question of the Starminer card, and the task read put it onto the base, so
+    /// base and branch hold the same report. Scene A, t-1: the state of Starminer at 18:14 (the base
+    /// holds the question from 17:10, the branch the done report of 18:03, and triage merged the branch
+    /// by hand and kept the copy of the base). The checkout is on the base. No task read runs after
+    /// scene A: the test copy meets the stale copy at its first poll.
+    #[test]
+    #[ignore]
+    fn stale_report_proof_project() {
+        let Ok(dir) = std::env::var("STALE_REPORT_PROOF_DIR") else { return };
+        let dir = PathBuf::from(dir);
+        let root = dir.join("proj");
+        fs::create_dir_all(&root).unwrap();
+        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false };
+        git_init(&project);
+        project.in_git = true;
+        write_file(&project.root.join("README.md"), "scratch project of the stale-report-loop proof\n").unwrap();
+        apply(&project, &[0]).unwrap();
+        set_branches(&project, true);
+        apply(&project, &[]).unwrap();
+        git_out(&project, &["add", "--all"]);
+        git_out(&project, &["commit", "-q", "-m", "scratch setup"]);
+        let fake = fake_claude(&dir);
+        write_file(&fake.join("work.txt"), "the work of the task\n").unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        // Scene B: the question stands on the base and on the branch.
+        plan_and_approve(&project, &fake, "t-2");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        write_file(&project.reports.join("t-2.md"), GATE_QUESTION).unwrap();
+        let branch = listed_branch(&project, "t-2");
+        assert!(branch.exists && !branch.checked_out, "{branch:?}");
+        assert_eq!(report_blob(&project, &branch.base, "t-2"), report_blob(&project, "task/t-2", "t-2"));
+        // Scene A: the stale copy of Starminer.
+        let base = stale_base_after_a_merge_by_hand(&project, &fake, "t-1");
+        assert_eq!(read(&project.reports.join("t-2.md")), GATE_QUESTION);
+        assert_eq!(git_out(&project, &["status", "--porcelain"]), "");
+        fs::write(dir.join("project.txt"), &cwd).unwrap();
+        fs::write(dir.join("base.txt"), &base).unwrap();
     }
 }
