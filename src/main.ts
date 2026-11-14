@@ -54,7 +54,8 @@ import { type CheckInfo, checkRows, checksSentence, checksText, choiceNames, def
 import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards, triageFree } from "./pending";
 import { type FlowView, openFlow } from "./flow";
 import { drawLinks, type Link } from "./links";
-import { initPipeline, openSetup, setupNeeded, showSetup } from "./pipeline";
+import { initPipeline, openSetup, setupNeeded, setupTodo, showSetup } from "./pipeline";
+import { setupDue, setupLook, setupStamp, setupTitle } from "./setupmark";
 import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersion } from "./help";
 import { lastRunVersion, newEntries } from "./changelog";
 import { alertActions, alertState, CHIME, newWaits, notificationText, type Wait } from "./alerts";
@@ -4794,6 +4795,40 @@ function showPauseButtons(): void {
   }
 }
 
+/** Gives a Setup button the mark of its project (ticket setup-attention): its classes and its tooltip. */
+function markSetupButton(button: HTMLElement, key: string, name: string): void {
+  const stamp = setupStates.get(key)?.stamp ?? "";
+  const look = setupLook(stamp, setupSeen.get(key), pulseOn(), reducedMotion.matches);
+  button.classList.toggle("attention", look !== "none");
+  button.classList.toggle("pulse", look === "pulse");
+  button.title = setupTitle(name, stamp);
+}
+
+/**
+ * The Setup button of each project in the bar group and the column heads, and the button Setup
+ * pipeline of Map and Overview for the project of the focused terminal (ticket setup-attention).
+ */
+function showSetupButtons(): void {
+  for (const button of document.querySelectorAll<HTMLButtonElement>(".project-setup")) {
+    markSetupButton(button, button.dataset.project ?? "", button.dataset.name ?? "");
+  }
+  const bar = document.querySelector<HTMLButtonElement>("#setup-pipeline");
+  const pane = focusedPane();
+  if (!bar) return;
+  if (pane?.project) markSetupButton(bar, paneKey(pane), "the project of the focused terminal");
+  else {
+    bar.classList.remove("attention", "pulse");
+    bar.title = "Prepare the project of the focused terminal for triage and workers";
+  }
+}
+
+/** A click on Setup calms its pulse until the steps To do change (user decision 2 of the plan). */
+function calmSetup(key: string): void {
+  const stamp = setupStates.get(key)?.stamp;
+  if (stamp) setupSeen.set(key, stamp);
+  showSetupButtons();
+}
+
 /** The path of the tickets file of a project folder, with the separator of the folder. */
 function ticketsFilePath(root: string): string {
   const sep = root.includes("\\") ? "\\" : "/";
@@ -5275,6 +5310,13 @@ const seenAttention = new Set<string>();
 /** The system setting for reduced motion: the signal then stays still. A change draws again. */
 const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 reducedMotion.addEventListener("change", () => renderChats());
+/**
+ * The setup steps To do of each shown project (ticket setup-attention): the stamp of `setupStamp`
+ * and the time of the check, by project key. A project without an entry has no mark.
+ */
+const setupStates = new Map<string, { stamp: string; checkedAt: number }>();
+/** The stamp that the user saw with a click on Setup, by project key: in memory for one run. */
+const setupSeen = new Map<string, string>();
 /** The workers that were blocked at the last call, and how often each one became blocked. */
 let blockedBefore = new Set<string>();
 const promptCounts = new Map<string, number>();
@@ -6681,7 +6723,14 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   pause.classList.add("project-pause");
   pause.dataset.project = key;
   const rules = tool("Rules", `Show the rules that Claude Code gets in ${name}`, () => openRules(ref.host, ref.root));
-  const setup = tool("Setup", `Prepare ${name} for triage and workers: the Setup pipeline window`, () => showSetup(ref.host, ref.root));
+  const setup = tool("Setup", `Prepare ${name} for triage and workers: the Setup pipeline window`, () => {
+    calmSetup(key);
+    showSetup(ref.host, ref.root);
+  });
+  // The mark of missing setup steps (ticket setup-attention): `showSetupButtons` sets it.
+  setup.classList.add("project-setup");
+  setup.dataset.project = key;
+  setup.dataset.name = name;
   const oldEl = tool("", `The worker sessions of ${name} that Claude Code still keeps after their task ended. Click to see them and end each one.`, () => openStale(key));
   oldEl.classList.add("project-old");
   const folder = tool("", `Open the workspace of ${name}: triage and the agent view. A project that is not set up shows the Setup pipeline window first.`, () => {
@@ -6693,6 +6742,7 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   el.append(tickets, pause, rules, setup, oldEl, folder);
   showOldButton(oldEl, key);
   showTicketButtons();
+  markSetupButton(setup, key, name);
   return { el, oldEl };
 }
 
@@ -7344,6 +7394,7 @@ function renderPills(): void {
   });
   focusProjectsEl.replaceChildren(...pills);
   markTabs();
+  showSetupButtons();
 }
 
 /** Marks the tab of each project with a task that has the signal (ticket card-attention). */
@@ -7375,6 +7426,37 @@ async function ensureWorkspace(ref: ProjectRef): Promise<void> {
   await openWorkspace(ref.host, ref.root);
   // The new tab hides behind focus mode; the tab that was active stays active.
   if (back && tabs.has(back)) activate(back);
+}
+
+/** The projects whose setup check runs now: a slow host gets no second call meanwhile. */
+const setupChecking = new Set<string>();
+
+/**
+ * Asks the setup steps of each project that is due (ticket setup-attention): every
+ * `SETUP_CHECK_MS`, through the same `pipeline_plan` as the Setup pipeline window. Then it marks the
+ * Setup buttons. A folder that is no project loses its mark.
+ */
+async function refreshSetupStates(roots: Iterable<ProjectRef>): Promise<void> {
+  const now = Date.now();
+  const due = [...roots].filter((ref) => {
+    const key = refKey(ref);
+    return !setupChecking.has(key) && setupDue(setupStates.get(key)?.checkedAt, now);
+  });
+  if (due.length === 0) return;
+  await Promise.all(
+    due.map(async (ref) => {
+      const key = refKey(ref);
+      setupChecking.add(key);
+      try {
+        setupStates.set(key, { stamp: setupStamp(await setupTodo(ref.host, ref.root)), checkedAt: Date.now() });
+      } catch {
+        setupStates.delete(key);
+      } finally {
+        setupChecking.delete(key);
+      }
+    }),
+  );
+  showSetupButtons();
 }
 
 /** Reads the tasks of every project of focus mode. */
@@ -7418,6 +7500,8 @@ async function refreshFocusTasks(): Promise<void> {
   renderTickets();
   approvePlans();
   updateAlerts();
+  // The setup steps of the same projects, every 30 s; the task poll does not wait for them (ticket setup-attention).
+  void refreshSetupStates(roots.values());
 }
 
 async function addFocusProject(): Promise<void> {
@@ -8345,6 +8429,9 @@ async function start(): Promise<void> {
     () => {
       reloadWorkerFlags();
       focusedPane()?.term.focus();
+      // After Apply the mark of the Setup buttons follows at once, not after the next period (ticket setup-attention).
+      for (const state of setupStates.values()) state.checkedAt = 0;
+      void refreshSetupStates(focusOn ? focusProjects : mapProjects());
     },
     recordTriageRole,
   );

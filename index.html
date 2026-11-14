@@ -400,7 +400,7 @@
         <ul>
           <li><b>Focus</b> at the left of the bar opens it. <b>Details</b> goes back to the terminal tabs and the chat list.</li>
           <li>Each project has a pill in the bar: green while a worker works, orange while something waits for you, and it pulses while a task waits for your click.</li>
-          <li>The head of each column has the buttons of its project: <b>Rules</b>, <b>Setup</b>, <b>N old</b> and the folder button.</li>
+          <li>The head of each column has the buttons of its project: <b>Rules</b>, <b>Setup</b>, <b>N old</b> and the folder button. <b>Setup</b> pulses while the project misses setup steps.</li>
           <li><b>Workers</b> in the head of a column opens the agent view of that project. A second click closes it.</li>
           <li>With two or more projects, a blue frame marks the project you work in.</li>
         </ul>
@@ -616,6 +616,7 @@
         <ul>
           <li><b>The four icons</b> split the terminal right or down, close it, and show or hide the side panels.</li>
           <li><b>The buttons of a project.</b> <b>Tickets</b>, <b>Rules</b>, <b>Setup</b>, <b>N old</b> and the folder button act on that project.</li>
+          <li><b>A pulsing Setup button</b> means that the project misses setup steps. Its tooltip names them. A click calms the pulse to a still mark; Apply in the Setup pipeline window makes the mark go.</li>
           <li><b>Rules</b> shows all the rules that Claude Code gets in the project. <b>Analyse rules</b> finds old or bad rules.</li>
           <li><b>Update to …</b> shows when a new version is ready. Click it to install the update.</li>
           <li><b>Options</b> (the gear) holds the mode, the alerts, the colour theme and the size of the text.</li>
@@ -718,7 +719,7 @@
           </label>
           <label>
             <input type="checkbox" data-attention="pulse" />
-            <span><b>Pulse.</b> The card of a task that waits for you pulses, and so does the pill, tab or column of its project, until you click the card. The system setting for reduced motion turns the motion off too.</span>
+            <span><b>Pulse.</b> The card of a task that waits for you pulses, and so does the pill, tab or column of its project, until you click the card. The Setup button of a project that misses setup steps pulses too. The system setting for reduced motion turns the motion off too.</span>
           </label>
           <p>An alert comes one time when a task starts to wait: a plan is ready, a report has a question or needs a permission, or a worker waits at a prompt. While night mode is on, only what night mode leaves to you alerts: a plan with a HOLD decision, a permission and a prompt.</p>
         </fieldset>

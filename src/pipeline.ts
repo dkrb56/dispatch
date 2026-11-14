@@ -309,6 +309,12 @@ export async function setupNeeded(host: HostId, root: string): Promise<boolean> 
   return plan.steps.some((step) => !step.done);
 }
 
+/** The steps of the setup of a project with their state, for the mark of its Setup button (ticket setup-attention). It changes no file. */
+export async function setupTodo(host: HostId, root: string): Promise<{ title: string; done: boolean }[]> {
+  const plan = await call<Plan>(host, "pipeline_plan", { cwd: root, rules: [] });
+  return plan.steps.map((step) => ({ title: step.title, done: step.done }));
+}
+
 /**
  * Opens the Setup pipeline window for a project and waits until the user closes it. Gives true
  * when every step was done at that time: the user clicked Apply, or nothing was to do.
