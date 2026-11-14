@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { agentsText, fileRowTitle, rowParts } from "../src/workerrow.ts";
+import { agentsText, fileRowTitle, rowParts, runTokensText, runTokensTitle, tokenText } from "../src/workerrow.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const HTML = read("../index.html");
@@ -73,6 +73,56 @@ test("the plan row of a task card has no chip; its tooltip has the state; the re
   assert.match(MAIN, /fileRow\("Plan", info\.plan, null, info\.state \|\| null\)/);
   assert.match(MAIN, /fileRow\("Report", info\.report, info\.header\?\.state \?\? null, null\)/);
   assert.match(MAIN, /row\.title = fileRowTitle\(label, file\.path, state\)/);
+});
+
+// Ticket run-tokens: each run row shows the tokens of its run after the duration, one summed count
+// over all models; the exact numbers per model stand in the tooltip. A run without tokens shows none.
+const fable = { model: "claude-fable-5-1", input: 804, cacheWrite: 163035, cacheRead: 2996664, output: 31303 };
+const opus = { model: "claude-opus-5-5", input: 37, cacheWrite: 424384, cacheRead: 4621868, output: 17786 };
+
+test("the short form of a token count", () => {
+  assert.equal(tokenText(950), "950");
+  assert.equal(tokenText(12_345), "12.3k");
+  assert.equal(tokenText(1_000_000), "1M");
+  assert.equal(tokenText(3_191_806), "3.2M");
+});
+
+test("the token text of a run: empty without models, the sum of all four counts over all models", () => {
+  assert.equal(runTokensText(undefined), "");
+  assert.equal(runTokensText([]), "");
+  // One model: 804 + 163,035 + 2,996,664 + 31,303 = 3,191,806.
+  assert.equal(runTokensText([fable]), "3.2M tokens");
+  // Two models: 3,191,806 + 5,064,075 = 8,255,881.
+  assert.equal(runTokensText([fable, opus]), "8.3M tokens");
+  assert.equal(runTokensText([{ model: "m", input: 1, cacheWrite: 2, cacheRead: 3, output: 4 }]), "10 tokens");
+});
+
+test("the tooltip of a run: one line per model with the exact numbers, then the rule", () => {
+  assert.equal(runTokensTitle([]), "");
+  assert.equal(
+    runTokensTitle([fable, opus]),
+    [
+      "claude-fable-5-1: input 804, cache write 163,035, cache read 2,996,664, output 31,303; total 3,191,806.",
+      "claude-opus-5-5: input 37, cache write 424,384, cache read 4,621,868, output 17,786; total 5,064,075.",
+      "The agents of this run count with it; a reply counts once, under the first run that has it.",
+    ].join("\n"),
+  );
+});
+
+test("the tokens stand after the duration and before the agents; without tokens the row is as before", () => {
+  const withTokens = (tokens: string, agents = 0) => rowParts(null, "2 min", agents, 0, tokens).join(" · ");
+  assert.equal(withTokens("3.2M tokens"), "2 min · 3.2M tokens");
+  assert.equal(withTokens("3.2M tokens", 3), "2 min · 3.2M tokens · 3 agents");
+  assert.equal(rowParts("a permission", "4 min", 1, 1, "950 tokens").join(" · "), "a permission · 4 min · 950 tokens · 1 agent, 1 active");
+  assert.equal(withTokens(""), "2 min");
+  assert.equal(withTokens(runTokensText(undefined), 3), "2 min · 3 agents");
+});
+
+test("the run row meets the page: one formatter, the tokens of the run by its session id", () => {
+  assert.doesNotMatch(MAIN, /function tokenText\(/);
+  assert.match(MAIN, /rowParts\(worker\.waitingFor, [^)]*runTokensText\(models\)\)/);
+  assert.match(MAIN, /runTokensTitle\(models\)/);
+  assert.match(MAIN, /run\.session === worker\.sessionId/);
 });
 
 test("the Help says that the plan row has no state chip and where the state stands", () => {

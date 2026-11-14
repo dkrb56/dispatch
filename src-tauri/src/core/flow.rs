@@ -93,6 +93,16 @@ pub struct ModelUsage {
     pub output: u64,
 }
 
+/// The tokens of one run of a task (ticket run-tokens): the run (`plan` or `work`), its session id
+/// (the key that joins a worker row of the task card to its run) and its tokens per model.
+#[derive(Serialize, Default, Debug, PartialEq, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RunUsage {
+    pub run: String,
+    pub session: String,
+    pub models: Vec<ModelUsage>,
+}
+
 /// One Bash command of a task with its result, from the transcripts (ticket task-evidence).
 #[derive(Serialize, Default, Debug, PartialEq, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -555,6 +565,42 @@ pub fn token_usage(projects: &Path, sessions: &[String]) -> Vec<ModelUsage> {
     sums.into_values().collect()
 }
 
+/// The tokens of each run of a task (ticket run-tokens): `runs` are the `(run, session id)` lines
+/// of the session file, in its order. The rule of `token_usage` holds over all runs: a reply counts
+/// once, under the first run that has it, so a copy that repeats the replies of its parent counts
+/// only its own, and the sum of the runs equals the total of the task. The agents of a session count
+/// for its run. A session without a transcript on this computer, or with an id that is no session
+/// id, gives no entry.
+pub fn run_token_usage(projects: &Path, runs: &[(String, String)]) -> Vec<RunUsage> {
+    let mut seen = std::collections::HashSet::new();
+    let mut list = Vec::new();
+    for (run, session) in runs {
+        if !valid_session(session) {
+            continue;
+        }
+        let files = transcripts_of(projects, session);
+        if files.is_empty() {
+            continue;
+        }
+        let mut sums: std::collections::BTreeMap<String, ModelUsage> = std::collections::BTreeMap::new();
+        for file in files {
+            for reply in transcript_of(&file).replies {
+                if !seen.insert(reply.id.clone()) {
+                    continue;
+                }
+                let model = reply.model.unwrap_or_else(|| "unknown".to_string());
+                let sum = sums.entry(model.clone()).or_insert_with(|| ModelUsage { model, ..ModelUsage::default() });
+                sum.input += reply.input;
+                sum.cache_write += reply.cache_write;
+                sum.cache_read += reply.cache_read;
+                sum.output += reply.output;
+            }
+        }
+        list.push(RunUsage { run: run.clone(), session: session.clone(), models: sums.into_values().collect() });
+    }
+    list
+}
+
 /// The Bash commands of the runs of a task with their results (ticket task-evidence): `runs` are
 /// the `(run, session id)` lines of the session file, in its order. The transcripts of each session
 /// and its agents count (decision 3). A tool call counts once over all sessions, under the first
@@ -752,6 +798,52 @@ mod tests {
         let usage = token_usage(&projects, &sessions);
         assert_eq!(usage[2], ModelUsage { model: "claude-opus-5-5".into(), input: 4, cache_write: 31, cache_read: 301, output: 8 });
         assert!(token_usage(&projects, &[]).is_empty());
+        fs::remove_dir_all(&projects).unwrap();
+    }
+
+    #[test]
+    fn the_tokens_of_each_run_sum_to_the_total_of_the_task() {
+        let projects = scratch_projects("runs");
+        let folder = projects.join("D--project");
+        let (plan, work, gone) = ("33333333-0000-0000-0000-00000000000a", "33333333-0000-0000-0000-00000000000b", "33333333-0000-0000-0000-00000000000c");
+        let first = reply_line("msg_p1", "claude-fable-5-1", 1, 10, 100, 5);
+        fs::write(folder.join(format!("{plan}.jsonl")), format!("{first}\n")).unwrap();
+        // The work run is a copy of the plan session: it repeats the plan reply, then adds its own.
+        let second = reply_line("msg_w1", "claude-opus-5-5", 2, 20, 200, 6);
+        fs::write(folder.join(format!("{work}.jsonl")), format!("{first}\n{second}\n")).unwrap();
+        // One agent under each session; the agent of the work run repeats a plan reply too.
+        for (session, line) in [(plan, reply_line("msg_pa", "claude-haiku-5-5", 3, 30, 300, 7)), (work, format!("{first}\n{}", reply_line("msg_wa", "claude-haiku-5-5", 4, 40, 400, 8)))] {
+            let agents = folder.join(session).join("subagents");
+            fs::create_dir_all(&agents).unwrap();
+            fs::write(agents.join("agent-a.jsonl"), format!("{line}\n")).unwrap();
+        }
+
+        let runs = [("plan".to_string(), plan.to_string()), ("work".to_string(), work.to_string()), ("work".to_string(), gone.to_string()), ("work".to_string(), "../x".to_string())];
+        let usage = run_token_usage(&projects, &runs);
+        let fable = |input, write, read, output| ModelUsage { model: "claude-fable-5-1".into(), input, cache_write: write, cache_read: read, output };
+        let haiku = |input, write, read, output| ModelUsage { model: "claude-haiku-5-5".into(), input, cache_write: write, cache_read: read, output };
+        let opus = |input, write, read, output| ModelUsage { model: "claude-opus-5-5".into(), input, cache_write: write, cache_read: read, output };
+        // The session without a transcript and the bad id give no entry.
+        assert_eq!(
+            usage,
+            [
+                RunUsage { run: "plan".into(), session: plan.into(), models: vec![fable(1, 10, 100, 5), haiku(3, 30, 300, 7)] },
+                RunUsage { run: "work".into(), session: work.into(), models: vec![haiku(4, 40, 400, 8), opus(2, 20, 200, 6)] },
+            ]
+        );
+
+        // The sum of the runs per model equals the total of the task.
+        let mut sums: std::collections::BTreeMap<String, ModelUsage> = std::collections::BTreeMap::new();
+        for model in usage.iter().flat_map(|run| run.models.iter()) {
+            let sum = sums.entry(model.model.clone()).or_insert_with(|| ModelUsage { model: model.model.clone(), ..ModelUsage::default() });
+            sum.input += model.input;
+            sum.cache_write += model.cache_write;
+            sum.cache_read += model.cache_read;
+            sum.output += model.output;
+        }
+        let sessions: Vec<String> = runs.iter().map(|(_, id)| id.clone()).collect();
+        assert_eq!(sums.into_values().collect::<Vec<_>>(), token_usage(&projects, &sessions));
+        assert!(run_token_usage(&projects, &[]).is_empty());
         fs::remove_dir_all(&projects).unwrap();
     }
 

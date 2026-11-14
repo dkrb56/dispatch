@@ -38,7 +38,7 @@ import { agentListShown, asksAgain, backKey, BACK_TITLE, LIST_TITLE } from "./ag
 import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, type FileInfo, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
-import { agentsText, fileRowTitle, rowParts } from "./workerrow";
+import { agentsText, fileRowTitle, rowParts, runTokensText, runTokensTitle, tokenText } from "./workerrow";
 import { announcements, parseEnded, serializeEnded } from "./announce";
 import { oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
 import { currentProject, groupCount, pillCount } from "./topbar";
@@ -498,13 +498,6 @@ const CONTEXT_COLORS: Record<string, string> = {
   "Autocompact buffer": "var(--line)",
   "Free space": "var(--card)",
 };
-
-/** A token count in the short form of Claude Code: 950, 12.3k, 1M. */
-function tokenText(tokens: number): string {
-  if (tokens >= 1_000_000) return `${+(tokens / 1_000_000).toFixed(1)}M`;
-  if (tokens >= 1000) return `${+(tokens / 1000).toFixed(1)}k`;
-  return String(tokens);
-}
 
 /** Fills the Context section: the share in use, a bar, and one row per category. */
 function renderContext(pane: Pane, contextTokens: number | null): void {
@@ -1724,6 +1717,8 @@ interface TaskInfo {
   branch?: BranchInfo | null;
   /** The tokens of the sessions of the task per model, each reply once (ticket task-tokens). Absent from an older host. */
   tokens?: ModelUsage[];
+  /** The tokens of each run with a transcript, by session id, each reply once under its first run (ticket run-tokens). Absent from an older host. */
+  runTokens?: RunUsage[];
   /** The Bash commands of the plan run and the work run from the transcripts (ticket task-evidence). Absent from an older host. */
   evidence?: Evidence[];
   /**
@@ -1760,6 +1755,13 @@ interface ModelUsage {
   cacheWrite: number;
   cacheRead: number;
   output: number;
+}
+
+/** The tokens of one run of a task (ticket run-tokens): `plan` or `work`, its session id, and its tokens per model. */
+interface RunUsage {
+  run: string;
+  session: string;
+  models: ModelUsage[];
 }
 
 /** The branch of a task (ticket task-branches), from its branch file and from git. */
@@ -3331,7 +3333,7 @@ function workerRun(task: Task, worker: Worker): "plan" | "work" | undefined {
   return (worker.startedAt ?? Infinity) > first ? "work" : "plan";
 }
 
-function workerRow(worker: Worker, run?: "plan" | "work"): HTMLElement {
+function workerRow(worker: Worker, run?: "plan" | "work", models?: ModelUsage[]): HTMLElement {
   const row = document.createElement("button");
   row.className = `chat worker ${worker.state ?? ""}`;
   row.title = `${worker.name ?? worker.id}\n${worker.cwd ?? ""}`;
@@ -3358,7 +3360,9 @@ function workerRow(worker: Worker, run?: "plan" | "work"): HTMLElement {
     time.textContent = chatTime(worker.startedAt);
   }
   // The agents that the worker started show only when it started one; else the row ends after the time.
-  const parts = rowParts(worker.waitingFor, time.textContent ? time : null, worker.agents, worker.agentsActive);
+  // The tokens of the run (ticket run-tokens) stand after the time, the exact numbers in the tooltip.
+  const parts = rowParts(worker.waitingFor, time.textContent ? time : null, worker.agents, worker.agentsActive, runTokensText(models));
+  if (runTokensText(models)) row.title += `\n${runTokensTitle(models)}`;
   parts.forEach((part, at) => details.append(...(at > 0 ? [" · ", part] : [part])));
   state.append(chip, details);
   if (worker.startedAt) {
@@ -5159,7 +5163,9 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   if (open) {
     const body = document.createElement("div");
     body.className = "task-body";
-    body.append(...task.workers.map((worker) => workerRow(worker, workerRun(task, worker))));
+    // Each run row gets the tokens of its run by the session id of the worker (ticket run-tokens).
+    const runTokens = task.info?.runTokens ?? [];
+    body.append(...task.workers.map((worker) => workerRow(worker, workerRun(task, worker), runTokens.find((run) => run.session === worker.sessionId)?.models)));
     const info = task.info;
     // The plan row is a file, so it has no chip: a chip there read as a second run (task-plan-row-chip).
     // The state of the script stands in the header of the card and in the tooltip of the plan row.

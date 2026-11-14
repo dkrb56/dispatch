@@ -2760,6 +2760,11 @@ pub struct TaskInfo {
     /// The tokens of the sessions of `<ticket>.session` per model, each reply once (ticket
     /// task-tokens). Empty without the file or without a transcript.
     tokens: Vec<crate::core::flow::ModelUsage>,
+    /// The tokens of each run of `<ticket>.session` with a transcript, by session id, each reply
+    /// once under the first run that has it (ticket run-tokens). Empty without the file or without
+    /// a transcript.
+    #[serde(rename = "runTokens")]
+    run_tokens: Vec<crate::core::flow::RunUsage>,
     /// The Bash commands of the plan run and the work run with their exit codes and output tails,
     /// from the transcripts of the sessions of `<ticket>.session` (ticket task-evidence). Empty
     /// without the file or without a transcript.
@@ -3155,6 +3160,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             measure_changed: Vec::new(),
             branch: None,
             tokens: Vec::new(),
+            run_tokens: Vec::new(),
             evidence: Vec::new(),
             unverified: Vec::new(),
             log: None,
@@ -3203,7 +3209,9 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         let mut transcript = false;
         if let Some(projects) = projects.as_ref().filter(|_| !sessions.is_empty()) {
             task.tokens = crate::core::flow::token_usage(projects, &sessions);
-            task.evidence = crate::core::flow::evidence_of(projects, &read_session_runs(&project.session_file(&task.name)));
+            let runs = read_session_runs(&project.session_file(&task.name));
+            task.run_tokens = crate::core::flow::run_token_usage(projects, &runs);
+            task.evidence = crate::core::flow::evidence_of(projects, &runs);
             transcript = crate::core::flow::has_transcript(projects, &sessions);
         }
         // A done report needs a command of the evidence for each Verification claim (ticket
@@ -4254,6 +4262,7 @@ mod tests {
         assert!(list.tasks[0].tokens.is_empty());
         let json = serde_json::to_value(&list.tasks[0]).unwrap();
         assert_eq!(json["tokens"], serde_json::json!([]));
+        assert_eq!(json["runTokens"], serde_json::json!([]));
         assert!(list.tasks[0].evidence.is_empty());
         assert_eq!(json["evidence"], serde_json::json!([]));
     }
@@ -4793,6 +4802,7 @@ evidence: no
             measure_changed: Vec::new(),
             branch: None,
             tokens: Vec::new(),
+            run_tokens: Vec::new(),
             evidence: Vec::new(),
             unverified: Vec::new(),
             log: None,
