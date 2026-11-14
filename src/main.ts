@@ -28,6 +28,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 import { onReturn } from "./chatend";
 import { markedProject, showMark, watchArea } from "./focusmark";
+import { type ColumnAction, type ColumnChoice, applyAction, columnStates, dragPartner, mayMinimize, parseChoice } from "./focuslayout";
 import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode } from "./overview";
 import { addedText, columnTickets, COLUMNS, countText, DROP_COLUMNS, endFailed, endWord, goesStraight, isQuestion, movedIds, nextTicket, nextType, type Ticket, ticketCounts, ticketMatches, ticketMessage, type TicketStatus, todoOrder, typeName } from "./tickets";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
@@ -6633,6 +6634,13 @@ interface FocusColumn {
   morningChecked: number;
   /** The button "N old" of the project in the head of the column; hidden without old sessions (topbar-projects). */
   oldEl: HTMLButtonElement;
+  /** The state text of the project ("1 waits", "2 working"); it shows in the strip only (focus-column-size). */
+  stateEl: HTMLElement;
+  /** The buttons – (minimize) and ⤢ (maximize) in the head of the column (focus-column-size). */
+  minEl: HTMLButtonElement;
+  maxEl: HTMLButtonElement;
+  /** The drag handle on the right edge of the column. Hidden without a drag partner. */
+  colHandle: HTMLElement;
 }
 const focusColumns = new Map<string, FocusColumn>();
 
@@ -6763,6 +6771,8 @@ function moveBack(pane: Pane): void {
 interface FocusSize {
   grow?: number;
   side?: number;
+  /** The column is minimized to a strip or maximized (focus-column-size); none for a normal column. */
+  state?: ColumnChoice;
 }
 const FOCUS_SIZES_KEY = "focus-sizes";
 /** The narrowest column and left panel that a drag leaves. */
@@ -6802,6 +6812,53 @@ function applyFocusSizes(key: string, el: HTMLElement, sideEl: HTMLElement): voi
   const size = focusSizes()[key] ?? {};
   el.style.flexGrow = String(size.grow ?? 1);
   sideEl.style.width = size.side ? `${size.side}px` : "";
+}
+
+/** The stored choice of each project of focus mode: minimized, maximized or none (focus-column-size). */
+function focusChoices(): Record<string, ColumnChoice | undefined> {
+  const sizes = focusSizes();
+  const choices: Record<string, ColumnChoice | undefined> = {};
+  for (const key of focusProjects.map(refKey)) choices[key] = parseChoice(sizes[key]?.state);
+  return choices;
+}
+
+/**
+ * Draws the state of each column (focus-column-size): the classes `min` and `max`, the share of a
+ * column that comes back from a strip, the drag handle, and the two buttons in the head. A normal
+ * column keeps the share that it has, so a render during a drag changes nothing.
+ */
+function applyFocusLayout(): void {
+  const keys = focusProjects.map(refKey);
+  const choices = focusChoices();
+  const states = columnStates(keys, choices);
+  for (const key of keys) {
+    const column = focusColumns.get(key);
+    if (!column) continue;
+    const state = states[key];
+    const name = projectName(column);
+    const wasMin = column.el.classList.contains("min");
+    column.el.classList.toggle("min", state === "min");
+    column.el.classList.toggle("max", state === "max");
+    if (state === "min") column.el.style.flexGrow = "0";
+    else if (wasMin) column.el.style.flexGrow = String(focusSizes()[key]?.grow ?? 1);
+    column.el.title = state === "min" ? `Click to bring back the column of ${name}` : "";
+    column.colHandle.hidden = dragPartner(keys, states, key) === null;
+    const maximized = state === "max";
+    column.maxEl.classList.toggle("open", maximized);
+    column.maxEl.setAttribute("aria-pressed", String(maximized));
+    column.maxEl.title = maximized ? "Give the layout of focus mode back" : `Give ${name} the whole width; the other projects become narrow strips`;
+    const may = mayMinimize(keys, choices, key);
+    column.minEl.disabled = !may;
+    column.minEl.title = may ? `Make ${name} a narrow strip with its name and state` : "One column always shows its contents";
+  }
+}
+
+/** Applies a click on the – or ⤢ button or on a strip, saves the changed choices and draws the layout. */
+function setColumnSize(key: string, action: ColumnAction): void {
+  const keys = focusProjects.map(refKey);
+  const { choices, changed } = applyAction(keys, focusChoices(), key, action);
+  for (const known of changed) saveFocusSize(known, { state: choices[known] });
+  applyFocusLayout();
 }
 
 /** A thin bar that the user drags. */
@@ -6905,7 +6962,10 @@ function dragColumns(handle: HTMLElement, key: string, el: HTMLElement): void {
   dragFrom(
     handle,
     () => {
-      next = el.nextElementSibling instanceof HTMLElement && el.nextElementSibling.classList.contains("focus-col") ? el.nextElementSibling : null;
+      // The next column that shows its contents; a strip between them keeps its width (focus-column-size).
+      const keys = focusProjects.map(refKey);
+      const partner = dragPartner(keys, columnStates(keys, focusChoices()), key);
+      next = partner ? (focusColumns.get(partner)?.el ?? null) : null;
       widths = [el.getBoundingClientRect().width, next?.getBoundingClientRect().width ?? 0];
       total = Number(el.style.flexGrow || 1) + Number(next?.style.flexGrow || 1);
     },
@@ -6982,7 +7042,27 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   const divider = document.createElement("span");
   divider.className = "project-divider";
   divider.setAttribute("aria-hidden", "true");
-  head.append(dotEl, name, pathEl, spacer, morningEl, tools.el, divider, mapButton, workersEl, close);
+  // The size of the column (focus-column-size): the state text shows in the strip only; – and ⤢
+  // stand before ×; the restore button stands at the bottom of the strip.
+  const stateEl = document.createElement("span");
+  stateEl.className = "focus-state";
+  const minEl = document.createElement("button");
+  minEl.className = "focus-size-button focus-min";
+  minEl.textContent = "–";
+  minEl.setAttribute("aria-label", `Minimize ${projectName(ref)}`);
+  minEl.addEventListener("click", () => setColumnSize(key, "minimize"));
+  const maxEl = document.createElement("button");
+  maxEl.className = "focus-size-button focus-max";
+  maxEl.textContent = "⤢";
+  maxEl.setAttribute("aria-label", `Maximize ${projectName(ref)}`);
+  maxEl.addEventListener("click", () => setColumnSize(key, "maximize"));
+  const restoreEl = document.createElement("button");
+  restoreEl.className = "focus-size-button focus-restore";
+  restoreEl.textContent = "↔";
+  restoreEl.title = `Bring back the column of ${projectName(ref)}`;
+  restoreEl.setAttribute("aria-label", `Restore ${projectName(ref)}`);
+  restoreEl.addEventListener("click", () => setColumnSize(key, "restore"));
+  head.append(dotEl, name, stateEl, pathEl, spacer, morningEl, tools.el, divider, mapButton, workersEl, minEl, maxEl, close, restoreEl);
   const body = document.createElement("div");
   body.className = "focus-body";
   const sideEl = document.createElement("aside");
@@ -7006,7 +7086,13 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   applyFocusSizes(key, el, sideEl);
   dragSide(sideHandle, key, sideEl);
   dragColumns(colHandle, key, el);
-  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, commandsEl, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl };
+  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, commandsEl, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, colHandle };
+  // A click anywhere on a strip brings the column back; a button or a drag edge keeps its own action.
+  el.addEventListener("click", (event) => {
+    if (!el.classList.contains("min")) return;
+    if (event.target instanceof Element && event.target.closest("button, .col-resize, .side-resize")) return;
+    setColumnSize(key, "restore");
+  });
   morningEl.addEventListener("click", () => {
     if (column.morning) void openViewer(column.morning);
   });
@@ -7107,6 +7193,7 @@ function renderFocus(): void {
     focusEl.replaceChildren(empty);
   }
   showFocusMark();
+  applyFocusLayout();
 
   for (const column of columns) {
     const key = projectKey(column.host, column.root);
@@ -7114,6 +7201,8 @@ function renderFocus(): void {
     const state = focusState(column);
     const badge = focusBadge(state);
     column.dotEl.className = `focus-dot ${badge.kind}${attentionClasses(projectSignal(key))}`;
+    column.stateEl.textContent = badge.text;
+    column.stateEl.className = `focus-state ${badge.kind}`;
 
     const { triage, agents } = workspacePanes(column);
     if (triage) moveInto(triage, column.triageEl);
@@ -7361,6 +7450,8 @@ function removeFocusProject(ref: ProjectRef): void {
   focusColumns.get(key)?.el.remove();
   focusColumns.delete(key);
   saveFocus();
+  // Without the removed project the others take their own states (focus-column-size).
+  applyFocusLayout();
   renderFocus();
 }
 

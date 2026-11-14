@@ -4546,6 +4546,139 @@ body:not(.map-mode):not(.overview-mode) #stale-alert {
   height: 14px;
 }
 
+/* The size of a column (focus-column-size): – makes it a narrow strip, ⤢ gives it the whole width and
+   makes the others strips. The state text and the restore button show in the strip only. */
+.focus-size-button {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.focus-size-button:hover {
+  background: var(--card);
+  color: var(--text);
+}
+
+.focus-size-button:disabled {
+  background: none;
+  color: var(--muted);
+  opacity: 0.35;
+  cursor: default;
+}
+
+.focus-size-button.open {
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.focus-state,
+.focus-restore {
+  display: none;
+}
+
+/* A narrow column (the user's answer to question 1 of the report): the project buttons give their
+   room first, a whole button at a time (the hidden ones wrap to a second line that does not show);
+   then Map, Workers and the name shorten. –, ⤢ and × keep their size and stay in the column. */
+.focus-col > .focus-head {
+  min-width: 0;
+  overflow: hidden;
+}
+
+.focus-col > .focus-head > .project-tools {
+  flex: 0 1000 auto;
+  flex-wrap: wrap;
+  min-width: 0;
+  max-height: 28px;
+  overflow: hidden;
+}
+
+/* A tiny weight: these shorten only once the project buttons have no room left to give. */
+.focus-col > .focus-head > .focus-name,
+.focus-col > .focus-head > .focus-workers-button {
+  flex-shrink: 0.001;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A strip: a fixed narrow width (the share of a drag does not count), nothing of the contents, and
+   a click anywhere on it brings the column back. The frame of the project in focus stays. */
+.focus-col.min {
+  flex: 0 0 44px;
+  width: 44px;
+  min-width: 0;
+  max-width: 44px;
+  cursor: pointer;
+}
+
+.focus-col.min:hover {
+  background: var(--card);
+}
+
+.focus-col.min > .focus-body,
+.focus-col.min > .col-resize {
+  display: none;
+}
+
+.focus-col.min > .focus-head {
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  height: auto;
+  min-height: 0;
+  padding: 16px 0 12px;
+  overflow: hidden;
+}
+
+.focus-col.min > .focus-head > * {
+  display: none;
+}
+
+.focus-col.min > .focus-head > .focus-dot {
+  display: block;
+}
+
+.focus-col.min > .focus-head > .focus-name,
+.focus-col.min > .focus-head > .focus-state {
+  display: block;
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  writing-mode: vertical-rl;
+}
+
+.focus-col.min > .focus-head > .focus-state {
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.focus-col.min > .focus-head > .focus-state.waits {
+  color: var(--wait);
+}
+
+.focus-col.min > .focus-head > .focus-state.working {
+  color: var(--work);
+}
+
+.focus-col.min > .focus-head > .focus-restore {
+  display: flex;
+  margin-top: auto;
+}
+
 .focus-side {
   gap: 4px;
   padding: 2px 14px 20px 20px;
