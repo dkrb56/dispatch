@@ -5897,6 +5897,19 @@ body.overview-mode .chats-resize {
   cursor: grabbing;
 }
 
+/* The extended card (overview-card-expand): 800px = 16 slots, twice the usual card. Its two lines of
+   each task and the reason of a waiting approval wrap instead of being cut. */
+.overview-card.extended {
+  width: 800px;
+}
+
+.overview-card.extended .task-tldr span,
+.overview-card.extended .task-wait {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
 /* The head is the handle of a card drag; the project name keeps its click. */
 .overview-head {
   display: flex;
@@ -5941,6 +5954,26 @@ body.overview-mode .chats-resize {
 
 .overview-count.waits {
   color: var(--wait);
+}
+
+/* The size button at the right end of the head: a flat control in the look of the close button of the Map. */
+.overview-expand {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font-size: calc(15px * var(--text-scale));
+  line-height: 1;
+  cursor: pointer;
+}
+
+.overview-expand:hover {
+  background: var(--card);
+  color: var(--text);
 }
 
 .overview-tasks {

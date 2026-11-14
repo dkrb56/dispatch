@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, OVERVIEW_DONE_SHOWN, OVERVIEW_GRID, type OverviewTask, parsePlaces, type RunFacts, runStarting, savedView, snapPlace } from "../src/overview.ts";
+import { cardLayout, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, OVERVIEW_CARD_WIDTH, OVERVIEW_DONE_SHOWN, OVERVIEW_EXTENDED_DONE, OVERVIEW_EXTENDED_WIDTH, OVERVIEW_GRID, type OverviewTask, parsePlaces, parseSizes, type RunFacts, runStarting, savedView, sizeOf, snapPlace, toggledSize } from "../src/overview.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const CSS = read("../src/styles.css");
@@ -469,4 +469,64 @@ test("the canvas shows one dot per slot of the grid, under the corner of each ca
   // The Help says what the dots are.
   const help = /<h3>Overview<\/h3>[\s\S]*?<ul>([\s\S]*?)<\/ul>/.exec(HTML)?.[1] ?? "";
   assert.match(help, /dots/);
+});
+
+// ---- The size of a card (overview-card-expand) ---------------------------------------------------
+
+test("a card has two sizes: the usual one and an extended one twice as wide with more tasks and full lines", () => {
+  // The usual width is the width of the style rule of a card.
+  const card = rules(CSS).filter((rule) => rule.selectors.includes(".overview-card") && rule.condition === "");
+  const width = card.flatMap((rule) => rule.declarations.filter(([name]) => name === "width").map(([, value]) => value)).pop();
+  assert.equal(width, `${OVERVIEW_CARD_WIDTH}px`);
+  assert.equal(OVERVIEW_EXTENDED_WIDTH, 2 * OVERVIEW_CARD_WIDTH);
+  assert.equal(OVERVIEW_CARD_WIDTH % OVERVIEW_GRID, 0);
+  assert.equal(OVERVIEW_EXTENDED_WIDTH % OVERVIEW_GRID, 0);
+  assert.deepEqual(cardLayout("normal"), { width: OVERVIEW_CARD_WIDTH, done: OVERVIEW_DONE_SHOWN, fullLines: false });
+  assert.deepEqual(cardLayout("extended"), { width: OVERVIEW_EXTENDED_WIDTH, done: OVERVIEW_EXTENDED_DONE, fullLines: true });
+  assert.equal(OVERVIEW_DONE_SHOWN, 5);
+  assert.equal(OVERVIEW_EXTENDED_DONE, 15);
+  // The Done part takes the number of the layout.
+  const ended = Array.from({ length: 20 }, (_, at) => ({ ...task(`t${at}`, "done"), time: at }));
+  assert.equal(doneTasks(ended, (one) => one, (one) => one.time, cardLayout("normal").done).length, 5);
+  assert.equal(doneTasks(ended, (one) => one, (one) => one.time, cardLayout("extended").done).length, 15);
+});
+
+test("a saved size comes back; a broken text or entry gives the usual size", () => {
+  const sizes = parseSizes(JSON.stringify({ "d:/one": "extended", "d:/two": "extended" }));
+  assert.deepEqual(sizes, { "d:/one": "extended", "d:/two": "extended" });
+  assert.equal(sizeOf(sizes, "d:/one"), "extended");
+  assert.equal(sizeOf(sizes, "d:/three"), "normal");
+  for (const text of [null, undefined, "", "{broken", "[1,2]", "42", "null", '"extended"']) assert.deepEqual(parseSizes(text), {}, String(text));
+  assert.deepEqual(parseSizes(JSON.stringify({ a: "normal", b: true, c: { width: 800 }, d: "extended", e: "Extended" })), { d: "extended" });
+});
+
+test("a click on the size button extends a usual card and gives an extended card its usual size", () => {
+  const before = { a: "extended" as const };
+  const extended = toggledSize(before, "b");
+  assert.deepEqual(extended, { a: "extended", b: "extended" });
+  assert.deepEqual(toggledSize(extended, "b"), { a: "extended" });
+  assert.deepEqual(toggledSize(extended, "a"), { b: "extended" });
+  assert.deepEqual(before, { a: "extended" });
+});
+
+test("the extended card is wider and shows the lines in full; the page has the button and keeps the sizes", () => {
+  const all = rules(CSS);
+  const value = (selector: string, property: string) =>
+    all
+      .filter((rule) => rule.selectors.includes(selector) && rule.condition === "")
+      .flatMap((rule) => rule.declarations.filter(([name]) => name === property).map(([, one]) => one))
+      .pop();
+  assert.equal(value(".overview-card.extended", "width"), `${OVERVIEW_EXTENDED_WIDTH}px`);
+  assert.equal(value(".overview-card.extended .task-tldr span", "white-space"), "normal");
+  assert.equal(value(".overview-card.extended .task-wait", "white-space"), "normal");
+  assert.ok(all.some((rule) => rule.selectors.includes(".overview-expand")), "src/styles.css has the size button");
+  assert.match(MAIN, /"overview-sizes"/);
+  assert.match(MAIN, /overview-expand/);
+  assert.match(MAIN, /PROJECT_KEY_MAPS = \[[^\]]*"overview-sizes"/);
+});
+
+test("the Help names the size button of a card", () => {
+  const help = /<h3>Overview<\/h3>[\s\S]*?<ul>([\s\S]*?)<\/ul>/.exec(HTML)?.[1] ?? "";
+  assert.match(help, /⤢/);
+  assert.match(help, /twice as wide/);
 });

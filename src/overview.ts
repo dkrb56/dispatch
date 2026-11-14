@@ -233,3 +233,65 @@ export function movedPlaces(places: OverviewPlaces, key: string, place: Overview
   moved[key] = place;
   return moved;
 }
+
+// ---- The size of a card (ticket overview-card-expand) -------------------------------------------
+// A card has two sizes: the usual one and the extended one, which is twice as wide, lists more
+// finished tasks and shows the two lines of each task in full. Dispatch keeps the extended cards in
+// localStorage `overview-sizes`, a record by project key like the places; a usual card has no entry.
+
+/** The two sizes of a card. */
+export type CardSize = "normal" | "extended";
+
+/** The width of a usual card in px: 8 slots of the grid (the value of `.overview-card` in styles.css). */
+export const OVERVIEW_CARD_WIDTH = 400;
+/** The width of an extended card in px: 16 slots of the grid, twice the usual card. */
+export const OVERVIEW_EXTENDED_WIDTH = 800;
+/** The "Done" part of an extended card shows this many finished tasks. */
+export const OVERVIEW_EXTENDED_DONE = 15;
+
+/** What a card of a size shows: its width, the number of finished tasks, and whether the lines show in full. */
+export interface CardLayout {
+  width: number;
+  done: number;
+  fullLines: boolean;
+}
+
+export function cardLayout(size: CardSize): CardLayout {
+  return size === "extended"
+    ? { width: OVERVIEW_EXTENDED_WIDTH, done: OVERVIEW_EXTENDED_DONE, fullLines: true }
+    : { width: OVERVIEW_CARD_WIDTH, done: OVERVIEW_DONE_SHOWN, fullLines: false };
+}
+
+/** The extended cards by project key. */
+export type CardSizes = Record<string, "extended">;
+
+/**
+ * The sizes from the saved text. Null, broken JSON or a text that is no object give no size; an
+ * entry whose value is not the extended size is dropped.
+ */
+export function parseSizes(text: string | null | undefined): CardSizes {
+  if (!text) return {};
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return {};
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return {};
+  const sizes: CardSizes = {};
+  for (const [key, value] of Object.entries(data as Record<string, unknown>)) if (value === "extended") sizes[key] = "extended";
+  return sizes;
+}
+
+/** The size of the card of a project. */
+export function sizeOf(sizes: CardSizes, key: string): CardSize {
+  return sizes[key] === "extended" ? "extended" : "normal";
+}
+
+/** The sizes after a click on the button of a card: a usual card becomes extended, an extended one usual. */
+export function toggledSize(sizes: CardSizes, key: string): CardSizes {
+  const next: CardSizes = {};
+  for (const [one, value] of Object.entries(sizes)) if (one !== key) next[one] = value;
+  if (sizes[key] !== "extended") next[key] = "extended";
+  return next;
+}

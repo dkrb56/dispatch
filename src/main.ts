@@ -28,7 +28,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 import { onReturn } from "./chatend";
 import { markedProject, showMark, watchArea } from "./focusmark";
-import { chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, runStarting, savedView, snapPlace, type ViewMode } from "./overview";
+import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode } from "./overview";
 import { addedText, columnTickets, COLUMNS, countText, DROP_COLUMNS, endFailed, endWord, goesStraight, isQuestion, movedIds, nextTicket, nextType, type Ticket, ticketCounts, ticketMatches, ticketMessage, type TicketStatus, todoOrder, typeName } from "./tickets";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { type Typed, typedAfter, typingState } from "./typing";
@@ -5068,7 +5068,7 @@ function startTicketDrag(event: PointerEvent, card: HTMLElement, project: string
  * drop snaps it to the grid, puts it on top and saves the places. The project name keeps its click.
  */
 function startCardDrag(event: PointerEvent, card: OverviewCard): void {
-  if (event.button !== 0 || (event.target as HTMLElement).closest(".overview-name")) return;
+  if (event.button !== 0 || (event.target as HTMLElement).closest(".overview-name, .overview-expand")) return;
   event.preventDefault();
   const head = event.currentTarget as HTMLElement;
   head.setPointerCapture(event.pointerId);
@@ -7810,6 +7810,8 @@ interface OverviewCard {
   headEl: HTMLElement;
   dotEl: HTMLElement;
   countEl: HTMLElement;
+  /** Extends the card or gives it its usual size back (overview-card-expand). */
+  expandEl: HTMLButtonElement;
   tasksEl: HTMLElement;
   /** Starts the workspace of a project whose card has no triage chat. */
   startEl: HTMLButtonElement;
@@ -7840,6 +7842,41 @@ function savePlaces(): void {
   } catch {
     // The places then apply until the app closes.
   }
+}
+
+/**
+ * The extended cards (overview-card-expand), in localStorage `overview-sizes`. A project that is not
+ * open keeps its size for the next time it opens.
+ */
+let overviewSizes: CardSizes = readSizes();
+
+function readSizes(): CardSizes {
+  try {
+    return parseSizes(localStorage.getItem("overview-sizes"));
+  } catch {
+    return {};
+  }
+}
+
+function saveSizes(): void {
+  try {
+    localStorage.setItem("overview-sizes", JSON.stringify(overviewSizes));
+  } catch {
+    // The sizes then apply until the app closes.
+  }
+}
+
+/** Extends a card or gives it its usual size back. The card keeps its place and lies on top, like a moved card. */
+function toggleCardSize(card: OverviewCard): void {
+  const key = projectKey(card.host, card.root);
+  overviewSizes = toggledSize(overviewSizes, key);
+  saveSizes();
+  const place = overviewPlaces[key];
+  if (place) {
+    overviewPlaces = movedPlaces(overviewPlaces, key, place);
+    savePlaces();
+  }
+  renderOverview();
 }
 
 /**
@@ -7926,7 +7963,8 @@ function overviewCard(ref: ProjectRef): OverviewCard {
   name.title = `${root}\nOpen this project in Focus, or in its tab when focus mode does not have it`;
   name.addEventListener("click", () => void showProject(ref));
   const countEl = mapElement("span", "overview-count");
-  head.append(grip, dotEl, name, countEl);
+  const expandEl = mapElement("button", "overview-expand");
+  head.append(grip, dotEl, name, countEl, expandEl);
   const tasksEl = mapElement("div", "overview-tasks");
   const startEl = mapElement("button", "focus-start", "Start triage");
   startEl.title = "Open the workspace of this project: triage and the agent view";
@@ -7934,7 +7972,8 @@ function overviewCard(ref: ProjectRef): OverviewCard {
   startEl.addEventListener("click", () => void ensureWorkspace(ref).then(renderOverview));
   const chatEl = mapElement("div", "overview-chat");
   el.append(head, tasksEl, startEl, chatEl);
-  const card: OverviewCard = { host, root, el, headEl: head, dotEl, countEl, tasksEl, startEl, chatEl };
+  const card: OverviewCard = { host, root, el, headEl: head, dotEl, countEl, expandEl, tasksEl, startEl, chatEl };
+  expandEl.addEventListener("click", () => toggleCardSize(card));
   head.title = "Drag to move this card; it snaps to the grid";
   head.addEventListener("pointerdown", (event) => startCardDrag(event, card));
   overviewCards.set(key, card);
@@ -7963,6 +8002,14 @@ function renderOverview(): void {
     card.dotEl.className = `focus-dot ${badge.kind}${attentionClasses(projectSignal(key))}`;
     card.countEl.className = `overview-count ${badge.kind}`;
     card.countEl.textContent = badge.text;
+    // The size of the card (overview-card-expand): the width and the full lines come from the class.
+    const size = sizeOf(overviewSizes, key);
+    const layout = cardLayout(size);
+    card.el.classList.toggle("extended", size === "extended");
+    card.expandEl.textContent = size === "extended" ? "⤡" : "⤢";
+    card.expandEl.title = size === "extended" ? "Back to the usual size" : "Show more: a wider card with more finished tasks and the whole lines";
+    card.expandEl.setAttribute("aria-label", size === "extended" ? "Back to the usual size" : "Extend this card");
+    card.expandEl.setAttribute("aria-pressed", String(size === "extended"));
     const record = projectTasks.get(key);
     if (!record) {
       card.tasksEl.replaceChildren(mapElement("p", "overview-none", "Reading the tasks…"));
@@ -7977,7 +8024,7 @@ function renderOverview(): void {
     ];
     card.tasksEl.replaceChildren(
       ...part("In work", withPending(tasks, tasks.map((task) => taskElement(task)), key), "Nothing in work"),
-      ...part("Done", doneTasks(all, overviewTask, taskTime).map((task) => taskElement(task)), "Nothing done yet"),
+      ...part("Done", doneTasks(all, overviewTask, taskTime, layout.done).map((task) => taskElement(task)), "Nothing done yet"),
       ...part("Tickets", [ticketsLine(card.host, card.root, record.tickets)], "No tickets"),
     );
   }
@@ -8065,7 +8112,7 @@ function parseFocusProjects(saved: unknown): ProjectRef[] {
 /** The prefixes of the browser store whose rest is a project key. */
 const PROJECT_KEY_PREFIXES = ["triage:", "triage-role:", "triage-choice:", "triage-limit:", "triage-earlier:"];
 /** The records of the browser store that map project keys to a value. */
-const PROJECT_KEY_MAPS = ["overview-places", "focus-sizes"];
+const PROJECT_KEY_MAPS = ["overview-places", "overview-sizes", "focus-sizes"];
 
 /**
  * Decision 4 of remote-multi-host: a value that a window saved under a project key without a host
@@ -8107,6 +8154,7 @@ function migrateStoredKeys(): void {
     console.warn("the stored project values were not moved", error);
   }
   overviewPlaces = readPlaces();
+  overviewSizes = readSizes();
 }
 
 async function start(): Promise<void> {
