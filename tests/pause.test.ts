@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { PAUSE_BANNER, pauseButton, PAUSED_TODO_EMPTY, PAUSED_WORD, pausedCountText, pauseLine } from "../src/pause.ts";
+import { PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, PAUSED_WORD, pausedCountText, pauseLine } from "../src/pause.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const MAIN = read("../src/main.ts");
@@ -20,12 +20,13 @@ test("the button says Pause, and Paused while the project is paused; each toolti
   assert.match(pauseButton(false).title, /A worker that runs finishes/);
 });
 
-test("the banner, the empty Todo column, the pill word and the Overview line", () => {
+test("the banner, the empty New column, the pill word and the Overview line", () => {
   assert.match(PAUSE_BANNER, /^This project is paused\./);
-  assert.match(PAUSED_TODO_EMPTY, /paused/);
+  assert.doesNotMatch(PAUSE_BANNER, /Todo/, "Todo went (ticket auto-todo)");
+  assert.equal(PAUSED_NEW_EMPTY, "A message to triage lands here. The project is paused: Dispatch sends it at Resume.");
   assert.equal(PAUSED_WORD, "paused");
-  assert.equal(pausedCountText("2 in Todo", true), "2 in Todo · paused");
-  assert.equal(pausedCountText("2 in Todo", false), "2 in Todo");
+  assert.equal(pausedCountText("2 waiting", true), "2 waiting · paused");
+  assert.equal(pausedCountText("2 waiting", false), "2 waiting");
 });
 
 test("the lines for triage at a pause and at a resume", () => {
@@ -41,7 +42,7 @@ test("main.ts: setPaused writes the setting, tells triage, and at Resume starts 
   assert.match(head, /tellTriage\(key, pauseLine\(on\)\)/);
   assert.match(head, /if \(!on\) \{\s*approvePlans\(\);\s*void dispatchTickets\(\);/);
   assert.match(MAIN, /pause\.classList\.add\("project-pause"\)/);
-  assert.match(MAIN, /el\.append\(tickets, tokensButton, pause, rules, setup, oldEl, folder\)/);
+  assert.match(MAIN, /el\.append\(tickets, chat, tokensButton, pause, rules, setup, oldEl, folder\)/);
   assert.match(MAIN, /setAttribute\("aria-pressed", String\(paused\)\)/);
   assert.match(CSS, /\.project-tool\[aria-pressed="true"\]/);
   assert.match(PIPELINE, /paused: boolean;/);

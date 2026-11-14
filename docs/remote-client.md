@@ -90,7 +90,7 @@ Lifetime rules:
 
 ### One window drives the automatic actions
 
-Some actions run in the page today, on a timer: the lines that Dispatch writes into the triage chat (`tellTriage` and `flushTriageQueue`), auto-approve of plans (`approvePlans`), and the sending of the Todo tickets (`dispatchTickets`, ticket tickets; before: the planned backlog entries). With two windows open, both would do them: each line would reach triage twice, and a plan could be approved twice. The host therefore gives a **driver** lease to one window at a time: the window that the user used last. Only the driver runs these actions. The other window shows the same state and runs them only when it gets the lease. The alerts (notification, chime, blink) are not part of the lease: each window alerts the person who sits at it.
+Some actions run in the page today, on a timer: the lines that Dispatch writes into the triage chat (`tellTriage` and `flushTriageQueue`), auto-approve of plans (`approvePlans`), and the sending of the New tickets (`dispatchTickets`, ticket tickets and ticket auto-todo; before: the planned backlog entries). With two windows open, both would do them: each line would reach triage twice, and a plan could be approved twice. The host therefore gives a **driver** lease to one window at a time: the window that the user used last. Only the driver runs these actions. The other window shows the same state and runs them only when it gets the lease. The alerts (notification, chime, blink) are not part of the lease: each window alerts the person who sits at it.
 
 ## What changes for the user in client mode
 

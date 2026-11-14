@@ -1,7 +1,7 @@
 // The temporary task cards (ticket pending-task-card): a message that went to triage shows as a
 // card in the task list of its project, until the real task card takes its place or triage answers
 // without a task. Since ticket tickets a message of the user is a ticket first (in
-// `.dispatch/tickets.jsonl`, src/tickets.ts); a card here is the Todo ticket that Dispatch sent to
+// `.dispatch/tickets.jsonl`, src/tickets.ts); a card here is the New ticket that Dispatch sent to
 // triage, in flight, and `entry` names the ticket, which follows its task when the card goes. The cards are in
 // localStorage of the window too, so a restart keeps them (ticket pending-card-persist). No imports
 // and no access to the page, so a test can load this file with Node (tests/pending.test.ts).

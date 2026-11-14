@@ -113,7 +113,7 @@ export interface ChatView {
    */
   say(text: string): Promise<void>;
   /**
-   * Sends a ticket of the Todo column (ticket tickets) or a question of the board to the session as
+   * Sends a ticket of the queue of New (ticket tickets, auto-todo) to the session as
    * the box sends a message (ticket overview-backlog): the
    * paths of pasted images at its start each as a paste of their own, then the text, then Enter. The
    * message box keeps its draft. The caller makes sure that the session can take a message, and
@@ -171,10 +171,10 @@ export interface ChatViewOptions {
    * Gets each message of the user before it goes, as the box would send it: the paths of pasted
    * images first, then the text. A text means that it took the message (a ticket, ticket tickets):
    * the box empties, nothing goes to the session, and the state line shows the text for a while.
-   * Null sends it at once (a question to triage, a command of Claude Code).
+   * Null sends it at once (a command of Claude Code); a question is a ticket too (ticket auto-todo).
    */
   onMessage?: (message: string) => Promise<string | null>;
-  /** How many Todo tickets wait for triage. The state line names them. */
+  /** How many New tickets wait for triage. The state line names them. */
   waiting?: () => number;
   /** The project of the pane is paused (ticket pause-tasks): the line says that the tickets wait for Resume. */
   paused?: () => boolean;
@@ -851,7 +851,7 @@ export function createChatView(options: ChatViewOptions): ChatView {
     } else {
       text = statusLine(reply.status);
     }
-    // The Todo tickets wait until triage is free (idle, or shell with a background command): the
+    // The New tickets wait until triage is free (idle, or shell with a background command): the
     // line says how many wait. A message that became a ticket says so first, for a while.
     const waits = waitingText(options.waiting?.() ?? 0, options.paused?.() ?? false);
     if (waits !== "") text = text === "" ? waits : `${text} ${waits}`;
@@ -1006,8 +1006,8 @@ export function createChatView(options: ChatViewOptions): ChatView {
     sendEl.disabled = true;
     try {
       const message = [...images.map((image) => quotePath(image.path)), text].filter(Boolean).join(" ");
-      // A message is a ticket first (ticket tickets): the user moves it to Todo, and Dispatch sends
-      // it when triage is free. A failure of the ticket keeps the text in the box (the catch below).
+      // A message is a ticket first (ticket tickets): it lands in New, the queue, and Dispatch sends
+      // it when triage is free (ticket auto-todo). A failure of the ticket keeps the text in the box.
       const taken = (await options.onMessage?.(message)) ?? null;
       if (taken === null) await pasteMessage(images.map((image) => image.path), text);
       else notice = { text: taken, until: Date.now() + NOTICE_MS };

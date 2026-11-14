@@ -6,8 +6,9 @@
 //   {"op":"update","ref":…,"ts":…,"title":…,"type":…,"order":…,"task":…,"renamed":…}
 // A ticket is the fold of its lines. A line that is no JSON, an unknown op or an unknown field is
 // skipped, so a file edited by hand still reads. Dispatch is the only writer: a message of the user
-// opens a ticket, the board moves and renames it, and the task read moves it after its task
-// (`follow`). The task read commits the file with the other task files of `.dispatch`.
+// opens a ticket in New, which is the queue (ticket auto-todo), the board orders, cancels and renames
+// it, and the task read moves it after its task (`follow`). An old `todo` line reads as New. The task
+// read commits the file with the other task files of `.dispatch`.
 
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
@@ -28,9 +29,8 @@ const ID_MAX: usize = 40;
 /// The longest title that the user can give.
 const RENAME_MAX: usize = 200;
 
-/// The columns of the board, as the field `status` of a ticket.
+/// The columns of the board, as the field `status` of a ticket. New is the queue.
 pub(crate) const NEW: &str = "new";
-pub(crate) const TODO: &str = "todo";
 pub(crate) const IN_PROGRESS: &str = "in-progress";
 pub(crate) const DONE: &str = "done";
 pub(crate) const CANCELED: &str = "canceled";
@@ -51,9 +51,9 @@ pub struct Ticket {
     pub(crate) kind: String,
     /// The words of the user, as the box sent them: the paths of pasted images first.
     pub(crate) summary: String,
-    /// `new`, `todo`, `in-progress`, `done` or `canceled`.
+    /// `new`, `in-progress`, `done` or `canceled`.
     pub(crate) status: String,
-    /// The place in the Todo column, 1 first; none outside Todo or for a ticket by hand.
+    /// The place in the queue of New, 1 first; none outside New or for a ticket without a place.
     pub(crate) order: Option<u32>,
     /// The name of the task of the ticket when triage gave it another id; empty: the id.
     pub(crate) task: String,
@@ -122,11 +122,11 @@ fn parse_ts(value: Option<&Value>) -> Option<u64> {
     u64::try_from(total).ok()
 }
 
-/// The column of a `status` value of the file: the starminer values and the values of the board.
+/// The column of a `status` value of the file: the starminer values and the values of the board. The
+/// Todo column of an older version is the queue of New now (ticket auto-todo).
 fn column_of(status: &str) -> Option<&'static str> {
     match status {
-        "triage" | "backlog" | NEW => Some(NEW),
-        TODO => Some(TODO),
+        "triage" | "backlog" | "todo" | NEW => Some(NEW),
         "in_progress" | IN_PROGRESS => Some(IN_PROGRESS),
         DONE => Some(DONE),
         CANCELED => Some(CANCELED),
@@ -137,7 +137,6 @@ fn column_of(status: &str) -> Option<&'static str> {
 /// The value that the file writes for a column that a `status` line holds.
 fn file_status(column: &str) -> &'static str {
     match column {
-        TODO => "todo",
         IN_PROGRESS => "in_progress",
         _ => "triage",
     }
@@ -394,7 +393,7 @@ fn event(op: &str, id: &str, at: u64, fields: Map<String, Value>) -> Value {
     Value::Object(line)
 }
 
-/// The line that moves a ticket into a column: `status` for New, Todo and In progress, `close` for
+/// The line that moves a ticket into a column: `status` for New and In progress, `close` for
 /// Done and Canceled with the end word.
 fn move_event(id: &str, at: u64, column: &str, note: &str, order: Option<u32>) -> Value {
     let mut fields = Map::new();
@@ -451,8 +450,8 @@ fn backlog_entries(dir: &Path) -> Vec<(u32, u64, String, String, std::path::Path
     entries
 }
 
-/// Each planned message of `.dispatch/backlog/` becomes a ticket in Todo in its order (the Planned
-/// list goes, user decision of 2026-11-13); the files and the folder go. Gives the count.
+/// Each planned message of `.dispatch/backlog/` becomes a ticket in the queue of New in its order
+/// (the Planned list goes, user decision of 2026-11-13); the files and the folder go. Gives the count.
 fn migrate_backlog(project: &Project) -> Result<usize, String> {
     let dir = project.backlog_dir();
     if !dir.is_dir() {
@@ -460,11 +459,11 @@ fn migrate_backlog(project: &Project) -> Result<usize, String> {
     }
     let entries = backlog_entries(&dir);
     let mut tickets = read(project);
-    let mut order = tickets.iter().filter(|ticket| ticket.status == TODO).filter_map(|ticket| ticket.order).max().unwrap_or(0);
+    let mut order = tickets.iter().filter(|ticket| ticket.status == NEW).filter_map(|ticket| ticket.order).max().unwrap_or(0);
     for (_, sent, _, text, path) in &entries {
         if !text.is_empty() {
             order += 1;
-            let ticket = open_ticket(project, &tickets, text, *sent, TODO, Some(order));
+            let ticket = open_ticket(project, &tickets, text, *sent, NEW, Some(order));
             append(project, &[open_event(&ticket)])?;
             tickets.push(ticket);
         }
@@ -543,20 +542,21 @@ fn target(facts: &TaskFacts) -> Option<(&'static str, &'static str)> {
     }
 }
 
-/// The end words of the user's own cancel (the × of a card, Ask triage): such a ticket stays in
-/// Canceled. A ticket that Dispatch canceled (triage answered without a task) follows a task that
-/// starts later.
+/// The end words of the user's own cancel (the × of a card, and Ask triage of an older version):
+/// such a ticket stays in Canceled. A ticket that Dispatch canceled (triage answered without a task)
+/// follows a task that starts later.
 const USER_CANCELS: [&str; 2] = ["canceled", "asked triage"];
 
 /// Moves each ticket after its task: In progress while the task runs, Done with `done` or `failed`
-/// after its report, Canceled with `stopped`. A ticket in New, or canceled by the user, stays. The
-/// title of the brief replaces the generated title, unless the user renamed the ticket. Writes one
-/// line per change and changes the tickets in place.
+/// after its report, Canceled with `stopped`. A ticket in New follows its task too, because Dispatch
+/// sends the New tickets (ticket auto-todo); a ticket canceled by the user stays. The title of the
+/// brief replaces the generated title, unless the user renamed the ticket. Writes one line per
+/// change and changes the tickets in place.
 pub(crate) fn follow(project: &Project, tickets: &mut [Ticket], facts: &[TaskFacts]) -> Result<(), String> {
     let at = now();
     let mut events = Vec::new();
     for ticket in tickets.iter_mut() {
-        if ticket.status == NEW || (ticket.status == CANCELED && USER_CANCELS.contains(&ticket.note.as_str())) {
+        if ticket.status == CANCELED && USER_CANCELS.contains(&ticket.note.as_str()) {
             continue;
         }
         let Some(task) = facts.iter().find(|facts| facts.name == ticket.task_name()) else { continue };
@@ -639,17 +639,16 @@ pub fn ticket_update(cwd: String, id: String, title: Option<String>, kind: Optio
     find(&read(&project), &id)
 }
 
-/// Moves a ticket into New, Todo or Canceled (the board; In progress and Done follow the task),
-/// with an end word for Canceled, and saves the order of the Todo column: `ids` names the Todo
-/// tickets in their new order; a Todo ticket that it does not name keeps its place after them.
-/// Only a ticket whose column or place changed gets a line.
+/// Moves a ticket into New or Canceled (the board; In progress and Done follow the task), with an
+/// end word for Canceled, and saves the order of the queue of New: `ids` names the New tickets in
+/// their new order; a New ticket that it does not name keeps its place after them. Only a ticket
+/// whose column or place changed gets a line.
 pub fn ticket_move(cwd: String, id: String, status: String, ids: Vec<String>, note: Option<String>) -> Result<Vec<Ticket>, String> {
     let project = Project::find(&cwd)?;
     let column = match status.as_str() {
         NEW => NEW,
-        TODO => TODO,
         CANCELED => CANCELED,
-        _ => return Err(format!("a ticket moves only into New, Todo or Canceled, not {status}")),
+        _ => return Err(format!("a ticket moves only into New or Canceled, not {status}")),
     };
     let tickets = read(&project);
     let moved = find(&tickets, &id)?;
@@ -657,29 +656,29 @@ pub fn ticket_move(cwd: String, id: String, status: String, ids: Vec<String>, no
         CANCELED => note.map(|note| note.trim().to_string()).filter(|note| !note.is_empty()).unwrap_or_else(|| "canceled".to_string()),
         _ => String::new(),
     };
-    // The Todo column after the move, in its new order.
-    let mut todo: Vec<&Ticket> = Vec::new();
+    // The queue of New after the move, in its new order.
+    let mut queue: Vec<&Ticket> = Vec::new();
     for named in &ids {
-        if let Some(ticket) = tickets.iter().find(|ticket| &ticket.id == named && (ticket.status == TODO || ticket.id == id)) {
-            if !todo.iter().any(|one| one.id == ticket.id) {
-                todo.push(ticket);
+        if let Some(ticket) = tickets.iter().find(|ticket| &ticket.id == named && (ticket.status == NEW || ticket.id == id)) {
+            if !queue.iter().any(|one| one.id == ticket.id) {
+                queue.push(ticket);
             }
         }
     }
-    let mut rest: Vec<&Ticket> = tickets.iter().filter(|ticket| ticket.status == TODO && !todo.iter().any(|one| one.id == ticket.id)).collect();
+    let mut rest: Vec<&Ticket> = tickets.iter().filter(|ticket| ticket.status == NEW && !queue.iter().any(|one| one.id == ticket.id)).collect();
     rest.sort_by_key(|ticket| (ticket.order.is_none(), ticket.order, ticket.created));
-    todo.extend(rest);
-    if column == TODO && !todo.iter().any(|ticket| ticket.id == id) {
-        todo.push(&moved);
+    queue.extend(rest);
+    if column == NEW && !queue.iter().any(|ticket| ticket.id == id) {
+        queue.push(&moved);
     }
-    todo.retain(|ticket| column == TODO || ticket.id != id);
+    queue.retain(|ticket| column == NEW || ticket.id != id);
     let at = now();
     let mut events = Vec::new();
-    if moved.status != column || (column != TODO && moved.note != note) {
-        let order = todo.iter().position(|ticket| ticket.id == id).map(|at| at as u32 + 1);
+    if moved.status != column || (column != NEW && moved.note != note) {
+        let order = queue.iter().position(|ticket| ticket.id == id).map(|at| at as u32 + 1);
         events.push(move_event(&id, at, column, &note, order));
     }
-    for (place, ticket) in todo.iter().enumerate() {
+    for (place, ticket) in queue.iter().enumerate() {
         let order = place as u32 + 1;
         if ticket.order == Some(order) || (ticket.id == id && moved.status != column) {
             continue;
@@ -744,6 +743,9 @@ mod tests {
         assert_eq!(a.updated, parse_ts(Some(&json!("2026-11-13T11:00:00.000Z"))).unwrap());
         let b = &tickets[1];
         assert_eq!((b.status.as_str(), b.note.as_str(), b.kind.as_str(), b.created), (CANCELED, "wontfix", "feature", 2000));
+        // A Todo line of an older version reads as New, with its place in the queue (ticket auto-todo).
+        let old = fold("{\"op\":\"open\",\"id\":\"d\",\"status\":\"todo\",\"order\":2}\n");
+        assert_eq!((old[0].status.as_str(), old[0].order), (NEW, Some(2)));
         // A close with done goes to Done with its note.
         let done = fold("{\"op\":\"open\",\"id\":\"c\"}\n{\"op\":\"close\",\"ref\":\"c\",\"resolution\":\"done\",\"note\":\"failed\"}\n");
         assert_eq!((done[0].status.as_str(), done[0].note.as_str(), done[0].title.as_str()), (DONE, "failed", "c"));
@@ -791,32 +793,37 @@ mod tests {
         assert!(ticket_update(cwd(&project), "nope".into(), Some("x".into()), None, None, None).is_err());
         assert_eq!(lines(), 3);
 
-        // Into Todo: a, then b on top.
-        let after = ticket_move(cwd(&project), a.id.clone(), TODO.into(), vec![a.id.clone()], None).unwrap();
-        assert_eq!(after.iter().find(|t| t.id == a.id).map(|t| (t.status.as_str(), t.order)), Some((TODO, Some(1))));
-        assert_eq!(lines(), 4);
-        let after = ticket_move(cwd(&project), b.id.clone(), TODO.into(), vec![b.id.clone(), a.id.clone()], None).unwrap();
+        // The queue of New (ticket auto-todo): a first gives both tickets a place, one line each.
+        let after = ticket_move(cwd(&project), a.id.clone(), NEW.into(), vec![a.id.clone()], None).unwrap();
+        assert_eq!(after.iter().find(|t| t.id == a.id).map(|t| (t.status.as_str(), t.order)), Some((NEW, Some(1))));
+        assert_eq!(lines(), 5);
+        let after = ticket_move(cwd(&project), b.id.clone(), NEW.into(), vec![b.id.clone(), a.id.clone()], None).unwrap();
         let order = |list: &[Ticket]| {
-            let mut todo: Vec<(&str, Option<u32>)> = list.iter().filter(|t| t.status == TODO).map(|t| (t.id.as_str(), t.order)).collect();
-            todo.sort_by_key(|one| one.1);
-            todo.into_iter().map(|one| one.0.to_string()).collect::<Vec<_>>()
+            let mut queue: Vec<(&str, Option<u32>)> = list.iter().filter(|t| t.status == NEW).map(|t| (t.id.as_str(), t.order)).collect();
+            queue.sort_by_key(|one| one.1);
+            queue.into_iter().map(|one| one.0.to_string()).collect::<Vec<_>>()
         };
         assert_eq!(order(&after), [b.id.clone(), a.id.clone()]);
-        // The move of b and the new place of a: two lines.
-        assert_eq!(lines(), 6);
+        // The new places of b and a: two lines.
+        assert_eq!(lines(), 7);
         // The same order again writes nothing.
-        ticket_move(cwd(&project), b.id.clone(), TODO.into(), vec![b.id.clone(), a.id.clone()], None).unwrap();
-        assert_eq!(lines(), 6);
-        // A move inside Todo writes only the places that changed.
-        let after = ticket_move(cwd(&project), a.id.clone(), TODO.into(), vec![a.id.clone(), b.id.clone()], None).unwrap();
+        ticket_move(cwd(&project), b.id.clone(), NEW.into(), vec![b.id.clone(), a.id.clone()], None).unwrap();
+        assert_eq!(lines(), 7);
+        // A move inside the queue writes only the places that changed.
+        let after = ticket_move(cwd(&project), a.id.clone(), NEW.into(), vec![a.id.clone(), b.id.clone()], None).unwrap();
         assert_eq!(order(&after), [a.id.clone(), b.id.clone()]);
-        assert_eq!(lines(), 8);
-        // Canceled with an end word; Todo keeps the other ticket at place 1.
-        let after = ticket_move(cwd(&project), a.id.clone(), CANCELED.into(), vec![b.id.clone()], Some("asked triage".into())).unwrap();
+        assert_eq!(lines(), 9);
+        // Canceled with an end word; the queue keeps the other ticket at place 1.
+        let after = ticket_move(cwd(&project), a.id.clone(), CANCELED.into(), vec![b.id.clone()], Some("triage answered without a task".into())).unwrap();
         let gone = after.iter().find(|t| t.id == a.id).unwrap();
-        assert_eq!((gone.status.as_str(), gone.note.as_str(), gone.order), (CANCELED, "asked triage", None));
+        assert_eq!((gone.status.as_str(), gone.note.as_str(), gone.order), (CANCELED, "triage answered without a task", None));
         assert_eq!(order(&after), [b.id.clone()]);
+        // Back to New: the end of the queue, without the end word.
+        let after = ticket_move(cwd(&project), a.id.clone(), NEW.into(), vec![b.id.clone(), a.id.clone()], None).unwrap();
+        assert_eq!(order(&after), [b.id.clone(), a.id.clone()]);
+        assert_eq!(after.iter().find(|t| t.id == a.id).map(|t| t.note.as_str()), Some(""));
         assert!(ticket_move(cwd(&project), b.id.clone(), DONE.into(), vec![], None).is_err());
+        assert!(ticket_move(cwd(&project), b.id.clone(), "todo".into(), vec![], None).is_err(), "Todo went");
         // The file reads back the same after a new start.
         assert_eq!(read(&project), after);
         let _ = fs::remove_dir_all(base);
@@ -826,11 +833,10 @@ mod tests {
     fn a_ticket_follows_its_task() {
         let (project, base) = scratch("follow");
         let mut tickets = Vec::new();
-        for (text, status) in [("one", TODO), ("two", IN_PROGRESS), ("three", TODO), ("four", NEW), ("five", TODO), ("six", TODO), ("seven", TODO), ("eight", TODO)] {
+        // Each message lands in New, the queue (ticket auto-todo).
+        for text in ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine"] {
             let ticket = ticket_add(cwd(&project), text.into()).unwrap();
-            if status != NEW {
-                ticket_move(cwd(&project), ticket.id.clone(), TODO.into(), vec![ticket.id.clone()], None).unwrap();
-            }
+            assert_eq!(ticket.status, NEW);
             tickets.push(ticket.id);
         }
         ticket_update(cwd(&project), tickets[2].clone(), Some("My own name".into()), None, None, None).unwrap();
@@ -859,12 +865,14 @@ mod tests {
                 ("The brief of one", IN_PROGRESS, ""),
                 ("Two", DONE, "done"),
                 ("My own name", DONE, "failed"),
-                // A ticket in New waits for the user, also when a task of its name runs.
-                ("Four", NEW, ""),
+                // Dispatch sent the New ticket: it follows its task like the others.
+                ("Four", IN_PROGRESS, ""),
                 ("Five", CANCELED, "stopped"),
                 ("Six", IN_PROGRESS, ""),
                 ("Seven", CANCELED, "canceled"),
                 ("Eight", IN_PROGRESS, ""),
+                // A New ticket without a task waits in the queue.
+                ("Nine", NEW, ""),
             ]
         );
         assert_eq!(read(&project), list, "the file has the moves");
@@ -876,7 +884,7 @@ mod tests {
     }
 
     #[test]
-    fn the_planned_messages_become_todo_tickets_and_their_folder_goes() {
+    fn the_planned_messages_become_new_tickets_and_their_folder_goes() {
         let (project, base) = scratch("migrate");
         let dir = project.backlog_dir();
         write_file(&dir.join("b.md"), "sent: 5\r\norder: 2\r\n\r\nsecond message\r\n").unwrap();
@@ -884,7 +892,7 @@ mod tests {
         write_file(&dir.join("hand.md"), "written by hand\n").unwrap();
         let list = list(&project);
         let shown: Vec<(&str, &str, Option<u32>, &str)> = list.iter().map(|t| (t.title.as_str(), t.status.as_str(), t.order, t.kind.as_str())).collect();
-        assert_eq!(shown, [("Fix the first thing", TODO, Some(1), "fix"), ("Second message", TODO, Some(2), "feature"), ("Written by hand", TODO, Some(3), "feature")]);
+        assert_eq!(shown, [("Fix the first thing", NEW, Some(1), "fix"), ("Second message", NEW, Some(2), "feature"), ("Written by hand", NEW, Some(3), "feature")]);
         assert_eq!((list[0].created, list[1].summary.as_str()), (9, "second message"));
         assert!(!dir.exists(), "the folder goes");
         // A second read moves nothing again.

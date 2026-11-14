@@ -183,7 +183,7 @@
         <button id="tickets-close" title="Close (Esc)">&times;</button>
       </header>
       <p id="tickets-error" hidden></p>
-      <p id="tickets-paused" hidden><span id="tickets-paused-text"></span> <button id="tickets-resume" title="Resume this project: Dispatch sends the next Todo ticket and starts the next approved plan">Resume</button></p>
+      <p id="tickets-paused" hidden><span id="tickets-paused-text"></span> <button id="tickets-resume" title="Resume this project: Dispatch sends the next ticket and starts the next approved plan">Resume</button></p>
       <div id="tickets-columns"></div>
     </dialog>
     <dialog id="tokens" aria-labelledby="tokens-title">
@@ -401,7 +401,7 @@
           <ul>
             <li>Short reports and Fixed title are on for a new project. The other three are off. A project that was set up before stays off for Measure before the plan and Task branches.</li>
             <li>A change of Short reports applies to a new triage chat only, because a chat keeps the role with which it started. The next start of the workspace (the folder button of the project, or the start of the app) opens a new triage chat.</li>
-            <li><b>Pause tasks</b> applies at once and stays over a restart. The <b>Pause</b> button with the buttons of the project, in the bar and in the head of a Focus column, does the same; it shows "Paused" while the project is paused, and the pill says "paused". While paused, no Todo ticket goes to triage, no plan starts its work run (also not with Approve plans automatically or night mode), and night mode answers no question. Your Approve click waits in line, and your answer to a question goes to the worker at once. A worker that runs finishes its run. <b>Resume</b> (the same button, or the banner of the tickets board) sends the next ticket and starts the next plan.</li>
+            <li><b>Pause tasks</b> applies at once and stays over a restart. The <b>Pause</b> button with the buttons of the project, in the bar and in the head of a Focus column, does the same; it shows "Paused" while the project is paused, and the pill says "paused". While paused, no ticket goes to triage, no plan starts its work run (also not with Approve plans automatically or night mode), and night mode answers no question. Your Approve click waits in line, and your answer to a question goes to the worker at once. A worker that runs finishes its run. <b>Resume</b> (the same button, or the banner of the tickets board) sends the next ticket and starts the next plan.</li>
             <li><b>Approve plans automatically</b> applies at once. It waits when the project has uncommitted changes or another work run runs. A work run counts from the moment Dispatch starts it, so only one starts at a time, also with several plans in line. A plan with a decision marked <code>HOLD:</code> waits for your click. The line in the triage chat says "approved automatically".</li>
             <li><b>Measure before the plan.</b> Write the commands into the box under the switch: the tests, a browser test, a measuring script. The plan then has a section "Measured" with each command, what it showed and what it means. A fault that the plan run did not reproduce says "not reproduced".</li>
             <li>The plan run still edits no file, starts no agent and asks you nothing. Apply changes the options of the plan run and the section in <code>CLAUDE.md</code> with the switch.</li>
@@ -416,7 +416,7 @@
         <ul>
           <li><b>Triage</b> (left). Type your tasks here. Triage plans each task with a worker and tells you when the plan is ready.</li>
           <li>Approve the plan in the task card. The worker does the work, and triage reports the result.</li>
-          <li>A message becomes a <b>ticket</b> on the board of the project. Move it to <b>Todo</b>: Dispatch sends the Todo tickets to triage, one at a time, in their order. See Tickets.</li>
+          <li>A message becomes a <b>ticket</b> in New on the board of the project. Dispatch sends the New tickets to triage by itself, one at a time, in their order. See Tickets.</li>
           <li><b>Chat</b> and <b>Terminal</b> above Triage select its view. Chat shows formatted messages. Terminal shows Claude Code itself.</li>
           <li><b>Workers</b> (right). This is the agent view of Claude Code. Select a worker to see its work or answer a prompt. <b>Back to list</b> above it shows the list of workers again; the worker goes on working.</li>
           <li><b>Environment</b> in the side panel shows the shell, folder, branch and session of a terminal. Its <b>Remote Control</b> switch turns Remote Control on or off.</li>
@@ -429,7 +429,7 @@
           <summary>Details</summary>
           <ul>
             <li>For each task, triage writes a brief and starts the plan run of a worker. Dispatch writes one line into the triage chat when a worker is done, blocked or failed, and when you approved, rejected, stopped or answered in the Tasks section.</li>
-            <li>A question to triage goes at once: a message that ends with <code>?</code> or starts with a question word. A message that starts with <code>/</code> (a command of Claude Code) goes at once too. Every other message is a ticket.</li>
+            <li>Every message is a ticket, a question too. Only a message that starts with <code>/</code> (a command of Claude Code) goes to triage at once. For a question without a ticket, click <b>Chat</b> with the buttons of the project.</li>
             <li>You can click Approve also while another work run edits the project or the project has uncommitted changes. The card then says "Approved · waits for the project", and Dispatch starts the work run when the project is free. Several approved plans start one after the other: the next waits until the work run before it ends. <b>Cancel approval</b> takes it back.</li>
             <li>A question of triage shows its options as buttons. Click one, or press Ctrl+Enter for the first.</li>
             <li>In the Chat view, Enter sends the message and Ctrl+V adds an image from the clipboard. A permission prompt of triage ("Allow this read …?", "Do you want to proceed?") shows as buttons too, marked Permission.</li>
@@ -518,7 +518,7 @@
             <li>Dispatch keeps the places on this computer, so a restart shows them again. The card of a new project takes the first free place. A card that you drop on another lies on top of it; the card you moved last is always on top.</li>
             <li><b>In work</b> lists a worker that runs, a plan that waits for Approve, a question or a permission of a worker, a worker at a prompt, a plan that you approved until its work run starts, and the message that triage reads now. Without one it says "Nothing in work".</li>
             <li><b>Done</b> shows the 5 newest tasks that ended (done, failed or stopped), newest first. Each task shows the same two lines as in the Tasks section. An extended card shows the 15 newest and the whole two lines of each task. Dispatch keeps the size of each card on this computer, and an extended card lies on top like a moved card.</li>
-            <li><b>Tickets</b> shows how many tickets are new and how many wait in Todo. A click opens the tickets board of the project.</li>
+            <li><b>Tickets</b> shows how many tickets wait in New. A click opens the tickets board of the project.</li>
             <li>The message box has the keys of the chat: Enter sends, Shift+Enter makes a new line, Ctrl+V adds an image. A text that you began in Focus stands in it too.</li>
             <li>The line above the box says when triage works or waits. While triage asks a question, the question shows above the box with its buttons; <b>Other…</b> opens the project with its terminal.</li>
             <li><b>Record of a question from the screen.</b> Claude Code writes a question into the chat only after your answer, so Dispatch reads the open question from the terminal. Each read goes into a file in the folder <code>menu-reads</code> in the data folder of Dispatch, named <code>menu-&lt;date&gt;-&lt;time&gt;-&lt;pane&gt;.json</code>.</li>
@@ -528,25 +528,27 @@
         </details>
 
         <h3>Tickets</h3>
-        <p class="tldr">Each message to triage is a ticket; the Todo column is the queue.</p>
+        <p class="tldr">Each message to triage is a ticket; Dispatch sends the New tickets one by one.</p>
         <ul>
-          <li><b>Tickets</b> among the buttons of a project opens its board. The number on it counts the New and Todo tickets.</li>
-          <li>The board has five columns: <b>New</b>, <b>Todo</b>, <b>In progress</b>, <b>Done</b> and <b>Canceled</b>.</li>
-          <li>A message that you type into triage lands in <b>New</b> with a title that Dispatch makes from your words.</li>
-          <li>Move a ticket to <b>Todo</b> with <b>→ Todo</b> or by its grip ⠿. Dispatch sends the Todo tickets to triage in the order of the column.</li>
+          <li><b>Tickets</b> among the buttons of a project opens its board. The number on it counts the tickets that wait in New.</li>
+          <li>The board has four columns: <b>New</b>, <b>In progress</b>, <b>Done</b> and <b>Canceled</b>.</li>
+          <li>A message that you type into triage lands in <b>New</b> with a title that Dispatch makes from your words. A question is a ticket too.</li>
+          <li>New is the queue. Dispatch sends the New tickets to triage by itself, one at a time, in the order of the column. You move nothing by hand.</li>
           <li>A ticket moves to In progress, Done or Canceled by itself as its task goes on.</li>
           <li>Click a title, or ✎, to rename it. Click the type tag to change the type.</li>
+          <li><b>A yellow !</b> after the name of a project says that its tickets wait and do not go: the project is paused, triage does not run, or triage has not taken a ticket for a minute. Its tooltip says which. A click opens the board.</li>
+          <li><b>Chat</b> among the buttons of a project opens a new tab with a plain Claude Code chat in the project folder. Ask a question there without a ticket; it is no triage chat and starts no task.</li>
         </ul>
         <details class="help-more">
           <summary>Details</summary>
           <ul>
-            <li><b>Questions go at once.</b> A message that ends with <code>?</code> or starts with what, why, how, when, where, which, who, is, are, do, does, did, can, could, should, would, will, was, were, has or have is a question: it goes to triage and makes no ticket. A ticket that is a question has <b>Ask triage</b>: it sends the words to triage and moves the ticket to Canceled.</li>
-            <li><b>The queue.</b> When triage is idle and asks nothing, Dispatch sends the first Todo ticket: your images, the line <code>Ticket &lt;id&gt;: &lt;title&gt;</code>, then your words. Triage uses that id for the task. One ticket at a time per project; night mode sends them too. A paused project sends none until you resume it (see Project settings). A command that triage runs in the background after its answer does not hold the ticket.</li>
-            <li>The line above the message box says how many Todo tickets wait. The ticket in flight shows "Sent to triage", then "Triage reads", and its dashed card stands under In work until its task comes.</li>
-            <li><b>Following the task.</b> When the plan run starts, the ticket goes to In progress and takes the title of the brief, unless you renamed it. A report that says done or failed moves it to Done ("failed" in red). A done report whose commands the transcripts do not show keeps it in In progress (see Tasks). A stopped task moves it to Canceled. When triage answers without a task, the ticket goes to Canceled with that note; drag it back to Todo to send it again.</li>
-            <li>In Todo, ▲ and ▼ change the order, <b>← New</b> takes a ticket back, and × cancels it. <b>New ticket</b> adds a ticket in your words without sending anything. The search box finds a ticket by its title, words, id or type.</li>
+            <li><b>The queue.</b> When triage is idle and asks nothing, Dispatch sends the first New ticket: your images, the line <code>Ticket &lt;id&gt;: &lt;title&gt;</code>, then your words. Triage uses that id for the task. One ticket at a time per project; night mode sends them too. A paused project sends none until you resume it (see Project settings). A command that triage runs in the background after its answer does not hold the ticket.</li>
+            <li>The line above the message box says how many tickets wait. The ticket in flight shows "Sent to triage", then "Triage reads", and its dashed card stands under In work until its task comes.</li>
+            <li><b>Following the task.</b> When the plan run starts, the ticket goes to In progress and takes the title of the brief, unless you renamed it. A report that says done or failed moves it to Done ("failed" in red). A done report whose commands the transcripts do not show keeps it in In progress (see Tasks). A stopped task moves it to Canceled. When triage answers without a task, the ticket goes to Canceled with that note; <b>→ New</b> on its card puts it back at the end of the queue.</li>
+            <li>In New, ▲ and ▼ or the grip ⠿ change the order, and × cancels a ticket, so Dispatch does not send it. <b>New ticket</b> adds a ticket in your words at the end of the queue. The search box finds a ticket by its title, words, id or type.</li>
+            <li><b>The yellow !</b> shows in the bar, in the head of a Focus column, on the Overview card and in the Map. It pulses like a waiting card; a click calms it to a still mark until other tickets wait. The switch Pulse in Options and the system setting for reduced motion keep it still. A ticket in flight hides it.</li>
             <li>The file is <code>.dispatch/tickets.jsonl</code> of the project: one line per change, in the form of the starminer-manager tickets file. Dispatch commits it with the task files, unless Task files local only is on. Triage and the workers do not edit it.</li>
-            <li>The planned messages of an older version became Todo tickets at the first start, in their order, and the folder <code>.dispatch/backlog/</code> went.</li>
+            <li>The planned messages of an older version became tickets in New at the first start, in their order, and the folder <code>.dispatch/backlog/</code> went. A ticket of the old Todo column shows in New, in its place.</li>
             <li>Setup pipeline shows "Section in CLAUDE.md" To do once after this update, because the section names the ticket line. Click Apply there.</li>
           </ul>
         </details>
@@ -605,7 +607,7 @@
             <li>The check takes only a task whose worker script wrote its session file, with a transcript on this computer. A report of the old form, without Verification, Why, Files and Follow-ups, is not checked.</li>
             <li>The two lines come from the title of its brief (else your words in the brief, else the title of the plan), and from the first Summary line of the plan, the first line of the report, or the open question. Dispatch writes nothing itself: the text is cut from the brief, the plan and the report. A long line ends in “…”; its tooltip has both lines in full.</li>
             <li>A task that you approved while the project was not free shows under its state, with an eye before it, which work run it waits for or how many changed files wait for a commit.</li>
-            <li>A message that you send to triage is a ticket first (see Tickets). When Dispatch sends a Todo ticket, it shows as a <b>temporary card</b> with a dashed edge: the title of the ticket, the time, and "Sent to triage", then "Triage reads" while triage works on it.</li>
+            <li>A message that you send to triage is a ticket first (see Tickets). When Dispatch sends a New ticket, it shows as a <b>temporary card</b> with a dashed edge: the title of the ticket, the time, and "Sent to triage", then "Triage reads" while triage works on it.</li>
             <li>The temporary card stands where the new task will stand. When triage starts the plan run, the real task card takes its place. When triage answers without a task, the card goes a few seconds after the answer, or at the latest after 10 minutes. The card stays when you close and open Dispatch. It has no buttons and starts no worker.</li>
             <li><b>Approve all</b> also takes the HOLD decisions, writes the options into the plan under "User decisions", and starts the work run. A plan without decisions shows <b>Approve</b>. A task that waits for you is first in the list.</li>
             <li>The Decisions window starts with your words from the brief, the Goal and the <b>TL;DR</b> of the plan. Click an option, or type your own answer under Other. Then click <b>Approve with these decisions</b>, or <b>Send back to the planner</b> to revise the plan with them.</li>

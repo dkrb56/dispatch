@@ -1,11 +1,11 @@
 // The tickets of a project (ticket tickets): `task_list` gives them from `.dispatch/tickets.jsonl`.
-// A message of the user becomes a ticket in New, unless it is a question to triage or a command of
-// Claude Code. The board moves a ticket into Todo, and Todo is the queue: Dispatch sends the first
-// Todo ticket of a project to triage when triage is free, one at a time. No imports and no access
-// to the page, so a test can load this file with Node (tests/tickets.test.ts).
+// Each message of the user becomes a ticket in New, unless it is a command of Claude Code. New is the
+// queue (ticket auto-todo): Dispatch sends the first New ticket of a project to triage when triage
+// is free, one at a time, unless the project is paused. No imports and no access to the page, so a
+// test can load this file with Node (tests/tickets.test.ts).
 
 /** The columns of the board, as the field `status` of a ticket. */
-export type TicketStatus = "new" | "todo" | "in-progress" | "done" | "canceled";
+export type TicketStatus = "new" | "in-progress" | "done" | "canceled";
 
 /** One ticket, as `task_list` gives it (`tickets::Ticket` in Rust). */
 export interface Ticket {
@@ -16,7 +16,7 @@ export interface Ticket {
   /** The words of the user, as the box sent them: the paths of pasted images first. */
   summary: string;
   status: TicketStatus;
-  /** The place in Todo, 1 first; null outside Todo. */
+  /** The place in the queue of New, 1 first; null for a ticket without a place and outside New. */
   order: number | null;
   /** The name of the task when triage gave it another id; empty: the id. */
   task: string;
@@ -28,19 +28,18 @@ export interface Ticket {
   renamed: boolean;
 }
 
-/** The five columns of the board, in their order. */
+/** The four columns of the board, in their order (user decision 1 of auto-todo: Todo went). */
 export const COLUMNS: readonly { status: TicketStatus; name: string }[] = [
   { status: "new", name: "New" },
-  { status: "todo", name: "Todo" },
   { status: "in-progress", name: "In progress" },
   { status: "done", name: "Done" },
   { status: "canceled", name: "Canceled" },
 ];
 
 /** The columns that take a ticket by a drag or a button: the others follow the task. */
-export const DROP_COLUMNS: readonly TicketStatus[] = ["new", "todo", "canceled"];
+export const DROP_COLUMNS: readonly TicketStatus[] = ["new", "canceled"];
 
-/** The column of a status; an unknown one is New. */
+/** The column of a status; an unknown one, and the old `todo`, is New. */
 export function columnOf(status: string): TicketStatus {
   return COLUMNS.some((column) => column.status === status) ? (status as TicketStatus) : "new";
 }
@@ -78,33 +77,19 @@ export function splitImages(message: string): { paths: string[]; words: string }
   return { paths, words: rest.trim() };
 }
 
-/** A message that goes to triage at once and is no ticket: a command of Claude Code (`/clear`, `/model`). */
+/**
+ * A message that goes to triage at once and is no ticket: a command of Claude Code (`/clear`,
+ * `/model`). Every other message is a ticket, a question too (ticket auto-todo); a question
+ * without a ticket goes to a plain chat of the project (the Chat button).
+ */
 export function goesStraight(text: string): boolean {
   return /^\s*\//.test(text);
 }
 
-/** The words that open a question (user decision 1 of the plan). */
-export const QUESTION_WORDS: readonly string[] = [
-  "what", "why", "how", "when", "where", "which", "who", "is", "are", "do", "does", "did",
-  "can", "could", "should", "would", "will", "was", "were", "has", "have",
-];
-
-/**
- * A message is a question to triage, not a ticket: its words (without the image paths) end with
- * `?` or start with a question word. A wrong guess is one click: the card button Ask triage.
- */
-export function isQuestion(text: string): boolean {
-  const { words } = splitImages(text);
-  if (words === "") return false;
-  if (words.endsWith("?")) return true;
-  const first = words.split(/\s+/)[0].toLowerCase().replace(/[^a-z']/g, "");
-  return QUESTION_WORDS.includes(first);
-}
-
-/** The Todo tickets in the order of the queue: by `order`, then by creation time, then by id; one without `order` last. */
-export function todoOrder<T extends Pick<Ticket, "id" | "status" | "order" | "created">>(tickets: readonly T[]): T[] {
+/** The New tickets in the order of the queue: by `order`, then by creation time, then by id; one without `order` last. */
+export function queueOrder<T extends Pick<Ticket, "id" | "status" | "order" | "created">>(tickets: readonly T[]): T[] {
   return tickets
-    .filter((ticket) => ticket.status === "todo")
+    .filter((ticket) => ticket.status === "new")
     .sort((a, b) => {
       if ((a.order === null) !== (b.order === null)) return a.order === null ? 1 : -1;
       return (a.order ?? 0) - (b.order ?? 0) || a.created - b.created || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
@@ -112,7 +97,7 @@ export function todoOrder<T extends Pick<Ticket, "id" | "status" | "order" | "cr
 }
 
 /**
- * The ticket to send to triage next: the first Todo ticket that did not go yet. While a ticket of
+ * The ticket to send to triage next: the first New ticket that did not go yet. While a ticket of
  * the project is in flight, none: triage takes one ticket at a time. A paused project sends none
  * (ticket pause-tasks); at Resume the first ticket that did not go comes next.
  */
@@ -123,7 +108,7 @@ export function nextTicket<T extends Pick<Ticket, "id" | "status" | "order" | "c
   paused = false,
 ): T | null {
   if (paused || inFlight.length > 0) return null;
-  return todoOrder(tickets).find((ticket) => !sent(ticket.id)) ?? null;
+  return queueOrder(tickets).find((ticket) => !sent(ticket.id)) ?? null;
 }
 
 /** The message that triage gets for a ticket: the image paths first, then the line with the id and the title, then the words. */
@@ -153,36 +138,34 @@ export function endFailed(ticket: Pick<Ticket, "status" | "note">): boolean {
   return ticket.status === "done" && ticket.note === "failed";
 }
 
-/** What the state line of the chat says right after the box made a ticket. */
-export function addedText(ticket: Pick<Ticket, "title">): string {
-  return `Ticket "${ticket.title}" is on the board under New.`;
+/** What the state line of the chat says right after the box made a ticket; a paused project holds it. */
+export function addedText(ticket: Pick<Ticket, "title">, paused = false): string {
+  return paused
+    ? `Ticket "${ticket.title}" is in New: the project is paused, it waits for Resume.`
+    : `Ticket "${ticket.title}" is in New: Dispatch sends it when triage is free.`;
 }
 
 /**
- * What the triage chat says above its message box while Todo tickets wait: how many, and when they
+ * What the triage chat says above its message box while New tickets wait: how many, and when they
  * go. No ticket gives an empty text. A paused project says that they wait for Resume (ticket pause-tasks).
  */
 export function waitingText(count: number, paused = false): string {
   if (count <= 0) return "";
-  if (paused) return count === 1 ? "1 ticket in Todo: paused, Dispatch sends it when you resume the project." : `${count} tickets in Todo: paused, Dispatch sends them when you resume the project.`;
+  if (paused) return count === 1 ? "1 ticket waits: paused, Dispatch sends it when you resume the project." : `${count} tickets wait: paused, Dispatch sends them when you resume the project.`;
   return count === 1
-    ? "1 ticket in Todo: Dispatch sends it when triage is free."
-    : `${count} tickets in Todo: Dispatch sends them one at a time when triage is free.`;
+    ? "1 ticket waits: Dispatch sends it when triage is free."
+    : `${count} tickets wait: Dispatch sends them one at a time when triage is free.`;
 }
 
-/** The numbers of the tickets in New and in Todo, for the Tickets button and the Overview. */
-export function ticketCounts(tickets: readonly Pick<Ticket, "status">[]): { fresh: number; todo: number } {
-  return {
-    fresh: tickets.filter((ticket) => ticket.status === "new").length,
-    todo: tickets.filter((ticket) => ticket.status === "todo").length,
-  };
+/** The number of the tickets in New (the queue), for the Tickets button and the Overview. */
+export function ticketCounts(tickets: readonly Pick<Ticket, "status">[]): { waiting: number } {
+  return { waiting: tickets.filter((ticket) => ticket.status === "new").length };
 }
 
 /** The line of the Overview card and the text of the Tickets button. */
 export function countText(tickets: readonly Pick<Ticket, "status">[]): string {
-  const { fresh, todo } = ticketCounts(tickets);
-  const parts = [fresh > 0 ? `${fresh} new` : "", todo > 0 ? `${todo} in Todo` : ""].filter(Boolean);
-  if (parts.length > 0) return parts.join(" · ");
+  const { waiting } = ticketCounts(tickets);
+  if (waiting > 0) return `${waiting} waiting`;
   return tickets.length > 0 ? `${tickets.length} ${tickets.length === 1 ? "ticket" : "tickets"}` : "No tickets";
 }
 
@@ -194,10 +177,10 @@ export function ticketMatches(ticket: Pick<Ticket, "id" | "title" | "summary" | 
 }
 
 /**
- * The cards of a column in their order: Todo by the queue, New and the ended columns newest first
- * (by their last change), In progress by its last change too.
+ * The cards of a column in their order: New by the queue, the other columns newest first (by their
+ * last change).
  */
 export function columnTickets<T extends Pick<Ticket, "id" | "status" | "order" | "created" | "updated">>(tickets: readonly T[], status: TicketStatus): T[] {
-  if (status === "todo") return todoOrder(tickets);
+  if (status === "new") return queueOrder(tickets);
   return tickets.filter((ticket) => ticket.status === status).sort((a, b) => b.updated - a.updated || b.created - a.created);
 }

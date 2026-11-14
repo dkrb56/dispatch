@@ -101,7 +101,7 @@ pub struct Options {
     /// files stay on this computer and a clone has none (ticket ignore-tasks). Off at the start; a
     /// settings file without the field is off.
     ignore_tasks: bool,
-    /// Dispatch sends no ticket of Todo to triage and starts no work run for the project while it is
+    /// Dispatch sends no ticket of New to triage and starts no work run for the project while it is
     /// on (ticket pause-tasks). A worker that runs finishes. Off at the start; a settings file without
     /// the field is off.
     paused: bool,
@@ -4780,7 +4780,7 @@ evidence: no
         // Not tasks: the briefs, the options files, the script and a report without the Markdown extension.
         write_file(&project.briefs().join("t-3.md"), "brief\n").unwrap();
         write_file(&project.reports.join("notes.txt"), "x\n").unwrap();
-        // A planned entry of the old layout is no task either: it becomes a ticket in Todo.
+        // A planned entry of the old layout is no task either: it becomes a ticket in New.
         write_file(&project.backlog_dir().join("e-1.md"), "sent: 1\norder: 1\n\nplanned work\n").unwrap();
         // The ticket of t-1 follows its task, and t-1 shows the title of the ticket.
         write_file(&project.tickets_file(), "{\"op\":\"open\",\"id\":\"t-1\",\"title\":\"Do it\",\"status\":\"todo\",\"order\":1}\n").unwrap();
@@ -4790,7 +4790,7 @@ evidence: no
         names.sort_unstable();
         assert_eq!(names, ["t-1", "t-2"]);
         let tickets: Vec<(&str, &str, &str, &str)> = list.tickets.iter().map(|t| (t.id.as_str(), t.title.as_str(), t.status.as_str(), t.note.as_str())).collect();
-        assert_eq!(tickets, [("t-1", "the brief title", "done", "done"), ("planned-work", "Planned work", "todo", "")]);
+        assert_eq!(tickets, [("t-1", "the brief title", "done", "done"), ("planned-work", "Planned work", "new", "")]);
         assert!(!project.backlog_dir().exists());
         let t1 = list.tasks.iter().find(|task| task.name == "t-1").unwrap();
         assert_eq!(t1.state, "working");
@@ -6289,7 +6289,7 @@ if (args[0] === 'agents') {
         let cwd = project.root.to_string_lossy().into_owned();
         let ticket = crate::core::tickets::ticket_add(cwd.clone(), "Show a branch that git merged as merged".to_string()).unwrap();
         crate::core::tickets::ticket_update(cwd.clone(), ticket.id.clone(), None, None, Some("t-1".to_string()), None).unwrap();
-        crate::core::tickets::ticket_move(cwd.clone(), ticket.id.clone(), "todo".to_string(), vec![ticket.id.clone()], None).unwrap();
+        crate::core::tickets::ticket_move(cwd.clone(), ticket.id.clone(), "new".to_string(), vec![ticket.id.clone()], None).unwrap();
         git_out(&project, &["add", "--all"]);
         git_out(&project, &["commit", "-q", "-m", "the ticket of the proof"]);
         plan_and_approve(&project, &fake, "t-1");
