@@ -2,6 +2,23 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.57 (2026-11-14)
+- Each project has a tickets board with the columns New, Todo, In progress, Done and Canceled. A message to triage becomes a ticket, and the Todo column is the queue.
+- The top bar groups the buttons of each project. The tab Tabs is now named Details, and "+" adds a project.
+- The Help is short: each section starts with a one-line summary and a short list, and the long texts open behind a click on Details.
+- The task card shows the tokens that a task used, per model.
+- The task card shows each command of the plan run and the work run, with its exit code, its time and the end of its output.
+- Each task has one log file in the task folder of the project, and the task card has a Log row that opens it.
+- A done report needs a command of the run for each claim in its Verification section. A chip on the Report row counts the claims without one, and the task stays in work until they have one.
+- You pick per task which checks run, from checkboxes with the recommended ones prefilled.
+- A question that you already answered does not come back as new when the worker leaves it in its report. The card offers Continue, Send the answer again and Stop.
+- The question card of the Chat view shows the question and its options only, never the screen text above them.
+- A line of Dispatch for triage waits while you type in the triage terminal, so your half sentence is not sent with it.
+- The triage chat hears the end of a worker once, not again after each later turn.
+- A merge that the gate refuses shows the failed checks as a short list. The whole gate log opens behind a click.
+- Setup pipeline has the switch "Task files local only": on, the task files stay out of git; off, Dispatch commits them as before.
+- Dispatch starts one work run per project at a time, also when two approvals come close together.
+
 ## 0.1.56 (2026-11-13)
 - Each finding of the rules check (Setup pipeline and the Rules window) has a link with the name of its file, also for a rule outside the project. A click shows the file in the viewer.
 - In a report or a plan, the files of the line "files:" show as a row of links above the text, and a path in a code span is a link too. A file that is not there marks its link, and the view stays.
