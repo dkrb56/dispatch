@@ -2783,9 +2783,13 @@ pub struct BranchInfo {
     name: String,
     /// The branch that the task branch starts from and merges into.
     base: String,
-    /// The merge line of the branch file after the merge: `done <sha> <time>`. Empty before.
+    /// The merge line of the branch file after the merge: `done <sha> <time>` after the merge of
+    /// Dispatch, or `outside <what> <time>` that the task read writes when git says that the base
+    /// holds the branch (ticket merged-outside); `<what>` is the short hash of the merge commit,
+    /// `fast-forward` or `same-changes`. Empty before.
     merge: String,
-    /// The branch exists in git: Approve made it, and no merge removed it.
+    /// The branch exists in git and waits for Merge: Approve made it, and no merge removed it. False
+    /// after an outside merge too, although the branch may still stand in git.
     exists: bool,
     /// The main checkout is on this branch now.
     checked_out: bool,
@@ -2897,7 +2901,10 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
 }
 
 /// The branch of a task for the task list, after the return to the base when its work run has ended.
-fn task_branch(project: &Project, ticket: &str, current: &str) -> Option<BranchInfo> {
+/// With `check_merged`, a branch that waits for Merge but that the base already holds (the user
+/// merged it with git, ticket merged-outside) gets the merge line `outside <what> <time>` in its
+/// branch file; the next task read commits it with the task files.
+fn task_branch(project: &Project, ticket: &str, current: &str, check_merged: bool) -> Option<BranchInfo> {
     let mut info = read_branch_file(&project.branch_file(ticket))?;
     let exists = |name: &str| git(&project.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_some();
     info.exists = info.merge.is_empty() && exists(&info.name);
@@ -2908,7 +2915,61 @@ fn task_branch(project: &Project, ticket: &str, current: &str) -> Option<BranchI
             Err(note) => info.note = note,
         }
     }
+    if check_merged && info.exists && !info.checked_out {
+        if let Some(how) = merged_outside(project, &info) {
+            let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
+            info.merge = format!("outside {how} {}Z", &crate::core::tickets::iso(millis)[..19]);
+            info.exists = false;
+            let text = format!("branch: {}\nbase: {}\nmerge: {}\n", info.name, info.base, info.merge);
+            if let Err(error) = write_file(&project.branch_file(ticket), &text) {
+                eprintln!("branch file of {ticket} not written after the outside merge: {error}");
+            }
+        }
+    }
     Some(info)
+}
+
+/// The tips of the branch and of the base that a check found unmerged, by project root and branch
+/// name: the poll asks git again only when one of them moved (ticket merged-outside).
+fn unmerged_tips() -> &'static std::sync::Mutex<std::collections::HashMap<(PathBuf, String), String>> {
+    static TIPS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<(PathBuf, String), String>>> = std::sync::OnceLock::new();
+    TIPS.get_or_init(Default::default)
+}
+
+/// Whether the base holds a task branch, and by what: the short hash of the first merge commit
+/// after the branch tip, `fast-forward` when the base holds the tip without a merge commit, or
+/// `same-changes` when a merge would change nothing in the base (a squash or a rebase). None while
+/// the branch has a change that the base lacks. One `rev-parse` per call; the two checks run only
+/// when a tip moved since the last call that found the branch unmerged.
+fn merged_outside(project: &Project, info: &BranchInfo) -> Option<String> {
+    let tips = git(&project.root, &["rev-parse", &format!("refs/heads/{}", info.name), &info.base])?;
+    let key = (project.root.clone(), info.name.clone());
+    let tips = tips.split_whitespace().collect::<Vec<_>>().join(" ");
+    if unmerged_tips().lock().ok()?.get(&key) == Some(&tips) {
+        return None;
+    }
+    let how = if git(&project.root, &["merge-base", "--is-ancestor", &info.name, &info.base]).is_some() {
+        let range = format!("{}..{}", info.name, info.base);
+        let merges = git(&project.root, &["log", "--format=%h", "--ancestry-path", "--merges", "--reverse", &range]).unwrap_or_default();
+        Some(merges.lines().next().map_or("fast-forward".to_string(), |sha| sha.trim().to_string()))
+    } else {
+        // git 2.38 and newer: the tree of a merge of the branch into the base. Equal to the tree of
+        // the base, the merge adds nothing. An older git fails here, and only the first check counts.
+        let merged = git(&project.root, &["merge-tree", "--write-tree", &info.base, &info.name]);
+        let base_tree = git(&project.root, &["rev-parse", &format!("{}^{{tree}}", info.base)]);
+        match (merged, base_tree) {
+            (Some(merged), Some(tree)) if merged.lines().next().map(str::trim) == Some(tree.trim()) => Some("same-changes".to_string()),
+            _ => None,
+        }
+    };
+    if let Ok(mut known) = unmerged_tips().lock() {
+        if how.is_some() {
+            known.remove(&key);
+        } else {
+            known.insert(key, tips);
+        }
+    }
+    how
 }
 
 /// The branch that the main checkout is on, or none (detached HEAD, no repository).
@@ -3150,7 +3211,14 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
     if project.in_git && (project.options().task_branches || tasks.iter().any(|task| project.branch_file(&task.name).is_file())) {
         let current = if merging.is_none() { current_branch(&project).unwrap_or_default() } else { String::new() };
         for task in tasks.iter_mut() {
-            task.branch = task_branch(&project, &task.name, &current);
+            // Only a branch whose card shows Merge is checked for an outside merge (ticket
+            // merged-outside): a report that waits for nobody, or a stopped task. A worker that asked
+            // a question before its first commit has a branch that the base holds, and its reply
+            // must still run on the branch.
+            let header = task.header.as_ref();
+            let waits = header.is_some_and(|header| matches!(header.needs.as_str(), "decision" | "permission") || header.state == "needs-decision");
+            let check = merging.is_none() && ((task.report.is_some() && !waits) || task.state == "stopped");
+            task.branch = task_branch(&project, &task.name, &current, check);
         }
     }
     // The script refuses an approval for these lines; the task files do not count.
@@ -5699,6 +5767,54 @@ if (args[0] === 'agents') {
         clean(&project);
     }
 
+    /// The hand-off line of a task in a fresh task list of the project.
+    fn listed_handoff(project: &Project, ticket: &str) -> Option<String> {
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        let task = list.tasks.iter().find(|task| task.name == ticket).unwrap();
+        handoff_state(task, false, false)
+    }
+
+    #[test]
+    fn a_branch_merged_outside_dispatch_counts_as_merged() {
+        let (project, fake, base) = branch_project("branch-outside");
+        let cwd = project.root.to_string_lossy().into_owned();
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        // Today's state: the branch waits for Merge.
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.exists && !branch.checked_out && branch.merge.is_empty(), "{branch:?}");
+        assert_eq!(listed_handoff(&project, "t-1").as_deref(), Some("done, its branch waits for Merge in the task card of Dispatch"));
+
+        // The user merges the branch with git, outside Dispatch.
+        git_out(&project, &["merge", "--no-ff", "-q", "-m", "merge by the user", "task/t-1"]);
+        let head = git_out(&project, &["rev-parse", "--short", &base]);
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.merge.starts_with(&format!("outside {head} ")), "{branch:?}");
+        assert!(!branch.exists, "{branch:?}");
+        assert!(git(&project.root, &["rev-parse", "--verify", "--quiet", "refs/heads/task/t-1"]).is_some(), "Dispatch deleted the branch");
+        assert_eq!(listed_handoff(&project, "t-1"), None);
+        // The merge of Dispatch refuses a merged branch.
+        let refused = task_merge(cwd.clone(), "t-1".to_string()).unwrap_err();
+        assert!(refused.contains("is merged already: outside"), "{refused}");
+        // The next task read commits the branch file.
+        task_list(cwd.clone()).unwrap();
+        assert_eq!(git_out(&project, &["status", "--porcelain"]), "");
+
+        // A squash merge: the base has the changes but not the commits of the branch.
+        write_file(&fake.join("work.txt"), "the work of the second task\n").unwrap();
+        plan_and_approve(&project, &fake, "t-2");
+        write_report(&project, "t-2");
+        let branch = listed_branch(&project, "t-2");
+        assert!(branch.exists && branch.merge.is_empty(), "{branch:?}");
+        assert_eq!(listed_handoff(&project, "t-2").as_deref(), Some("done, its branch waits for Merge in the task card of Dispatch"));
+        git_out(&project, &["merge", "--squash", "task/t-2"]);
+        git_out(&project, &["commit", "-q", "-m", "squash by the user"]);
+        let branch = listed_branch(&project, "t-2");
+        assert!(branch.merge.starts_with("outside same-changes "), "{branch:?}");
+        assert_eq!(listed_handoff(&project, "t-2"), None);
+        clean(&project);
+    }
+
     /// Builds the scratch projects of the proof script of ticket task-branches when the variable
     /// BRANCHES_PROOF_DIR names an empty folder: `on` runs a scratch ticket through plan, approve,
     /// report, return and merge and writes the task list as JSON; `off` gets Apply with the switch
@@ -5818,6 +5934,46 @@ if (args[0] === 'agents') {
         git_out(&project, &["commit", "-q", "-m", "the gate log of the proof"]);
         set_merge_gate(cwd.clone(), "type merge-gate-fail.txt & exit 1\n".to_string()).unwrap();
         task_list(cwd.clone()).unwrap();
+        fs::write(dir.join("project.txt"), &cwd).unwrap();
+        fs::write(dir.join("base.txt"), &branch.base).unwrap();
+    }
+
+    /// Builds the scratch project of the proof of ticket merged-outside when the variable
+    /// MERGED_OUTSIDE_PROOF_DIR names an empty folder: `<dir>/proj` with Task branches on, the ticket
+    /// t-1 through plan, approve and report with the fake worker, the checkout back on the base, a
+    /// gate that refuses every merge, and one ticket of the board for the task t-1. It merges
+    /// nothing; the proof clicks Merge in the test copy and then merges the branch with git.
+    #[test]
+    #[ignore]
+    fn merged_outside_proof_project() {
+        let Ok(dir) = std::env::var("MERGED_OUTSIDE_PROOF_DIR") else { return };
+        let dir = PathBuf::from(dir);
+        let root = dir.join("proj");
+        fs::create_dir_all(&root).unwrap();
+        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false };
+        git_init(&project);
+        project.in_git = true;
+        write_file(&project.root.join("README.md"), "scratch project of the merged-outside proof\n").unwrap();
+        apply(&project, &[0]).unwrap();
+        set_branches(&project, true);
+        apply(&project, &[]).unwrap();
+        git_out(&project, &["add", "--all"]);
+        git_out(&project, &["commit", "-q", "-m", "scratch setup"]);
+        let fake = fake_claude(&dir);
+        write_file(&fake.join("work.txt"), "the work of the task\n").unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        let ticket = crate::core::tickets::ticket_add(cwd.clone(), "Show a branch that git merged as merged".to_string()).unwrap();
+        crate::core::tickets::ticket_update(cwd.clone(), ticket.id.clone(), None, None, Some("t-1".to_string()), None).unwrap();
+        crate::core::tickets::ticket_move(cwd.clone(), ticket.id.clone(), "todo".to_string(), vec![ticket.id.clone()], None).unwrap();
+        git_out(&project, &["add", "--all"]);
+        git_out(&project, &["commit", "-q", "-m", "the ticket of the proof"]);
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.exists && !branch.checked_out && branch.merge.is_empty(), "{branch:?}");
+        set_merge_gate(cwd.clone(), "echo the gate of the proof refuses every merge & exit 1\n".to_string()).unwrap();
+        let list = task_list(cwd.clone()).unwrap();
+        assert!(list.tickets.iter().any(|one| one.id == ticket.id && one.status == crate::core::tickets::DONE), "{:?}", list.tickets);
         fs::write(dir.join("project.txt"), &cwd).unwrap();
         fs::write(dir.join("base.txt"), &branch.base).unwrap();
     }

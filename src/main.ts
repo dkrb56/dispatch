@@ -47,6 +47,7 @@ import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
+import { mergedWords, outsideLine, refusalGoes } from "./merged";
 import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
 import { type CheckInfo, checkRows, checksSentence, checksText, choiceNames, defaultChoice } from "./checks";
 import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards, triageFree } from "./pending";
@@ -1767,9 +1768,12 @@ interface BranchInfo {
   name: string;
   /** The branch that the task branch starts from and merges into. */
   base: string;
-  /** `done <sha> <time>` after the merge, else empty. */
+  /**
+   * `done <sha> <time>` after the merge of Dispatch, `outside <what> <time>` after a merge with git
+   * outside Dispatch that the task read found (ticket merged-outside), else empty.
+   */
   merge: string;
-  /** The branch exists in git: Approve made it, and no merge removed it. */
+  /** The branch exists in git and waits for Merge. False after an outside merge too, although the branch may still stand. */
   exists: boolean;
   /** The main checkout is on the task branch now. */
   checkedOut: boolean;
@@ -1848,6 +1852,26 @@ function hostedTasks(host: HostId, tasks: TaskInfo[]): TaskInfo[] {
 
 /** The task lists of the projects that the window shows, by project key. */
 const projectTasks = new Map<string, ProjectTasks>();
+
+/**
+ * Keeps a new task list of a project, after a look at what changed since the list before it
+ * (ticket merged-outside): an old refusal of the Merge button goes by the rule of `refusalGoes`, and
+ * a branch that the task read found merged outside Dispatch gets one line for triage. The first list
+ * of a project after the start says nothing.
+ */
+function storeProjectTasks(key: string, record: ProjectTasks): void {
+  const before = projectTasks.get(key);
+  for (const info of record.infos) {
+    const branch = info.branch;
+    if (!branch) continue;
+    const error = actionErrors.get(info.name);
+    if (error && refusalGoes(error, { merged: Boolean(branch.merge), dirty: record.dirty })) actionErrors.delete(info.name);
+    const old = before?.infos.find((one) => one.name === info.name);
+    const line = old && !old.branch?.merge ? outsideLine(info.name, branch) : null;
+    if (line) tellTriage(projectFor(record.host, record.cwd), line);
+  }
+  projectTasks.set(key, record);
+}
 
 /** The last reply of the `task_list` command, for the folder of the focused terminal. */
 let taskInfos: TaskInfo[] = [];
@@ -2050,7 +2074,7 @@ async function refreshTasks(): Promise<void> {
   tasksFolder = projectKey(host, cwd);
   tasksCwd = cwd ?? "";
   tasksHost = host;
-  if (cwd) projectTasks.set(tasksFolder, tasksRecord(host, cwd, reply));
+  if (cwd) storeProjectTasks(tasksFolder, tasksRecord(host, cwd, reply));
   renderChats();
   approvePlans();
   updateAlerts();
@@ -2592,7 +2616,7 @@ function loadPending(): void {
 async function readProjectTasks(host: HostId, cwd: string): Promise<void> {
   const readAt = Date.now();
   const reply = await call<TaskListReply>(host, "task_list", { cwd });
-  projectTasks.set(projectKey(host, cwd), tasksRecord(host, cwd, reply));
+  storeProjectTasks(projectKey(host, cwd), tasksRecord(host, cwd, reply));
   taskReadTimes.set(projectKey(host, cwd), readAt);
 }
 
@@ -4284,7 +4308,7 @@ function mergeRunning(task: Task): boolean {
 /**
  * Merges the branch of a task through the worker script, then queues one line for triage with the
  * merge commit. The gate can run for hours; the card says "merging" meanwhile. A refusal stays in
- * the card until the next click.
+ * the card until the next click, or until `storeProjectTasks` takes it away (ticket merged-outside).
  */
 async function mergeTask(task: Task): Promise<void> {
   const branch = task.info?.branch;
@@ -4406,7 +4430,7 @@ function branchRow(branch: BranchInfo): HTMLElement {
   const row = document.createElement("div");
   row.className = "task-branch";
   const state = branch.merge
-    ? `merged ${branch.merge.replace(/^done\s*/, "")}`
+    ? mergedWords(branch.merge)
     : branch.checkedOut
       ? "checked out"
       : branch.exists
@@ -7247,7 +7271,7 @@ async function refreshFocusTasks(): Promise<void> {
       const readAt = Date.now();
       try {
         const reply = await call<TaskListReply>(host, "task_list", { cwd: root });
-        projectTasks.set(projectKey(host, root), tasksRecord(host, root, reply));
+        storeProjectTasks(projectKey(host, root), tasksRecord(host, root, reply));
         taskReadTimes.set(projectKey(host, root), readAt);
       } catch {
         // A folder that is no project has no tasks.
