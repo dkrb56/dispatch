@@ -38,6 +38,13 @@ const MERGE_IGNORE: &str = "merge/";
 const GATE_LIMIT: u32 = 14400;
 /// The prefix of a task branch: the branch of ticket `t-1` is `task/t-1`.
 const BRANCH_PREFIX: &str = "task/";
+/// The line of the root `.gitignore` that keeps the task folder out of git (ticket ignore-tasks).
+const ROOT_TASKS_IGNORE: &str = ".dispatch/";
+/// The comment line that Dispatch writes above `ROOT_TASKS_IGNORE`. Apply removes only this pair, so
+/// a line that the user wrote by hand stays (user decision 1 of ignore-tasks).
+const TASKS_IGNORE_MARK: &str = "# Dispatch: the task files stay on this computer (setting \"Task files local only\")";
+/// The message of the commit that takes the task files out of git when the option goes on.
+const TASKS_LOCAL_MESSAGE: &str = "Dispatch: task files are local only";
 
 /// The folder where the app saves pasted images. The app sets it at its start.
 pub(crate) static PASTED_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -90,13 +97,17 @@ pub struct Options {
     /// click after the gate command (ticket task-branches). Off at the start; a settings file
     /// without the field is off.
     task_branches: bool,
+    /// Git ignores the task folder `.dispatch` through a line of the root `.gitignore`, so the task
+    /// files stay on this computer and a clone has none (ticket ignore-tasks). Off at the start; a
+    /// settings file without the field is off.
+    ignore_tasks: bool,
 }
 
 // A settings file of an older version has a field for answers in the triage chat. Serde drops a
 // field it does not know, so such a file reads without an error.
 impl Default for Options {
     fn default() -> Self {
-        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false }
+        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false }
     }
 }
 
@@ -229,8 +240,10 @@ impl Project {
             .filter(|top| top.is_dir());
         let in_git = top.is_some();
         let root = top.unwrap_or_else(|| cwd.to_path_buf());
-        // The task files are in the project, so git tracks them and a clone has them. Dispatch
-        // commits them itself (`keep_tasks_committed`), and Approve does not count them as changes.
+        // The task files are in the project, so git tracks them and a clone has them, unless the
+        // option "Task files in git" (`ignore_tasks`) is on: then the root `.gitignore` ignores the
+        // folder. Dispatch commits them itself (`keep_tasks_committed`), and Approve does not count
+        // them as changes.
         let reports = root.join(TASKS_DIR);
         Ok(Project { root, reports, in_git })
     }
@@ -314,6 +327,33 @@ impl Project {
     /// The ignore file of the task folder. Its line `measure/` keeps the scratch folder out of git.
     fn tasks_ignore(&self) -> PathBuf {
         self.reports.join(".gitignore")
+    }
+
+    /// The ignore file of the project root. With "Task files local only" on, its line `.dispatch/`
+    /// keeps the whole task folder out of git (ticket ignore-tasks).
+    fn root_ignore(&self) -> PathBuf {
+        self.root.join(".gitignore")
+    }
+
+    /// The lines of the root `.gitignore`, trimmed; none without the file.
+    fn root_ignore_lines(&self) -> Vec<String> {
+        fs::read_to_string(self.root_ignore()).unwrap_or_default().lines().map(|line| line.trim().to_string()).collect()
+    }
+
+    /// The root `.gitignore` has the line `.dispatch/`, by Dispatch or by hand.
+    fn root_ignores_tasks(&self) -> bool {
+        self.root_ignore_lines().iter().any(|line| line == ROOT_TASKS_IGNORE)
+    }
+
+    /// The root `.gitignore` has the line `.dispatch/` directly under the mark of Dispatch: the pair
+    /// that Apply writes and removes. A line without the mark is the user's, and Dispatch leaves it.
+    fn tasks_ignored_by_dispatch(&self) -> bool {
+        self.root_ignore_lines().windows(2).any(|pair| pair[0] == TASKS_IGNORE_MARK && pair[1] == ROOT_TASKS_IGNORE)
+    }
+
+    /// Git tracks at least one file of the task folder. False outside git.
+    fn tasks_tracked(&self) -> bool {
+        self.in_git && git(&self.root, &["ls-files", "--", TASKS_DIR]).is_some_and(|files| !files.trim().is_empty())
     }
 
     /// The permitted measuring commands: the lines of the list that are not empty and do not start
@@ -434,8 +474,10 @@ impl Project {
     /// The files that the steps write, relative to the root with `/`. "Commit to git" commits
     /// only these. The task files of `.dispatch` (briefs, plans, reports, state files and the
     /// other options files) are committed by Dispatch at each task read (`keep_tasks_committed`).
-    fn setup_files(&self) -> [&'static str; 9] {
-        [
+    /// With "Task files local only" on, the root `.gitignore` is a setup file too, so the commit
+    /// takes its line (decision 6 of the series); git then ignores the files of `.dispatch`.
+    fn setup_files(&self) -> Vec<&'static str> {
+        let mut files = vec![
             "CLAUDE.md",
             ".claude/settings.json",
             ".claude/settings.local.json",
@@ -445,7 +487,21 @@ impl Project {
             ".dispatch/work-flags.txt",
             ".dispatch/measure-commands.txt",
             ".dispatch/merge-gate.txt",
-        ]
+        ];
+        // Off again, the commit takes the removal of the line of Dispatch, while HEAD still has it.
+        if self.options().ignore_tasks || self.committed_tasks_ignore() {
+            files.push(".gitignore");
+        }
+        files
+    }
+
+    /// The root `.gitignore` of HEAD has the line of Dispatch under its mark.
+    fn committed_tasks_ignore(&self) -> bool {
+        self.in_git
+            && git(&self.root, &["show", "HEAD:.gitignore"]).is_some_and(|text| {
+                let lines: Vec<&str> = text.lines().map(str::trim).collect();
+                lines.windows(2).any(|pair| pair[0] == TASKS_IGNORE_MARK && pair[1] == ROOT_TASKS_IGNORE)
+            })
     }
 
     /// The reports folder with `/`, as `CLAUDE.md` gives it.
@@ -519,13 +575,19 @@ impl Project {
         let measure = if self.options().measure_before_plan { measure_rule(&reports, &script) } else { String::new() };
         // The same for "Task branches": off, the section is the text of the version before.
         let branches = if self.options().task_branches { branches_rule(&reports, &script) } else { String::new() };
+        // The same for "Task files local only" (ticket ignore-tasks): off, the sentence of the version before.
+        let tasks_git = if self.options().ignore_tasks {
+            format!("git ignores `{reports}/`: the task files stay on this computer, and a clone has none")
+        } else {
+            format!("Dispatch commits the files of `{reports}/` itself")
+        };
         format!(
             "- A task is two runs of one worker session. The plan run reads the code and writes a plan. The work run executes the approved plan. Triage starts and resumes a worker only with the script `{reports}/{SCRIPT_NAME}`, never with `claude --bg` or `claude --resume` directly. A worker works in the main checkout (`worktree.bgIsolation` is `none`).
 - Triage writes each brief to `{reports}/briefs/<ticket-id>.md`: the user's words, the constraints, and the command that proves the work. The brief says nothing about the approach; the plan run decides that.
 - A message that Dispatch sends from its tickets board starts with the line `Ticket <id>: <title>`. Triage uses that id as the ticket id of the task. Dispatch keeps the tickets file `{reports}/tickets.jsonl`; triage and the workers do not edit it.
 - `{script} plan <ticket-id>` starts the plan run on the options in `{reports}/plan-flags.txt`: without the Edit tool, without the Agent tool and without a prompt; its Write tool may write only into `{reports}/plans/`. The plan run writes the plan to `{reports}/plans/<ticket-id>.md`, changes nothing else, and ends its turn.
 {measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; the word HOLD stands in no other line of this section); Do not touch; Size (files). No code in a plan.
-- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which resumes the same session on the options in `{reports}/work-flags.txt`, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when the working tree has uncommitted changes outside `{reports}/` (after Setup pipeline, the user commits the setup files first; Dispatch commits the files of `{reports}/` itself), when the worker still runs, or when the task was stopped.
+- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which resumes the same session on the options in `{reports}/work-flags.txt`, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when the working tree has uncommitted changes outside `{reports}/` (after Setup pipeline, the user commits the setup files first; {tasks_git}), when the worker still runs, or when the task was stopped.
 - The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It never pushes or merges. The user decides the push.
 {branches}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification lists each command the worker ran as a line that starts with a code span with the exact text of the Bash call, for example `` `cargo test --lib` ``, followed by what it showed. Dispatch compares these spans with the Bash commands of the transcripts of the task, without a leading `cd <folder> && ` on both sides: a done report with a claim that no command matches, or without the section, counts as working, and its ticket stays open.
 - A worker starts no session and sends no message to a chat. It has no question tool. A question for the user goes into the report under the heading `## Questions`: numbered items, each with its options as list items, the recommended option first. Each option is one short line, because Dispatch shows it as a button and sends it back word for word; the details stand above the questions. The worker then writes `state: needs-decision` and `needs: decision` and ends its turn, also when the question is about a permission. `needs: permission` means: a refused tool call stopped the work, the report names the refused call and the rule it needs, and the work goes on with a follow-up `Continue` once the user changed the rule. The user answers in the task card of Dispatch, and the answer arrives as a follow-up `Answer to question N: <option>`. An answered question never comes back unchanged: after the answer the worker takes the question out of its report or writes what it decided and did, and ends with `state: done` or a new question. A follow-up `Continue` after an answer means: take the answers as given and go on.
@@ -1377,7 +1439,12 @@ fn plan(project: &Project) -> Result<Plan, String> {
                 && plan_flags_current(project)
                 && work_flags_current(project),
             detail: format!(
-                "The folder .dispatch in the project for the task files: the reports of the workers, a folder for the briefs, a folder for the plans, and the state of each task. Git tracks it; Dispatch commits its files itself, and Approve does not count them as changes. The options of the two runs go into plan-flags.txt and work-flags.txt, one argument per line; the files start with the defaults (plan run: {} {}, work run: {} {}). The work run names its permission mode ({}) and its tool list, because a copy of the plan session keeps the options it does not name again; an older file gets these lines and the paths of this folder, its choice stays.{}",
+                "The folder .dispatch in the project for the task files: the reports of the workers, a folder for the briefs, a folder for the plans, and the state of each task. {} The options of the two runs go into plan-flags.txt and work-flags.txt, one argument per line; the files start with the defaults (plan run: {} {}, work run: {} {}). The work run names its permission mode ({}) and its tool list, because a copy of the plan session keeps the options it does not name again; an older file gets these lines and the paths of this folder, its choice stays.{}",
+                if options.ignore_tasks {
+                    "Git ignores it (Task files local only is on): the task files stay on this computer, and a clone has none. Approve does not count them as changes."
+                } else {
+                    "Git tracks it; Dispatch commits its files itself, and Approve does not count them as changes."
+                },
                 PLAN_DEFAULT.0,
                 PLAN_DEFAULT.1,
                 WORK_DEFAULT.0,
@@ -1441,6 +1508,7 @@ fn plan(project: &Project) -> Result<Plan, String> {
         },
         measure_step(project, options.measure_before_plan)?,
         branches_step(project, options.task_branches),
+        ignore_step(project, options.ignore_tasks),
     ];
     let measure_commands = fs::read_to_string(project.measure_commands_file()).unwrap_or_default().replace("\r\n", "\n");
     let merge_gate = fs::read_to_string(project.merge_gate_file()).unwrap_or_default().replace("\r\n", "\n");
@@ -1473,6 +1541,85 @@ fn branches_step(project: &Project, on: bool) -> Step {
         ),
         rules: None,
     }
+}
+
+/// The step "Task files in git" (ticket ignore-tasks). On, it is done when the root `.gitignore` has
+/// the line `.dispatch/` and git tracks no task file. Off, it is done when the line of Dispatch (the
+/// pair under its mark) is absent; a line that the user wrote by hand stays (user decision 1).
+fn ignore_step(project: &Project, on: bool) -> Step {
+    let target = project.root_ignore().to_string_lossy().into_owned();
+    if !on {
+        let ours = project.tasks_ignored_by_dispatch();
+        let detail = if ours {
+            format!("Off. Apply removes the line {ROOT_TASKS_IGNORE} of Dispatch from .gitignore, adds the folder .dispatch to git again and commits the task files. Commit to git then commits .gitignore.")
+        } else {
+            "Off. Git tracks the folder .dispatch; Dispatch commits its files itself.".to_string()
+        };
+        return Step { title: "Task files in git", target, done: !ours, detail, rules: None };
+    }
+    let mut detail = format!(
+        "Git ignores the folder .dispatch: tickets, briefs, plans, reports, logs and the other task files stay on this computer, and a clone has none. Apply adds the line {ROOT_TASKS_IGNORE} with a comment line to .gitignore of the project"
+    );
+    if project.tasks_tracked() {
+        detail.push_str(&format!(
+            ", takes the task files out of git (they stay on the disk) and commits that with the message \"{TASKS_LOCAL_MESSAGE}\""
+        ));
+    }
+    detail.push_str(". Commit to git then commits .gitignore. Off again, Apply puts the folder back into git.");
+    Step { title: "Task files in git", target, done: project.root_ignores_tasks() && !project.tasks_tracked(), detail, rules: None }
+}
+
+/// Adds the line of Dispatch with its mark to the root `.gitignore` when no line `.dispatch/` is
+/// there, and makes the file when it is absent.
+fn add_root_ignore(project: &Project) -> Result<(), String> {
+    if project.root_ignores_tasks() {
+        return Ok(());
+    }
+    let mut text = fs::read_to_string(project.root_ignore()).unwrap_or_default();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&format!("{TASKS_IGNORE_MARK}\n{ROOT_TASKS_IGNORE}\n"));
+    write_file(&project.root_ignore(), &text)
+}
+
+/// Removes each pair of the mark and the line `.dispatch/` from the root `.gitignore`; the other
+/// lines stay as they are, with their line ends.
+fn remove_root_ignore(project: &Project) -> Result<(), String> {
+    let text = fs::read_to_string(project.root_ignore()).unwrap_or_default();
+    let lines: Vec<&str> = text.split_inclusive('\n').collect();
+    let mut kept = String::new();
+    let mut at = 0;
+    while at < lines.len() {
+        if lines[at].trim() == TASKS_IGNORE_MARK && lines.get(at + 1).is_some_and(|line| line.trim() == ROOT_TASKS_IGNORE) {
+            at += 2;
+            continue;
+        }
+        kept.push_str(lines[at]);
+        at += 1;
+    }
+    write_file(&project.root_ignore(), &kept)
+}
+
+/// Commits the removal of the task files from git, and nothing else: the commit goes through an
+/// index of its own, made from HEAD, so the staged changes of the user stay staged (user decision 2).
+/// Then the index of the repository drops the task files too. The files stay on the disk.
+fn untrack_tasks(project: &Project) -> Result<(), String> {
+    // In the temp folder: `.git` is a file in a worktree.
+    let index = std::env::temp_dir().join(format!("dispatch-untrack-{}-{}.index", std::process::id(), stamp(&project.reports_text())));
+    // Without a commit that has task files (no commit yet, or the files are only staged), there is
+    // nothing to commit: the index of the repository drops them, and that is all.
+    let in_head = git(&project.root, &["ls-tree", "-r", "--name-only", "HEAD", "--", TASKS_DIR]).is_some_and(|files| !files.trim().is_empty());
+    let result = (|| {
+        if in_head {
+            run_git_index(&project.root, Some(&index), &["read-tree", "HEAD"])?;
+            run_git_index(&project.root, Some(&index), &["rm", "-r", "--cached", "-q", "--", TASKS_DIR])?;
+            run_git_index(&project.root, Some(&index), &["commit", "-q", "-m", TASKS_LOCAL_MESSAGE])?;
+        }
+        run_git(&project.root, &["rm", "-r", "--cached", "-q", "--ignore-unmatch", "--", TASKS_DIR]).map(|_| ())
+    })();
+    let _ = fs::remove_file(&index);
+    result
 }
 
 /// The step "Measure before the plan" (ticket measure-before-plan). Off, it is done and changes
@@ -2503,7 +2650,9 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
         }
         paths.push(path);
     }
-    // A later return (after a reply) finds the files of the first one on the base already.
+    // A later return (after a reply) finds the files of the first one on the base already. With
+    // "Task files local only" on, git tracks no task file, so the diff above is empty and `paths`
+    // too: the return ends here without a commit (ticket ignore-tasks).
     let mut status = vec!["status", "--porcelain", "--"];
     status.extend(paths.iter().map(String::as_str));
     if paths.is_empty() || run_git(&project.root, &status)?.trim().is_empty() {
@@ -2990,6 +3139,19 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
     if !done(8) {
         ignore_line(project, MERGE_IGNORE)?;
     }
+    // "Task files local only" (ticket ignore-tasks). On: the line, then the task files leave git in
+    // one commit of their own. Off: the line of Dispatch goes, and the task files are committed again.
+    if !done(9) {
+        if project.options().ignore_tasks {
+            add_root_ignore(project)?;
+            if project.tasks_tracked() {
+                untrack_tasks(project)?;
+            }
+        } else {
+            remove_root_ignore(project)?;
+            keep_tasks_committed(project)?;
+        }
+    }
     Ok(())
 }
 
@@ -3007,14 +3169,18 @@ const SETUP_COMMIT_MESSAGE: &str = "Dispatch setup";
 /// Runs git in a folder and gives its output, or the error text of git. Unlike `info::git`, it
 /// takes the index lock, which a commit needs, and keeps the error text for the user.
 fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(args)
-        .stdin(Stdio::null())
-        .no_window()
-        .output()
-        .map_err(|e| format!("git did not start: {e}"))?;
+    run_git_index(cwd, None, args)
+}
+
+/// `run_git` on another index file than the one of the repository, when `index` names one. A commit
+/// then takes that index, and the staged changes of the user stay staged in theirs.
+fn run_git_index(cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(cwd).args(args).stdin(Stdio::null());
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
+    let output = command.no_window().output().map_err(|e| format!("git did not start: {e}"))?;
     if output.status.success() {
         return Ok(String::from_utf8_lossy(&output.stdout).into_owned());
     }
@@ -3032,11 +3198,11 @@ fn commit_setup(project: &Project) -> Result<String, String> {
     let files = project.setup_files();
     // `--untracked-files=all`: a new `.claude` folder shows its files, not only the folder.
     let mut args = vec!["status", "--porcelain", "--untracked-files=all", "--"];
-    args.extend(files);
+    args.extend(files.iter().copied());
     let status = run_git(&project.root, &args)?;
     // A line of `--porcelain` is two status letters, a space and the path from the top folder.
     let changed: Vec<&str> =
-        files.into_iter().filter(|file| status.lines().any(|line| line.get(3..).is_some_and(|path| path.trim_matches('"') == *file))).collect();
+        files.iter().copied().filter(|file| status.lines().any(|line| line.get(3..).is_some_and(|path| path.trim_matches('"') == *file))).collect();
     if changed.is_empty() {
         return Err("No commit: nothing to commit. The setup files are committed, or git ignores them.".to_string());
     }
@@ -3055,8 +3221,10 @@ fn commit_setup(project: &Project) -> Result<String, String> {
 /// the script, the options files and the tickets file), and no other file. Other staged changes
 /// of the user stay staged.
 /// Gives the number of changed files, 0 when there was nothing to commit or no git repository.
+/// With "Task files local only" on it commits nothing and gives 0: git ignores the folder, also in
+/// the time between the switch and Apply (ticket ignore-tasks).
 fn keep_tasks_committed(project: &Project) -> Result<usize, String> {
-    if !project.in_git {
+    if !project.in_git || project.options().ignore_tasks {
         return Ok(0);
     }
     // `--untracked-files=all`: a new folder shows its files, not only the folder.
@@ -3184,6 +3352,25 @@ mod tests {
         assert_eq!(git(&["status", "--porcelain"]).trim(), "?? notes.txt");
         // The setup files are committed: a second click has nothing to commit.
         assert!(commit_setup(&project).unwrap_err().contains("nothing to commit"));
+
+        // "Task files local only" on (ticket ignore-tasks): the root `.gitignore` is a setup file,
+        // and the commit takes its line and no other file.
+        assert!(!project.setup_files().contains(&".gitignore"));
+        set_ignore(&project, true);
+        assert_eq!(project.setup_files().len(), 10);
+        add_root_ignore(&project).unwrap();
+        let text = commit_setup(&project).unwrap();
+        assert!(text.contains("made with .gitignore. "), "{text}");
+        assert_eq!(git(&["show", "--name-only", "--format=", "HEAD"]).trim(), ".gitignore");
+        // The settings file is a task file, and git ignores it now.
+        assert_eq!(git(&["status", "--porcelain"]).trim(), "?? notes.txt");
+        // Off again: while HEAD has the line of Dispatch, the commit takes its removal.
+        set_ignore(&project, false);
+        remove_root_ignore(&project).unwrap();
+        assert!(project.setup_files().contains(&".gitignore"));
+        commit_setup(&project).unwrap();
+        assert_eq!(git(&["show", "--name-only", "--format=", "HEAD"]).trim(), ".gitignore");
+        assert_eq!(project.setup_files().len(), 9);
         clean(&project);
     }
 
@@ -3613,6 +3800,51 @@ mod tests {
             println!("{line}");
         }
         println!("--- end");
+    }
+
+    /// The proof of ticket ignore-tasks: a scratch git repository with committed task files, then
+    /// the switch on with Apply and Commit to git, then off with Apply and Commit to git. After each
+    /// step it prints the lines of Dispatch in the root `.gitignore`, the count of
+    /// `git ls-files .dispatch` and the last commit. Without DISPATCH_PROOF_IGNORE it does nothing.
+    #[test]
+    #[ignore]
+    fn ignore_switch_in_a_scratch_repository_for_the_proof() {
+        if std::env::var("DISPATCH_PROOF_IGNORE").is_err() {
+            return;
+        }
+        let project = git_scratch("ignore-proof");
+        let root = project.root.clone();
+        let git = |args: &[&str]| run_git(&root, args).unwrap();
+        let show = |step: &str| {
+            println!("--- {step}");
+            let ours: Vec<String> = project.root_ignore_lines().into_iter().filter(|line| line == TASKS_IGNORE_MARK || line == ROOT_TASKS_IGNORE).collect();
+            println!(".gitignore lines of Dispatch: {}", if ours.is_empty() { "no line".to_string() } else { ours.join(" | ") });
+            println!("git ls-files .dispatch | wc -l: {}", git(&["ls-files", ".dispatch"]).lines().count());
+            println!("git log -1: {}", git(&["log", "-1", "--format=%h %s"]).trim());
+            println!("open steps: {:?}", open_steps(&project));
+        };
+        write_file(&root.join("README.md"), "scratch project of the ignore-tasks proof\n").unwrap();
+        apply(&project, &[0]).unwrap();
+        write_file(&project.briefs().join("t-1.md"), "brief\n").unwrap();
+        write_file(&project.plans().join("t-1.md"), "# Plan t-1: one\n").unwrap();
+        git(&["add", "--all"]);
+        git(&["commit", "-q", "-m", "scratch setup with task files"]);
+        // cargo writes the name of the test without a line end before this output.
+        println!();
+        show("start: task files committed, the switch off");
+        set_ignore(&project, true);
+        apply(&project, &[]).unwrap();
+        show("switch on, Apply");
+        println!("{}", commit_setup(&project).unwrap());
+        show("switch on, Commit to git");
+        set_ignore(&project, false);
+        apply(&project, &[]).unwrap();
+        show("switch off, Apply");
+        println!("{}", commit_setup(&project).unwrap());
+        show("switch off, Commit to git");
+        println!("git status --porcelain: {:?}", git(&["status", "--porcelain"]).trim());
+        println!("--- end");
+        clean(&project);
     }
 
     /// An evidence line of a Bash command, for the tests of the report check.
@@ -4687,6 +4919,27 @@ if (args[0] === 'agents') {
         assert_eq!(git(&["status", "--porcelain", "--", ".dispatch"]), "");
         // Nothing changed: no empty commit.
         assert_eq!(keep_tasks_committed(&project), Ok(0));
+
+        // "Task files local only" on (ticket ignore-tasks): Apply takes the task files out of git in
+        // one commit, and a new task file gets no commit at the next read.
+        set_ignore(&project, true);
+        apply(&project, &[]).unwrap();
+        assert_eq!(git(&["log", "-1", "--format=%s"]).trim(), TASKS_LOCAL_MESSAGE);
+        assert_eq!(git(&["ls-files", "--", ".dispatch"]), "");
+        write_file(&project.briefs().join("t-2.md"), "brief two\n").unwrap();
+        task_list(cwd.clone()).unwrap();
+        assert_eq!(git(&["log", "-1", "--format=%s"]).trim(), TASKS_LOCAL_MESSAGE);
+        assert_eq!(keep_tasks_committed(&project), Ok(0));
+        assert_eq!(git(&["status", "--porcelain", "--", ".dispatch"]), "");
+        assert!(git(&["status", "--porcelain"]).contains("A  staged.txt"));
+        // Off again: Apply commits the task files again, the new brief among them.
+        set_ignore(&project, false);
+        apply(&project, &[]).unwrap();
+        let subject = git(&["log", "-1", "--format=%s"]);
+        assert!(subject.starts_with("Dispatch: ") && subject.trim().ends_with(" task files"), "{subject}");
+        assert!(git(&["show", "--name-only", "--format=", "HEAD"]).lines().any(|file| file == ".dispatch/briefs/t-2.md"));
+        assert_eq!(git(&["status", "--porcelain", "--", ".dispatch"]), "");
+        assert!(git(&["status", "--porcelain"]).contains("A  staged.txt"));
         clean(&project);
     }
 
@@ -4711,6 +4964,15 @@ if (args[0] === 'agents') {
         assert!(out.contains("uncommitted changes") && out.contains("user.txt") && !out.contains(".dispatch"), "{out}");
         assert_eq!(read(&project.reports.join("t-1.state")), "planning\n");
         fs::remove_file(root.join("user.txt")).unwrap();
+        // "Task files local only" on (ticket ignore-tasks): until Commit to git, the new line of the
+        // root `.gitignore` refuses the approval; then it goes on.
+        set_ignore(&project, true);
+        apply(&project, &[]).unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("uncommitted changes") && out.contains(".gitignore") && !out.contains(".dispatch/"), "{out}");
+        commit_setup(&project).unwrap();
+        assert_eq!(git(&["status", "--porcelain"]), "");
         // Only task files are uncommitted: the approval goes on, and the prompt names the report.
         let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
         assert_eq!(code, 0, "{out}");
@@ -4722,9 +4984,77 @@ if (args[0] === 'agents') {
         clean(&project);
     }
 
+    #[test]
+    fn the_ignore_switch_takes_the_task_folder_out_of_git_and_back() {
+        let project = git_scratch("ignore-switch");
+        let root = project.root.clone();
+        let git = |args: &[&str]| run_git(&root, args).unwrap();
+        write_file(&root.join(".gitignore"), "node_modules\n").unwrap();
+        // One checked rule, so the step "Working rules" is done too.
+        apply(&project, &[0]).unwrap();
+        write_file(&project.briefs().join("t-1.md"), "brief\n").unwrap();
+        git(&["add", "--all"]);
+        git(&["commit", "-q", "-m", "setup with task files"]);
+        let tracked = git(&["ls-files", "--", ".dispatch"]).lines().count();
+        assert!(tracked > 0);
+        // A staged change of the user stays staged through both switches.
+        write_file(&root.join("staged.txt"), "staged\n").unwrap();
+        git(&["add", "staged.txt"]);
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+
+        // On: the step is to do; Apply writes the pair, and one commit takes only the removals.
+        set_ignore(&project, true);
+        assert!(open_steps(&project).contains(&"Task files in git"), "{:?}", open_steps(&project));
+        apply(&project, &[]).unwrap();
+        assert_eq!(read(&root.join(".gitignore")), format!("node_modules\n{TASKS_IGNORE_MARK}\n{ROOT_TASKS_IGNORE}\n"));
+        assert_eq!(git(&["ls-files", "--", ".dispatch"]), "");
+        assert_eq!(git(&["log", "-1", "--format=%s"]).trim(), TASKS_LOCAL_MESSAGE);
+        let removed = git(&["show", "--name-status", "--format=", "HEAD"]);
+        let removed: Vec<&str> = removed.lines().filter(|line| !line.is_empty()).collect();
+        assert_eq!(removed.len(), tracked, "{removed:?}");
+        assert!(removed.iter().all(|line| line.starts_with("D\t.dispatch/")), "{removed:?}");
+        assert!(project.briefs().join("t-1.md").is_file(), "the files stay on the disk");
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        assert!(read(&project.instructions()).contains("git ignores `"), "the section says so");
+        // A task file written now stays out of git.
+        write_file(&project.briefs().join("t-2.md"), "brief two\n").unwrap();
+        assert_eq!(keep_tasks_committed(&project), Ok(0));
+        assert_eq!(git(&["status", "--porcelain", "--", ".dispatch"]), "");
+        let status = git(&["status", "--porcelain"]);
+        assert!(status.contains("A  staged.txt") && status.contains(" M .gitignore"), "{status}");
+        commit_setup(&project).unwrap();
+
+        // Off: Apply removes only the pair and commits the task files again.
+        set_ignore(&project, false);
+        assert!(open_steps(&project).contains(&"Task files in git"), "{:?}", open_steps(&project));
+        apply(&project, &[]).unwrap();
+        assert_eq!(read(&root.join(".gitignore")), "node_modules\n");
+        assert_eq!(git(&["ls-files", "--", ".dispatch"]).lines().count(), tracked + 2, "the new brief and the settings file");
+        let subject = git(&["log", "-1", "--format=%s"]);
+        assert!(subject.starts_with("Dispatch: ") && subject.trim().ends_with(" task files"), "{subject}");
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        assert!(!read(&project.instructions()).contains("git ignores `"));
+        assert!(git(&["status", "--porcelain"]).contains("A  staged.txt"));
+        commit_setup(&project).unwrap();
+        assert!(!project.setup_files().contains(&".gitignore"));
+
+        // A line that the user wrote by hand: off, the step is done, and Apply leaves the file.
+        write_file(&root.join(".gitignore"), "node_modules\n.dispatch/\n").unwrap();
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        apply(&project, &[]).unwrap();
+        assert_eq!(read(&root.join(".gitignore")), "node_modules\n.dispatch/\n");
+        clean(&project);
+    }
+
     /// Turns "Task branches" on or off in the settings file, as the switch does.
     fn set_branches(project: &Project, on: bool) {
         let options = Options { task_branches: on, ..project.options() };
+        write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
+    }
+
+    /// Turns "Task files local only" on or off in the settings file, as the switch does.
+    fn set_ignore(project: &Project, on: bool) {
+        let options = Options { ignore_tasks: on, ..project.options() };
         write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
     }
 
@@ -4821,14 +5151,19 @@ if (args[0] === 'agents') {
         let before: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
 
         assert!(!project.options().task_branches);
+        // The same file has no field for "Task files local only" (ticket ignore-tasks): it is off.
+        assert!(!project.options().ignore_tasks);
         let shown = plan(&project).unwrap();
         assert_eq!(serde_json::to_value(&shown.options).unwrap()["taskBranches"], json!(false));
+        assert_eq!(serde_json::to_value(&shown.options).unwrap()["ignoreTasks"], json!(false));
+        assert!(shown.steps.iter().any(|step| step.title == "Task files in git" && step.done));
         assert_eq!(shown.merge_gate, "");
         assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
         apply(&project, &[]).unwrap();
         let after: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
         assert!(before == after, "Apply changed a file of the old project");
         assert!(!project.merge_gate_file().exists() && !project.tasks_ignore().exists() && !project.merge_dir().exists());
+        assert!(!project.root_ignore().exists());
         clean(&project);
     }
 

@@ -105,7 +105,11 @@
           <span><b>Task branches.</b> Each task works on its own branch <code>task/&lt;task&gt;</code>. When the worker is done, the task card shows <b>Merge</b>: Dispatch merges the branch after the gate command below passed. The push stays with you.</span>
         </label>
         <textarea id="setup-merge-gate" rows="2" spellcheck="false" placeholder="The gate command, for example: node scripts/merge-check.mjs&#10;# limit 14400 as the first line sets the time limit in seconds" title="The command that must pass on the merged code before the merge commit. It runs with cmd.exe in the project folder. Empty: no gate. The box saves when you leave it"></textarea>
-        <p>Short reports changes the step "Triage role". Measure before the plan changes the steps "Task files", "Section in CLAUDE.md" and "Measure before the plan". Task branches changes the steps "Allow rules", "Section in CLAUDE.md" and "Task branches". After Apply, the next start of the workspace opens a new triage chat. The other settings apply at once.</p>
+        <label>
+          <input type="checkbox" data-option="ignoreTasks" />
+          <span><b>Task files local only.</b> Git ignores the folder <code>.dispatch</code>: tickets, briefs, plans, reports and logs stay on this computer, and a clone has none. Off, git tracks the folder and Dispatch commits it.</span>
+        </label>
+        <p>Short reports changes the step "Triage role". Measure before the plan changes the steps "Task files", "Section in CLAUDE.md" and "Measure before the plan". Task branches changes the steps "Allow rules", "Section in CLAUDE.md" and "Task branches". Task files local only changes the steps "Task files", "Section in CLAUDE.md" and "Task files in git". After Apply, the next start of the workspace opens a new triage chat. The other settings apply at once.</p>
       </fieldset>
       <section id="setup-rules-check">
         <h3>Rules that conflict with the pipeline</h3>
@@ -257,9 +261,9 @@
             <li>Click a step to see its file and the text that it adds.</li>
             <li>Under the steps, the window lists the rules of the project that conflict with the pipeline, each with its file as a link. A click opens the file in the viewer, also for a rule outside the project. <b>Open in editor</b> there lets you change the rule yourself.</li>
             <li>Apply makes no commit, so you can look at the changes in git first. When all steps are done, <b>Commit to git</b> becomes available.</li>
-            <li><b>Commit to git</b> commits on the current branch: <code>CLAUDE.md</code>, the three files in <code>.claude</code>, and the script, the two options files, the measure commands and the gate command in <code>.dispatch</code>. Your other changes stay out of the commit. Dispatch makes no push.</li>
+            <li><b>Commit to git</b> commits on the current branch: <code>CLAUDE.md</code>, the three files in <code>.claude</code>, and the script, the two options files, the measure commands and the gate command in <code>.dispatch</code>. With Task files local only on, it commits <code>.gitignore</code> instead of the files in <code>.dispatch</code>. Your other changes stay out of the commit. Dispatch makes no push.</li>
             <li>The window shows the commit, or the reason for no commit: no git repository, nothing to commit, or the error of git.</li>
-            <li>A work run starts only when the project has no uncommitted changes outside <code>.dispatch</code>. Without the setup commit, the first approval is refused and names the setup files. Dispatch commits the task files in <code>.dispatch</code> itself.</li>
+            <li>A work run starts only when the project has no uncommitted changes outside <code>.dispatch</code>. Without the setup commit, the first approval is refused and names the setup files. Dispatch commits the task files in <code>.dispatch</code> itself, unless Task files local only is on.</li>
             <li>The workspace is a new tab with two terminals. Claude Code starts in both.</li>
             <li>A close with a step still To do adds nothing. Click <b>+</b> again to start over.</li>
           </ul>
@@ -281,6 +285,7 @@
             <tr><td>Worker script</td><td><code>.dispatch/worker.ps1</code></td><td>Starts, resumes and stops a worker.</td></tr>
             <tr><td>Measure before the plan</td><td><code>.dispatch/measure-commands.txt</code></td><td>Optional: commands that the plan run may run.</td></tr>
             <tr><td>Task branches</td><td><code>.dispatch/merge-gate.txt</code></td><td>Optional: each task gets its own git branch.</td></tr>
+            <tr><td>Task files in git</td><td><code>.gitignore</code></td><td>Optional: the task files stay on this computer; a clone has none.</td></tr>
             <tr><td>Triage role</td><td><code>.claude/triage.md</code></td><td>Tells triage to plan and check, not to implement.</td></tr>
           </tbody>
         </table>
@@ -288,9 +293,9 @@
           <summary>Details</summary>
           <ul>
             <li><b>Task files.</b> Each worker writes its report and the state of its task into <code>.dispatch</code>. Triage writes its briefs to <code>briefs</code>, and each worker writes its plan to <code>plans</code>.</li>
-            <li><b>Task logs.</b> Dispatch writes one log per task into <code>logs</code>, in the format of the illspace project: the approved plan, each command of the plan run and the work run with its exit code and its last output lines, the sections of the report with "evidence: yes" or "no" after each Verification claim, and the tokens per model. It writes the log when the plan appears, and again when the plan or the report changes. Git tracks the logs with the other task files.</li>
+            <li><b>Task logs.</b> Dispatch writes one log per task into <code>logs</code>, in the format of the illspace project: the approved plan, each command of the plan run and the work run with its exit code and its last output lines, the sections of the report with "evidence: yes" or "no" after each Verification claim, and the tokens per model. It writes the log when the plan appears, and again when the plan or the report changes. With Task files local only off, git tracks the logs with the other task files.</li>
             <li>The options of the two runs are in <code>plan-flags.txt</code> and <code>work-flags.txt</code>. The lists above Workers change them.</li>
-            <li>Git tracks the folder, so a clone has the history of the tasks. Dispatch commits these files itself (the commit message starts with "Dispatch:"), except while a work run runs without a report. Approve does not count them as changes.</li>
+            <li>With Task files local only off, git tracks the folder, so a clone has the history of the tasks. Dispatch commits these files itself (the commit message starts with "Dispatch:"), except while a work run runs without a report. Approve does not count them as changes.</li>
             <li>A project of an older version has the folder <code>&lt;project&gt;-reports</code> next to it. Apply moves its files into <code>.dispatch</code> and overwrites nothing. The step shows the number of files first.</li>
             <li><b>Allow rules.</b> Triage can run the worker script and check workers without a prompt. A deny rule keeps the approve verb of the script for the Approve button. Each session can read and write the task files in <code>.dispatch</code> without a prompt.</li>
             <li>Apply removes the rules of an older version that name <code>&lt;project&gt;-reports</code>. Triage can also read the job folders of the workers (<code>%USERPROFILE%\.claude\jobs</code>), where a worker keeps the screenshots of its visual test.</li>
@@ -303,6 +308,8 @@
             <li><b>Task branches.</b> Off: the step is done, and nothing changes. On: each task works on its own branch <code>task/&lt;task&gt;</code>. Approve makes it from the branch that the project was on when the plan run started (the base). The worker commits there and never merges or pushes.</li>
             <li>When the report is written, Dispatch switches the project back to the base and commits the task files there. Then the task card shows <b>Merge</b>. The gate command of the box under the switch runs on the merged code first, for at most 4 hours; a first line <code># limit &lt;seconds&gt;</code> changes that.</li>
             <li>The log of the gate goes into <code>.dispatch/merge/</code>, which git ignores (Apply adds <code>merge/</code> to <code>.dispatch/.gitignore</code>). The step "Allow rules" adds a deny rule, so triage cannot merge.</li>
+            <li><b>Task files in git.</b> Off: the step is done, and nothing changes. On: Apply adds the line <code>.dispatch/</code> with a comment line to <code>.gitignore</code> of the project, and takes the task files out of git in one commit "Dispatch: task files are local only". The files stay on the disk. Commit to git then commits <code>.gitignore</code>.</li>
+            <li>With the switch on, tickets and task files are local only: a clone has no tickets, briefs, plans, reports or logs. Off again, Apply removes the line of Dispatch and commits the task files again. A line <code>.dispatch/</code> that you wrote yourself stays.</li>
             <li><b>Triage role.</b> The text tells the session in the Triage terminal that it is triage: it plans and checks, and it does no implementation. The project settings change this text.</li>
           </ul>
         </details>
@@ -461,7 +468,7 @@
             <li>The line above the message box says how many Todo tickets wait. The ticket in flight shows "Sent to triage", then "Triage reads", and its dashed card stands under In work until its task comes.</li>
             <li><b>Following the task.</b> When the plan run starts, the ticket goes to In progress and takes the title of the brief, unless you renamed it. A report that says done or failed moves it to Done ("failed" in red). A done report whose commands the transcripts do not show keeps it in In progress (see Tasks). A stopped task moves it to Canceled. When triage answers without a task, the ticket goes to Canceled with that note; drag it back to Todo to send it again.</li>
             <li>In Todo, ▲ and ▼ change the order, <b>← New</b> takes a ticket back, and × cancels it. <b>New ticket</b> adds a ticket in your words without sending anything. The search box finds a ticket by its title, words, id or type.</li>
-            <li>The file is <code>.dispatch/tickets.jsonl</code> of the project: one line per change, in the form of the starminer-manager tickets file. Dispatch commits it with the task files. Triage and the workers do not edit it.</li>
+            <li>The file is <code>.dispatch/tickets.jsonl</code> of the project: one line per change, in the form of the starminer-manager tickets file. Dispatch commits it with the task files, unless Task files local only is on. Triage and the workers do not edit it.</li>
             <li>The planned messages of an older version became Todo tickets at the first start, in their order, and the folder <code>.dispatch/backlog/</code> went.</li>
             <li>Setup pipeline shows "Section in CLAUDE.md" To do once after this update, because the section names the ticket line. Click Apply there.</li>
           </ul>

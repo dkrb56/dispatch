@@ -62,10 +62,10 @@ With several hosts, each project name gets ` · <host name>` after it, so two pr
 
 All in the open, each step listed before you apply it:
 
-- the folder `.dispatch` inside the project, with the briefs, plans, reports, the state of each task, the tickets file, the worker script `worker.ps1` and in `logs` the log of each task (the plan, each command of the worker with its output, and the report); git tracks it, Dispatch commits its files itself, and Apply moves the files of an older `<project>-reports` folder there;
+- the folder `.dispatch` inside the project, with the briefs, plans, reports, the state of each task, the tickets file, the worker script `worker.ps1` and in `logs` the log of each task (the plan, each command of the worker with its output, and the report); git tracks it and Dispatch commits its files itself, unless "Task files local only" is on, and Apply moves the files of an older `<project>-reports` folder there;
 - allow and deny rules, and two read folders, in `.claude/settings.local.json` of the project;
 - worktree isolation off, so workers edit the project itself;
-- optional, off by default: "Measure before the plan" lets the plan run run listed commands first, and "Task branches" gives each task its own branch `task/<task>`, which Dispatch merges on your click after a gate command passed (no push);
+- optional, off by default: "Measure before the plan" lets the plan run run listed commands first, and "Task branches" gives each task its own branch `task/<task>`, which Dispatch merges on your click after a gate command passed (no push), and "Task files local only" puts `.dispatch/` into the root `.gitignore`, so tickets and task files stay on your computer and a clone has none;
 - a "Background workers" section and optional working rules in `CLAUDE.md`;
 - the triage role in `.claude/triage.md`.
 

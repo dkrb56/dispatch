@@ -26,6 +26,8 @@ interface Options {
   measureBeforePlan: boolean;
   /** Each task works on its own branch, and Dispatch merges it on a click (ticket task-branches). Off at the start. */
   taskBranches: boolean;
+  /** Git ignores the task folder `.dispatch`, so the task files stay on this computer (ticket ignore-tasks). Off at the start. */
+  ignoreTasks: boolean;
 }
 
 /** The reply of the `pipeline_plan`, `pipeline_apply` and `set_project_options` commands. */
