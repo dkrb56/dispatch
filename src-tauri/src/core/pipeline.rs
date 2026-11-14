@@ -3103,6 +3103,11 @@ fn setup_time(project: &Project) -> Option<u64> {
 /// The briefs and the options files are not tasks.
 pub fn task_list(cwd: String) -> Result<TaskList, String> {
     let project = Project::find(&cwd)?;
+    // One read of a project at a time (ticket stale-report-loop, the user's answer to question 1): the
+    // frontend reads a project from the focused pane and from the overview at once, and a read that
+    // ran while the other one took a report from a branch gave the old copy and met its git lock.
+    let lock = read_lock(&project.root);
+    let _held = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     // The files are read before the branch step. When that step switched the checkout back or took
     // a newer report from a task branch, the files of this read are old: the same read reads them
     // again, so no window shows an old question for one poll (ticket stale-report-loop). Two reads
@@ -3112,6 +3117,14 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
         return Ok(list);
     }
     read_tasks(&project).map(|(list, _)| list)
+}
+
+/// The lock of the task reads of a project folder: a second read waits until the first one has ended.
+fn read_lock(root: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+    type Locks = std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>;
+    static LOCKS: std::sync::OnceLock<Locks> = std::sync::OnceLock::new();
+    let mut locks = LOCKS.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks.entry(root.to_path_buf()).or_default().clone()
 }
 
 /// One read of the tasks of a project for `task_list`, and whether the branch step changed the
@@ -5991,6 +6004,28 @@ if (args[0] === 'agents') {
         let after = git_out(&project, &["log", "--format=%s", &format!("{head}..{base}")]);
         assert!(!after.contains("Dispatch: report of"), "{after}");
         clean(&project);
+    }
+
+    #[test]
+    fn two_task_reads_at_once_both_give_the_newer_report() {
+        // The frontend reads a project from the focused pane and from the overview at the same time.
+        for round in 0..3 {
+            let (project, fake, _) = branch_project(&format!("stale-twice-{round}"));
+            stale_base_after_a_merge_by_hand(&project, &fake, "t-1");
+            let cwd = project.root.to_string_lossy().into_owned();
+            let reads: Vec<_> = (0..2)
+                .map(|_| {
+                    let cwd = cwd.clone();
+                    std::thread::spawn(move || {
+                        let list = task_list(cwd).unwrap();
+                        list.tasks.into_iter().find(|task| task.name == "t-1").and_then(|task| task.header).map(|header| header.state).unwrap_or_default()
+                    })
+                })
+                .collect();
+            let states: Vec<String> = reads.into_iter().map(|read| read.join().unwrap()).collect();
+            assert_eq!(states, ["done", "done"], "round {round}: a read gave the old copy");
+            clean(&project);
+        }
     }
 
     #[test]
