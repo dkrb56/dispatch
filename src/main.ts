@@ -28,6 +28,7 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 import { onReturn } from "./chatend";
 import { markedProject, showMark, watchArea } from "./focusmark";
+import { removeAnswer, removeTexts } from "./removeproject";
 import { type ColumnAction, type ColumnChoice, applyAction, columnStates, dragPartner, mayMinimize, parseChoice } from "./focuslayout";
 import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode } from "./overview";
 import {
@@ -2565,6 +2566,21 @@ function initStale(): void {
   document.querySelector("#stale-close")!.addEventListener("click", () => staleDialog.close());
   staleDialog.addEventListener("click", (event) => {
     if (event.target === staleDialog) staleDialog.close();
+  });
+}
+
+/** The window "Remove from focus mode?": its ×, the dark area, and the answer at the close. */
+function initRemoveProject(): void {
+  document.querySelector("#remove-project-close")!.addEventListener("click", () => removeDialog.close());
+  removeDialog.addEventListener("click", (event) => {
+    if (event.target === removeDialog) removeDialog.close();
+  });
+  removeDialog.addEventListener("close", () => {
+    const ref = removePending;
+    removePending = null;
+    const key = removeAnswer(ref ? refKey(ref) : null, removeDialog.returnValue);
+    if (ref && key !== null) removeFocusProject(ref);
+    focusedPane()?.term.focus();
   });
 }
 
@@ -7571,7 +7587,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
     if (column.morning) void openViewer(column.morning);
   });
   workersEl.addEventListener("click", () => setWorkersOpen(column, !column.workersOpen));
-  close.addEventListener("click", () => removeFocusProject(ref));
+  close.addEventListener("click", () => askRemoveProject(ref));
   // The column that the user works in is the project of Setup and Rules: a click in it (not on a
   // drag edge) or the keyboard arriving in it.
   watchArea(el, key, setFocusCurrent);
@@ -7948,6 +7964,26 @@ async function addFocusProject(): Promise<void> {
   renderFocus();
   renderPills();
   await refreshFocusTasks();
+}
+
+/** The project whose × opened the window "Remove from focus mode?", while the window is open. */
+let removePending: ProjectRef | null = null;
+const removeDialog = document.querySelector<HTMLDialogElement>("#remove-project")!;
+
+/** The × of a column: asks first; only Remove in the window takes the project out (remove-project-confirm). */
+function askRemoveProject(ref: ProjectRef): void {
+  const texts = removeTexts(projectName(ref));
+  removePending = ref;
+  document.querySelector<HTMLElement>("#remove-project-title")!.textContent = texts.title;
+  document.querySelector<HTMLElement>("#remove-project-body")!.textContent = texts.body;
+  document.querySelector<HTMLElement>("#remove-project-cancel")!.textContent = texts.cancel;
+  const confirm = document.querySelector<HTMLButtonElement>("#remove-project-confirm")!;
+  confirm.textContent = texts.remove;
+  // Esc and close() keep the old value: clear it, so only Remove gives the value of Remove.
+  removeDialog.returnValue = "";
+  if (!removeDialog.open) removeDialog.showModal();
+  // Enter on the focused Remove button confirms.
+  confirm.focus();
 }
 
 function removeFocusProject(ref: ProjectRef): void {
@@ -8884,6 +8920,7 @@ async function start(): Promise<void> {
   initDecisions();
   initQuestions();
   initStale();
+  initRemoveProject();
   initTickets();
   initTokens();
   void pollSide();

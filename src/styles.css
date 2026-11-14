@@ -1949,7 +1949,8 @@ button.task-head:hover {
 }
 
 #stale,
-#changelog {
+#changelog,
+#remove-project {
   width: min(92vw, 720px);
   max-height: 86vh;
   padding: 0;
@@ -1962,18 +1963,21 @@ button.task-head:hover {
 }
 
 #stale[open],
-#changelog[open] {
+#changelog[open],
+#remove-project[open] {
   display: flex;
   flex-direction: column;
 }
 
 #stale::backdrop,
-#changelog::backdrop {
+#changelog::backdrop,
+#remove-project::backdrop {
   background: rgb(0 0 0 / 60%);
 }
 
 #stale header,
-#changelog header {
+#changelog header,
+#remove-project header {
   display: flex;
   align-items: center;
   padding-left: 20px;
@@ -1981,7 +1985,8 @@ button.task-head:hover {
 }
 
 #stale h2,
-#changelog h2 {
+#changelog h2,
+#remove-project h2 {
   flex: 1;
   margin: 0;
   font-size: calc(16px * var(--text-scale));
@@ -1989,7 +1994,8 @@ button.task-head:hover {
 }
 
 #stale-close,
-#changelog-close {
+#changelog-close,
+#remove-project-close {
   width: 32px;
   height: 32px;
   margin: 8px;
@@ -2004,12 +2010,14 @@ button.task-head:hover {
 }
 
 #stale-close:hover,
-#changelog-close:hover {
+#changelog-close:hover,
+#remove-project-close:hover {
   background: var(--card);
 }
 
 #stale-intro,
-#changelog-intro {
+#changelog-intro,
+#remove-project-body {
   flex: none;
   margin: 0;
   padding: 10px 20px;
@@ -2024,6 +2032,41 @@ button.task-head:hover {
   min-height: 0;
   padding: 4px 20px 14px;
   overflow-y: auto;
+}
+
+/* The question before the × of a Focus column removes the project (remove-project-confirm). */
+#remove-project {
+  width: min(92vw, 460px);
+}
+
+#remove-project-body {
+  border-bottom: 0;
+  color: var(--text);
+}
+
+#remove-project-form {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 20px;
+  border-top: 1px solid var(--hairline);
+}
+
+#remove-project-form button {
+  padding: 5px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+#remove-project-form button.primary {
+  border-color: var(--work-line);
+  background: var(--work-bg);
+  color: var(--work);
 }
 
 /* One version of the changelog: the version and its date, then its changes. */
