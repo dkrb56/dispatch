@@ -1,5 +1,5 @@
 ## Background workers
-<!-- dispatch-section: 0370d657286642ae -->
+<!-- dispatch-section: b6ec14eb8c7465cd -->
 - A task is two runs of one worker session. The plan run reads the code and writes a plan. The work run executes the approved plan. Triage starts and resumes a worker only with the script `D:/dev_projects/dispatch/.dispatch/worker.ps1`, never with `claude --bg` or `claude --resume` directly. A worker works in the main checkout (`worktree.bgIsolation` is `none`).
 - Triage writes each brief to `D:/dev_projects/dispatch/.dispatch/briefs/<ticket-id>.md`: the user's words, the constraints, and the command that proves the work. The brief says nothing about the approach; the plan run decides that.
 - A message that Dispatch sends from its tickets board starts with the line `Ticket <id>: <title>`. Triage uses that id as the ticket id of the task. Dispatch keeps the tickets file `D:/dev_projects/dispatch/.dispatch/tickets.jsonl`; triage and the workers do not edit it.
