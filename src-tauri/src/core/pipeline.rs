@@ -624,7 +624,7 @@ impl Project {
 {measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; the word HOLD stands in no other line of this section); Do not touch; Size (files). No code in a plan.
 {checks}- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which resumes the same session on the options in `{reports}/work-flags.txt`, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when the working tree has uncommitted changes outside `{reports}/` (after Setup pipeline, the user commits the setup files first; {tasks_git}), when the worker still runs, or when the task was stopped.
 - The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It never pushes or merges. The user decides the push.
-{branches}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification lists each command the worker ran as a line that starts with a code span with the exact text of the Bash call, for example `` `cargo test --lib` ``, followed by what it showed. Dispatch compares these spans with the Bash commands of the transcripts of the task, without a leading `cd <folder> && ` on both sides: a done report with a claim that no command matches, or without the section, counts as working, and its ticket stays open.
+{branches}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification lists each command the worker ran as a line that starts with a code span with the exact text of the Bash call, for example `` `cargo test --lib` ``, followed by what it showed. Only a line without indent is a claim: the results of a command stand as indented lines under it, and Dispatch does not compare them. Dispatch compares these spans with the Bash commands of the transcripts of the task, without a leading `cd <folder> && ` on both sides: a done report with a claim that no command matches, or without the section, counts as working, and its ticket stays open.
 - A worker starts no session and sends no message to a chat. It has no question tool. A question for the user goes into the report under the heading `## Questions`: numbered items, each with its options as list items, the recommended option first. Each option is one short line, because Dispatch shows it as a button and sends it back word for word; the details stand above the questions. The worker then writes `state: needs-decision` and `needs: decision` and ends its turn, also when the question is about a permission. `needs: permission` means: a refused tool call stopped the work, the report names the refused call and the rule it needs, and the work goes on with a follow-up `Continue` once the user changed the rule. The user answers in the task card of Dispatch, and the answer arrives as a follow-up `Answer to question N: <option>`. An answered question never comes back unchanged: after the answer the worker takes the question out of its report or writes what it decided and did, and ends with `state: done` or a new question. A follow-up `Continue` after an answer means: take the answers as given and go on.
 - A follow-up goes through `{script} reply <ticket-id> \"<message>\"` and quotes the user's words exactly. The script takes the options of the run from `{reports}/<ticket-id>.state`.
 - Triage does no implementation. It classifies, writes briefs, starts the plan run, shows the plan, relays the yes, checks results and reports to the user.
@@ -2144,12 +2144,33 @@ fn section_lines(text: &str, title: &str) -> Vec<String> {
     lines
 }
 
-/// The claims of a report (ticket report-check): of each line of the section `## Verification`
-/// that starts with a code span, the trimmed text of that first span. The rest of the line is what
-/// the command showed and may hold code spans too. A span of several backticks ends at the same
-/// number of backticks; an empty or unclosed span is no claim.
+/// The top-level lines of a section, as `section_lines` gives them: a line with a space or a tab
+/// at its start is left out (ticket claim-lines).
+fn top_level_lines(text: &str, title: &str) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut in_section = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(heading) = trimmed.strip_prefix("## ") {
+            in_section = heading.trim().eq_ignore_ascii_case(title);
+            continue;
+        }
+        if in_section && !trimmed.is_empty() && !line.starts_with([' ', '\t']) {
+            let item = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")).unwrap_or(trimmed);
+            lines.push(item.trim().to_string());
+        }
+    }
+    lines
+}
+
+/// The claims of a report (ticket report-check): of each top-level line of the section
+/// `## Verification` that starts with a code span, the trimmed text of that first span. The rest of
+/// the line is what the command showed and may hold code spans too. A span of several backticks
+/// ends at the same number of backticks; an empty or unclosed span is no claim. An indented line is
+/// a result of the claim above it, whatever it holds, and no claim (ticket claim-lines, user
+/// decision 1).
 fn verification_claims(text: &str) -> Vec<String> {
-    section_lines(text, "Verification").iter().filter_map(|line| claim_of(line)).collect()
+    top_level_lines(text, "Verification").iter().filter_map(|line| claim_of(line)).collect()
 }
 
 /// The claim of one line of the Verification section without its list mark: the trimmed text of
@@ -4426,12 +4447,50 @@ mod tests {
     #[test]
     fn verification_claims_reads_the_first_code_span_of_each_claim_line() {
         let report = new_report(
-            "- `cargo test --lib` in `src-tauri/`: `test result: ok`.\n- ``git log -1 --format=`%s` `` gives the subject.\n- Read the code by hand: no command.\n  - `npm run build`: exit code 0.\n- `` : an empty span.\n- `unclosed span\n`  node --test tests/  `: trimmed.\n",
+            "- `cargo test --lib` in `src-tauri/`: `test result: ok`.\n- ``git log -1 --format=`%s` `` gives the subject.\n- Read the code by hand: no command.\n  - `npm run build`: exit code 0.\n\t- `npm test`: a result.\n  * `git status`: a result.\n- `` : an empty span.\n- `unclosed span\n`  node --test tests/  `: trimmed.\n",
         );
-        assert_eq!(verification_claims(&report), ["cargo test --lib", "git log -1 --format=`%s`", "npm run build", "node --test tests/"]);
+        // An indented line is a result, also under a line without a command (user decision 1 of claim-lines).
+        assert_eq!(verification_claims(&report), ["cargo test --lib", "git log -1 --format=`%s`", "node --test tests/"]);
         // Code spans of other sections are no claims, and a report without the section has none.
         assert!(verification_claims("state: done\n\n## What changed\n- `cargo test`\n").is_empty());
         assert!(verification_claims("").is_empty());
+    }
+
+    /// The commands of the Verification section of the report of overview-card-expand (ticket
+    /// claim-lines): each ran, so each is in the evidence.
+    const EXPAND_COMMANDS: [&str; 8] = [
+        "npx tsc --noEmit",
+        r#"node --test --test-reporter=tap "tests/*.test.ts" "tests/*.test.mjs" 2>&1 | tail -8"#,
+        r#"npm run build > /dev/null 2>&1; echo "build exit $?""#,
+        r#"powershell -NoProfile -Command '$e=$null; [System.Management.Automation.Language.Parser]::ParseFile("D:\dev_projects\dispatch\.dispatch\proof\overview-card-expand\scripts\oc-run.ps1",[ref]$null,[ref]$e) | Out-Null; "parse errors: $($e.Count)"'; node --check .dispatch/proof/overview-card-expand/scripts/oc-drive.mjs && node --check .dispatch/proof/overview-card-expand/scripts/oc-setup.mjs && echo "node syntax ok"; tasklist | grep -i dispatch"#,
+        r#"CARGO_TARGET_DIR='D:\dev_projects\dispatch\src-tauri\target\tickets-proof' npx tauri build --debug --no-bundle --config .dispatch/proof/overview-card-expand/scripts/test-conf.json > "$CLAUDE_JOB_DIR/tmp/build.log" 2>&1; echo "build exit $?"; tail -3 "$CLAUDE_JOB_DIR/tmp/build.log""#,
+        "powershell -ExecutionPolicy Bypass -File .dispatch/proof/overview-card-expand/scripts/oc-run.ps1 2>&1 | tail -30",
+        r#"node --check .dispatch/proof/overview-card-expand/scripts/oc-drive.mjs && powershell -ExecutionPolicy Bypass -File .dispatch/proof/overview-card-expand/scripts/oc-run.ps1 2>&1 | grep -v "LF will be replaced" | tail -16; cat .dispatch/proof/overview-card-expand/card-proof.txt"#,
+        "git log -1 --format=%s; git status --porcelain | wc -l",
+    ];
+
+    #[test]
+    fn the_results_under_a_claim_are_no_claims() {
+        // The section of the report of overview-card-expand: eight commands at the left edge, the
+        // six result lines of the proof file indented under the seventh, one line without a command.
+        let mut section = String::new();
+        for (at, command) in EXPAND_COMMANDS.iter().enumerate() {
+            section.push_str(&format!("- `{command}`: what it showed.\n"));
+            if at == 6 {
+                section.push_str("  - `normal card: size = 400 x 1511, tasks shown = 8`\n  - `extended card: size = 800 x 2143, tasks shown = 11, on top = true`\n  - `back to normal: size as before = true`\n  - `lines: normal card cut = true (white-space nowrap), extended card cut = false (white-space normal)`\n  - `button: normal ⤢, extended ⤡`\n  - `restart: extended kept = true (size = 800 x 2143, tasks shown = 11)`\n");
+            }
+        }
+        section.push_str("- The diff before the commit had no personal name, mail address or user folder path.\n");
+        let report = new_report(&section);
+        let evidence: Vec<_> = EXPAND_COMMANDS.iter().map(|command| bash(command)).collect();
+        assert_eq!(verification_claims(&report), EXPAND_COMMANDS);
+        assert_eq!(check_report(&report, &evidence, true, &[]), None);
+        // A top-level claim without its command still goes back to working.
+        let (_, unverified) = check_report(&report, &evidence[1..], true, &[]).unwrap();
+        assert_eq!(unverified, [EXPAND_COMMANDS[0]]);
+        // Any indent before the list mark makes a result: two spaces, four spaces, a tab, or `*`.
+        let indented = new_report("- `cargo test --lib`: ok.\n  - `npm run build`\n    - `npm test`\n\t- `npx tsc --noEmit`\n  * `git status`\n* `git log -1`: the subject.\n");
+        assert_eq!(verification_claims(&indented), ["cargo test --lib", "git log -1"]);
     }
 
     #[test]
