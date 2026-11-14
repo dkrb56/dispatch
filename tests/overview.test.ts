@@ -361,7 +361,8 @@ test("the Overview meets the page", () => {
   assert.match(block, /\.place\(/);
   assert.match(block, /\.restore\(\)/);
   // Each Chat view still writes to the terminal of its own pane, on the pane's host (remote-multi-host).
-  assert.match(MAIN, /paste: \(text\) => term\.paste\(text\),/);
+  // The paste marks itself as no key of the user (typing-sent-by-line).
+  assert.match(MAIN, /paste: \(text\) => \{\s*pane\.pasting = true;\s*try \{\s*term\.paste\(text\);/);
   assert.match(MAIN, /write: \(data\) => call\(pane\.host, "pty_write", \{ id: pane\.id, data \}\),/);
   assert.match(MAIN, /savedView\(/);
 });

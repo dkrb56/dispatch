@@ -101,14 +101,16 @@ export interface ChatView {
   /**
    * Sends a text to the session as a message of the user, without touching the message box. The
    * caller makes sure that the session can take a message: Enter in a menu or a prompt would
-   * select the highlighted option.
+   * select the highlighted option. The caller also makes sure that the user does not type in the
+   * terminal of the pane: the text would join the typed text, and Enter would send both.
    */
   say(text: string): Promise<void>;
   /**
    * Sends a ticket of the Todo column (ticket tickets) or a question of the board to the session as
    * the box sends a message (ticket overview-backlog): the
    * paths of pasted images at its start each as a paste of their own, then the text, then Enter. The
-   * message box keeps its draft. The caller makes sure that the session can take a message.
+   * message box keeps its draft. The caller makes sure that the session can take a message, and
+   * that the user does not type in the terminal of the pane.
    */
   deliver(message: string): Promise<void>;
   /**
@@ -1091,7 +1093,8 @@ export function createChatView(options: ChatViewOptions): ChatView {
       }
     },
     async say(text) {
-      // The draft of the user in the box stays. The text goes to Claude Code as a paste, as a message does.
+      // The draft of the user in the box of the Chat view stays. The text goes to Claude Code as a
+      // paste, as a message does; the prompt of the terminal must be free (the caller checks it).
       while (sending) await wait(PASTE_WAIT_MS);
       sending = true;
       sendEl.disabled = true;

@@ -31,6 +31,7 @@ import { markedProject, showMark, watchArea } from "./focusmark";
 import { chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, runStarting, savedView, snapPlace, type ViewMode } from "./overview";
 import { addedText, columnTickets, COLUMNS, countText, DROP_COLUMNS, endFailed, endWord, goesStraight, isQuestion, movedIds, nextTicket, nextType, type Ticket, ticketCounts, ticketMatches, ticketMessage, type TicketStatus, todoOrder, typeName } from "./tickets";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
+import { type Typed, typedAfter, typingState } from "./typing";
 import { MENU_ABOVE_LINES, menuScreen, parseMenu, parseReview, SUBMIT_QUESTION } from "./menu";
 import { type MenuRecord, type ScreenRow } from "./menurecord";
 import { getVersion } from "@tauri-apps/api/app";
@@ -170,6 +171,10 @@ interface Pane extends SavedPane {
   sequence?: boolean;
   /** Called at the next prompt of the shell. */
   promptWaiters: (() => void)[];
+  /** What the user typed into the terminal of a triage pane since the last Enter (typing-sent-by-line). */
+  typed?: Typed;
+  /** Dispatch pastes a text into the terminal now: its `onData` is no key of the user. */
+  pasting?: boolean;
   /** The arguments of its `pty_spawn` without the size: a reconnect to the host calls it again (remote-client-mode). */
   spawnArgs?: Record<string, unknown>;
 }
@@ -2586,6 +2591,8 @@ async function dispatchTickets(): Promise<void> {
       if (switchRuns(key) || triageQueue.some((line) => line.project === key)) continue;
       if (!triageFree(await triageStatus(pane).catch(() => null))) continue;
       if (parseMenu(menuLines(pane.term)) !== null) continue;
+      // A ticket goes through the same prompt as the keys of the user (typing-sent-by-line).
+      if (userTypes(pane)) continue;
       const known = projectTaskList(record).map((task) => task.name);
       const card = pendingCard(key, ticket.title, known, Date.now(), ticket.id);
       sentTickets.add(`${key}\n${ticket.id}`);
@@ -2972,6 +2979,18 @@ async function triageReady(pane: Pane): Promise<boolean> {
   return parseMenu(menuLines(pane.term)) === null;
 }
 
+/**
+ * The user types in the terminal of a triage pane: a key came a moment ago, or the typed text still
+ * stands on the screen. A paste of a line would join that text, and its Enter would send both
+ * (typing-sent-by-line). A typed text that the screen no longer shows is forgotten.
+ */
+function userTypes(pane: Pane): boolean {
+  if (!pane.typed) return false;
+  const state = typingState(pane.typed, terminalLines(pane.term), Date.now());
+  if (state === "reset") pane.typed = undefined;
+  return state === "types";
+}
+
 let flushingTriage = false;
 
 /** Sends the queued lines whose triage can take them. The rest wait for the next poll. */
@@ -2997,6 +3016,8 @@ async function flushTriageQueue(): Promise<void> {
       if (!pane?.chat) continue;
       try {
         if (!(await triageReady(pane))) continue;
+        // The user types in the terminal of triage: the line waits for the next poll.
+        if (userTypes(pane)) continue;
         if (switchRuns(line.project)) continue;
         await pane.chat.say(lineText(line));
         triageQueue.splice(triageQueue.indexOf(line), 1);
@@ -5936,7 +5957,15 @@ function createPane(tabId: string, saved: SavedPane): Pane {
           return null;
         }
       },
-      paste: (text) => term.paste(text),
+      // A paste of Dispatch (a line, a ticket, a message of the box) is no key of the user.
+      paste: (text) => {
+        pane.pasting = true;
+        try {
+          term.paste(text);
+        } finally {
+          pane.pasting = false;
+        }
+      },
       write: (data) => call(pane.host, "pty_write", { id: pane.id, data }),
       screen: () => menuLines(term),
       screenRows: () => terminalRows(term),
@@ -6103,7 +6132,14 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
     return true;
   });
 
-  term.onData((data) => void call(pane.host, "pty_write", { id, data }));
+  term.onData((data) => {
+    // The keys of the user in a triage terminal hold the lines of Dispatch (typing-sent-by-line).
+    // A report of the terminal (focus, mouse, cursor) starts with ESC and is no typing; a paste is.
+    if (pane.role === "triage" && !pane.pasting && (!data.startsWith("\x1b") || data.startsWith("\x1b[200~"))) {
+      pane.typed = { text: typedAfter(pane.typed?.text ?? "", data), at: Date.now() };
+    }
+    void call(pane.host, "pty_write", { id, data });
+  });
   term.onResize(({ cols, rows }) => {
     // The agent view prints a new frame at each size and leaves the old ones above it. Before it
     // draws again, the screen and the scrollback of its pane are empty, and the cursor is at the top.
