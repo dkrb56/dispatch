@@ -5,8 +5,9 @@
 /**
  * The text of a question from the screen and the text of a question from the chat file are the
  * same question. The screen breaks lines and words and changes spaces, so all white space goes
- * before the compare. The screen keeps only the last paragraph above the options, so the file
- * text may also end with the screen text. The options are not compared: the screen can cut a label.
+ * before the compare. The screen gives the lines between the tab bar and the options, or an empty
+ * text when it cannot find them, so the file text may also end with the screen text. The options are
+ * not compared: the screen can cut a label.
  */
 export function sameQuestion(screen: string, file: string): boolean {
   const seen = screen.replace(/\s+/g, "");
@@ -19,6 +20,23 @@ export interface AskedQuestion {
   question: string;
   header?: string;
   options?: { label: string }[];
+}
+
+/** What a question card shows when the Chat view could not read the question from the screen (ticket question-card-text). */
+export const QUESTION_NOT_FOUND = "Dispatch could not read the question from the screen. Open the terminal to read it.";
+
+/**
+ * A question from the screen (`seen`) and a question of the chat file (`named`) are the same: their
+ * texts are the same question, or the screen has no text and the option labels, without white space,
+ * are the same in the same order.
+ */
+export function sameAskedQuestion(seen: AskedQuestion, named: AskedQuestion): boolean {
+  if (sameQuestion(seen.question, named.question)) return true;
+  if (seen.question.trim() !== "") return false;
+  const labels = (asked: AskedQuestion) => (asked.options ?? []).map((option) => option.label.replace(/\s+/g, ""));
+  const a = labels(seen);
+  const b = labels(named);
+  return a.length > 0 && a.length === b.length && a.every((label, index) => label === b[index]);
 }
 
 /** The label and the tooltip of a button of a question card. */

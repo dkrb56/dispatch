@@ -56,13 +56,37 @@ export type OpenRecord = Omit<MenuRecord, "outcome"> | null;
 /** The most reads one record keeps: the first one and the newest ones. A menu that never settles cannot grow it without a bound. */
 export const MAX_READS = 30;
 
-/** The terminal rows joined as `terminalLines` in main.ts joins them: a wrapped row continues the line above. */
-export function joinRows(rows: ScreenRow[]): string[] {
+/** A character that takes two columns of the terminal: East Asian wide characters and most emoji. */
+const WIDE = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹏＀-｠￠-￦\u{1F300}-\u{1FAFF}]/u;
+
+/** The columns that a text takes in the terminal. */
+function columns(text: string): number {
+  let count = 0;
+  for (const char of text) count += WIDE.test(char) ? 2 : 1;
+  return count;
+}
+
+/**
+ * A row that xterm marks as wrapped is a real wrap of the row above (ticket question-card-text): the
+ * row above is full to its last column with a character that is no space, and the row has text.
+ * Claude Code pads its rows with spaces to the last column, and the terminal then marks the next row
+ * as wrapped although Claude Code drew it as a line of its own.
+ */
+function realWrap(above: ScreenRow, row: ScreenRow, width: number): boolean {
+  return row.text.trim() !== "" && !/\s$/.test(above.text) && columns(above.text) >= width;
+}
+
+/**
+ * The terminal rows joined as `terminalLines` in main.ts joins them: a wrapped row continues the line
+ * above. With the `width` of the terminal only a real wrap joins; without it each wrapped row joins.
+ */
+export function joinRows(rows: ScreenRow[], width?: number): string[] {
   const lines: string[] = [];
-  for (const row of rows) {
-    if (row.wrapped && lines.length > 0) lines[lines.length - 1] += row.text;
+  rows.forEach((row, index) => {
+    const joins = row.wrapped && lines.length > 0 && (width === undefined || realWrap(rows[index - 1], row, width));
+    if (joins) lines[lines.length - 1] += row.text;
     else lines.push(row.text);
-  }
+  });
   return lines;
 }
 
@@ -111,7 +135,7 @@ function localIso(now: number): string {
 export function recordRead(open: OpenRecord, input: ReadInput): { open: OpenRecord; done: MenuRecord | null } {
   if (!wantsRead(open, input.menu, input.settledBefore)) return { open, done: null };
   const counted = input.menu !== null && input.settledAfter !== null && sameMenu(input.menu, input.settledAfter);
-  const joined = joinRows(input.rows);
+  const joined = joinRows(input.rows, input.cols);
   const read: MenuRead = {
     at: localIso(input.now),
     now: input.now,
@@ -147,7 +171,7 @@ export function recordName(now: number, pane: string): string {
   return `menu-${stamp}-${id}.json`;
 }
 
-/** The menu that `parseMenu` makes of the lines of each read of a record, in order. */
+/** The menu that `parseMenu` makes of the lines of each read of a record, at the width of the read, in order. */
 export function replayRecord(record: MenuRecord): (Question[] | null)[] {
-  return record.reads.map((read) => parseMenu(read.lines));
+  return record.reads.map((read) => parseMenu(read.lines, read.cols));
 }

@@ -126,7 +126,7 @@ test("a record replays through parseMenu to the menu of its counted read, and it
   const last = record.reads.length - 1;
   assert.deepEqual(replayed[last], record.reads[last].menu);
   assert.deepEqual(replayed[0], record.reads[0].menu);
-  for (const read of record.reads) assert.deepEqual(joinRows(read.rows), read.lines);
+  for (const read of record.reads) assert.deepEqual(joinRows(read.rows, read.cols), read.lines);
   // A row that xterm marked as wrapped joins the line above, as `terminalLines` does.
   const wrapped = rowsOf(COMPLETE_SCREEN, 4);
   assert.equal(wrapped.length, COMPLETE_SCREEN.length + 1);
@@ -157,4 +157,37 @@ test("a menu that never settles keeps the first read and the newest reads, at mo
   assert.equal(state.open?.dropped, 10);
   assert.equal(state.open?.reads[0].now, 0, "the first read stays");
   assert.equal(state.open?.reads[MAX_READS - 1].now, (MAX_READS + 9) * 100);
+});
+
+// Ticket question-card-text: Claude Code pads its rows with spaces to the last column, and xterm then marks
+// the next row as wrapped. With the width only a real wrap joins: a row above that is full to its last
+// column with a character that is no space, and a wrapped row with text.
+test("joinRows with the width: a blank wrapped row, a row after a short or padded row stay lines; a row after a full row joins", () => {
+  const pad = (text: string) => text.padEnd(20);
+  const rows: ScreenRow[] = [
+    { text: pad("● A message."), wrapped: false },
+    { text: pad(""), wrapped: true },
+    { text: pad(" ☐ Bug task"), wrapped: true },
+    { text: "short", wrapped: false },
+    { text: "next after short", wrapped: true },
+    { text: "abcdefghijklmnopqrst", wrapped: false },
+    { text: "uvw", wrapped: true },
+    { text: "─".repeat(20), wrapped: false },
+    { text: "  4. Chat about this", wrapped: true },
+  ];
+  assert.deepEqual(joinRows(rows, 20), [
+    pad("● A message."),
+    pad(""),
+    pad(" ☐ Bug task"),
+    "short",
+    "next after short",
+    "abcdefghijklmnopqrstuvw",
+    `${"─".repeat(20)}  4. Chat about this`,
+  ]);
+  // Without the width each wrapped row joins, as before.
+  assert.equal(joinRows(rows).length, 4);
+  // A blank wrapped row after a full row stays a line too.
+  assert.deepEqual(joinRows([{ text: "abcdefghijklmnopqrst", wrapped: false }, { text: "", wrapped: true }], 20), ["abcdefghijklmnopqrst", ""]);
+  // A wide character takes two columns: ten of them fill a row of 20.
+  assert.deepEqual(joinRows([{ text: "漢".repeat(10), wrapped: false }, { text: "字", wrapped: true }], 20), [`${"漢".repeat(10)}字`]);
 });

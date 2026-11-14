@@ -33,7 +33,7 @@ import { addedText, columnTickets, COLUMNS, countText, DROP_COLUMNS, endFailed, 
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { type Typed, typedAfter, typingState } from "./typing";
 import { MENU_ABOVE_LINES, menuScreen, parseMenu, parseReview, SUBMIT_QUESTION } from "./menu";
-import { type MenuRecord, type ScreenRow } from "./menurecord";
+import { joinRows, type MenuRecord, type ScreenRow } from "./menurecord";
 import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, type FileInfo, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
@@ -2681,28 +2681,29 @@ function withPending<T extends HTMLElement>(tasks: Task[], items: T[], project: 
   return [...items.slice(0, at), ...cards.map(pendingElement), ...items.slice(at)];
 }
 
-/** The lines of the screen of a terminal. A line that the terminal wrapped is one line of the program. */
-function terminalLines(term: Terminal): string[] {
+/** The rows `from` to `to` (not included) of the buffer of a terminal, each with its wrap mark. */
+function bufferRows(term: Terminal, from: number, to: number): ScreenRow[] {
   const buffer = term.buffer.active;
-  const lines: string[] = [];
-  for (let row = 0; row < term.rows; row++) {
-    const line = buffer.getLine(buffer.baseY + row);
-    const text = line?.translateToString(true) ?? "";
-    if (line?.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
-    else lines.push(text);
+  const rows: ScreenRow[] = [];
+  for (let row = from; row < to; row++) {
+    const line = buffer.getLine(row);
+    rows.push({ text: line?.translateToString(true) ?? "", wrapped: Boolean(line?.isWrapped) });
   }
-  return lines;
+  return rows;
+}
+
+/**
+ * The lines of the screen of a terminal. A line that the terminal really wrapped is one line of the
+ * program; a row that only reached the last column with padding stays a line (`joinRows`).
+ */
+function terminalLines(term: Terminal): string[] {
+  return joinRows(terminalRows(term).rows, term.cols);
 }
 
 /** The rows of the screen of a terminal with the wrap mark of each, unjoined, and its width: the record of the menu reads keeps them. */
 function terminalRows(term: Terminal): { cols: number; rows: ScreenRow[] } {
-  const buffer = term.buffer.active;
-  const rows: ScreenRow[] = [];
-  for (let row = 0; row < term.rows; row++) {
-    const line = buffer.getLine(buffer.baseY + row);
-    rows.push({ text: line?.translateToString(true) ?? "", wrapped: Boolean(line?.isWrapped) });
-  }
-  return { cols: term.cols, rows };
+  const baseY = term.buffer.active.baseY;
+  return { cols: term.cols, rows: bufferRows(term, baseY, baseY + term.rows) };
 }
 
 /** The version of the app for the record of the menu reads, read once. */
@@ -2717,15 +2718,8 @@ async function saveMenuRecord(pane: Pane, name: string, record: MenuRecord): Pro
 
 /** The `count` rows of the scrollback right above the screen of a terminal, joined as in `terminalLines`. */
 function scrollbackLines(term: Terminal, count: number): string[] {
-  const buffer = term.buffer.active;
-  const lines: string[] = [];
-  for (let row = Math.max(0, buffer.baseY - count); row < buffer.baseY; row++) {
-    const line = buffer.getLine(row);
-    const text = line?.translateToString(true) ?? "";
-    if (line?.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
-    else lines.push(text);
-  }
-  return lines;
+  const baseY = term.buffer.active.baseY;
+  return joinRows(bufferRows(term, Math.max(0, baseY - count), baseY), term.cols);
 }
 
 /** The lines in which a question menu is read: the screen, and the scrollback above it for a menu taller than the screen. */
@@ -2748,7 +2742,7 @@ function recordOpenQuestions(): void {
   for (const pane of panes.values()) {
     if (pane.role !== "triage" || !pane.project) continue;
     const screen = menuLines(pane.term);
-    const menu = parseMenu(screen);
+    const menu = parseMenu(screen, pane.term.cols);
     if (!menu || menu.length === 0) continue;
     open[paneKey(pane)] = lostQuestionLine(menu, screen);
   }
@@ -2774,7 +2768,8 @@ function lostQuestionLine(menu: NonNullable<ReturnType<typeof parseMenu>>, scree
     );
   }
   const questions = menu
-    .map((question) => `"${question.question}" (options: ${(question.options ?? []).map((option) => option.label).join(" | ")})`)
+    // The text of a question keeps its line breaks (ticket question-card-text); the line to triage stays one line.
+    .map((question) => `"${question.question.replace(/\s+/g, " ").trim()}" (options: ${(question.options ?? []).map((option) => option.label).join(" | ")})`)
     .join("; ");
   return lostLine(questions);
 }
@@ -5968,6 +5963,7 @@ function createPane(tabId: string, saved: SavedPane): Pane {
       },
       write: (data) => call(pane.host, "pty_write", { id: pane.id, data }),
       screen: () => menuLines(term),
+      width: () => term.cols,
       screenRows: () => terminalRows(term),
       saveRecord: (name, record) => saveMenuRecord(pane, name, record),
       saveImage: (image) => saveImage(pane, image),

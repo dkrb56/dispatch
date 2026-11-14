@@ -10,7 +10,7 @@ import { atEnd as listAtEnd, endKeeper } from "./chatend";
 import { type FileEntry, imageFileUrl } from "./files";
 import { type MenuReads, NO_READS, parseMenu, type Question, settleMenu } from "./menu";
 import { type MenuRecord, type OpenRecord, recordName, recordRead, type ScreenRow, wantsRead } from "./menurecord";
-import { cancelButton, NO_DEFAULTS, openDefaults, type QuestionButton, sameQuestion, sendCancel, viewDefaultsButton } from "./question";
+import { cancelButton, NO_DEFAULTS, openDefaults, QUESTION_NOT_FOUND, type QuestionButton, sameAskedQuestion, sendCancel, viewDefaultsButton } from "./question";
 import { type Named, namedTasks, sections } from "./sections";
 
 /** One message of a chat. The `chat_view` command gives them. */
@@ -33,7 +33,8 @@ interface OpenQuestion {
   /** One element for each question, with its buttons. */
   parts: HTMLElement[];
   /**
-   * The question comes from the terminal screen, because the chat file does not have it yet.
+   * The question comes from the terminal screen, between the tab bar and the options, because the
+   * chat file does not have it yet.
    * Claude Code writes a question into the chat file only after the answer. A question of the
    * session that closes before that waits in the view for its line in the chat file.
    */
@@ -59,13 +60,19 @@ function addHeader(text: HTMLElement, header: string): void {
 
 /**
  * The chat file names the questions of the screen: each part whose question the file names gets
- * the header chip of the file. The chip of the tool call shows after a restart too.
+ * the header chip of the file. The chip of the tool call shows after a restart too. A part whose
+ * question the screen could not read gets the text of the file in the place of its note.
  */
 function addHeaders(parts: HTMLElement[], seen: Question[], named: Question[]): void {
   seen.forEach((asked, index) => {
-    const header = named.find((other) => sameQuestion(asked.question, other.question))?.header;
+    const match = named.find((other) => sameAskedQuestion(asked, other));
     const text = parts[index]?.querySelector<HTMLElement>(".question-text");
-    if (header && text) addHeader(text, header);
+    if (!match || !text) return;
+    if (text.classList.contains("question-missing")) {
+      text.classList.remove("question-missing");
+      text.textContent = match.question;
+    }
+    if (match.header) addHeader(text, match.header);
   });
 }
 
@@ -135,6 +142,8 @@ export interface ChatViewOptions {
   write: (data: string) => Promise<void>;
   /** The lines of the terminal screen. */
   screen: () => string[];
+  /** The width of the terminal in columns: the read of a menu joins the rows of its question at it. */
+  width: () => number;
   /** The rows of the visible terminal screen with the wrap mark of each, and the width of the terminal. */
   screenRows: () => { cols: number; rows: ScreenRow[] };
   /** Writes the record of the menu reads as the file `name` (ticket menu-read-recorder). */
@@ -685,7 +694,11 @@ export function createChatView(options: ChatViewOptions): ChatView {
       const part = element("div", "question-part");
       if (number === 0 && !inTerminal) part.classList.add("current");
       const text = element("div", "question-text");
-      text.append(asked.question);
+      // The screen gave no question text (ticket question-card-text): one line says so, never the chat.
+      if (fromScreen && asked.question.trim() === "") {
+        text.classList.add("question-missing");
+        text.append(QUESTION_NOT_FOUND);
+      } else text.append(asked.question);
       if (asked.header) addHeader(text, asked.header);
       part.append(text);
       if (!inTerminal) {
@@ -783,7 +796,7 @@ export function createChatView(options: ChatViewOptions): ChatView {
   function nameClosed(item: ChatItem): boolean {
     const named = item.questions ?? [];
     const matches = unnamed.filter((entry) =>
-      entry.questions.some((asked) => named.some((other) => sameQuestion(asked.question, other.question))),
+      entry.questions.some((asked) => named.some((other) => sameAskedQuestion(asked, other))),
     );
     if (matches.length === 0) return false;
     for (const entry of matches) addHeaders(entry.parts, entry.questions, named);
@@ -917,7 +930,7 @@ export function createChatView(options: ChatViewOptions): ChatView {
         // option is then not the question, and options are missing (ticket chat-question-doubled).
         // A menu counts only after two reads that agree.
         const screen = options.screen();
-        const read = parseMenu(screen);
+        const read = parseMenu(screen, options.width());
         const readAt = Date.now();
         const settledBefore = reads.settled;
         reads = settleMenu(reads, read, readAt);

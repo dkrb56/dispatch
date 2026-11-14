@@ -26,17 +26,98 @@ const BOX_LINES = /[─-╿]+/g;
 /** The tab bar of a form with several questions: `←  ☐ Gateway mode  ✔ Submit  →`, or `[ ] Gateway mode`. */
 const TAB_BAR = /^\s*(?:←|→|☐|☒|✔|✓|√|\[[ x×√✓✔]\])/;
 
+/** A left border of a box at the start of a line, with the space after it. */
+const LEFT_SIDE = /^\s*[│┃║]\s?/;
+
 /**
  * The text of one screen line of a menu, without its box: a left border goes, the part right of
- * the next border (a preview pane, or the right border) goes, rules become spaces. A line of the
- * tab bar becomes empty, so it ends the paragraph of the question above the options.
+ * the next border (a preview pane, or the right border) goes, rules become spaces.
  */
-export function menuText(line: string): string {
-  let text = line.replace(/^\s*[│┃║]\s?/, "");
+export function boxText(line: string): string {
+  let text = line.replace(LEFT_SIDE, "");
   const side = text.search(BOX_SIDE);
   if (side >= 0) text = text.slice(0, side);
-  text = text.replace(BOX_LINES, " ").trimEnd();
+  return text.replace(BOX_LINES, " ").trimEnd();
+}
+
+/**
+ * The text of one screen line of a menu, as `boxText` gives it. A line of the tab bar becomes empty,
+ * so it ends the paragraph of a question above the options.
+ */
+export function menuText(line: string): string {
+  const text = boxText(line);
   return TAB_BAR.test(text) ? "" : text;
+}
+
+/** A line of the chat above a menu: the prompt `> `, a message `● `, a meta line `✻ `, a tool result `⎿`. */
+const CHAT_LINE = /^\s*(?:> |● |✻ |⎿)/;
+
+/** The question of a menu is at most this many lines above its first option (ticket question-card-text). */
+const QUESTION_ROWS = 30;
+
+/**
+ * The first word of a text, or "". Used to see whether the terminal program broke a row because the
+ * next word did not fit.
+ */
+function firstWord(text: string): string {
+  return /^\s*(\S*)/.exec(text)?.[1] ?? "";
+}
+
+/**
+ * The program filled the screen row `raw`: the first word of the next line does not fit after its
+ * text (Decision 1 of ticket question-card-text). Inside a box with a right border the border is the end.
+ */
+function rowFilled(raw: string, next: string, width: number): boolean {
+  const left = LEFT_SIDE.exec(raw)?.[0].length ?? 0;
+  const rest = raw.slice(left);
+  const side = rest.search(BOX_SIDE);
+  const limit = side >= 0 ? left + side : width;
+  const end = left + (side >= 0 ? rest.slice(0, side) : rest).trimEnd().length;
+  return end + 1 + firstWord(next).length > limit;
+}
+
+/**
+ * The text of the question from its screen lines (`rows`, raw): a line that the program broke at the
+ * width joins the next with one space; every other line end stays a line break; blank lines inside
+ * become one paragraph break. Without a `width` every line end stays a line break.
+ */
+function questionText(rows: string[], width?: number): string {
+  let text = "";
+  let gap = false;
+  rows.forEach((raw, index) => {
+    const line = menuText(raw).trim();
+    if (line === "") {
+      gap = text !== "";
+      return;
+    }
+    if (text === "") text = line;
+    else if (gap) text += `\n\n${line}`;
+    else text += (width !== undefined && rowFilled(rows[index - 1], line, width) ? " " : "\n") + line;
+    gap = false;
+  });
+  return text;
+}
+
+/**
+ * The question above the first option of a question of the session (ticket question-card-text): the
+ * lines between the tab bar and option 1, as `questionText` joins them. "" when a chat line or the
+ * 30th line comes before the tab bar: the question is not found, and the card never shows the chat.
+ * null when the top of the lines comes first: the menu goes on above them.
+ */
+function questionBelowTabs(screen: string[], first: number, width?: number): string | null {
+  for (let row = first - 1; row >= 0; row--) {
+    if (first - row > QUESTION_ROWS) return "";
+    const text = boxText(screen[row]);
+    if (TAB_BAR.test(text)) {
+      // A question row glued to the tab bar stands after the tabs, behind a run of spaces.
+      const after = text.trim().split(/\s{3,}/).slice(1).join(" ");
+      const rows = screen.slice(row + 1, first);
+      const below = questionText(rows, width);
+      return after === "" ? below : below === "" ? after : `${after}\n${below}`;
+    }
+    if (CHAT_LINE.test(text)) return "";
+  }
+  return null;
 }
 
 /** The question of the last step of a form with several questions. */
@@ -97,7 +178,7 @@ const SESSION_LABEL = /^(?!PS [A-Za-z]:)(?!.*[>$#]$).{1,40}$/;
  * Reads the question menu of Claude Code from the terminal screen. Claude Code can show the menu
  * before it writes the question to the chat file. `null` when the screen has no menu.
  */
-export function parseMenu(screen: string[]): Question[] | null {
+export function parseMenu(screen: string[], width?: number): Question[] | null {
   const lines = screen.map(menuText);
   let end = -1;
   for (let row = lines.length - 1; row >= 0; row--) {
@@ -141,11 +222,13 @@ export function parseMenu(screen: string[]): Question[] | null {
       last.description = `${last.description} ${lines[row].trim()}`.trim();
     }
   }
-  const text = paragraphAbove(lines, first);
-  if (text.length === 0) return null;
+  // A question of the session stands below its tab bar; a permission prompt and the submit step of a
+  // form have none, there the paragraph above the options is the question.
+  const text = submit < 0 && /Enter to select/.test(lines[end]) ? questionBelowTabs(screen, first, width) : paragraphAbove(screen, lines, first, width);
+  if (text === null) return null;
   return [
     {
-      question: text.join(" "),
+      question: text,
       // A permission prompt has no "Enter to select". Its key answers it, like an option of a question.
       ...(submit >= 0 || /Enter to select/.test(lines[end]) ? {} : { header: "Permission" }),
       multiSelect,
@@ -155,7 +238,11 @@ export function parseMenu(screen: string[]): Question[] | null {
   ];
 }
 
-/** At most this many lines of the scrollback above the screen go to the read of a menu. */
+/**
+ * At most this many lines of the scrollback above the screen go to the read of a menu. They only help
+ * to find a question that goes on above the screen; the card never shows them (an empty question text
+ * of `parseMenu` means "not found").
+ */
 export const MENU_ABOVE_LINES = 100;
 
 /**
@@ -163,7 +250,9 @@ export const MENU_ABOVE_LINES = 100;
  * taller than the terminal (four options with long descriptions, a short pane) has its question and
  * its first options above the screen, in the scrollback: the screen alone then shows the footer of a
  * menu and gives no menu. Only then the lines `above` the screen come first. A menu that fits the
- * screen reads as before, so an old option row in the scrollback cannot change it.
+ * screen reads as before, so an old option row in the scrollback cannot change it. `parseMenu` gives
+ * null when the menu goes on above its lines, and a question with an empty text when the question is
+ * not found (ticket question-card-text): then the scrollback does not help, and the screen stays alone.
  */
 export function menuScreen(screen: string[], above: string[]): string[] {
   if (parseMenu(screen) !== null) return screen;
@@ -174,13 +263,21 @@ export function menuScreen(screen: string[], above: string[]): string[] {
 /** The box before an option of a question with several answers. */
 const CHECKBOX = /^\[[ ×√xX✓✔]\]\s*/;
 
-/** The paragraph above a row of the menu: the question. A link line like "Security guide" is skipped. */
-function paragraphAbove(lines: string[], first: number): string[] {
+/**
+ * The paragraph above a row of the menu: the question, joined as `questionText` joins it. A link line
+ * like "Security guide" is skipped. "" when the paragraph reaches a chat line or goes on for more than
+ * 30 lines (the question is not found); null when there is no paragraph above.
+ */
+function paragraphAbove(screen: string[], lines: string[], first: number, width?: number): string | null {
   let row = first - 1;
   while (row >= 0 && (lines[row].trim() === "" || /^\s*Security guide\s*$/.test(lines[row]))) row--;
-  const text: string[] = [];
-  while (row >= 0 && lines[row].trim() !== "") text.unshift(lines[row--].trim());
-  return text;
+  const last = row;
+  while (row >= 0 && lines[row].trim() !== "") {
+    if (CHAT_LINE.test(lines[row]) || last - row >= QUESTION_ROWS) return "";
+    row--;
+  }
+  if (last < 0) return null;
+  return questionText(screen.slice(row + 1, last + 1), width);
 }
 
 /**

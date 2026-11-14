@@ -3208,6 +3208,12 @@ button.task-head:hover {
   white-space: pre-wrap;
 }
 
+/* The note in the place of a question that the screen did not show readably (ticket question-card-text). */
+.question-text.question-missing {
+  color: var(--muted);
+  font-weight: normal;
+}
+
 .question-header {
   display: inline-block;
   margin-right: 8px;

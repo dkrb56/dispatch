@@ -1,7 +1,7 @@
 // Tests of `sameQuestion` (src/question.ts). Run: node --test tests/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { sameQuestion } from "../src/question.ts";
+import { sameAskedQuestion, sameQuestion } from "../src/question.ts";
 
 // The question of the screenshot of the ticket question-shown-twice, as the chat file names it
 // (triage chat 3c137a0e…, line 842, tool call toolu_01USPmRgnzMaTD5P32uyzaHu).
@@ -42,4 +42,27 @@ test("the submit step of a form is not a question of the form", () => {
 test("an empty screen text is never the same", () => {
   assert.equal(sameQuestion("", PUBLISH_FILE), false);
   assert.equal(sameQuestion("  \n ", PUBLISH_FILE), false);
+});
+
+// Ticket question-card-text: a card whose question the screen could not read is named by its options.
+const BUG_TASK = {
+  question:
+    "Do you want a Dispatch task for this: a question that stands unchanged in the report after your answer is not shown again as new, and the section rule tells the worker to remove or replace an answered question?",
+  header: "Bug task",
+  options: [{ label: "Yes, write the brief (Recommended)" }, { label: "No, leave it" }],
+};
+
+test("sameAskedQuestion: an empty screen text with the same labels is the same question", () => {
+  assert.equal(sameAskedQuestion({ question: "", options: [{ label: "Yes, write the brief (Recommended)" }, { label: "No, leave  it" }] }, BUG_TASK), true);
+});
+
+test("sameAskedQuestion: an empty screen text with other labels, fewer labels or none is not the same", () => {
+  assert.equal(sameAskedQuestion({ question: "", options: [{ label: "Yes" }, { label: "No" }] }, BUG_TASK), false);
+  assert.equal(sameAskedQuestion({ question: "", options: [{ label: "Yes, write the brief (Recommended)" }] }, BUG_TASK), false);
+  assert.equal(sameAskedQuestion({ question: "", options: [] }, { question: "Which?", options: [] }), false);
+});
+
+test("sameAskedQuestion: a found text compares the texts, as sameQuestion, and not the labels", () => {
+  assert.equal(sameAskedQuestion({ question: BUG_TASK.question.replace(" as new", "\nas new"), options: [] }, BUG_TASK), true);
+  assert.equal(sameAskedQuestion({ question: "Another question?", options: BUG_TASK.options }, BUG_TASK), false);
 });

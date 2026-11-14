@@ -1,0 +1,362 @@
+{
+ "source": "menu-reads record of 2026-11-14 00:28:14, read 2 (counted), Dispatch 0.1.56",
+ "cols": 127,
+ "rows": [
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "> Worker report-check [work] is done.                                                                                          ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": true
+  },
+  {
+   "text": "  Ran 3 shell commands                                                                                                         ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "● report-check needs your decision. The code is built and tested (84 Rust tests, 305 Node tests pass), but the work run ended  ",
+   "wrapped": false
+  },
+  {
+   "text": "  with two questions. The task card of Dispatch shows them with their options; answer there.                                   ",
+   "wrapped": false
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "  1. Which headings mark a report of the new form: the old report of done-line-repeats has \"What changed\" and a session file,  ",
+   "wrapped": false
+  },
+  {
+   "text": "     so it falls back to working today.                                                                                        ",
+   "wrapped": false
+  },
+  {
+   "text": "  2. How a claim with a leading cd matches: Claude Code drops a cd to the current folder from the transcript, so an exact copy ",
+   "wrapped": false
+  },
+  {
+   "text": "     of the command fails the check.                                                                                           ",
+   "wrapped": false
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "  One finding for the series: in this repository the folder .dispatch was never tracked by git. The root .gitignore has ignored",
+   "wrapped": true
+  },
+  {
+   "text": "  it since the first commit of the public repo, so the premise \"git tracks it\" holds for other projects, not here. This        ",
+   "wrapped": false
+  },
+  {
+   "text": "  matters for ignore-tasks (5 of 5). The task-log plan run waits until report-check is done.                                   ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": true
+  },
+  {
+   "text": "✻ Baked for 26s · done 0:10                                                                                                    ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "> Questions of report-check answered in Dispatch: question 1: Verification, Why, Files or Follow-ups, not What changed;        ",
+   "wrapped": true
+  },
+  {
+   "text": "  question 2: Ignore a leading cd to a folder on both sides                                                                    ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "● Noted. The answers went to the worker word for word, and its work run goes on. I report when it is done, then start the plan ",
+   "wrapped": true
+  },
+  {
+   "text": "  run of task-log.                                                                                                             ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "✻ Crunched for 2s · done 0:12                                                                                                  ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "> Worker report-check [work] is done.                                                                                          ",
+   "wrapped": false
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "  Ran 2 shell commands                                                                                                         ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "● report-check is done. One local commit (amended with your answers), tree clean. A done report is now checked against the     ",
+   "wrapped": true
+  },
+  {
+   "text": "  transcript; the proof shows this report itself with 15 claims and 0 unverified, and done-line-repeats back at done. 84 Rust  ",
+   "wrapped": false
+  },
+  {
+   "text": "  tests and 305 Node tests pass.                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "  The plan run of task-log (4 of 5) started. Seven commits wait for a push.                                                    ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": true
+  },
+  {
+   "text": "✻ Cooked for 12s · done 0:15                                                                                                   ",
+   "wrapped": false
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "> Worker task-log [plan] is done.                                                                                              ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": true
+  },
+  {
+   "text": "  Ran 1 shell command                                                                                                          ",
+   "wrapped": false
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": true
+  },
+  {
+   "text": "● The plan for task-log is ready. Open the task card in Dispatch and click Approve or Reject there.                            ",
+   "wrapped": false
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "  Summary: Rust writes one log per task in the given format with the plan, each command per stage with its output, the report  ",
+   "wrapped": true
+  },
+  {
+   "text": "  sections with \"evidence: yes|no\" and the token table; the task card shows a Log row. 5 files. 3 decisions, none is HOLD: the ",
+   "wrapped": false
+  },
+  {
+   "text": "  log is written again also when the plan is newer (default), a failed work run shows as blocked (default), and every task with",
+   "wrapped": false
+  },
+  {
+   "text": "  a plan file gets a log at the first poll, about 75 here (default).                                                           ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "✻ Worked for 7s · done 0:21                                                                                                    ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "> Plan task-log approved in Dispatch with the decisions of the user. The work run started.                                     ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "● Noted. The work run of task-log is running. When it is done, I start the plan run of ignore-tasks, the last of the series.   ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "✻ Brewed for 2s · done 0:26                                                                                                    ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "> [Image #4] [Image #5] something wierd was going on with workers                                                              ",
+   "wrapped": true
+  },
+  {
+   "text": "  ⎿  [Image #4]                                                                                                                ",
+   "wrapped": true
+  },
+  {
+   "text": "  ⎿  [Image #5]                                                                                                                ",
+   "wrapped": false
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": true
+  },
+  {
+   "text": "● What happened, from the chat and the card:                                                                                   ",
+   "wrapped": false
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "  - The worker asked one question. You answered \"Stop here\". The worker got it, committed the session log and rewrote its      ",
+   "wrapped": true
+  },
+  {
+   "text": "    report, but it kept the state needs-decision with the same question. Dispatch cannot tell a repeated question from a new   ",
+   "wrapped": false
+  },
+  {
+   "text": "    one, so the card showed the buttons again.                                                                                 ",
+   "wrapped": false
+  },
+  {
+   "text": "  - Your second answer started another run (a reply resumes the session as a copy, so each answer is one more \"Work run\" row on",
+   "wrapped": true
+  },
+  {
+   "text": "    the card). That fourth run then ended cleanly with state done.                                                             ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "  So the cause is on both sides: the worker left an answered question in its report, and Dispatch showed it again as new. The  ",
+   "wrapped": true
+  },
+  {
+   "text": "  runs did no harm; the branch has its three commits and the checkout is back on main.                                         ",
+   "wrapped": false
+  },
+  {
+   "text": "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+   "wrapped": false
+  },
+  {
+   "text": " [ ] Bug task                                                                                                                  ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": true
+  },
+  {
+   "text": "│ Do you want a Dispatch task for this: a question that stands unchanged in the report after your answer is not shown again as ",
+   "wrapped": true
+  },
+  {
+   "text": "│ new, and the section rule tells the worker to remove or replace an answered question?                                        ",
+   "wrapped": true
+  },
+  {
+   "text": "                                                                                                                               ",
+   "wrapped": false
+  },
+  {
+   "text": "> 1. Yes, write the brief (Recommended)                                                                                        ",
+   "wrapped": true
+  },
+  {
+   "text": "     I write the brief with the evidence of this case and start the plan run after the series, or now beside it.               ",
+   "wrapped": false
+  },
+  {
+   "text": "  2. No, leave it                                                                                                              ",
+   "wrapped": true
+  },
+  {
+   "text": "     No task. I note it for later.                                                                                             ",
+   "wrapped": false
+  },
+  {
+   "text": "  3. Type something.                                                                                                           ",
+   "wrapped": false
+  },
+  {
+   "text": "───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+   "wrapped": true
+  },
+  {
+   "text": "  4. Chat about this                                                                                                           ",
+   "wrapped": true
+  },
+  {
+   "text": "",
+   "wrapped": false
+  },
+  {
+   "text": "Enter to select · ↑/↓ to navigate · Esc to cancel                                                                              ",
+   "wrapped": false
+  },
+  {
+   "text": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Triage ─",
+   "wrapped": true
+  }
+ ]
+}
