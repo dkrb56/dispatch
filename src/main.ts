@@ -30,6 +30,25 @@ import { onReturn } from "./chatend";
 import { markedProject, showMark, watchArea } from "./focusmark";
 import { type ColumnAction, type ColumnChoice, applyAction, columnStates, dragPartner, mayMinimize, parseChoice } from "./focuslayout";
 import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode } from "./overview";
+import {
+  allowanceLine,
+  bars,
+  buckets,
+  type Consumer as TokenConsumer,
+  KINDS,
+  modelTable,
+  NO_WEEKLY,
+  type Range as TokenRange,
+  RANGES,
+  rangeStart,
+  ranking,
+  type Ranked,
+  tableRows,
+  tiles,
+  type TokenEvent,
+  type TokenRow,
+  type UsageHistory,
+} from "./tokens";
 import { addedText, columnTickets, COLUMNS, countText, DROP_COLUMNS, endFailed, endWord, goesStraight, isQuestion, movedIds, nextTicket, nextType, type Ticket, ticketCounts, ticketMatches, ticketMessage, type TicketStatus, todoOrder, typeName } from "./tickets";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { type Typed, typedAfter, typingState } from "./typing";
@@ -4773,6 +4792,408 @@ function initTickets(): void {
   });
 }
 
+// ---------------------------------------------------------------------------------------------
+// The window Token usage (ticket token-usage): the button Tokens next to Tickets opens it for its
+// project; "All projects" shows every project with a workspace. It reads `token_report` per shown
+// project and `usage_history` of one host at the open, at each click of a group and every 60 s while
+// it is open; the task poll does not read it. The rules are in src/tokens.ts.
+
+/** The reply of `token_report` for one project. */
+interface TokenReport {
+  root: string;
+  rows: TokenRow[];
+  consumers: TokenConsumer[];
+  events: TokenEvent[];
+}
+
+const tokensDialog = document.querySelector<HTMLDialogElement>("#tokens")!;
+/** How often the open window reads again. */
+const TOKENS_REFRESH_MS = 60_000;
+let tokensRange: TokenRange = "today";
+/** The key of the shown project, or "all". */
+let tokensProject = "all";
+/** The projects of the project group: the ones with a workspace and the one of the click. */
+let tokensRefs: ProjectRef[] = [];
+let tokensTable = false;
+let tokensReports = new Map<string, TokenReport>();
+let tokensHistory: UsageHistory | null = null;
+let tokensError = "";
+let tokensLoading = false;
+let tokensTimer: ReturnType<typeof setInterval> | undefined;
+/** Counts the reads, so the reply of an older read does not replace the one of a newer read. */
+let tokensRead = 0;
+
+/** Opens the window for a project, on the range Today. */
+function openTokens(ref: ProjectRef): void {
+  const refs = workspaceRefs();
+  if (!refs.some((known) => refKey(known) === refKey(ref))) refs.push(ref);
+  tokensRefs = refs;
+  tokensProject = refKey(ref);
+  tokensRange = "today";
+  tokensTable = false;
+  tokensReports = new Map();
+  tokensHistory = null;
+  tokensError = "";
+  if (!tokensDialog.open) tokensDialog.showModal();
+  void readTokens();
+  clearInterval(tokensTimer);
+  tokensTimer = setInterval(() => void readTokens(), TOKENS_REFRESH_MS);
+}
+
+/** The projects that the window shows now. */
+function shownTokenRefs(): ProjectRef[] {
+  return tokensProject === "all" ? tokensRefs : tokensRefs.filter((ref) => refKey(ref) === tokensProject);
+}
+
+/** Reads the tokens of the shown projects and the history of the weekly allowance, then draws. */
+async function readTokens(): Promise<void> {
+  const read = ++tokensRead;
+  const refs = shownTokenRefs();
+  const since = rangeStart(tokensRange, Date.now());
+  tokensLoading = tokensReports.size === 0;
+  renderTokens();
+  // The history of the host of the shown project; in All projects the one of the first backend.
+  const historyHost = tokensProject === "all" ? firstBackend() : (refs[0]?.host ?? firstBackend());
+  try {
+    const [reports, history] = await Promise.all([
+      Promise.all(refs.map((ref) => call<TokenReport>(ref.host, "token_report", { cwd: ref.root, since }).then((report) => [refKey(ref), report] as const))),
+      call<UsageHistory>(historyHost, "usage_history"),
+    ]);
+    if (read !== tokensRead) return;
+    tokensReports = new Map(reports);
+    tokensHistory = history;
+    tokensError = "";
+  } catch (error) {
+    if (read !== tokensRead) return;
+    tokensError = `The token usage could not be read: ${error}`;
+  }
+  tokensLoading = false;
+  renderTokens();
+}
+
+/** The name of a project of the window by its key. */
+function tokenProjectName(key: string): string {
+  const ref = tokensRefs.find((one) => refKey(one) === key);
+  return ref ? projectName(ref) : "";
+}
+
+/** The name of a consumer: the ticket id of a task; "Triage of <project>" for the triage chat of its project, else the title of the chat. */
+function tokenConsumerName(consumer: TokenConsumer): string {
+  if (consumer.kind === "task") return consumer.id;
+  const ref = tokensRefs.find((one) => refKey(one) === consumer.project);
+  if (ref && rememberedTriage(ref.host, ref.root) === consumer.id) return `Triage of ${projectName(ref)}`;
+  const chat = chatList.find((one) => one.id === consumer.id);
+  return chat?.title || `Chat ${consumer.id.slice(0, 8)}`;
+}
+
+/** A button of a group of the head. */
+function tokensGroupButton(text: string, pressed: boolean, action: () => void): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.textContent = text;
+  button.setAttribute("aria-pressed", String(pressed));
+  button.addEventListener("click", action);
+  return button;
+}
+
+/** Opens what a ranked row names: the card of a task, or the chat. */
+function openTokenConsumer(row: Ranked): void {
+  if (row.kind === "task") {
+    tokensDialog.close();
+    setFocusCurrent(row.project);
+    taskOpenChoice.set(`${row.project}|${row.id}`, true);
+    renderChats();
+    requestAnimationFrame(() => {
+      const card = [...document.querySelectorAll<HTMLElement>(".task")].find((el) => el.querySelector(".task-title")?.textContent === row.id);
+      card?.scrollIntoView({ block: "center" });
+    });
+    return;
+  }
+  const chat = chatList.find((one) => one.id === row.id);
+  if (!chat) return;
+  tokensDialog.close();
+  void openChat(chat);
+}
+
+/** An element with a class and a text. */
+function tokensEl<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text?: string): HTMLElementTagNameMap[K] {
+  const made = document.createElement(tag);
+  if (className) made.className = className;
+  if (text !== undefined) made.textContent = text;
+  return made;
+}
+
+/** Draws the window from the last replies. */
+function renderTokens(): void {
+  if (!tokensDialog.open) return;
+  const now = Date.now();
+  document.querySelector("#tokens-range")!.replaceChildren(
+    ...RANGES.map(({ range, name }) =>
+      tokensGroupButton(name, tokensRange === range, () => {
+        if (tokensRange === range) return;
+        tokensRange = range;
+        tokensReports = new Map();
+        void readTokens();
+      }),
+    ),
+  );
+  const pick = (key: string) => () => {
+    if (tokensProject === key) return;
+    tokensProject = key;
+    tokensReports = new Map();
+    void readTokens();
+  };
+  document.querySelector("#tokens-projects")!.replaceChildren(
+    tokensGroupButton("All projects", tokensProject === "all", pick("all")),
+    ...tokensRefs.map((ref) => tokensGroupButton(projectName(ref), tokensProject === refKey(ref), pick(refKey(ref)))),
+  );
+  const tableButton = document.querySelector<HTMLButtonElement>("#tokens-table-button")!;
+  tableButton.setAttribute("aria-pressed", String(tokensTable));
+  const state = document.querySelector<HTMLElement>("#tokens-state")!;
+  state.hidden = !tokensError && !tokensLoading;
+  state.classList.toggle("error", Boolean(tokensError));
+  state.textContent = tokensError || (tokensLoading ? "Reading the transcripts…" : "");
+
+  // The rows, consumers and events of the shown projects, each with the key of its project.
+  const rows: TokenRow[] = [];
+  const consumers: TokenConsumer[] = [];
+  const events: TokenEvent[] = [];
+  for (const [key, report] of tokensReports) {
+    rows.push(...report.rows.map((row) => ({ ...row, project: key })));
+    consumers.push(...report.consumers.map((consumer) => ({ ...consumer, project: key })));
+    events.push(...report.events);
+    for (const consumer of report.consumers) {
+      if (consumer.kind !== "chat" || consumer.created === null) continue;
+      events.push({ time: consumer.created, local: null, kind: "chat", text: `new triage chat: ${tokenConsumerName({ ...consumer, project: key })}` });
+    }
+  }
+  const ranked = ranking(rows, consumers, tokenConsumerName, tokenProjectName);
+  const chart = bars(rows, buckets(tokensRange, now));
+  const tileValues = tiles(tokensRange, rows, ranked);
+  const line = tokensHistory ? allowanceLine(tokensHistory, events, now) : null;
+  const models = modelTable(rows);
+
+  document.querySelector<HTMLElement>("#tokens-body")!.hidden = tokensTable;
+  const tableEl = document.querySelector<HTMLElement>("#tokens-table")!;
+  tableEl.hidden = !tokensTable;
+  if (tokensTable) {
+    const table = tokensEl("table", "tokens-table-rows");
+    const head = tokensEl("tr");
+    head.append(tokensEl("th", "", "Part"), tokensEl("th", "", "What"), tokensEl("th", "", "Value"));
+    table.append(tokensEl("thead"));
+    table.tHead!.append(head);
+    const body = tokensEl("tbody");
+    for (const one of tableRows(tileValues, chart.bars, line, ranked, models)) {
+      const tr = tokensEl("tr");
+      tr.append(tokensEl("td", "", one.section), tokensEl("td", "", one.label), tokensEl("td", "", one.value));
+      body.append(tr);
+    }
+    table.append(body);
+    tableEl.replaceChildren(table);
+    return;
+  }
+
+  // The tiles.
+  const tile = (label: string, value: string, text: string) => {
+    const made = tokensEl("div", "tokens-tile");
+    made.append(tokensEl("span", "tokens-tile-label", label), tokensEl("span", "tokens-tile-value", value), tokensEl("span", "tokens-tile-text", text));
+    made.title = `${label}: ${value}, ${text}`;
+    return made;
+  };
+  document.querySelector("#tokens-tiles")!.replaceChildren(
+    tile(tileValues.totalLabel, tileValues.total, "tokens, all kinds"),
+    tile("Written by the model", tileValues.output, tileValues.outputText),
+    tile("Read from the cache", tileValues.cacheShare, "of the input came from the cache"),
+    tile("Biggest consumer", tileValues.topName, tileValues.topText),
+  );
+
+  // The bars, stacked from the top: triage, agents, plan, work, as on the board.
+  document.querySelector("#tokens-bars-title")!.textContent = tokensRange === "today" ? "Tokens per hour, by who used them" : "Tokens per day, by who used them";
+  document.querySelector("#tokens-bars-legend")!.replaceChildren(
+    ...KINDS.map(({ name, color }) => {
+      const item = tokensEl("span");
+      item.setAttribute("role", "listitem");
+      const swatch = tokensEl("span", "tokens-swatch");
+      swatch.setAttribute("aria-hidden", "true");
+      swatch.style.background = color;
+      item.append(swatch, name);
+      return item;
+    }),
+  );
+  const axis = tokensEl("div", "tokens-axis");
+  axis.setAttribute("aria-hidden", "true");
+  axis.append(...chart.axis.map((text) => tokensEl("span", "", text)));
+  const area = tokensEl("div", "tokens-bars-area");
+  const mid = tokensEl("div", "tokens-mid");
+  mid.setAttribute("aria-hidden", "true");
+  const barRow = tokensEl("div", "tokens-bar-row");
+  barRow.setAttribute("role", "list");
+  barRow.setAttribute("aria-label", tokensRange === "today" ? "Hours" : "Days");
+  for (const bar of chart.bars) {
+    const column = tokensEl("div", "tokens-bar");
+    column.setAttribute("role", "listitem");
+    column.title = bar.tip;
+    column.setAttribute("aria-label", bar.tip);
+    for (const { kind, color } of [...KINDS].reverse()) {
+      if (bar.heights[kind] <= 0) continue;
+      const part = tokensEl("span");
+      part.dataset.kind = kind;
+      part.style.height = `${bar.heights[kind]}%`;
+      part.style.background = color;
+      column.append(part);
+    }
+    barRow.append(column);
+  }
+  area.append(mid, barRow);
+  const labels = tokensEl("div", "tokens-labels");
+  labels.setAttribute("aria-hidden", "true");
+  // 30 bars leave room for every second label only.
+  labels.append(...chart.bars.map((bar, at) => tokensEl("span", "", tokensRange === "30d" && at % 2 === 1 ? "" : bar.label)));
+  const plot = tokensEl("div", "tokens-plot");
+  plot.append(area, labels);
+  const chartEl = tokensEl("div", "tokens-chart");
+  chartEl.append(axis, plot);
+  document.querySelector("#tokens-bars")!.replaceChildren(chartEl);
+
+  // The line of the weekly allowance.
+  const lineEl = document.querySelector("#tokens-line")!;
+  if (!line) {
+    lineEl.replaceChildren(tokensEl("p", "tokens-none", NO_WEEKLY));
+  } else {
+    const svgNs = "http://www.w3.org/2000/svg";
+    const px = (x: number) => (x * 700).toFixed(1);
+    const py = (y: number) => (199 - (Math.min(100, Math.max(0, y)) / 100) * 197).toFixed(1);
+    const svg = document.createElementNS(svgNs, "svg");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", line.aria);
+    svg.setAttribute("viewBox", "0 0 700 200");
+    svg.setAttribute("preserveAspectRatio", "none");
+    const shape = (name: string, attrs: Record<string, string>) => {
+      const made = document.createElementNS(svgNs, name);
+      for (const [key, value] of Object.entries(attrs)) made.setAttribute(key, value);
+      svg.append(made);
+      return made;
+    };
+    shape("line", { x1: "0", y1: "100", x2: "700", y2: "100", stroke: "#22282f", "stroke-width": "1" });
+    shape("line", { x1: "0", y1: "2", x2: "700", y2: "2", stroke: "#22282f", "stroke-width": "1", "stroke-dasharray": "2 4" });
+    shape("line", { x1: "0", y1: "199", x2: "700", y2: "199", stroke: "#2b323a", "stroke-width": "1" });
+    if (line.resetAt !== null) shape("line", { x1: "700", y1: "0", x2: "700", y2: "199", stroke: "#2b323a", "stroke-width": "1", "stroke-dasharray": "4 4" });
+    shape("polyline", {
+      class: "tokens-used",
+      points: line.points.map((point) => `${px(point.x)},${py(point.y)}`).join(" "),
+      fill: "none",
+      stroke: "#3987e5",
+      "stroke-width": "2",
+      "stroke-linejoin": "round",
+      "vector-effect": "non-scaling-stroke",
+    });
+    if (line.trend.length > 0) {
+      shape("polyline", {
+        class: "tokens-trend",
+        points: line.trend.map((point) => `${px(point.x)},${py(point.y)}`).join(" "),
+        fill: "none",
+        stroke: "#8fb3d9",
+        "stroke-width": "2",
+        "stroke-dasharray": "5 5",
+        "vector-effect": "non-scaling-stroke",
+      });
+    }
+    if (line.outX !== null) shape("line", { x1: px(line.outX), y1: "0", x2: px(line.outX), y2: "199", stroke: "#d8b06a", "stroke-width": "1", "stroke-dasharray": "3 3" });
+    const over = tokensEl("div", "tokens-over");
+    for (const event of line.events) {
+      const point = tokensEl("span", "tokens-event");
+      point.tabIndex = 0;
+      point.title = event.tip;
+      point.setAttribute("aria-label", event.tip);
+      point.style.left = `${(event.x * 100).toFixed(2)}%`;
+      point.style.top = `${-200 + Number(py(event.y))}px`;
+      over.append(point);
+    }
+    if (line.label) {
+      const out = tokensEl("span", "tokens-out-label", line.label);
+      out.style.left = `${((line.outX ?? 1) * 100).toFixed(2)}%`;
+      over.append(out);
+    }
+    if (line.resetText) {
+      const reset = tokensEl("span", "tokens-reset-label", line.resetText);
+      reset.style.left = "100%";
+      over.append(reset);
+    }
+    const days = tokensEl("div", "tokens-days");
+    days.setAttribute("aria-hidden", "true");
+    days.append(...line.days.map((day) => tokensEl("span", "", day)));
+    const figure = tokensEl("figure", "tokens-figure");
+    figure.append(svg, over, days);
+    const lineAxis = tokensEl("div", "tokens-axis");
+    lineAxis.setAttribute("aria-hidden", "true");
+    lineAxis.append(tokensEl("span", "", "100%"), tokensEl("span", "", "50%"), tokensEl("span", "", "0"));
+    const wrap = tokensEl("div", "tokens-chart");
+    wrap.append(lineAxis, figure);
+    lineEl.replaceChildren(wrap);
+  }
+
+  // Who used the most.
+  const who = document.querySelector("#tokens-who")!;
+  if (ranked.length === 0) {
+    who.replaceChildren(tokensEl("p", "tokens-none", tokensLoading ? "" : "No tokens in this range."));
+  } else {
+    who.replaceChildren(
+      ...ranked.map((one) => {
+        const button = tokensEl("button", "tokens-who-row");
+        button.setAttribute("role", "listitem");
+        button.title = `${one.tip}\n${one.kind === "task" ? "Click to open the card of the task." : "Click to open the chat."}`;
+        const name = tokensEl("span", "tokens-who-name");
+        name.append(tokensEl("span", "", one.name), tokensEl("span", "", one.sub));
+        const bar = tokensEl("span", "tokens-who-bar");
+        bar.setAttribute("aria-hidden", "true");
+        for (const { kind, color } of KINDS) {
+          if (one.widths[kind] <= 0) continue;
+          const part = tokensEl("span");
+          part.style.width = `${one.widths[kind]}%`;
+          part.style.background = color;
+          bar.append(part);
+        }
+        button.append(name, bar, tokensEl("span", "tokens-who-tokens", tokenText(one.tokens)));
+        button.addEventListener("click", () => openTokenConsumer(one));
+        return button;
+      }),
+    );
+  }
+
+  // Per model.
+  const modelsEl = document.querySelector<HTMLTableElement>("#tokens-models")!;
+  const head = tokensEl("tr");
+  head.append(...["Model", "In", "Cache", "Out", "Total"].map((text) => tokensEl("th", "", text)));
+  const thead = tokensEl("thead");
+  thead.append(head);
+  const tbody = tokensEl("tbody");
+  for (const model of models) {
+    const tr = tokensEl("tr");
+    const cache = tokensEl("td", "", tokenText(model.cache));
+    cache.title = `cache write ${model.cacheWrite.toLocaleString("en-US")}, cache read ${model.cacheRead.toLocaleString("en-US")}`;
+    tr.append(tokensEl("td", "", model.model), tokensEl("td", "", tokenText(model.input)), cache, tokensEl("td", "", tokenText(model.output)), tokensEl("td", "", tokenText(model.total)));
+    tbody.append(tr);
+  }
+  modelsEl.replaceChildren(thead, tbody);
+}
+
+/** Connects the buttons of the window. */
+function initTokens(): void {
+  document.querySelector("#tokens-close")!.addEventListener("click", () => tokensDialog.close());
+  document.querySelector("#tokens-table-button")!.addEventListener("click", () => {
+    tokensTable = !tokensTable;
+    renderTokens();
+  });
+  tokensDialog.addEventListener("click", (event) => {
+    if (event.target === tokensDialog) tokensDialog.close();
+  });
+  tokensDialog.addEventListener("close", () => {
+    clearInterval(tokensTimer);
+    tokensTimer = undefined;
+    tokensRead++;
+    focusedPane()?.term.focus();
+  });
+}
+
 /** The text of the Tickets button of a project: the tickets that wait for the user or for triage. */
 function showTicketButtons(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>(".project-tickets")) {
@@ -6691,7 +7112,7 @@ const FOLDER_ICON =
   '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" /></svg>';
 
 /**
- * The buttons of one project (topbar-projects): Tickets (ticket tickets), Rules, Setup, "N old" and the folder button. They
+ * The buttons of one project (topbar-projects): Tickets (ticket tickets), Tokens (ticket token-usage), Rules, Setup, "N old" and the folder button. They
  * stand in the open group of the bar in Details and in the head of the column in Focus. Each acts on
  * this project, not on the focused terminal. "N old" is hidden while the project has no old session.
  */
@@ -6718,6 +7139,9 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   const tickets = tool("Tickets", `The tickets board of ${name}`, () => openTickets(ref));
   tickets.classList.add("project-tickets");
   tickets.dataset.project = key;
+  // The window Token usage (ticket token-usage) of this project.
+  const tokensButton = tool("Tokens", `How many tokens ${name} used, when and by whom: the window Token usage`, () => openTokens(ref));
+  tokensButton.classList.add("project-tokens");
   // Pause tasks (ticket pause-tasks): `showPauseButtons` sets the text and the pressed state.
   const pause = tool("Pause", "", () => void setPaused(ref, !projectPaused(key)));
   pause.classList.add("project-pause");
@@ -6739,7 +7163,7 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   folder.classList.add("project-folder");
   folder.setAttribute("aria-label", `Open the workspace of ${name}`);
   folder.innerHTML = FOLDER_ICON;
-  el.append(tickets, pause, rules, setup, oldEl, folder);
+  el.append(tickets, tokensButton, pause, rules, setup, oldEl, folder);
   showOldButton(oldEl, key);
   showTicketButtons();
   markSetupButton(setup, key, name);
@@ -8461,6 +8885,7 @@ async function start(): Promise<void> {
   initQuestions();
   initStale();
   initTickets();
+  initTokens();
   void pollSide();
   // A click on the alert opens the first worker that waits.
   workerAlertEl.addEventListener("click", () => {

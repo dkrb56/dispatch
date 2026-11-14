@@ -346,15 +346,19 @@ fn flow_of(projects: &Path, session: &str, from: &HashMap<String, u64>) -> Resul
     Ok(files)
 }
 
-/// One reply of a transcript, for the token sum of a task.
+/// One reply of a transcript, for the token sum of a task and the token window (ticket token-usage).
 #[derive(Clone)]
-struct Reply {
-    id: String,
-    model: Option<String>,
-    input: u64,
-    cache_write: u64,
-    cache_read: u64,
-    output: u64,
+pub(crate) struct Reply {
+    pub(crate) id: String,
+    pub(crate) model: Option<String>,
+    pub(crate) input: u64,
+    pub(crate) cache_write: u64,
+    pub(crate) cache_read: u64,
+    pub(crate) output: u64,
+    /// The time of the line, RFC 3339, as Claude Code wrote it (ticket token-usage).
+    pub(crate) time: Option<String>,
+    /// The line is an agent line in the transcript of its session (`isSidechain`).
+    pub(crate) sidechain: bool,
 }
 
 /// A Bash call of a transcript, for the evidence of a task (ticket task-evidence).
@@ -450,6 +454,8 @@ fn read_transcript_line(line: &str, read: &mut Transcript) {
                     cache_write: usage.cache_creation_input_tokens.unwrap_or(0),
                     cache_read: usage.cache_read_input_tokens.unwrap_or(0),
                     output: usage.output_tokens.unwrap_or(0),
+                    time: entry.timestamp.clone(),
+                    sidechain: entry.is_sidechain,
                 });
             }
         }
@@ -527,6 +533,35 @@ fn transcripts_of(projects: &Path, session: &str) -> Vec<PathBuf> {
         }));
     }
     files
+}
+
+/// The replies of one session and its agents, through the cache of the task list (ticket
+/// token-usage): each reply with `true` when it comes from an `agent-*.jsonl` file of the session or
+/// is an agent line of its transcript. A reply on several lines stands here several times; the caller
+/// counts it once by its id. An id that is no session id gives none. A file that changed last before
+/// `since` (milliseconds since the Unix epoch) has no reply in the range and is not opened.
+pub(crate) fn session_replies(projects: &Path, session: &str, since: u64) -> Vec<(Reply, bool)> {
+    if !valid_session(session) {
+        return Vec::new();
+    }
+    let mut list = Vec::new();
+    for file in transcripts_of(projects, session) {
+        if modified_millis(&file).is_some_and(|modified| modified < since) {
+            continue;
+        }
+        let agent_file = file.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("agent-"));
+        for reply in transcript_of(&file).replies {
+            let agent = agent_file || reply.sidechain;
+            list.push((reply, agent));
+        }
+    }
+    list
+}
+
+/// The change time of a file in milliseconds since the Unix epoch.
+pub(crate) fn modified_millis(path: &Path) -> Option<u64> {
+    let modified = fs::metadata(path).ok()?.modified().ok()?;
+    Some(modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64)
 }
 
 /// Whether one of the sessions has a transcript in a folder of `projects` (ticket report-check): a

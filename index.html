@@ -186,6 +186,55 @@
       <p id="tickets-paused" hidden><span id="tickets-paused-text"></span> <button id="tickets-resume" title="Resume this project: Dispatch sends the next Todo ticket and starts the next approved plan">Resume</button></p>
       <div id="tickets-columns"></div>
     </dialog>
+    <dialog id="tokens" aria-labelledby="tokens-title">
+      <header>
+        <h2 id="tokens-title">Token usage</h2>
+        <div id="tokens-range" class="tokens-group" role="group" aria-label="Range"></div>
+        <div id="tokens-projects" class="tokens-group" role="group" aria-label="Project"></div>
+        <div class="tokens-grow"></div>
+        <button id="tokens-table-button" aria-pressed="false" title="Show every number of this window as rows">Table</button>
+        <button id="tokens-close" aria-label="Close" title="Close (Esc)">&times;</button>
+      </header>
+      <p id="tokens-state" hidden></p>
+      <div id="tokens-body">
+        <div id="tokens-tiles"></div>
+        <section class="tokens-part" aria-labelledby="tokens-bars-title">
+          <div class="tokens-part-head">
+            <h3 id="tokens-bars-title">Tokens per hour, by who used them</h3>
+            <div class="tokens-legend" role="list" aria-label="Legend" id="tokens-bars-legend"></div>
+          </div>
+          <div id="tokens-bars"></div>
+          <p class="tokens-note" id="tokens-bars-note">Hover a bar for the numbers of the hour. In 7 days and 30 days the bars are days.</p>
+        </section>
+        <section class="tokens-part" aria-labelledby="tokens-line-title">
+          <div class="tokens-part-head">
+            <h3 id="tokens-line-title">Weekly allowance: used so far, and when it runs out at this pace</h3>
+            <div class="tokens-legend" role="list" aria-label="Legend">
+              <span role="listitem"><span aria-hidden="true" class="tokens-key-line"></span>Used, all models</span>
+              <span role="listitem"><span aria-hidden="true" class="tokens-key-dash"></span>Trend of the last 24 h</span>
+              <span role="listitem"><span aria-hidden="true" class="tokens-key-event"></span>Event</span>
+            </div>
+          </div>
+          <div id="tokens-line"></div>
+          <p class="tokens-note">
+            The line is the weekly percent that Claude Code reports in /usage, read every hour as the bottom bar does. A point marks an event: a release, a plan approved, night mode on or off, a new triage chat; hover names it. The dashed line continues the pace of the last 24 hours; where it crosses 100% stands "runs out", before or after the reset.
+          </p>
+        </section>
+        <div id="tokens-columns">
+          <section class="tokens-part" aria-labelledby="tokens-who-title">
+            <h3 id="tokens-who-title">Who used the most</h3>
+            <div id="tokens-who" role="list" aria-label="Consumers"></div>
+            <p class="tokens-note">A row is a task or a chat of a project; a click opens its card. The bar is the share of the biggest row.</p>
+          </section>
+          <section class="tokens-part" aria-labelledby="tokens-models-title">
+            <h3 id="tokens-models-title">Per model</h3>
+            <table id="tokens-models"></table>
+            <p class="tokens-note">Cache is write and read together; the tooltip of a cell splits them. The Table button above shows every number of this window as rows.</p>
+          </section>
+        </div>
+      </div>
+      <div id="tokens-table" hidden></div>
+    </dialog>
     <dialog id="stale">
       <header>
         <h2>Old sessions</h2>

@@ -33,7 +33,7 @@ The work moves into a new headless program, the **host** (working name `dispatch
 | Chats and workers | `chat_list`, `chat_view`, `session_flow`, `worker_list`, `worker_end` | `chat_list` names the pane in which a chat runs; the host gives only the panes of the calling window. |
 | Tasks and pipeline | `pipeline_plan`, `pipeline_apply`, `pipeline_commit`, `set_project_options`, `set_measure_commands`, `set_merge_gate`, `task_list`, `ticket_add`, `ticket_update`, `ticket_move`, `task_approve`, `task_decide`, `task_reject`, `task_reply`, `task_stop`, `task_merge`, `triage_handoff`, `project_root`, `worker_flags`, `set_worker_flags` | The worker script, git and PowerShell run on the desktop, as today. |
 | Rules | `project_rules`, `set_rule`, `update_rule`, `check_rules` | `rules-off.json` lives in the host's data folder. |
-| Status bar | `status_info`, `usage_info` | The bar shows the Claude account and usage of the desktop. |
+| Status bar | `status_info`, `usage_info`, `token_report`, `usage_history` | The bar shows the Claude account and usage of the desktop. The window Token usage reads the tokens of a project and the history of the weekly allowance of the host (ticket token-usage). |
 | Shared window state | the triage chat of each project and the Nightmode switch (today the fields `triage` and `night` of `state.json`) | User decision 3: both windows continue the same triage chat. |
 | New | `dir_list` | Lists the folders of a desktop folder for the folder chooser (user decision 4). |
 

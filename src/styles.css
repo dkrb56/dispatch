@@ -1199,6 +1199,499 @@ button.task-head:hover {
   background: var(--card);
 }
 
+/* The window Token usage (ticket token-usage): the frame of the tickets board, the parts of the
+   board "Token usage: how much, when, and who". The four kind colours are the ones of the board. */
+#tokens {
+  width: 94vw;
+  max-width: 1440px;
+  height: 90vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 50%);
+  color: var(--text);
+  font-size: calc(13px * var(--text-scale));
+}
+
+#tokens[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#tokens::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+#tokens header {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+}
+
+#tokens h2 {
+  margin: 0;
+  font-size: calc(15px * var(--text-scale));
+  font-weight: 600;
+}
+
+#tokens h3 {
+  margin: 0;
+  font-size: calc(13px * var(--text-scale));
+  font-weight: 600;
+}
+
+.tokens-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.tokens-group button {
+  height: 24px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.tokens-group button[aria-pressed="true"] {
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tokens-grow {
+  flex-grow: 1;
+}
+
+#tokens-table-button {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+#tokens-table-button[aria-pressed="true"] {
+  border-color: var(--accent-line);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+#tokens-close {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: calc(16px * var(--text-scale));
+  cursor: pointer;
+}
+
+#tokens-close:hover,
+#tokens-table-button:hover,
+.tokens-group button:hover {
+  background: var(--card);
+}
+
+#tokens-state {
+  margin: 10px 14px 0;
+  color: var(--text-2);
+}
+
+#tokens-state.error {
+  color: var(--danger);
+}
+
+#tokens-body,
+#tokens-table {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 22px;
+  min-height: 0;
+  padding: 18px 14px 20px;
+  overflow: auto;
+}
+
+#tokens-body[hidden],
+#tokens-table[hidden] {
+  display: none;
+}
+
+#tokens-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.tokens-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.tokens-tile-label {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.tokens-tile-value {
+  overflow: hidden;
+  font-size: calc(26px * var(--text-scale));
+  font-weight: 600;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tokens-tile-text {
+  color: var(--text-2);
+}
+
+.tokens-part {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.tokens-part-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: baseline;
+}
+
+.tokens-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  color: var(--text-2);
+}
+
+.tokens-legend > span {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.tokens-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.tokens-key-line {
+  width: 14px;
+  height: 2px;
+  background: #3987e5;
+}
+
+.tokens-key-dash {
+  width: 14px;
+  border-top: 2px dashed var(--accent);
+}
+
+.tokens-key-event,
+.tokens-event {
+  box-sizing: border-box;
+  border: 2px solid var(--wait);
+  border-radius: 50%;
+  background: var(--bg);
+}
+
+.tokens-key-event {
+  width: 8px;
+  height: 8px;
+}
+
+.tokens-note {
+  margin: 0;
+  color: var(--muted);
+}
+
+.tokens-chart {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+
+.tokens-axis {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  justify-content: space-between;
+  width: 36px;
+  padding-bottom: 20px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.tokens-plot {
+  display: flex;
+  flex-grow: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tokens-bars-area {
+  position: relative;
+  height: 180px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tokens-mid {
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.tokens-bar-row {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.tokens-bar {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-width: 0;
+  height: 100%;
+  cursor: default;
+}
+
+.tokens-bar > span {
+  flex: none;
+}
+
+.tokens-bar > span + span {
+  margin-top: 2px;
+}
+
+.tokens-bar > span:first-child {
+  border-radius: 3px 3px 0 0;
+}
+
+.tokens-labels {
+  display: flex;
+  gap: 6px;
+  padding-top: 6px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  font-variant-numeric: tabular-nums;
+}
+
+.tokens-labels > span {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.tokens-figure {
+  display: flex;
+  flex-grow: 1;
+  flex-direction: column;
+  min-width: 0;
+  margin: 0;
+}
+
+.tokens-figure svg {
+  display: block;
+  width: 100%;
+  height: 200px;
+  overflow: visible;
+}
+
+.tokens-over {
+  position: relative;
+  height: 0;
+}
+
+.tokens-event {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  margin: -6px 0 0 -6px;
+  padding: 0;
+  cursor: default;
+}
+
+.tokens-out-label {
+  position: absolute;
+  top: -196px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--wait-bg);
+  color: var(--wait);
+  font-size: calc(11px * var(--text-scale));
+  white-space: nowrap;
+  transform: translateX(-100%);
+}
+
+/* The reset line stands at the right edge of the plot: the label stands left of it, under the
+   run-out label, so the scroll box of the window does not cut it. */
+.tokens-reset-label {
+  position: absolute;
+  top: -176px;
+  margin-left: -6px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  white-space: nowrap;
+  transform: translateX(-100%);
+}
+
+.tokens-days {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 6px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
+.tokens-none {
+  margin: 0;
+  padding: 18px 0;
+  color: var(--text-2);
+}
+
+#tokens-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: 22px;
+}
+
+#tokens-who {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tokens-who-row {
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr) 72px;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tokens-who-row:hover {
+  background: var(--card);
+}
+
+.tokens-who-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.tokens-who-name > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tokens-who-name > span:first-child {
+  font-weight: 600;
+}
+
+.tokens-who-name > span:last-child {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
+.tokens-who-bar {
+  display: flex;
+  height: 12px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--card);
+}
+
+.tokens-who-bar > span + span {
+  margin-left: 2px;
+}
+
+.tokens-who-tokens {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+#tokens-models,
+.tokens-table-rows {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+#tokens-models th,
+.tokens-table-rows th {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  font-weight: 600;
+  text-align: left;
+}
+
+#tokens-models td,
+.tokens-table-rows td {
+  padding: 6px;
+  border-bottom: 1px solid var(--card);
+}
+
+#tokens-models th:not(:first-child),
+#tokens-models td:not(:first-child) {
+  text-align: right;
+}
+
+#tokens-models td:last-child {
+  font-weight: 600;
+}
+
 #tickets-error {
   flex: none;
   margin: 0;

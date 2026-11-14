@@ -224,7 +224,7 @@ pub struct Plan {
 /// The paths of one project.
 pub(crate) struct Project {
     pub(crate) root: PathBuf,
-    reports: PathBuf,
+    pub(crate) reports: PathBuf,
     /// The folder is in a git repository. `root` is then the top folder of the repository.
     in_git: bool,
 }
@@ -304,7 +304,7 @@ impl Project {
     }
 
     /// The plans that the plan runs write, one file per ticket.
-    fn plans(&self) -> PathBuf {
+    pub(crate) fn plans(&self) -> PathBuf {
         self.reports.join("plans")
     }
 
@@ -427,7 +427,7 @@ impl Project {
     }
 
     /// The session file of a ticket (ticket task-tokens): the Claude sessions of its runs.
-    fn session_file(&self, ticket: &str) -> PathBuf {
+    pub(crate) fn session_file(&self, ticket: &str) -> PathBuf {
         self.reports.join(format!("{ticket}.session"))
     }
 
@@ -2829,7 +2829,7 @@ fn read_session_file(path: &Path) -> Vec<String> {
 /// The `(run, session id)` lines of a session file, with the checks of `read_session_file`: the run
 /// is `plan` or `work`, the id can be a part of a path, and an id counts once, under its first run
 /// (ticket task-evidence: the run gives the stage of a command).
-fn read_session_runs(path: &Path) -> Vec<(String, String)> {
+pub(crate) fn read_session_runs(path: &Path) -> Vec<(String, String)> {
     let mut runs: Vec<(String, String)> = Vec::new();
     for line in fs::read_to_string(path).unwrap_or_default().lines() {
         let mut words = line.split_whitespace();
@@ -2844,7 +2844,7 @@ fn read_session_runs(path: &Path) -> Vec<(String, String)> {
 /// The folder of the Claude Code transcripts: `.claude/projects` in the home folder of the user
 /// (`USERPROFILE`, else `HOME`). The task list has no `Core`, so it takes the home folder from the
 /// environment, as `extra_directories` does.
-fn claude_projects_dir() -> Option<PathBuf> {
+pub(crate) fn claude_projects_dir() -> Option<PathBuf> {
     let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
     Some(PathBuf::from(home).join(".claude").join("projects"))
 }
@@ -3073,7 +3073,7 @@ pub struct TaskList {
 }
 
 /// The files with an extension in a folder: the name without the extension, the path, the entry.
-fn files_with(dir: &Path, extension: &str) -> Vec<(String, PathBuf, FileEntry)> {
+pub(crate) fn files_with(dir: &Path, extension: &str) -> Vec<(String, PathBuf, FileEntry)> {
     fs::read_dir(dir)
         .into_iter()
         .flatten()

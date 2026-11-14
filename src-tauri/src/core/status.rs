@@ -9,7 +9,9 @@
 //!
 //! The answer of `/usage` holds more than the bar needs too (the session id, a cost, the usage of
 //! the last hours, tips). `read_usage` takes only the weekly lines: their name, the percent used
-//! and the reset text. The rest is dropped in the same function.
+//! and the reset text. The rest is dropped in the same function. The percent and the reset text of
+//! the line for all models go into the history file of the data folder, one reading per hour
+//! (`tokens::record_reading`, ticket token-usage); they stay on this computer.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -222,7 +224,12 @@ pub fn usage_info(core: &Core) -> UsageInfo {
     if std::fs::write(&settings, "{\"disableAllHooks\":true}").is_err() {
         return usage_unknown();
     }
-    usage_from(|args| run_claude(home.as_deref(), args), &settings.to_string_lossy(), &USAGE_MODEL_ASKED)
+    let info = usage_from(|args| run_claude(home.as_deref(), args), &settings.to_string_lossy(), &USAGE_MODEL_ASKED);
+    // The history of the weekly allowance (ticket token-usage, user decision 4).
+    if let Some(week) = info.weeks.iter().find(|week| week.name.to_lowercase().contains("all models")) {
+        crate::core::tokens::record_reading(core, week.percent, week.resets.as_deref());
+    }
+    info
 }
 
 #[cfg(test)]

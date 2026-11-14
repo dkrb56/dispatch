@@ -17,6 +17,7 @@ use crate::core::pipeline::{self, Choice, Options, Plan, ProjectRoot, TaskList, 
 use crate::core::rules::{self, Rules};
 use crate::core::rules_check::{self, RulesCheck};
 use crate::core::status::{self, StatusInfo, UsageInfo};
+use crate::core::tokens::{self, TokenReport, UsageHistory};
 use crate::core::update::{self, Update};
 use crate::core::hostrun::{self, HostRun};
 use crate::core::{pty, store, Core};
@@ -315,6 +316,18 @@ pub fn status_info(core: State<Core>) -> StatusInfo {
 #[tauri::command(async)]
 pub fn usage_info(core: State<Core>) -> UsageInfo {
     status::usage_info(&core)
+}
+
+/// The tokens of a project since `since` for the window Token usage (ticket token-usage).
+#[tauri::command(async)]
+pub fn token_report(cwd: String, since: u64) -> Result<TokenReport, String> {
+    tokens::token_report(cwd, since)
+}
+
+/// The history of the weekly allowance of this computer (ticket token-usage).
+#[tauri::command(async)]
+pub fn usage_history(core: State<Core>) -> UsageHistory {
+    tokens::usage_history(&core)
 }
 
 #[tauri::command(async)]

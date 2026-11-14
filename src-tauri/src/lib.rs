@@ -89,6 +89,8 @@ pub fn run() {
             commands::check_rules,
             commands::status_info,
             commands::usage_info,
+            commands::token_report,
+            commands::usage_history,
             commands::update_check,
             commands::update_install,
             commands::update_installer_open,

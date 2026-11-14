@@ -18,6 +18,7 @@ pub mod rules_check;
 pub mod status;
 pub mod store;
 pub mod tickets;
+pub mod tokens;
 pub mod update;
 
 use std::fs;
