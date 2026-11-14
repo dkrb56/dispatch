@@ -1,6 +1,7 @@
 // The Options screen (ticket alerts-options): the three switches of the alerts when a task waits for
 // the user, and the colour theme and text size lists (main.ts wires those two, as before).
 import { ALERT_OPTIONS_KEY, type AlertOptions, parseAlertOptions } from "./alerts";
+import { parsePulse, PULSE_KEY } from "./attention";
 import { cleanAddress, DEFAULT_PORT, type HostEntry, hostSettings, setHostSettings, windowCall } from "./backend";
 
 const dialog = document.querySelector<HTMLDialogElement>("#options")!;
@@ -200,6 +201,14 @@ export function alertOptions(): AlertOptions {
   return options;
 }
 
+/** The switch Pulse (ticket card-attention): a card that waits for the user pulses. On until the user turns it off. */
+let pulse = parsePulse(null);
+
+/** The switch Pulse is on. The system setting for reduced motion still stops the motion. */
+export function pulseOn(): boolean {
+  return pulse;
+}
+
 function save(): void {
   try {
     localStorage.setItem(ALERT_OPTIONS_KEY, JSON.stringify(options));
@@ -236,6 +245,23 @@ export function initOptions(onClose: () => void, onHostChange: () => unknown): v
     input.addEventListener("change", () => {
       options = { ...options, [name]: input.checked };
       save();
+    });
+  }
+  try {
+    pulse = parsePulse(localStorage.getItem(PULSE_KEY));
+  } catch {
+    // Without the storage, the pulse is on.
+  }
+  const pulseInput = dialog.querySelector<HTMLInputElement>('input[data-attention="pulse"]');
+  if (pulseInput) {
+    pulseInput.checked = pulse;
+    pulseInput.addEventListener("change", () => {
+      pulse = pulseInput.checked;
+      try {
+        localStorage.setItem(PULSE_KEY, String(pulse));
+      } catch {
+        // The switch stays for this run of the app.
+      }
     });
   }
   document.querySelector("#show-options")!.addEventListener("click", () => {

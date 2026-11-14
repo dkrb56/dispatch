@@ -152,6 +152,23 @@ summary:focus-visible {
   content: "";
 }
 
+/* The tab of a project with a card that has the signal (ticket card-attention): a yellow dot before
+   the name, also on a tab that does not show. */
+.tab.attention::before {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-right: 2px;
+  border-radius: 50%;
+  background: var(--wait);
+  box-shadow: 0 0 0 3px var(--wait-glow);
+  content: "";
+}
+
+.tab.attention.pulse::before {
+  animation: attention-dot 1.6s ease-in-out infinite;
+}
+
 #bar button {
   display: flex;
   flex: none;
@@ -590,6 +607,46 @@ button.chat-note {
 
 .task.waits {
   border-color: var(--wait-line);
+}
+
+/* A card that waits for the user and was not clicked yet (ticket card-attention): a yellow frame
+   with a glow, still with the switch Pulse off or with reduced motion; with the pulse the glow and
+   the dot swell and fade in a cycle of 1.6 s. */
+@keyframes attention-pulse {
+  0%,
+  100% {
+    border-color: var(--wait-line);
+    box-shadow: 0 0 0 0 var(--wait-glow);
+  }
+  50% {
+    border-color: var(--wait);
+    box-shadow: 0 0 0 5px var(--wait-glow);
+  }
+}
+
+@keyframes attention-dot {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--wait-glow);
+    transform: scale(1);
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--wait-glow);
+    transform: scale(1.35);
+  }
+}
+
+.task.attention {
+  border: 2px solid var(--wait);
+  box-shadow: 0 0 0 3px var(--wait-glow);
+}
+
+.task.attention.pulse {
+  animation: attention-pulse 1.6s ease-in-out infinite;
+}
+
+.task.attention.pulse .task-dot {
+  animation: attention-dot 1.6s ease-in-out infinite;
 }
 
 .task.working {
@@ -3955,6 +4012,32 @@ body.focus-mode #chats {
 
 .focus-dot.waits {
   background: var(--wait);
+}
+
+/* The dot of a project with a card that has the signal (ticket card-attention): pills, column
+   heads, Overview cards and Map heads. */
+.focus-dot.attention {
+  background: var(--wait);
+  box-shadow: 0 0 0 3px var(--wait-glow);
+}
+
+.focus-dot.attention.pulse {
+  animation: attention-dot 1.6s ease-in-out infinite;
+}
+
+#bar .focus-pill.attention,
+#bar .project-group-head.attention {
+  box-shadow: inset 0 0 0 1px var(--wait);
+}
+
+/* The motion of the signal stops with the system setting for reduced motion; the still mark stays. */
+@media (prefers-reduced-motion: reduce) {
+  .task.attention.pulse,
+  .task.attention.pulse .task-dot,
+  .focus-dot.attention.pulse,
+  .tab.attention.pulse::before {
+    animation: none;
+  }
 }
 
 /* The columns: one per project. From the fourth one on the row scrolls sideways. */

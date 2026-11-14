@@ -57,7 +57,8 @@ import { initPipeline, openSetup, setupNeeded, showSetup } from "./pipeline";
 import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersion } from "./help";
 import { lastRunVersion, newEntries } from "./changelog";
 import { alertActions, alertState, CHIME, newWaits, notificationText, type Wait } from "./alerts";
-import { alertOptions, initOptions } from "./options";
+import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
+import { alertOptions, initOptions, pulseOn } from "./options";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
 import { initRules, openRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
@@ -4599,6 +4600,55 @@ function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"
 }
 
 /**
+ * What a task waits for, as the signal of its card sees it (ticket card-attention), or null. The
+ * checks go in the order of `taskStatus`, so the signal and the yellow status agree. A merge counts
+ * while it waits for the click, not while it runs (user decision 3 of the plan).
+ */
+function taskAttentionWait(task: Task): AttentionWait | null {
+  const info = task.info;
+  const key = `${projectKey(task.project?.host ?? LOCAL, task.project?.cwd ?? "")}|${task.name}`;
+  if (approvalQueued(task)) return null;
+  if (planReady(task) && info?.plan) return { key, kind: info.hold ? "hold" : "plan", stamp: String(info.plan.modified) };
+  const report = String(info?.report?.modified ?? "");
+  if (repeatedQuestionsOf(task)) return { key, kind: "repeat", stamp: report };
+  if (reportWaits(task)) return { key, kind: permissionWaits(task) ? "permission" : "question", stamp: report };
+  const blocked = task.workers.find((worker) => worker.state === "blocked");
+  if (blocked) return { key, kind: "prompt", stamp: `${blocked.id}#${promptCounts.get(workerKey(blocked)) ?? 1}` };
+  if (task.workers.some((worker) => worker.state === "working")) return null;
+  if (mergeWaits(task) && !mergeRunning(task)) return { key, kind: "merge", stamp: report || "stopped" };
+  return null;
+}
+
+/** The waits of a list of tasks, for the signal. */
+function attentionWaits(tasks: readonly Task[]): AttentionWait[] {
+  return tasks.flatMap((task) => taskAttentionWait(task) ?? []);
+}
+
+/** The task waits for the user, and the user did not press the pointer in its card since. */
+function taskSignal(task: Task): boolean {
+  return signalKeys(attentionWaits([task]), seenAttention).size > 0;
+}
+
+/** A task of the project (by its key) has the signal. */
+function projectSignal(key: string): boolean {
+  const record = projectTasks.get(key);
+  return record ? signalKeys(attentionWaits(projectTaskList(record)), seenAttention).size > 0 : false;
+}
+
+/** The classes of something with or without the signal: none, ` attention`, or ` attention pulse`. */
+function attentionClasses(signal: boolean): string {
+  const look = attentionLook(signal, pulseOn(), reducedMotion.matches);
+  return look === "pulse" ? " attention pulse" : look === "still" ? " attention" : "";
+}
+
+/** Gives an element the classes of the signal, or takes them away. */
+function toggleAttention(el: Element, signal: boolean): void {
+  const look = attentionLook(signal, pulseOn(), reducedMotion.matches);
+  el.classList.toggle("attention", look !== "none");
+  el.classList.toggle("pulse", look === "pulse");
+}
+
+/**
  * A done report that the report check sent back (ticket report-check): the task list gives it the
  * header state `working`, while a report of a worker says done, needs-decision or failed.
  */
@@ -5111,7 +5161,15 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   const status = taskStatus(task);
   const open = alwaysOpen || (taskOpenChoice.get(key) ?? status.kind !== "done");
   const made = document.createElement("div");
-  made.className = `task ${status.kind}${open ? " open" : ""}`;
+  made.className = `task ${status.kind}${open ? " open" : ""}${attentionClasses(taskSignal(task))}`;
+  // A press anywhere in the card stops its signal (user decision 4); the classes go at once, so the
+  // click that follows still lands on its button.
+  made.addEventListener("pointerdown", () => {
+    if (!made.classList.contains("attention")) return;
+    markSeen(seenAttention, attentionWaits([task]), key);
+    made.classList.remove("attention", "pulse");
+    showProjectAttention();
+  });
 
   const head = document.createElement(alwaysOpen ? "div" : "button");
   head.className = "task-head";
@@ -5262,6 +5320,14 @@ function updateWorkerAlert(): void {
 
 /** The marks of the waits that alerted, for this run of the app. */
 const alertMarks = alertState();
+/**
+ * The waits whose card the user pressed in this run (ticket card-attention): their signal stops. In
+ * memory only, so a wait that is still there after a restart signals again (user decision 2).
+ */
+const seenAttention = new Set<string>();
+/** The system setting for reduced motion: the signal then stays still. A change draws again. */
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+reducedMotion.addEventListener("change", () => renderChats());
 /** The workers that were blocked at the last call, and how often each one became blocked. */
 let blockedBefore = new Set<string>();
 const promptCounts = new Map<string, number>();
@@ -5633,7 +5699,7 @@ function renderChats(): void {
   renderFocus();
   renderMap();
   renderOverview();
-  renderPills();
+  showProjectAttention();
   if (chatsEl.hidden) return;
   // A render replaces the cards. While the user types into one, the render waits for the blur.
   const active = document.activeElement;
@@ -7101,7 +7167,7 @@ function renderFocus(): void {
     void refreshMorning(column);
     const state = focusState(column);
     const badge = focusBadge(state);
-    column.dotEl.className = `focus-dot ${badge.kind}`;
+    column.dotEl.className = `focus-dot ${badge.kind}${attentionClasses(projectSignal(key))}`;
 
     const { triage, agents } = workspacePanes(column);
     if (triage) moveInto(triage, column.triageEl);
@@ -7198,10 +7264,11 @@ function renderPills(): void {
     const isOpen = key === open;
     const badge = isOpen ? groupCount(state) : pillCount(state);
     const pill = document.createElement("button");
-    pill.className = isOpen ? "project-group-head" : "focus-pill";
+    const signal = attentionClasses(projectSignal(key));
+    pill.className = `${isOpen ? "project-group-head" : "focus-pill"}${signal}`;
     pill.title = backends().length > 1 ? `${root.root}\non ${backendName(root.host)}` : root.root;
     const dot = document.createElement("span");
-    dot.className = `focus-dot ${badge.kind}`;
+    dot.className = `focus-dot ${badge.kind}${signal}`;
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = projectName(root);
@@ -7241,6 +7308,29 @@ function renderPills(): void {
     return group;
   });
   focusProjectsEl.replaceChildren(...pills);
+  markTabs();
+}
+
+/** Marks the tab of each project with a task that has the signal (ticket card-attention). */
+function markTabs(): void {
+  for (const tab of tabs.values()) {
+    const keys = new Set(tabPanes(tab.id).flatMap((pane) => (pane.project ? [paneKey(pane)] : [])));
+    toggleAttention(tab.button, [...keys].some((key) => projectSignal(key)));
+  }
+}
+
+/**
+ * Shows the signal of each project at once, after a press in a card or a full render: the pills,
+ * the tabs, the dots of the Focus columns, the Overview cards and the Map heads.
+ */
+function showProjectAttention(): void {
+  renderPills();
+  for (const [key, column] of focusColumns) toggleAttention(column.dotEl, projectSignal(key));
+  for (const [key, card] of overviewCards) toggleAttention(card.dotEl, projectSignal(key));
+  for (const section of mapEl.querySelectorAll<HTMLElement>(".map-project")) {
+    const dot = section.querySelector(".map-head .focus-dot");
+    if (dot && section.dataset.project) toggleAttention(dot, projectSignal(section.dataset.project));
+  }
 }
 
 /** Opens the workspace of a project when it has none: triage and the agent view start. */
@@ -7566,7 +7656,7 @@ function mapSection(ref: ProjectRef): HTMLElement {
   const section = mapElement("section", "map-project");
   section.dataset.project = key;
   const head = mapElement("div", "map-head");
-  const dot = mapElement("span", `focus-dot ${waiting.length > 0 ? "waits" : live.length > 0 ? "working" : ""}`);
+  const dot = mapElement("span", `focus-dot ${waiting.length > 0 ? "waits" : live.length > 0 ? "working" : ""}${attentionClasses(projectSignal(key))}`);
   dot.setAttribute("aria-hidden", "true");
   const name = mapElement("b", "", projectName(ref));
   const path = mapElement("span", "map-muted", root);
@@ -7924,7 +8014,7 @@ function renderOverview(): void {
   for (const card of cards) {
     const key = projectKey(card.host, card.root);
     const badge = focusBadge(focusState(card));
-    card.dotEl.className = `focus-dot ${badge.kind}`;
+    card.dotEl.className = `focus-dot ${badge.kind}${attentionClasses(projectSignal(key))}`;
     card.countEl.className = `overview-count ${badge.kind}`;
     card.countEl.textContent = badge.text;
     const record = projectTasks.get(key);
@@ -8177,7 +8267,11 @@ async function start(): Promise<void> {
   initHelp(() => focusedPane()?.term.focus());
   initNews(() => focusedPane()?.term.focus());
   initOptions(
-    () => focusedPane()?.term.focus(),
+    () => {
+      // The switch Pulse may have changed (ticket card-attention).
+      renderChats();
+      focusedPane()?.term.focus();
+    },
     () => saveState().catch((error) => console.error("host settings save failed", error)),
   );
   initHostMode(reattach);

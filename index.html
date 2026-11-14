@@ -361,6 +361,7 @@
           <li><b>Workers</b> (right). This is the agent view of Claude Code. Select a worker to see its work or answer a prompt. <b>Back to list</b> above it shows the list of workers again; the worker goes on working.</li>
           <li><b>Environment</b> in the side panel shows the shell, folder, branch and session of a terminal. Its <b>Remote Control</b> switch turns Remote Control on or off.</li>
           <li><b>The yellow button</b> in the top bar shows when a worker waits for you. Click it to open that worker.</li>
+          <li><b>A pulsing card</b> waits for you. The pill or tab of its project pulses too when the project is not in view. A click on the card stops it; Options and the system setting for reduced motion turn the motion off.</li>
           <li><b>Old sessions.</b> The button <b>N old</b> lists finished worker sessions that Claude Code still keeps open. <b>End</b> closes one.</li>
           <li>The folder button of a project opens its workspace again and continues its last triage chat.</li>
         </ul>
@@ -398,7 +399,7 @@
         <p class="tldr">One column for each project, side by side, with its chat and tasks.</p>
         <ul>
           <li><b>Focus</b> at the left of the bar opens it. <b>Details</b> goes back to the terminal tabs and the chat list.</li>
-          <li>Each project has a pill in the bar: green while a worker works, orange while something waits for you.</li>
+          <li>Each project has a pill in the bar: green while a worker works, orange while something waits for you, and it pulses while a task waits for your click.</li>
           <li>The head of each column has the buttons of its project: <b>Rules</b>, <b>Setup</b>, <b>N old</b> and the folder button.</li>
           <li><b>Workers</b> in the head of a column opens the agent view of that project. A second click closes it.</li>
           <li>With two or more projects, a blue frame marks the project you work in.</li>
@@ -711,6 +712,10 @@
           <label>
             <input type="checkbox" data-alert="blink" />
             <span><b>Blink.</b> The Dispatch button in the taskbar blinks until you open the window.</span>
+          </label>
+          <label>
+            <input type="checkbox" data-attention="pulse" />
+            <span><b>Pulse.</b> The card of a task that waits for you pulses, and so does the pill, tab or column of its project, until you click the card. The system setting for reduced motion turns the motion off too.</span>
           </label>
           <p>An alert comes one time when a task starts to wait: a plan is ready, a report has a question or needs a permission, or a worker waits at a prompt. While night mode is on, only what night mode leaves to you alerts: a plan with a HOLD decision, a permission and a prompt.</p>
         </fieldset>
