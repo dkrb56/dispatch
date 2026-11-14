@@ -34,6 +34,7 @@ import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { type Typed, typedAfter, typingState } from "./typing";
 import { MENU_ABOVE_LINES, menuScreen, parseMenu, parseReview, SUBMIT_QUESTION } from "./menu";
 import { joinRows, type MenuRecord, type ScreenRow } from "./menurecord";
+import { agentListShown, asksAgain, backKey, BACK_TITLE, LIST_TITLE } from "./agentview";
 import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, type FileInfo, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
@@ -1076,6 +1077,35 @@ function fillPaneBar(pane: Pane): void {
   count.title = "The agents that the workers of this project started";
   model.before(runLabel("plan", "The plan run reads the code and writes the plan"));
   effort.after(runLabel("work", "The work run executes the approved plan"), workModel, workEffort, agents, count);
+  // An opened worker covers the list of the agent view. The button brings the list back; it is grey
+  // while the list shows, because a key there can leave the agent view (ticket workers-back-button).
+  const back = document.createElement("button");
+  back.className = "workers-back";
+  back.textContent = "Back to list";
+  back.setAttribute("aria-label", BACK_TITLE);
+  const showBack = () => {
+    const list = agentListShown(agentRows(pane.term));
+    back.disabled = list;
+    back.title = list ? LIST_TITLE : BACK_TITLE;
+  };
+  back.addEventListener("click", () => {
+    void backToAgentList(pane)
+      .catch((error) => console.error("back to the list failed", error))
+      .finally(() => {
+        showBack();
+        pane.term.focus();
+      });
+  });
+  // The agent view draws often (its spinner): the state is read at most once per short wait.
+  let backDue: ReturnType<typeof setTimeout> | null = null;
+  pane.term.onRender(() => {
+    backDue ??= setTimeout(() => {
+      backDue = null;
+      showBack();
+    }, BACK_STATE_MS);
+  });
+  showBack();
+  label.after(back);
   showAgentCount(pane);
   // In focus mode the pane closes from its own bar too. In Details the style hides this button.
   const hide = document.createElement("button");
@@ -1123,6 +1153,35 @@ function fillPaneBar(pane: Pane): void {
   load().catch(failed);
   // Setup pipeline writes the flag files; the close of its window reads them again (the hint).
   flagLoaders.set(pane, () => load().catch(failed));
+}
+
+/** The wait of the button "Back to list" before it reads the screen of the Workers pane again. */
+const BACK_STATE_MS = 200;
+
+/** The wait after one ← before the screen is read: the agent view draws the list in this time (measured: under 1.5 s). */
+const BACK_WAIT_MS = 400;
+
+/**
+ * The rows of the screen of the agent view, not joined. The list fills its folder row to the last
+ * column, and the join of `terminalLines` then glues the summary row to it (proof run of 17:41 UTC).
+ */
+function agentRows(term: Terminal): string[] {
+  return terminalRows(term).rows.map((row) => row.text);
+}
+
+/**
+ * Brings the list of the agent view back from an opened worker: the left arrow, which Claude Code
+ * takes as "back to agents" on the empty prompt of the worker. Claude Code asks for a second ← right
+ * after the opening; the second one goes only when the screen asks for it. Nothing goes while the
+ * list shows. The worker goes on working.
+ */
+async function backToAgentList(pane: Pane): Promise<void> {
+  for (let press = 0; press < 2; press++) {
+    const lines = agentRows(pane.term);
+    if (agentListShown(lines) || (press > 0 && !asksAgain(lines))) return;
+    await call(pane.host, "pty_write", { id: pane.id, data: backKey(pane.term.modes.applicationCursorKeysMode) });
+    await new Promise((done) => setTimeout(done, BACK_WAIT_MS));
+  }
 }
 
 /** The reader of the worker flags of each pane bar that has one. */

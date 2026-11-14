@@ -4889,6 +4889,29 @@ body:not(.map-mode):not(.overview-mode) #stale-alert {
   color: var(--text);
 }
 
+/* "Back to list" in the bar of the Workers pane: the list of the agent view again. Grey while it shows. */
+.pane-bar .workers-back {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.pane-bar .workers-back:hover:not(:disabled) {
+  background: var(--card);
+  color: var(--text);
+}
+
+.pane-bar .workers-back:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.6;
+}
+
 /* In Tabs the Workers pane is a pane of its tab: no ×. */
 body:not(.focus-mode) .pane-bar .workers-hide {
   display: none;
