@@ -168,3 +168,38 @@ test("the tickets meet the page: the commands, the board, the dispatcher, the bo
   for (const name of ["New", "Todo", "In progress", "Done", "Canceled", "Ask triage", "tickets.jsonl", "Ticket &lt;id&gt;: &lt;title&gt;"]) assert.ok(help.includes(name), name);
   assert.doesNotMatch(HTML, /<b>Planned/);
 });
+
+// Pause tasks (ticket pause-tasks): a paused project sends no ticket; at Resume the next goes once.
+test("paused: no ticket is sent; resumed: the next ticket goes once", () => {
+  const list = [ticket("second", "todo", 2), ticket("first", "todo", 1)];
+  const sent = new Set<string>();
+  const poll = (paused: boolean) => {
+    const next = nextTicket(list, [], (id) => sent.has(id), paused);
+    if (next) sent.add(next.id);
+    return next?.id ?? null;
+  };
+  for (let i = 0; i < 15; i++) assert.equal(poll(true), null, "paused: no ticket");
+  assert.equal(poll(false), "first", "resumed: the first ticket of the queue");
+  // While the first is in flight the dispatcher passes it as such: none goes.
+  assert.equal(nextTicket(list, ["first"], (id) => sent.has(id), false), null);
+  assert.equal(poll(true), null, "paused again: the second waits");
+  assert.equal(poll(false), "second");
+  assert.equal(poll(false), null, "each ticket once");
+});
+
+test("paused: the line above the message box says that the tickets wait for Resume", () => {
+  assert.equal(waitingText(0, true), "");
+  assert.equal(waitingText(1, true), "1 ticket in Todo: paused, Dispatch sends it when you resume the project.");
+  assert.equal(waitingText(2, true), "2 tickets in Todo: paused, Dispatch sends them when you resume the project.");
+  assert.equal(waitingText(2, false), waitingText(2));
+});
+
+test("paused: the dispatcher passes the pause, and the page has the banner and the Setup switch", () => {
+  const dispatch = MAIN.slice(MAIN.indexOf("async function dispatchTickets("));
+  assert.match(dispatch.slice(0, dispatch.indexOf("\n}\n")), /nextTicket\(record\.tickets, \[\], \(id\) => ticketSent\(key, id\), record\.paused\)/);
+  assert.match(HTML, /<p id="tickets-paused" hidden>/);
+  assert.match(HTML, /id="tickets-resume"/);
+  assert.match(HTML, /data-option="paused"/);
+  assert.match(CHAT, /waitingText\(options\.waiting\?\.\(\) \?\? 0, options\.paused\?\.\(\) \?\? false\)/);
+  assert.match(CSS, /#tickets-paused \{/);
+});

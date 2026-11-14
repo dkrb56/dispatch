@@ -12,6 +12,8 @@ export interface WaitFacts {
   dirty: readonly string[];
   /** The task whose branch Dispatch merges now (ticket task-branches), or null. */
   merging?: string | null;
+  /** The user paused the project (ticket pause-tasks). */
+  paused?: boolean;
 }
 
 /** The reason in two lengths. */
@@ -23,10 +25,17 @@ export interface WaitReason {
 }
 
 /**
- * The reason, or null when nothing holds the work run back. A merge comes first (it holds the main
- * checkout and runs its gate there), then the running work run.
+ * The reason, or null when nothing holds the work run back. A pause comes first (Resume is the one
+ * click that frees the queue), then a merge (it holds the main checkout and runs its gate there),
+ * then the running work run.
  */
 export function waitReason(facts: WaitFacts): WaitReason | null {
+  if (facts.paused) {
+    return {
+      short: "Paused: its work run starts at Resume.",
+      full: "The project is paused. Its work run starts when you resume the project.",
+    };
+  }
   if (facts.merging) {
     return {
       short: `Waits for the merge of ${facts.merging}.`,

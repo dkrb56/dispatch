@@ -101,13 +101,17 @@ pub struct Options {
     /// files stay on this computer and a clone has none (ticket ignore-tasks). Off at the start; a
     /// settings file without the field is off.
     ignore_tasks: bool,
+    /// Dispatch sends no ticket of Todo to triage and starts no work run for the project while it is
+    /// on (ticket pause-tasks). A worker that runs finishes. Off at the start; a settings file without
+    /// the field is off.
+    paused: bool,
 }
 
 // A settings file of an older version has a field for answers in the triage chat. Serde drops a
 // field it does not know, so such a file reads without an error.
 impl Default for Options {
     fn default() -> Self {
-        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false }
+        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, paused: false }
     }
 }
 
@@ -2922,6 +2926,8 @@ pub struct TaskList {
     dirty: Vec<String>,
     /// The setting of the project: Dispatch approves a plan without a `HOLD` decision itself.
     auto_approve: bool,
+    /// The setting of the project: Dispatch starts nothing new for it (ticket pause-tasks).
+    paused: bool,
     /// When the project got its Dispatch setup: the creation time of the task folder (or of its
     /// oldest state file, see `setup_time`), which the first Apply makes and a later one keeps, in milliseconds since the Unix epoch. The chat
     /// list folds the chats from before it.
@@ -3154,7 +3160,8 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
         Vec::new()
     };
     let setup = setup_time(&project);
-    Ok(TaskList { tasks, dirty, auto_approve: project.options().auto_approve, setup, tickets, merging, gate: project.merge_gate() })
+    let options = project.options();
+    Ok(TaskList { tasks, dirty, auto_approve: options.auto_approve, paused: options.paused, setup, tickets, merging, gate: project.merge_gate() })
 }
 
 /// At most this many open tasks get their own part in the hand-off; the rest are counted.
@@ -3535,6 +3542,16 @@ pub fn set_project_options(cwd: String, options: Options) -> Result<Plan, String
     let text = serde_json::to_string_pretty(&options).map_err(err)?;
     write_file(&project.options_file(), &format!("{text}\n"))?;
     plan(&project)
+}
+
+/// Pauses or resumes the execution of tasks of the project of a folder (ticket pause-tasks): sets the
+/// one setting `paused` and keeps the others. Gives the new value. The steps do not change.
+pub fn set_paused(cwd: String, on: bool) -> Result<bool, String> {
+    let project = Project::find(&cwd)?;
+    let options = Options { paused: on, ..project.options() };
+    let text = serde_json::to_string_pretty(&options).map_err(err)?;
+    write_file(&project.options_file(), &format!("{text}\n"))?;
+    Ok(project.options().paused)
 }
 
 #[cfg(test)]
@@ -4555,6 +4572,8 @@ evidence: no
         assert!(t2.words.is_empty() && t2.goal.is_empty());
         // The scratch project is in no git repository, so nothing is dirty.
         assert!(list.dirty.is_empty());
+        // A project without the field "paused" is not paused (ticket pause-tasks).
+        assert!(!list.paused);
         assert!(check_ticket("t-1").is_ok() && check_ticket("../t-1").is_err() && check_ticket("").is_err());
         clean(&project);
     }
@@ -4841,6 +4860,8 @@ if (args[0] === 'agents') {
 
         let options = project.options();
         assert!(!options.measure_before_plan && options.auto_approve && !options.triage_name, "the other settings stay");
+        // The same file has no field for "Pause tasks" (ticket pause-tasks): it is off.
+        assert!(!options.paused);
         assert!(plan_flags_current(&project), "the plan options of 0.1.54 are current");
         assert_eq!(read(&project.plan_flags()), plan_lines(&project, "--model\nfable\n--effort\nxhigh\n"));
         assert!(!project.section_body().contains("Measure before the plan"));
@@ -5521,6 +5542,28 @@ if (args[0] === 'agents') {
     }
 
     #[test]
+    fn set_paused_flips_the_one_setting_and_keeps_the_others() {
+        let project = scratch("paused");
+        apply(&project, &[0]).unwrap();
+        write_file(&project.options_file(), "{\n  \"shortReports\": false,\n  \"triageName\": true,\n  \"autoApprove\": true\n}\n").unwrap();
+        let root = project.root.to_string_lossy().into_owned();
+        assert!(!task_list(root.clone()).unwrap().paused, "a settings file without the field is not paused");
+        let steps = open_steps(&project);
+
+        assert!(set_paused(root.clone(), true).unwrap());
+        let options = project.options();
+        assert!(options.paused && options.auto_approve && !options.short_reports && options.triage_name, "the other settings stay");
+        assert!(task_list(root.clone()).unwrap().paused, "the task list gives the state");
+        assert_eq!(open_steps(&project), steps, "a pause changes no step of the setup");
+        assert_eq!(serde_json::to_value(&plan(&project).unwrap().options).unwrap()["paused"], json!(true));
+
+        assert!(!set_paused(root.clone(), false).unwrap());
+        assert!(!project.options().paused && project.options().auto_approve);
+        assert!(!task_list(root).unwrap().paused);
+        clean(&project);
+    }
+
+    #[test]
     fn an_old_project_stays_off_after_the_branch_update() {
         let project = scratch("branch-old");
         apply(&project, &[0]).unwrap();
@@ -5532,6 +5575,7 @@ if (args[0] === 'agents') {
         assert!(!project.options().task_branches);
         // The same file has no field for "Task files local only" (ticket ignore-tasks): it is off.
         assert!(!project.options().ignore_tasks);
+        assert!(!project.options().paused);
         let shown = plan(&project).unwrap();
         assert_eq!(serde_json::to_value(&shown.options).unwrap()["taskBranches"], json!(false));
         assert_eq!(serde_json::to_value(&shown.options).unwrap()["ignoreTasks"], json!(false));

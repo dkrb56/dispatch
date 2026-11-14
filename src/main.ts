@@ -41,6 +41,7 @@ import { agentsText, fileRowTitle, rowParts } from "./workerrow";
 import { announcements, parseEnded, serializeEnded } from "./announce";
 import { oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
 import { currentProject, groupCount, pillCount } from "./topbar";
+import { PAUSE_BANNER, pauseButton, PAUSED_TODO_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
@@ -1733,6 +1734,8 @@ interface TaskListReply {
   dirty: string[];
   /** The setting of the project: Dispatch approves a plan without a HOLD decision itself. */
   autoApprove: boolean;
+  /** The setting of the project: Dispatch starts nothing new for it (ticket pause-tasks). Absent from an older host. */
+  paused?: boolean;
   /** When the project got its Dispatch setup (the reports folder was made); null without one. */
   setup: number | null;
   /** The tickets of the project (ticket tickets), in the order of the file. */
@@ -1751,6 +1754,8 @@ interface ProjectTasks {
   infos: TaskInfo[];
   dirty: string[];
   autoApprove: boolean;
+  /** The user paused the project: no ticket goes to triage and no work run starts (ticket pause-tasks). */
+  paused: boolean;
   setup: number | null;
   /** The tickets of the project (ticket tickets). */
   tickets: Ticket[];
@@ -1768,6 +1773,7 @@ function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTa
     infos: hostedTasks(host, reply.tasks),
     dirty: reply.dirty,
     autoApprove: reply.autoApprove,
+    paused: reply.paused ?? false,
     setup: reply.setup ?? null,
     tickets: reply.tickets ?? [],
     merging: reply.merging ?? null,
@@ -2004,10 +2010,11 @@ function approvePlans(): void {
     if (!driverOf(project.host)) continue;
     const night = nightOf(project.host);
     const tasks = projectTaskList(project);
-    if (night) nightDefaults(project, tasks);
+    // A paused project gets no answer of night mode (ticket pause-tasks, user decision 4).
+    if (night && !project.paused) nightDefaults(project, tasks);
     // A merge holds the main checkout and runs its gate there (ticket task-branches). A start in
-    // flight holds the project like a running work run.
-    const busy = { dirty: project.dirty.length, merging: project.merging, running: workRun(tasks)?.name ?? null, leased: startHolder(project.host, project.cwd) };
+    // flight holds the project like a running work run. A pause holds every start (ticket pause-tasks).
+    const busy = { dirty: project.dirty.length, merging: project.merging, running: workRun(tasks)?.name ?? null, leased: startHolder(project.host, project.cwd), paused: project.paused };
     // A plan that the user approved while the project was not free starts first.
     const queued = projectBusy(busy) ? undefined : nextQueued(project, tasks);
     const choice = chooseStart({
@@ -2580,6 +2587,38 @@ async function ticketAction(project: string, command: string, args: Record<strin
   }
 }
 
+/**
+ * Pauses or resumes a project (ticket pause-tasks): writes the setting, reads the task list again,
+ * draws the views and tells triage. At Resume the queue goes on at once: the next Todo ticket and
+ * the next approved plan. The sent tickets, the cards in flight and the start lease keep anything
+ * from going twice.
+ */
+async function setPaused(ref: ProjectRef, on: boolean): Promise<void> {
+  const key = refKey(ref);
+  ticketError = "";
+  try {
+    await call<boolean>(ref.host, "set_paused", { cwd: ref.root, on });
+    await readProjectTasks(ref.host, ref.root);
+    tellTriage(key, pauseLine(on));
+  } catch (error) {
+    ticketError = `The project could not be ${on ? "paused" : "resumed"}: ${error}`;
+    console.error("set_paused failed", error);
+  }
+  tasksShown = "";
+  renderChats();
+  renderPills();
+  renderTickets();
+  if (!on) {
+    approvePlans();
+    void dispatchTickets();
+  }
+}
+
+/** Whether a project (by its key) is paused, from its last task list. */
+function projectPaused(key: string): boolean {
+  return projectTasks.get(key)?.paused ?? false;
+}
+
 /** The Todo ids of a project (by its key) without one ticket: the column after that ticket left it. */
 function todoIdsWithout(project: string, id: string): string[] {
   return todoOrder(projectTickets(project))
@@ -2663,7 +2702,8 @@ async function dispatchTickets(): Promise<void> {
         if (noteStatus(pendingCards, key, status, Date.now())) savePending();
         continue;
       }
-      const ticket = nextTicket(record.tickets, [], (id) => ticketSent(key, id));
+      // A paused project sends no ticket; a ticket in flight goes on (ticket pause-tasks).
+      const ticket = nextTicket(record.tickets, [], (id) => ticketSent(key, id), record.paused);
       if (!ticket) continue;
       if (switchRuns(key) || triageQueue.some((line) => line.project === key)) continue;
       if (!triageFree(await triageStatus(pane).catch(() => null))) continue;
@@ -3691,7 +3731,9 @@ function approveWait(task: Task): string {
 function waitFacts(task: Task): WaitFacts {
   const editing = workRun(task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos))?.name ?? startHolder(taskHost(task), taskCwd(task));
   const merging = task.project ? task.project.merging : mergingTask;
-  return { editing: editing && editing !== task.name ? editing : null, dirty: task.project?.dirty ?? dirtyLines, merging };
+  // A paused project queues an Approve click (ticket pause-tasks, user decision 3).
+  const paused = task.project?.paused ?? projectTasks.get(tasksFolder)?.paused ?? false;
+  return { editing: editing && editing !== task.name ? editing : null, dirty: task.project?.dirty ?? dirtyLines, merging, paused };
 }
 
 /** Opens the Decisions window of a task: each decision with its options as buttons and an Other box. */
@@ -4584,6 +4626,9 @@ const ticketsTitleEl = document.querySelector<HTMLElement>("#tickets-title")!;
 const ticketsCountEl = document.querySelector<HTMLElement>("#tickets-count")!;
 const ticketsPathEl = document.querySelector<HTMLElement>("#tickets-path")!;
 const ticketsErrorEl = document.querySelector<HTMLElement>("#tickets-error")!;
+/** The banner of a paused project on the board, and its text (ticket pause-tasks). */
+const ticketsPausedEl = document.querySelector<HTMLElement>("#tickets-paused")!;
+const ticketsPausedTextEl = document.querySelector<HTMLElement>("#tickets-paused-text")!;
 const ticketsSearchEl = document.querySelector<HTMLInputElement>("#tickets-search")!;
 
 /** The project of the open board, or null. */
@@ -4625,6 +4670,9 @@ function initTickets(): void {
     renderTickets();
   });
   ticketsSearchEl.addEventListener("input", renderTickets);
+  document.querySelector("#tickets-resume")!.addEventListener("click", () => {
+    if (ticketsRef) void setPaused(ticketsRef, false);
+  });
   ticketsDialog.addEventListener("click", (event) => {
     if (event.target === ticketsDialog) ticketsDialog.close();
   });
@@ -4643,6 +4691,18 @@ function showTicketButtons(): void {
     const { fresh, todo } = ticketCounts(tickets);
     button.textContent = fresh + todo > 0 ? `Tickets ${fresh + todo}` : "Tickets";
     button.title = `The tickets board of this project: ${countText(tickets)}. New tickets wait for you; Dispatch sends the Todo tickets to triage in their order.`;
+  }
+  showPauseButtons();
+}
+
+/** The Pause button of each project (ticket pause-tasks): its text, tooltip and pressed state from the task list. */
+function showPauseButtons(): void {
+  for (const button of document.querySelectorAll<HTMLButtonElement>(".project-pause")) {
+    const paused = projectPaused(button.dataset.project ?? "");
+    const look = pauseButton(paused);
+    button.textContent = look.text;
+    button.title = look.title;
+    button.setAttribute("aria-pressed", String(paused));
   }
 }
 
@@ -4666,6 +4726,10 @@ function renderTickets(): void {
   ticketsPathEl.textContent = ticketsFilePath(ticketsRef.root);
   ticketsErrorEl.textContent = ticketError;
   ticketsErrorEl.hidden = ticketError === "";
+  // The banner of a paused project, with Resume (ticket pause-tasks).
+  const paused = record?.paused ?? false;
+  ticketsPausedEl.hidden = !paused;
+  ticketsPausedTextEl.textContent = PAUSE_BANNER;
   const shown = tickets.filter((ticket) => ticketMatches(ticket, ticketsSearchEl.value));
   const todoIds = todoOrder(tickets).map((ticket) => ticket.id);
   const columns = COLUMNS.map(({ status, name }) => {
@@ -4678,7 +4742,7 @@ function renderTickets(): void {
     if (status === "new" && newTicketOpen) list.append(newTicketForm(key));
     list.append(...items.map((ticket) => ticketCard(key, ticket, todoIds, record)));
     if (items.length === 0 && !(status === "new" && newTicketOpen)) {
-      list.append(mapElement("p", "tickets-none", status === "todo" ? "Move a ticket here: Dispatch sends it to triage." : "No tickets"));
+      list.append(mapElement("p", "tickets-none", status === "todo" ? (paused ? PAUSED_TODO_EMPTY : "Move a ticket here: Dispatch sends it to triage.") : "No tickets"));
     }
     column.append(head, list);
     return column;
@@ -6171,6 +6235,7 @@ function createPane(tabId: string, saved: SavedPane): Pane {
       onFocus: () => focusPane(pane),
       onMessage: (message) => addTicket(pane.host, pane.project ?? pane.cwd ?? "", message),
       waiting: () => waitingTickets(projectKey(pane.host, pane.project ?? pane.cwd)).length,
+      paused: () => projectPaused(projectKey(pane.host, pane.project ?? pane.cwd)),
     });
     // The view is on top of the terminal. The terminal keeps its size behind it.
     termEl.append(pane.chat.el);
@@ -6502,6 +6567,10 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   const tickets = tool("Tickets", `The tickets board of ${name}`, () => openTickets(ref));
   tickets.classList.add("project-tickets");
   tickets.dataset.project = key;
+  // Pause tasks (ticket pause-tasks): `showPauseButtons` sets the text and the pressed state.
+  const pause = tool("Pause", "", () => void setPaused(ref, !projectPaused(key)));
+  pause.classList.add("project-pause");
+  pause.dataset.project = key;
   const rules = tool("Rules", `Show the rules that Claude Code gets in ${name}`, () => openRules(ref.host, ref.root));
   const setup = tool("Setup", `Prepare ${name} for triage and workers: the Setup pipeline window`, () => showSetup(ref.host, ref.root));
   const oldEl = tool("", `The worker sessions of ${name} that Claude Code still keeps after their task ended. Click to see them and end each one.`, () => openStale(key));
@@ -6512,7 +6581,7 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   folder.classList.add("project-folder");
   folder.setAttribute("aria-label", `Open the workspace of ${name}`);
   folder.innerHTML = FOLDER_ICON;
-  el.append(tickets, rules, setup, oldEl, folder);
+  el.append(tickets, pause, rules, setup, oldEl, folder);
   showOldButton(oldEl, key);
   showTicketButtons();
   return { el, oldEl };
@@ -6882,19 +6951,18 @@ async function refreshMorning(column: FocusColumn): Promise<void> {
   column.morningEl.title = `Open the morning list of night mode${date ? ` of ${date}` : ""}: the defaults it took with their options, what was built, and what waits for you. Changed ${new Date(morning.modified).toLocaleString()}.`;
 }
 
-function focusState(ref: ProjectRef): { waits: number; working: number } {
+function focusState(ref: ProjectRef): { waits: number; working: number; paused: boolean } {
   const key = refKey(ref);
   const record = projectTasks.get(key);
   const tasks = record ? projectTaskList(record) : [];
   const waits = tasks.filter((task) => (planReady(task) && !approvalQueued(task)) || reportWaits(task)).length;
   const working = workerList.filter((worker) => inProject(worker, key) && worker.state === "working").length;
-  return { waits, working };
+  return { waits, working, paused: record?.paused ?? false };
 }
 
-function focusBadge(state: { waits: number; working: number }): { text: string; kind: string } {
-  if (state.waits > 0) return { text: `${state.waits} ${state.waits === 1 ? "waits" : "wait"}`, kind: "waits" };
-  if (state.working > 0) return { text: `${state.working} working`, kind: "working" };
-  return { text: "idle", kind: "idle" };
+/** The state text of a Focus column and an Overview card: the text of the open group, with "paused" (ticket pause-tasks). */
+function focusBadge(state: { waits: number; working: number; paused?: boolean }): { text: string; kind: string } {
+  return groupCount(state);
 }
 
 /** Shows or hides the Workers pane of a column, and sets its button in the head of the column. */
@@ -7803,7 +7871,7 @@ function renderOverview(): void {
 
 /** The line of the Tickets part of an Overview card: the counts as a button that opens the board. */
 function ticketsLine(host: HostId, root: string, tickets: readonly Ticket[]): HTMLElement {
-  const button = mapElement("button", "overview-tickets", countText(tickets));
+  const button = mapElement("button", "overview-tickets", pausedCountText(countText(tickets), projectPaused(projectKey(host, root))));
   button.title = "Open the tickets board of this project";
   button.addEventListener("click", () => openTickets({ host, root }));
   return button;

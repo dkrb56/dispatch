@@ -125,6 +125,7 @@ pub fn run(
         "pipeline_apply" => json(pipeline::pipeline_apply(a.req("cwd")?, a.req("rules")?)?),
         "pipeline_commit" => json(pipeline::pipeline_commit(a.req("cwd")?)?),
         "set_project_options" => json(pipeline::set_project_options(a.req("cwd")?, a.req("options")?)?),
+        "set_paused" => json(pipeline::set_paused(a.req("cwd")?, a.req("on")?)?),
         "set_measure_commands" => json(pipeline::set_measure_commands(a.req("cwd")?, a.req("text")?)?),
         "set_merge_gate" => json(pipeline::set_merge_gate(a.req("cwd")?, a.req("text")?)?),
         "set_checks" => json(pipeline::set_checks(a.req("cwd")?, a.req("text")?)?),

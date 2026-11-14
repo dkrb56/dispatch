@@ -28,6 +28,8 @@ interface Options {
   taskBranches: boolean;
   /** Git ignores the task folder `.dispatch`, so the task files stay on this computer (ticket ignore-tasks). Off at the start. */
   ignoreTasks: boolean;
+  /** Dispatch sends no Todo ticket and starts no work run for the project (ticket pause-tasks). Off at the start. */
+  paused: boolean;
 }
 
 /** The reply of the `pipeline_plan`, `pipeline_apply` and `set_project_options` commands. */

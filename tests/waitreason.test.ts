@@ -80,3 +80,13 @@ test("a merge holds the work run first, before another work run and changed file
   });
   assert.equal(waitReason({ editing: null, dirty: [], merging: null }), null);
 });
+
+// Pause tasks (ticket pause-tasks): an Approve click of a paused project waits, and the card says why.
+test("paused: the reason comes before the merge, the work run and the changed files", () => {
+  const paused = { short: "Paused: its work run starts at Resume.", full: "The project is paused. Its work run starts when you resume the project." };
+  assert.deepEqual(waitReason({ editing: null, dirty: [], paused: true }), paused);
+  assert.deepEqual(waitReason({ editing: "x", dirty: [" M a.ts"], merging: "y", paused: true }), paused);
+  assert.equal(waitReason({ editing: null, dirty: [], paused: false }), null, "off changes nothing");
+  assert.equal(waitReason({ editing: "x", dirty: [], paused: false })?.short, "Waits for the work run of x.");
+  assert.ok(words(paused.short) <= 12);
+});

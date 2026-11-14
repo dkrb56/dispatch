@@ -96,6 +96,10 @@
           <span><b>Approve plans automatically.</b> Dispatch starts the work run as soon as a plan is ready, the project has no uncommitted changes and no other work run runs. A plan with a <code>HOLD:</code> decision waits for your click.</span>
         </label>
         <label>
+          <input type="checkbox" data-option="paused" />
+          <span><b>Pause tasks.</b> Dispatch sends no ticket to triage and starts no work run for this project. A worker that runs finishes. Resume starts the queue where it stopped. The Pause button with the buttons of the project does the same.</span>
+        </label>
+        <label>
           <input type="checkbox" data-option="measureBeforePlan" />
           <span><b>Measure before the plan.</b> The plan run may run the commands below first, one at a time, and the plan gets a section "Measured" with what they showed. It can run no other command.</span>
         </label>
@@ -179,6 +183,7 @@
         <button id="tickets-close" title="Close (Esc)">&times;</button>
       </header>
       <p id="tickets-error" hidden></p>
+      <p id="tickets-paused" hidden><span id="tickets-paused-text"></span> <button id="tickets-resume" title="Resume this project: Dispatch sends the next Todo ticket and starts the next approved plan">Resume</button></p>
       <div id="tickets-columns"></div>
     </dialog>
     <dialog id="stale">
@@ -326,6 +331,7 @@
           <li><b>Short reports.</b> Triage tells you the result and your decisions in a few lines. It gives details when you ask.</li>
           <li><b>Fixed title.</b> A new triage chat has the name "Triage" in the chat list.</li>
           <li><b>Approve plans automatically.</b> Dispatch starts the work run when a plan is ready.</li>
+          <li><b>Pause tasks.</b> Dispatch sends no ticket and starts no work run for the project until you resume.</li>
           <li><b>Measure before the plan.</b> The plan run may run your commands before it writes the plan.</li>
           <li><b>Task branches.</b> Each task works on its own git branch.</li>
           <li>After a change, click <b>Apply</b>.</li>
@@ -335,6 +341,7 @@
           <ul>
             <li>Short reports and Fixed title are on for a new project. The other three are off. A project that was set up before stays off for Measure before the plan and Task branches.</li>
             <li>A change of Short reports applies to a new triage chat only, because a chat keeps the role with which it started. The next start of the workspace (the folder button of the project, or the start of the app) opens a new triage chat.</li>
+            <li><b>Pause tasks</b> applies at once and stays over a restart. The <b>Pause</b> button with the buttons of the project, in the bar and in the head of a Focus column, does the same; it shows "Paused" while the project is paused, and the pill says "paused". While paused, no Todo ticket goes to triage, no plan starts its work run (also not with Approve plans automatically or night mode), and night mode answers no question. Your Approve click waits in line, and your answer to a question goes to the worker at once. A worker that runs finishes its run. <b>Resume</b> (the same button, or the banner of the tickets board) sends the next ticket and starts the next plan.</li>
             <li><b>Approve plans automatically</b> applies at once. It waits when the project has uncommitted changes or another work run runs. A work run counts from the moment Dispatch starts it, so only one starts at a time, also with several plans in line. A plan with a decision marked <code>HOLD:</code> waits for your click. The line in the triage chat says "approved automatically".</li>
             <li><b>Measure before the plan.</b> Write the commands into the box under the switch: the tests, a browser test, a measuring script. The plan then has a section "Measured" with each command, what it showed and what it means. A fault that the plan run did not reproduce says "not reproduced".</li>
             <li>The plan run still edits no file, starts no agent and asks you nothing. Apply changes the options of the plan run and the section in <code>CLAUDE.md</code> with the switch.</li>
@@ -470,7 +477,7 @@
           <summary>Details</summary>
           <ul>
             <li><b>Questions go at once.</b> A message that ends with <code>?</code> or starts with what, why, how, when, where, which, who, is, are, do, does, did, can, could, should, would, will, was, were, has or have is a question: it goes to triage and makes no ticket. A ticket that is a question has <b>Ask triage</b>: it sends the words to triage and moves the ticket to Canceled.</li>
-            <li><b>The queue.</b> When triage is idle and asks nothing, Dispatch sends the first Todo ticket: your images, the line <code>Ticket &lt;id&gt;: &lt;title&gt;</code>, then your words. Triage uses that id for the task. One ticket at a time per project; night mode sends them too. A command that triage runs in the background after its answer does not hold the ticket.</li>
+            <li><b>The queue.</b> When triage is idle and asks nothing, Dispatch sends the first Todo ticket: your images, the line <code>Ticket &lt;id&gt;: &lt;title&gt;</code>, then your words. Triage uses that id for the task. One ticket at a time per project; night mode sends them too. A paused project sends none until you resume it (see Project settings). A command that triage runs in the background after its answer does not hold the ticket.</li>
             <li>The line above the message box says how many Todo tickets wait. The ticket in flight shows "Sent to triage", then "Triage reads", and its dashed card stands under In work until its task comes.</li>
             <li><b>Following the task.</b> When the plan run starts, the ticket goes to In progress and takes the title of the brief, unless you renamed it. A report that says done or failed moves it to Done ("failed" in red). A done report whose commands the transcripts do not show keeps it in In progress (see Tasks). A stopped task moves it to Canceled. When triage answers without a task, the ticket goes to Canceled with that note; drag it back to Todo to send it again.</li>
             <li>In Todo, ▲ and ▼ change the order, <b>← New</b> takes a ticket back, and × cancels it. <b>New ticket</b> adds a ticket in your words without sending anything. The search box finds a ticket by its title, words, id or type.</li>

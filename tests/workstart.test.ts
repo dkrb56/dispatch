@@ -141,3 +141,40 @@ test("main.ts: approvePlans chooses with chooseStart and every start claims the 
   const facts = MAIN.slice(MAIN.indexOf("function waitFacts("));
   assert.match(facts.slice(0, facts.indexOf("\n}\n")), /startHolder\(/);
 });
+
+// Pause tasks (ticket pause-tasks): a paused project starts nothing; at Resume one start comes.
+test("paused: no approve, also not with the setting, night mode or a queued approval", () => {
+  const facts: StartFacts = { dirty: 0, merging: null, running: null, leased: null, paused: true, queued: "ignore-tasks", auto: true, night: true, tasks: [candidate(NIGHT_PLAN)] };
+  assert.equal(chooseStart(facts), null);
+  assert.equal(chooseStart({ ...facts, queued: null }), null, "the setting and night mode start nothing");
+  assert.equal(chooseStart({ ...facts, paused: false }) !== null, true, "the same facts without the pause start one");
+});
+
+test("paused: no work run start in many polls; resumed: one start, and the lease holds the next poll", () => {
+  const leases = new StartLeases();
+  const queue = [...QUEUED];
+  let paused = true;
+  const starts: string[] = [];
+  const tick = () => {
+    const leased = leases.holder(PROJECT, { tasks: 0, workers: 0 });
+    const choice = chooseStart({ dirty: 0, merging: null, running: null, leased, paused, queued: queue[0] ?? null, auto: true, night: true, tasks: [candidate(NIGHT_PLAN)] });
+    if (!choice) return;
+    if (choice.kind === "queued") queue.shift();
+    assert.equal(leases.claim(PROJECT, choice.task, { tasks: 0, workers: 0 }), true);
+    starts.push(choice.task);
+  };
+  for (let i = 0; i < 15; i++) tick();
+  assert.deepEqual(starts, [], "paused: no start");
+  paused = false;
+  tick();
+  tick();
+  assert.deepEqual(starts, ["ignore-tasks"], "resumed: one start, the queue goes on where it stopped");
+});
+
+test("main.ts: approvePlans passes the pause, and night mode answers nothing on a paused project", () => {
+  const body = MAIN.slice(MAIN.indexOf("function approvePlans("), MAIN.indexOf("function nextQueued("));
+  assert.match(body, /paused: project\.paused/);
+  assert.match(body, /if \(night && !project\.paused\) nightDefaults\(/);
+  const facts = MAIN.slice(MAIN.indexOf("function waitFacts("));
+  assert.match(facts.slice(0, facts.indexOf("\n}\n")), /paused/);
+});

@@ -1167,7 +1167,8 @@ button.task-head:hover {
   font: inherit;
 }
 
-#tickets-new {
+#tickets-new,
+#tickets-resume {
   padding: 5px 12px;
   border: 0;
   border-radius: 6px;
@@ -1202,6 +1203,23 @@ button.task-head:hover {
   border-bottom: 1px solid var(--hairline);
   background: var(--danger-bg);
   color: var(--danger);
+}
+
+/* The banner of a paused project (ticket pause-tasks). */
+#tickets-paused {
+  display: flex;
+  flex: none;
+  gap: 10px;
+  align-items: center;
+  margin: 0;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--accent-bg);
+  color: var(--text);
+}
+
+#tickets-paused[hidden] {
+  display: none;
 }
 
 #tickets-columns {
@@ -3908,6 +3926,10 @@ body.focus-mode #chats {
   color: var(--wait);
 }
 
+.focus-pill .count.paused {
+  color: var(--muted);
+}
+
 #focus-add {
   flex: none;
   padding: 4px 11px;
@@ -4304,6 +4326,17 @@ body:not(.focus-mode):not(.map-mode):not(.overview-mode) #focus-projects {
 
 .project-group-head .count.waits {
   color: var(--wait);
+}
+
+.project-group-head .count.paused {
+  color: var(--muted);
+}
+
+/* The Pause button of a paused project looks pressed (ticket pause-tasks). */
+#bar .project-group .project-tool[aria-pressed="true"],
+.focus-head .project-tool[aria-pressed="true"] {
+  background: var(--accent-bg);
+  color: var(--accent);
 }
 
 .project-divider {

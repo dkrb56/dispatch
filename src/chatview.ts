@@ -176,6 +176,8 @@ export interface ChatViewOptions {
   onMessage?: (message: string) => Promise<string | null>;
   /** How many Todo tickets wait for triage. The state line names them. */
   waiting?: () => number;
+  /** The project of the pane is paused (ticket pause-tasks): the line says that the tickets wait for Resume. */
+  paused?: () => boolean;
 }
 
 /** Claude Code needs this time to read a paste, before the next paste or the Enter key. */
@@ -851,7 +853,7 @@ export function createChatView(options: ChatViewOptions): ChatView {
     }
     // The Todo tickets wait until triage is free (idle, or shell with a background command): the
     // line says how many wait. A message that became a ticket says so first, for a while.
-    const waits = waitingText(options.waiting?.() ?? 0);
+    const waits = waitingText(options.waiting?.() ?? 0, options.paused?.() ?? false);
     if (waits !== "") text = text === "" ? waits : `${text} ${waits}`;
     if (notice && Date.now() < notice.until) text = text === "" ? notice.text : `${notice.text} ${text}`;
     else notice = null;

@@ -69,11 +69,13 @@ export interface BusyFacts {
   running: string | null;
   /** The task of the start lease, or null. */
   leased: string | null;
+  /** The user paused the project (ticket pause-tasks): nothing starts until Resume. */
+  paused?: boolean;
 }
 
-/** Whether a work run of the project can start now. */
+/** Whether a work run of the project can start now. A paused project starts nothing (ticket pause-tasks). */
 export function projectBusy(facts: BusyFacts): boolean {
-  return facts.dirty > 0 || facts.merging !== null || facts.running !== null || facts.leased !== null;
+  return !!facts.paused || facts.dirty > 0 || facts.merging !== null || facts.running !== null || facts.leased !== null;
 }
 
 /** A task of the project as the choice of a start sees it. */

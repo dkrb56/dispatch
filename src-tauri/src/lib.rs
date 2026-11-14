@@ -64,6 +64,7 @@ pub fn run() {
             commands::pipeline_apply,
             commands::pipeline_commit,
             commands::set_project_options,
+            commands::set_paused,
             commands::set_measure_commands,
             commands::set_merge_gate,
             commands::set_checks,

@@ -193,6 +193,11 @@ pub fn set_project_options(cwd: String, options: Options) -> Result<Plan, String
 }
 
 #[tauri::command(async)]
+pub fn set_paused(cwd: String, on: bool) -> Result<bool, String> {
+    pipeline::set_paused(cwd, on)
+}
+
+#[tauri::command(async)]
 pub fn set_measure_commands(cwd: String, text: String) -> Result<Plan, String> {
     pipeline::set_measure_commands(cwd, text)
 }

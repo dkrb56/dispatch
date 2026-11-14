@@ -113,14 +113,16 @@ export function todoOrder<T extends Pick<Ticket, "id" | "status" | "order" | "cr
 
 /**
  * The ticket to send to triage next: the first Todo ticket that did not go yet. While a ticket of
- * the project is in flight, none: triage takes one ticket at a time.
+ * the project is in flight, none: triage takes one ticket at a time. A paused project sends none
+ * (ticket pause-tasks); at Resume the first ticket that did not go comes next.
  */
 export function nextTicket<T extends Pick<Ticket, "id" | "status" | "order" | "created">>(
   tickets: readonly T[],
   inFlight: readonly string[],
   sent: (id: string) => boolean = () => false,
+  paused = false,
 ): T | null {
-  if (inFlight.length > 0) return null;
+  if (paused || inFlight.length > 0) return null;
   return todoOrder(tickets).find((ticket) => !sent(ticket.id)) ?? null;
 }
 
@@ -158,10 +160,11 @@ export function addedText(ticket: Pick<Ticket, "title">): string {
 
 /**
  * What the triage chat says above its message box while Todo tickets wait: how many, and when they
- * go. No ticket gives an empty text.
+ * go. No ticket gives an empty text. A paused project says that they wait for Resume (ticket pause-tasks).
  */
-export function waitingText(count: number): string {
+export function waitingText(count: number, paused = false): string {
   if (count <= 0) return "";
+  if (paused) return count === 1 ? "1 ticket in Todo: paused, Dispatch sends it when you resume the project." : `${count} tickets in Todo: paused, Dispatch sends them when you resume the project.`;
   return count === 1
     ? "1 ticket in Todo: Dispatch sends it when triage is free."
     : `${count} tickets in Todo: Dispatch sends them one at a time when triage is free.`;

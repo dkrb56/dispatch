@@ -43,3 +43,14 @@ test("the bar meets the page: Details, no Project button, main.ts uses the modul
   assert.match(main, /openRules\(/);
   assert.match(main, /showSetup\(/);
 });
+
+// Pause tasks (ticket pause-tasks): the pill and the open group show the pause.
+test("paused: the pill and the group say paused; something that waits still says waits", () => {
+  assert.deepEqual(pillCount({ waits: 0, working: 0, paused: true }), { text: "paused", kind: "paused" });
+  assert.deepEqual(pillCount({ waits: 1, working: 0, paused: true }), { text: "waits", kind: "waits" });
+  assert.deepEqual(pillCount({ waits: 0, working: 2, paused: true }), { text: "2 · paused", kind: "working" });
+  assert.deepEqual(groupCount({ waits: 0, working: 0, paused: true }), { text: "paused", kind: "paused" });
+  assert.deepEqual(groupCount({ waits: 0, working: 1, paused: true }), { text: "1 working · paused", kind: "working" });
+  assert.deepEqual(groupCount({ waits: 2, working: 1, paused: true }), { text: "2 wait", kind: "waits" });
+  assert.deepEqual(groupCount({ waits: 0, working: 0, paused: false }), { text: "idle", kind: "idle" });
+});
