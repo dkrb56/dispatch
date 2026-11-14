@@ -42,6 +42,8 @@ interface Plan {
   measureCommands: string;
   /** The text of `.dispatch/merge-gate.txt`: the gate command of the merge step. Absent from an older host. */
   mergeGate?: string;
+  /** The text of `.dispatch/checks.txt`: the checks that a task can run (ticket task-checks). Absent from an older host. */
+  checks?: string;
 }
 
 const dialog = document.querySelector<HTMLDialogElement>("#setup")!;
@@ -59,6 +61,8 @@ const optionEls = [...dialog.querySelectorAll<HTMLInputElement>("#setup-options 
 const measureEl = document.querySelector<HTMLTextAreaElement>("#setup-measure-commands")!;
 /** The box with the gate command of the merge step, under the switch "Task branches". */
 const gateEl = document.querySelector<HTMLTextAreaElement>("#setup-merge-gate")!;
+/** The box with the checks of the project (ticket task-checks). It has no switch: an empty list is off. */
+const checksEl = document.querySelector<HTMLTextAreaElement>("#setup-checks")!;
 
 /** The folder for which the dialog shows the steps, and its host (remote-multi-host). */
 let folder: string | null = null;
@@ -165,6 +169,8 @@ function show(plan: Plan): void {
   measureEl.disabled = !plan.options.measureBeforePlan;
   if (document.activeElement !== gateEl) gateEl.value = plan.mergeGate ?? "";
   gateEl.disabled = !plan.options.taskBranches;
+  if (document.activeElement !== checksEl) checksEl.value = plan.checks ?? "";
+  checksEl.disabled = false;
   stepsEl.replaceChildren(
     ...plan.steps.map((step) => {
       const item = document.createElement("details");
@@ -189,7 +195,7 @@ function show(plan: Plan): void {
 }
 
 /** Asks the backend for the steps, or to do them, and shows the result. */
-async function run(command: "pipeline_plan" | "pipeline_apply" | "set_project_options" | "set_measure_commands" | "set_merge_gate", options?: Options, text?: string): Promise<void> {
+async function run(command: "pipeline_plan" | "pipeline_apply" | "set_project_options" | "set_measure_commands" | "set_merge_gate" | "set_checks", options?: Options, text?: string): Promise<void> {
   applyEl.disabled = true;
   // The positions of the checked working rules. Apply adds these.
   const rules = [...stepsEl.querySelectorAll<HTMLInputElement>(".setup-rules input:checked")].map((box) => Number(box.dataset.rule));
@@ -227,6 +233,10 @@ export function initPipeline(
   // The gate command is saved the same way (ticket task-branches).
   gateEl.addEventListener("change", () => {
     if (folder) void run("set_merge_gate", undefined, gateEl.value);
+  });
+  // The list of checks is saved the same way (ticket task-checks).
+  checksEl.addEventListener("change", () => {
+    if (folder) void run("set_checks", undefined, checksEl.value);
   });
   applyEl.addEventListener("click", async () => {
     if (!folder) return;
@@ -274,6 +284,8 @@ function open(host: HostId, target: string | null): void {
   measureEl.disabled = true;
   gateEl.value = "";
   gateEl.disabled = true;
+  checksEl.value = "";
+  checksEl.disabled = true;
   checkRun += 1;
   checkStateEl.textContent = "";
   checkListEl.replaceChildren();

@@ -125,6 +125,15 @@ fn measure_rule(reports: &str, script: &str) -> String {
     )
 }
 
+/// The line of the "Background workers" section for a project with a list of checks (ticket
+/// task-checks). `reports` is the reports folder with `/`.
+fn checks_rule(reports: &str) -> String {
+    format!(
+        "- This project lists the checks that a task can run in `{reports}/checks.txt`, one per line: `name | command`, and `| always` after a check that is always recommended. The plan then has the section Checks after Acceptance: one list item per check of the list, `- [x] <name> — <reason>` when the plan run recommends it for this task and `- [ ] <name> — <reason>` when not; a check marked always is `[x]`. The task card of Dispatch shows the checks as checkboxes with the recommended ones checked, and the user changes them before Approve. Dispatch then writes the choice at the end of the plan as the section Checks chosen and into `{reports}/<ticket-id>.checks` (the name, a tab and the command of each chosen check). The work run runs each chosen check with its command as written there and names each in Verification with that exact command; a done report without a claim for a chosen check counts as working, and its ticket stays open.
+"
+    )
+}
+
 /// The line of the "Background workers" section for a project with "Task branches" on.
 fn branches_rule(reports: &str, script: &str) -> String {
     format!(
@@ -204,6 +213,8 @@ pub struct Plan {
     measure_commands: String,
     /// The text of `merge-gate.txt`, for the box under the switch "Task branches".
     merge_gate: String,
+    /// The text of `checks.txt`, for the box "Checks" (ticket task-checks).
+    checks: String,
 }
 
 /// The paths of one project.
@@ -394,6 +405,23 @@ impl Project {
         self.reports.join(format!("{ticket}.branch"))
     }
 
+    /// The checks that a task of the project can run (ticket task-checks): one per line,
+    /// `name | command`, with a third field `always` for a check that is always recommended.
+    pub(crate) fn checks_file(&self) -> PathBuf {
+        self.reports.join("checks.txt")
+    }
+
+    /// The checks that the user chose for a task at Approve (ticket task-checks): one line per
+    /// check, the name, a tab and the command. A merge gate or a project script reads it.
+    fn task_checks_file(&self, ticket: &str) -> PathBuf {
+        self.reports.join(format!("{ticket}.checks"))
+    }
+
+    /// The checks of the list of the project, in the order of the file. Empty without the file.
+    fn checks(&self) -> Vec<Check> {
+        parse_checks(&fs::read_to_string(self.checks_file()).unwrap_or_default())
+    }
+
     /// The session file of a ticket (ticket task-tokens): the Claude sessions of its runs.
     fn session_file(&self, ticket: &str) -> PathBuf {
         self.reports.join(format!("{ticket}.session"))
@@ -487,6 +515,7 @@ impl Project {
             ".dispatch/work-flags.txt",
             ".dispatch/measure-commands.txt",
             ".dispatch/merge-gate.txt",
+            ".dispatch/checks.txt",
         ];
         // Off again, the commit takes the removal of the line of Dispatch, while HEAD still has it.
         if self.options().ignore_tasks || self.committed_tasks_ignore() {
@@ -575,6 +604,8 @@ impl Project {
         let measure = if self.options().measure_before_plan { measure_rule(&reports, &script) } else { String::new() };
         // The same for "Task branches": off, the section is the text of the version before.
         let branches = if self.options().task_branches { branches_rule(&reports, &script) } else { String::new() };
+        // A project without a list of checks (ticket task-checks): the section is the text of the version before.
+        let checks = if self.checks().is_empty() { String::new() } else { checks_rule(&reports) };
         // The same for "Task files local only" (ticket ignore-tasks): off, the sentence of the version before.
         let tasks_git = if self.options().ignore_tasks {
             format!("git ignores `{reports}/`: the task files stay on this computer, and a clone has none")
@@ -587,7 +618,7 @@ impl Project {
 - A message that Dispatch sends from its tickets board starts with the line `Ticket <id>: <title>`. Triage uses that id as the ticket id of the task. Dispatch keeps the tickets file `{reports}/tickets.jsonl`; triage and the workers do not edit it.
 - `{script} plan <ticket-id>` starts the plan run on the options in `{reports}/plan-flags.txt`: without the Edit tool, without the Agent tool and without a prompt; its Write tool may write only into `{reports}/plans/`. The plan run writes the plan to `{reports}/plans/<ticket-id>.md`, changes nothing else, and ends its turn.
 {measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; the word HOLD stands in no other line of this section); Do not touch; Size (files). No code in a plan.
-- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which resumes the same session on the options in `{reports}/work-flags.txt`, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when the working tree has uncommitted changes outside `{reports}/` (after Setup pipeline, the user commits the setup files first; {tasks_git}), when the worker still runs, or when the task was stopped.
+{checks}- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which resumes the same session on the options in `{reports}/work-flags.txt`, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when the working tree has uncommitted changes outside `{reports}/` (after Setup pipeline, the user commits the setup files first; {tasks_git}), when the worker still runs, or when the task was stopped.
 - The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It never pushes or merges. The user decides the push.
 {branches}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification lists each command the worker ran as a line that starts with a code span with the exact text of the Bash call, for example `` `cargo test --lib` ``, followed by what it showed. Dispatch compares these spans with the Bash commands of the transcripts of the task, without a leading `cd <folder> && ` on both sides: a done report with a claim that no command matches, or without the section, counts as working, and its ticket stays open.
 - A worker starts no session and sends no message to a chat. It has no question tool. A question for the user goes into the report under the heading `## Questions`: numbered items, each with its options as list items, the recommended option first. Each option is one short line, because Dispatch shows it as a button and sends it back word for word; the details stand above the questions. The worker then writes `state: needs-decision` and `needs: decision` and ends its turn, also when the question is about a permission. `needs: permission` means: a refused tool call stopped the work, the report names the refused call and the rule it needs, and the work goes on with a follow-up `Continue` once the user changed the rule. The user answers in the task card of Dispatch, and the answer arrives as a follow-up `Answer to question N: <option>`. An answered question never comes back unchanged: after the answer the worker takes the question out of its report or writes what it decided and did, and ends with `state: done` or a new question. A follow-up `Continue` after an answer means: take the answers as given and go on.
@@ -611,6 +642,120 @@ impl Project {
     pub(crate) fn pipeline_description(&self) -> String {
         format!("{SECTION_HEADING}\n{}\n{}", self.section_body(), rules_section(&(0..RULES.len()).collect::<Vec<_>>()))
     }
+}
+
+/// One check of the list of a project (ticket task-checks): a test, a test suite or a gate.
+#[derive(Clone, PartialEq, Debug)]
+struct Check {
+    name: String,
+    command: String,
+    /// The list marks it as always recommended.
+    always: bool,
+}
+
+/// Reads the list of checks (user decision 1 of task-checks): `name | command`, with a last field
+/// `always` for a check that is always recommended. The name ends at the first `|`; a command may
+/// hold `|` itself, so only a last field that is exactly `always` is the mark. An empty line and a
+/// line that starts with `#` are skipped, and so are a line without a name or a command and a
+/// second check with the same name.
+fn parse_checks(text: &str) -> Vec<Check> {
+    let mut checks: Vec<Check> = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, rest)) = line.split_once('|') else { continue };
+        // A tab would cut the line of the task file of the checks.
+        let (name, mut command, mut always) = (name.trim().replace('\t', " "), rest.trim(), false);
+        if let Some((head, mark)) = command.rsplit_once('|') {
+            if mark.trim().eq_ignore_ascii_case("always") {
+                command = head.trim();
+                always = true;
+            }
+        }
+        if name.is_empty() || command.is_empty() || checks.iter().any(|check| check.name.eq_ignore_ascii_case(&name)) {
+            continue;
+        }
+        checks.push(Check { name, command: command.to_string(), always });
+    }
+    checks
+}
+
+/// One check of the project for a task, for the checkboxes of the Plan ready card (ticket
+/// task-checks): from the list of the project, the section `Checks` of the plan and, after
+/// Approve, the section `Checks chosen`.
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckInfo {
+    name: String,
+    command: String,
+    /// The list of the project marks it as always recommended.
+    always: bool,
+    /// Always, or ticked by the plan run in the section `Checks`: the box starts checked.
+    recommended: bool,
+    /// The reason that the plan gives after the name, or empty.
+    reason: String,
+    /// The choice of the user from the section `Checks chosen`; none before Approve.
+    chosen: Option<bool>,
+}
+
+/// The heading of the section that Approve writes at the end of a plan (ticket task-checks).
+const CHECKS_CHOSEN_HEADING: &str = "## Checks chosen";
+
+/// The ticked check lines of a plan section: `- [x] name — reason` or `- [ ] name: reason`, the
+/// name maybe in backticks. Gives the name, whether it is ticked, and the text after the name.
+fn check_lines(text: &str, title: &str) -> Vec<(String, bool, String)> {
+    let mut lines = Vec::new();
+    for line in section_text(text, title) {
+        let item = line.trim();
+        let item = item.strip_prefix("- ").or_else(|| item.strip_prefix("* ")).unwrap_or(item).trim_start();
+        let (ticked, rest) = if let Some(rest) = item.strip_prefix("[x]").or_else(|| item.strip_prefix("[X]")) {
+            (true, rest)
+        } else if let Some(rest) = item.strip_prefix("[ ]") {
+            (false, rest)
+        } else {
+            continue;
+        };
+        let rest = rest.trim();
+        let cut = [" — ", " – ", " - ", ": "].iter().filter_map(|mark| rest.find(mark).map(|at| (at, mark.len()))).min();
+        let (name, after) = match cut {
+            Some((at, len)) => (&rest[..at], rest[at + len..].trim()),
+            None => (rest, ""),
+        };
+        let name = name.trim().trim_matches('`').trim().trim_end_matches(':').trim();
+        if !name.is_empty() {
+            lines.push((name.to_string(), ticked, after.to_string()));
+        }
+    }
+    lines
+}
+
+/// The checks of a task (ticket task-checks): each check of the list of the project, recommended
+/// when the list marks it always or the section `Checks` of the plan ticks it, and chosen as the
+/// section `Checks chosen` says, when the plan has it. A name that is not in the list is left out.
+fn plan_checks(text: &str, list: &[Check]) -> Vec<CheckInfo> {
+    let planned = check_lines(text, "Checks");
+    let decided = has_heading(text, &CHECKS_CHOSEN_HEADING[3..]);
+    let chosen = check_lines(text, &CHECKS_CHOSEN_HEADING[3..]);
+    list.iter()
+        .map(|check| {
+            let named = |lines: &[(String, bool, String)]| lines.iter().find(|(name, _, _)| name.eq_ignore_ascii_case(&check.name)).cloned();
+            let plan = named(&planned);
+            CheckInfo {
+                name: check.name.clone(),
+                command: check.command.clone(),
+                always: check.always,
+                recommended: check.always || plan.as_ref().is_some_and(|(_, ticked, _)| *ticked),
+                reason: plan.map(|(_, _, reason)| reason).unwrap_or_default(),
+                chosen: decided.then(|| named(&chosen).is_some_and(|(_, ticked, _)| ticked)),
+            }
+        })
+        .collect()
+}
+
+/// The name and the command of each check that the user chose (ticket task-checks).
+fn chosen_checks(checks: &[CheckInfo]) -> Vec<(String, String)> {
+    checks.iter().filter(|check| check.chosen == Some(true)).map(|check| (check.name.clone(), check.command.clone())).collect()
 }
 
 /// The time limit of the commands of a list file: the first line of the file that is not empty,
@@ -641,6 +786,8 @@ Dispatch worker script. Triage starts and resumes a worker only through this fil
   merge <ticket-id>             merge the task branch into its base after the gate command (Task branches; Dispatch only)
 Exit codes: 0 done, 2 refused (the reason is on stderr), 124 a measuring command stopped at its
 time limit, other: the exit code of claude or of the measuring command.
+The gate command of merge gets DISPATCH_TICKET (the ticket id) and DISPATCH_CHECKS (the path of
+<ticket-id>.checks: the checks that the user chose, one line each, the name, a tab and the command).
 #>
 param(
   [Parameter(Mandatory = $true, Position = 0)]
@@ -951,7 +1098,12 @@ function Merge-Branch($Info, [string]$Gate, [int]$Limit) {
   }
   if ($Gate) {
     $log = Join-Path $Reports "merge\$Id.log"
+    # The gate reads the ticket and the checks that the user chose for it (ticket task-checks); the
+    # file can be absent: then the user chose no check, or the project has no list.
+    $env:DISPATCH_TICKET = $Id
+    $env:DISPATCH_CHECKS = Join-Path $Reports "$Id.checks"
     $code = Run-Measured $Gate $log $Limit
+    Remove-Item Env:DISPATCH_TICKET, Env:DISPATCH_CHECKS -ErrorAction SilentlyContinue
     if ($code -ne 0) {
       Invoke-Git @('merge', '--abort') | Out-Null
       $tail = if (Test-Path -LiteralPath $log) { (Get-Content -LiteralPath $log -Tail 40) -join "`n" } else { '' }
@@ -1034,6 +1186,15 @@ switch ($Verb) {
     # The prompt names the report file: a worker planned with the paths of its plan run.
     $report = Join-Path $Reports "$Id.md"
     $prompt = "Plan approved: $plan. Execute it. A deviation goes into the report, not into the code. Write the report to $report."
+    # The checks that the user chose at Approve (ticket task-checks): one line per check, the name, a
+    # tab and the command. A quote of a name becomes an apostrophe, as in a reply.
+    $chosen = Join-Path $Reports "$Id.checks"
+    if (Test-Path -LiteralPath $chosen) {
+      $names = @(Get-Content -LiteralPath $chosen | Where-Object { $_.Trim() -ne '' } | ForEach-Object { ($_ -split "`t", 2)[0].Trim() -replace '"', "'" })
+      if ($names.Count -gt 0) {
+        $prompt += " The user chose these checks: $($names -join ', '). Run each with the command of the section Checks chosen of the plan, and name each in Verification with that exact command."
+      }
+    }
     # Task branches: the work run works on the branch of the task; a failed start checks out the branch before.
     $back = ''
     if (Branches-On) {
@@ -1512,7 +1673,8 @@ fn plan(project: &Project) -> Result<Plan, String> {
     ];
     let measure_commands = fs::read_to_string(project.measure_commands_file()).unwrap_or_default().replace("\r\n", "\n");
     let merge_gate = fs::read_to_string(project.merge_gate_file()).unwrap_or_default().replace("\r\n", "\n");
-    Ok(Plan { root: show(project.root.clone()), git: project.in_git, options, steps, measure_commands, merge_gate })
+    let checks = fs::read_to_string(project.checks_file()).unwrap_or_default().replace("\r\n", "\n");
+    Ok(Plan { root: show(project.root.clone()), git: project.in_git, options, steps, measure_commands, merge_gate, checks })
 }
 
 /// The step "Task branches" (ticket task-branches). Off, it is done and changes nothing. On, it is
@@ -2035,9 +2197,22 @@ fn without_cd(command: &str) -> &str {
 /// report of the old form, without `## Verification` and without the new headings (user decision
 /// 1). A claim matches a command when both are equal after trimming (user decision 2) and without
 /// a leading `cd <folder> && ` on both sides.
-fn check_report(text: &str, evidence: &[crate::core::flow::Evidence], has_transcript: bool) -> Option<(String, Vec<String>)> {
+/// `chosen` gives the name and the command of each check that the user chose (ticket task-checks,
+/// user decision 3): each is one more claim that the Verification section must carry, also without
+/// a transcript; the result then gives the commands of the checks without a claim.
+fn check_report(text: &str, evidence: &[crate::core::flow::Evidence], has_transcript: bool, chosen: &[(String, String)]) -> Option<(String, Vec<String>)> {
     let (header, _) = parse_report(text);
-    if header.is_none_or(|header| header.state != "done") || !has_transcript {
+    if header.is_none_or(|header| header.state != "done") {
+        return None;
+    }
+    let named = verification_claims(text);
+    let missing: Vec<&(String, String)> = chosen.iter().filter(|(_, command)| !named.iter().any(|claim| without_cd(claim) == without_cd(command))).collect();
+    if !missing.is_empty() {
+        let names = missing.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>().join(", ");
+        let what = if missing.len() == 1 { "the chosen check" } else { "the chosen checks" };
+        return Some((format!("The report says done, but its Verification section has no claim for {what} {names}."), missing.iter().map(|(_, command)| command.clone()).collect()));
+    }
+    if !has_transcript {
         return None;
     }
     if !has_heading(text, "Verification") {
@@ -2458,13 +2633,18 @@ fn first_sentence(text: &str) -> (String, String) {
 
 /// Puts a section with the decisions of the user at the end of a plan, in place of an earlier one.
 fn with_user_decisions(plan: &str, body: &str) -> String {
-    const HEADING: &str = "## User decisions";
+    with_section(plan, "## User decisions", body)
+}
+
+/// Puts a section with a heading at the end of a plan, in place of an earlier section with the
+/// same heading (the user decisions, and the checks that the user chose, ticket task-checks).
+fn with_section(plan: &str, heading: &str, body: &str) -> String {
     let crlf = plan.contains("\r\n");
     let mut kept: Vec<&str> = Vec::new();
     let mut skipping = false;
     for line in plan.lines() {
         if line.trim_start().starts_with("## ") {
-            skipping = line.trim().eq_ignore_ascii_case(HEADING);
+            skipping = line.trim().eq_ignore_ascii_case(heading);
         }
         if !skipping {
             kept.push(line);
@@ -2473,7 +2653,7 @@ fn with_user_decisions(plan: &str, body: &str) -> String {
     while kept.last().is_some_and(|line| line.trim().is_empty()) {
         kept.pop();
     }
-    let text = format!("{}\n\n{HEADING}\n\n{}\n", kept.join("\n"), body.trim());
+    let text = format!("{}\n\n{heading}\n\n{}\n", kept.join("\n"), body.trim());
     if crlf { text.replace('\n', "\r\n") } else { text }
 }
 
@@ -2486,6 +2666,51 @@ pub fn task_decide(cwd: String, id: String, text: String) -> Result<u64, String>
     let path = project.plans().join(format!("{id}.md"));
     let plan = fs::read_to_string(&path).map_err(|error| format!("no plan at {}: {error}", path.display()))?;
     write_file(&path, &with_user_decisions(&plan, &text))?;
+    Ok(file_entry(&path).map_or(0, |entry| entry.modified))
+}
+
+/// The text of the section `Checks chosen` (ticket task-checks): a stamp line, then one line per
+/// check of the list, `[x]` with its command for a chosen one, `[ ]` for the others.
+fn checks_chosen_text(list: &[Check], names: &[String], stamp: &str) -> String {
+    let mut lines = vec![
+        format!("The user chose these checks in Dispatch on {stamp}. The work run runs each checked one with the command as written here, and names that exact command in Verification."),
+        String::new(),
+    ];
+    for check in list {
+        if names.iter().any(|name| name.trim().eq_ignore_ascii_case(&check.name)) {
+            lines.push(format!("- [x] {} — `{}`", check.name, check.command));
+        } else {
+            lines.push(format!("- [ ] {}", check.name));
+        }
+    }
+    lines.join("\n")
+}
+
+/// The lines of `<ticket>.checks` (ticket task-checks): the name, a tab and the command of each
+/// chosen check, in the order of the list. Empty when the user chose none.
+fn task_checks_text(list: &[Check], names: &[String]) -> String {
+    list.iter()
+        .filter(|check| names.iter().any(|name| name.trim().eq_ignore_ascii_case(&check.name)))
+        .map(|check| format!("{}\t{}\n", check.name, check.command))
+        .collect()
+}
+
+/// Writes the checks that the user chose for a task, before Approve starts its work run (ticket
+/// task-checks, user decision 2): the section `Checks chosen` at the end of the plan and the file
+/// `<ticket>.checks`. A name that is not in the list of the project is left out. Without the list
+/// it writes nothing. Gives the change time of the plan file in milliseconds, as `task_decide`.
+pub fn task_checks(cwd: String, id: String, names: Vec<String>) -> Result<u64, String> {
+    check_ticket(&id)?;
+    let project = Project::find(&cwd)?;
+    let path = project.plans().join(format!("{id}.md"));
+    let plan = fs::read_to_string(&path).map_err(|error| format!("no plan at {}: {error}", path.display()))?;
+    let list = project.checks();
+    if !list.is_empty() {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
+        let stamp = format!("{} UTC", crate::core::tickets::iso(now)[..16].replace('T', " "));
+        write_file(&path, &with_section(&plan, CHECKS_CHOSEN_HEADING, &checks_chosen_text(&list, &names, &stamp)))?;
+        write_file(&project.task_checks_file(&id), &task_checks_text(&list, &names))?;
+    }
     Ok(file_entry(&path).map_or(0, |entry| entry.modified))
 }
 
@@ -2541,6 +2766,9 @@ pub struct TaskInfo {
     unverified: Vec<String>,
     /// The log of the task in `.dispatch/logs` (ticket task-log), when it exists.
     log: Option<FileEntry>,
+    /// The checks of the project for this task, with the recommendation of the plan and the choice
+    /// of the user (ticket task-checks). Empty without the list of the project.
+    checks: Vec<CheckInfo>,
 }
 
 /// The branch of a task (ticket task-branches): from its branch file and from git.
@@ -2770,6 +2998,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
             evidence: Vec::new(),
             unverified: Vec::new(),
             log: None,
+            checks: Vec::new(),
         });
         tasks.len() - 1
     }
@@ -2777,6 +3006,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
         let at = task_at(&mut tasks, &name);
         tasks[at].state = fs::read_to_string(&path).unwrap_or_default().trim().to_string();
     }
+    let check_list = project.checks();
     for (name, path, entry) in files_with(&project.plans(), "md") {
         let at = task_at(&mut tasks, &name);
         let text = fs::read_to_string(&path).unwrap_or_default();
@@ -2788,6 +3018,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
         tasks[at].decisions = parse_decisions(&text);
         tasks[at].goal = section_lines(&text, "Goal");
         tasks[at].tldr = section_lines(&text, "TL;DR");
+        tasks[at].checks = plan_checks(&text, &check_list);
         tasks[at].plan = Some(entry);
     }
     for (name, path, entry) in files_with(&project.reports, "md") {
@@ -2806,25 +3037,27 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
     }
     // The tokens of each task from the transcripts of its sessions (ticket task-tokens), and the
     // Bash commands of its runs (ticket task-evidence).
-    if let Some(projects) = claude_projects_dir() {
-        for task in tasks.iter_mut() {
-            let sessions = read_session_file(&project.session_file(&task.name));
-            if !sessions.is_empty() {
-                task.tokens = crate::core::flow::token_usage(&projects, &sessions);
-                task.evidence = crate::core::flow::evidence_of(&projects, &read_session_runs(&project.session_file(&task.name)));
-                // A done report needs a command of the evidence for each Verification claim (ticket
-                // report-check). The report file stays; the task list shows it as working (user decision 3).
-                if task.header.as_ref().is_some_and(|header| header.state == "done") {
-                    let text = fs::read_to_string(project.reports.join(format!("{}.md", task.name))).unwrap_or_default();
-                    let transcript = crate::core::flow::has_transcript(&projects, &sessions);
-                    if let Some((reason, unverified)) = check_report(&text, &task.evidence, transcript) {
-                        if let Some(header) = task.header.as_mut() {
-                            header.state = "working".to_string();
-                        }
-                        task.did = reason;
-                        task.unverified = unverified;
-                    }
+    let projects = claude_projects_dir();
+    for task in tasks.iter_mut() {
+        let sessions = read_session_file(&project.session_file(&task.name));
+        let mut transcript = false;
+        if let Some(projects) = projects.as_ref().filter(|_| !sessions.is_empty()) {
+            task.tokens = crate::core::flow::token_usage(projects, &sessions);
+            task.evidence = crate::core::flow::evidence_of(projects, &read_session_runs(&project.session_file(&task.name)));
+            transcript = crate::core::flow::has_transcript(projects, &sessions);
+        }
+        // A done report needs a command of the evidence for each Verification claim (ticket
+        // report-check), and a claim for each check that the user chose (ticket task-checks, also
+        // without a transcript). The report file stays; the task list shows it as working (user decision 3).
+        let chosen = chosen_checks(&task.checks);
+        if task.header.as_ref().is_some_and(|header| header.state == "done") && (transcript || !chosen.is_empty()) {
+            let text = fs::read_to_string(project.reports.join(format!("{}.md", task.name))).unwrap_or_default();
+            if let Some((reason, unverified)) = check_report(&text, &task.evidence, transcript, &chosen) {
+                if let Some(header) = task.header.as_mut() {
+                    header.state = "working".to_string();
                 }
+                task.did = reason;
+                task.unverified = unverified;
             }
         }
     }
@@ -2963,7 +3196,7 @@ fn handoff_state(task: &TaskInfo, live: bool, queued: bool) -> Option<String> {
     }
     // A done report that the check sent back (ticket report-check): the task list says working.
     if report_state == "working" && task.report.is_some() {
-        return Some("its report says done, but Dispatch found no command in the transcript for its Verification claims; it stays open".to_string());
+        return Some("its report says done, but Dispatch found no command in the transcript for its Verification claims, or no claim for a check that the user chose; it stays open".to_string());
     }
     let unmerged = task.branch.as_ref().is_some_and(|branch| branch.exists && branch.merge.is_empty());
     if report_state == "done" && (needs.is_empty() || needs == "nothing") {
@@ -3271,6 +3504,19 @@ pub fn set_merge_gate(cwd: String, text: String) -> Result<Plan, String> {
     plan(&project)
 }
 
+/// Saves the list of checks of the project of a folder (ticket task-checks): the text of the box,
+/// each line trimmed, empty lines at the end dropped. The steps then show what Apply must change.
+pub fn set_checks(cwd: String, text: String) -> Result<Plan, String> {
+    let project = Project::find(&cwd)?;
+    let mut lines: Vec<&str> = text.lines().map(str::trim).collect();
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    let text = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
+    write_file(&project.checks_file(), &text)?;
+    plan(&project)
+}
+
 /// Merges the branch of a task into its base: the Merge button of the task card. The task files
 /// are committed first, so the checkout is clean; the script refuses a dirty checkout, a failed
 /// gate and a conflict outside `.dispatch`, and then changes nothing.
@@ -3357,7 +3603,7 @@ mod tests {
         // and the commit takes its line and no other file.
         assert!(!project.setup_files().contains(&".gitignore"));
         set_ignore(&project, true);
-        assert_eq!(project.setup_files().len(), 10);
+        assert_eq!(project.setup_files().len(), 11);
         add_root_ignore(&project).unwrap();
         let text = commit_setup(&project).unwrap();
         assert!(text.contains("made with .gitignore. "), "{text}");
@@ -3370,7 +3616,7 @@ mod tests {
         assert!(project.setup_files().contains(&".gitignore"));
         commit_setup(&project).unwrap();
         assert_eq!(git(&["show", "--name-only", "--format=", "HEAD"]).trim(), ".gitignore");
-        assert_eq!(project.setup_files().len(), 9);
+        assert_eq!(project.setup_files().len(), 10);
         clean(&project);
     }
 
@@ -3660,6 +3906,134 @@ mod tests {
     }
 
     #[test]
+    fn a_checks_file_gives_its_checks() {
+        let text = "# The checks of the project\n\n  unit | cargo test --lib | always\nlint|npx tsc --noEmit\nlong | node net.mjs | tail -3\n| no name\nempty |\nno bar\nUnit | npm test\nwide\tname | x | ALWAYS\n";
+        let check = |name: &str, command: &str, always: bool| Check { name: name.into(), command: command.into(), always };
+        assert_eq!(
+            parse_checks(text),
+            vec![
+                check("unit", "cargo test --lib", true),
+                check("lint", "npx tsc --noEmit", false),
+                // A command may hold `|`; only a last field `always` is the mark.
+                check("long", "node net.mjs | tail -3", false),
+                // A tab in the name would cut the line of the task file.
+                check("wide name", "x", true),
+            ]
+        );
+        assert!(parse_checks("").is_empty());
+    }
+
+    #[test]
+    fn a_plan_marks_the_recommended_checks() {
+        let list = parse_checks("unit | cargo test --lib | always\nlint | npx tsc --noEmit\nnet | node net.mjs\nui | npm run e2e\n");
+        let plan = "# t-1: a plan\n\n## Acceptance\n- x\n\n## Checks\n- [x] `lint` — the types change.\n- [ ] net: no network code changes.\n- [X] ui - the card changes\n- [x] other — not in the list\n\n## Steps\n1. go\n";
+        let checks = plan_checks(plan, &list);
+        let row = |at: usize| (checks[at].name.as_str(), checks[at].always, checks[at].recommended, checks[at].reason.as_str(), checks[at].chosen);
+        assert_eq!(checks.len(), 4, "a name that is not in the list is left out");
+        // `unit` is not in the section: its always mark makes it recommended.
+        assert_eq!(row(0), ("unit", true, true, "", None));
+        assert_eq!(row(1), ("lint", false, true, "the types change.", None));
+        assert_eq!(row(2), ("net", false, false, "no network code changes.", None));
+        assert_eq!(row(3), ("ui", false, true, "the card changes", None));
+        assert_eq!(checks[1].command, "npx tsc --noEmit");
+        // After Approve the section Checks chosen gives the choice of the user, also against the plan.
+        let names = vec!["unit".to_string(), "net".to_string()];
+        let decided = with_section(plan, CHECKS_CHOSEN_HEADING, &checks_chosen_text(&list, &names, "2026-11-14 01:30 UTC"));
+        let chosen: Vec<Option<bool>> = plan_checks(&decided, &list).iter().map(|check| check.chosen).collect();
+        assert_eq!(chosen, vec![Some(true), Some(false), Some(true), Some(false)]);
+        assert_eq!(chosen_checks(&plan_checks(&decided, &list)), vec![("unit".to_string(), "cargo test --lib".to_string()), ("net".to_string(), "node net.mjs".to_string())]);
+        // The recommendation of the plan stays as it was.
+        assert!(plan_checks(&decided, &list)[1].recommended);
+        // No list: no checks, whatever the plan says.
+        assert!(plan_checks(plan, &[]).is_empty());
+    }
+
+    #[test]
+    fn task_checks_writes_the_plan_section_and_the_checks_file() {
+        let project = scratch("task-checks");
+        let cwd = project.root.to_string_lossy().into_owned();
+        let plan_path = project.plans().join("t-1.md");
+        write_file(&plan_path, "# t-1: a plan\n\n## Checks\n- [x] lint — types\n").unwrap();
+        // Without the list of the project nothing is written, and the section of CLAUDE.md is the old one.
+        let before = project.section_body();
+        task_checks(cwd.clone(), "t-1".into(), vec!["lint".into()]).unwrap();
+        assert_eq!(read(&plan_path), "# t-1: a plan\n\n## Checks\n- [x] lint — types\n");
+        assert!(!project.task_checks_file("t-1").exists());
+        assert!(!before.contains("checks.txt"), "{before}");
+        assert!(plan(&project).unwrap().checks.is_empty());
+
+        let shown = set_checks(cwd.clone(), "unit | cargo test --lib | always\nlint | npx tsc --noEmit\nnet | node net.mjs\n\n\n".into()).unwrap();
+        assert_eq!(shown.checks, "unit | cargo test --lib | always\nlint | npx tsc --noEmit\nnet | node net.mjs\n");
+        assert!(setup_files_have_checks(&project));
+        let rule = project.section_body();
+        assert!(rule.contains(&format!("in `{}/checks.txt`", project.reports_text())) && rule.contains("the section Checks chosen"), "{rule}");
+        // The new text of the section makes the step "Section in CLAUDE.md" To do.
+        assert!(open_steps(&project).contains(&"Section in CLAUDE.md"), "{:?}", open_steps(&project));
+
+        task_checks(cwd.clone(), "t-1".into(), vec!["unit".into(), "NET".into(), "unknown".into()]).unwrap();
+        let text = read(&plan_path);
+        assert!(text.starts_with("# t-1: a plan\n\n## Checks\n- [x] lint — types\n\n## Checks chosen\n\nThe user chose these checks in Dispatch on "), "{text}");
+        assert!(text.ends_with(" UTC. The work run runs each checked one with the command as written here, and names that exact command in Verification.\n\n- [x] unit — `cargo test --lib`\n- [ ] lint\n- [x] net — `node net.mjs`\n"), "{text}");
+        assert_eq!(read(&project.task_checks_file("t-1")), "unit\tcargo test --lib\nnet\tnode net.mjs\n");
+        // A second choice replaces the first one; none chosen gives an empty file.
+        task_checks(cwd.clone(), "t-1".into(), Vec::new()).unwrap();
+        let text = read(&plan_path);
+        assert_eq!(text.matches("## Checks chosen").count(), 1, "{text}");
+        assert!(text.ends_with("- [ ] unit\n- [ ] lint\n- [ ] net\n"), "{text}");
+        assert_eq!(read(&project.task_checks_file("t-1")), "");
+        // The task list gives the checks of the task with the choice.
+        task_checks(cwd.clone(), "t-1".into(), vec!["lint".into()]).unwrap();
+        let list = task_list(cwd.clone()).unwrap();
+        let task = list.tasks.iter().find(|task| task.name == "t-1").unwrap();
+        let rows: Vec<(&str, bool, Option<bool>)> = task.checks.iter().map(|check| (check.name.as_str(), check.recommended, check.chosen)).collect();
+        assert_eq!(rows, vec![("unit", true, Some(false)), ("lint", true, Some(true)), ("net", false, Some(false))]);
+        assert_eq!(serde_json::to_value(&task.checks[0]).unwrap()["chosen"], json!(false));
+        assert!(task_checks(cwd, "t-2".into(), Vec::new()).unwrap_err().contains("no plan at"));
+        clean(&project);
+    }
+
+    /// The proof of ticket task-checks: the checks of the task in DISPATCH_PROOF_TASK of the project
+    /// in DISPATCH_PROOF_CWD, one line each with its recommended and chosen flags. Without the
+    /// variables it does nothing.
+    #[test]
+    #[ignore]
+    fn checks_of_the_project_for_the_proof() {
+        let (Ok(cwd), Ok(ticket)) = (std::env::var("DISPATCH_PROOF_CWD"), std::env::var("DISPATCH_PROOF_TASK")) else { return };
+        let list = task_list(cwd).unwrap();
+        let Some(task) = list.tasks.iter().find(|task| task.name == ticket) else { return };
+        // cargo writes the name of the test without a line end before this output.
+        println!();
+        for check in &task.checks {
+            println!("check {} | recommended {} | chosen {:?} | {}", check.name, check.recommended, check.chosen, check.command);
+        }
+    }
+
+    /// The setup files of a project name the list of checks, so Commit to git commits it.
+    fn setup_files_have_checks(project: &Project) -> bool {
+        project.setup_files().contains(&".dispatch/checks.txt")
+    }
+
+    #[test]
+    fn a_done_report_must_name_each_chosen_check() {
+        let report = "state: done\nneeds: nothing\nfiles: a.rs\nplan: p\n\n## What changed\n- a\n\n## Verification\n- `cargo test --lib`: ok.\n- `cd /d/p && npx tsc --noEmit`: no output.\n";
+        let chosen = |pairs: &[(&str, &str)]| pairs.iter().map(|(name, command)| (name.to_string(), command.to_string())).collect::<Vec<_>>();
+        // Each chosen check has its claim, also with a leading cd: the check passes without a transcript.
+        assert_eq!(check_report(report, &[], false, &chosen(&[("unit", "cargo test --lib"), ("lint", "npx tsc --noEmit")])), None);
+        // A chosen check without a claim makes the report working, also without a transcript.
+        let (reason, missing) = check_report(report, &[], false, &chosen(&[("unit", "cargo test --lib"), ("net", "node net.mjs")])).unwrap();
+        assert_eq!(reason, "The report says done, but its Verification section has no claim for the chosen check net.");
+        assert_eq!(missing, vec!["node net.mjs".to_string()]);
+        let (reason, missing) = check_report(report, &[], true, &chosen(&[("net", "node net.mjs"), ("ui", "npm run e2e")])).unwrap();
+        assert_eq!(reason, "The report says done, but its Verification section has no claim for the chosen checks net, ui.");
+        assert_eq!(missing.len(), 2);
+        // A report that is not done is not checked.
+        assert_eq!(check_report(&report.replace("state: done", "state: failed"), &[], true, &chosen(&[("net", "node net.mjs")])), None);
+        // With every chosen check named, the claims still need their commands in the transcript.
+        let (reason, _) = check_report(report, &[], true, &chosen(&[("unit", "cargo test --lib")])).unwrap();
+        assert!(reason.contains("Verification claims match no command of the transcript"), "{reason}");
+    }
+
+    #[test]
     fn a_plan_gives_its_summary_and_its_hold() {
         let plan = "# Plan t-1\n\n## Summary\n- Adds a section to memory.md.\n- 1 file, 0 decisions.\n\n## Goal\nThe goal.\n\n## Decisions\n- D1: name of the section. Default: Dispatch pipeline.\n- D2: the date. HOLD: the user picks it.\n";
         assert_eq!(parse_plan(plan), (vec!["Adds a section to memory.md.".to_string(), "1 file, 0 decisions.".to_string()], true));
@@ -3872,16 +4246,16 @@ mod tests {
     fn a_done_report_with_an_unverified_claim_goes_back_to_working() {
         let evidence = [bash("cargo test --lib"), bash("  npm run build  ")];
         let report = new_report("- `cargo test --lib`: ok.\n- `npm run build`: exit code 0.\n- `node --test tests/`: `# fail 0`.\n");
-        let (reason, unverified) = check_report(&report, &evidence, true).unwrap();
+        let (reason, unverified) = check_report(&report, &evidence, true, &[]).unwrap();
         assert_eq!(unverified, ["node --test tests/"]);
         assert_eq!(reason, "The report says done, but 1 Verification claim matches no command of the transcript.");
         // A claim must equal a command; a part of one is not enough (user decision 2).
-        let (reason, unverified) = check_report(&new_report("- `cargo test`: ok.\n- `npm run`: ok.\n"), &evidence, true).unwrap();
+        let (reason, unverified) = check_report(&new_report("- `cargo test`: ok.\n- `npm run`: ok.\n"), &evidence, true, &[]).unwrap();
         assert_eq!((reason.as_str(), unverified.len()), ("The report says done, but 2 Verification claims match no command of the transcript.", 2));
         // The new form without the section, and a section without a claim, go back too.
         let without = new_report("").replace("## Verification\n", "");
-        assert_eq!(check_report(&without, &evidence, true), Some(("The report says done, but it has no Verification section.".to_string(), Vec::new())));
-        assert_eq!(check_report(&new_report("Checked by hand.\n"), &evidence, true).map(|(_, claims)| claims), Some(Vec::new()));
+        assert_eq!(check_report(&without, &evidence, true, &[]), Some(("The report says done, but it has no Verification section.".to_string(), Vec::new())));
+        assert_eq!(check_report(&new_report("Checked by hand.\n"), &evidence, true, &[]).map(|(_, claims)| claims), Some(Vec::new()));
         // The task list checks only a task with a session file and a transcript: the scratch project
         // has neither, so the same report stays done there. The proof test covers the real project.
         let project = scratch("report-check");
@@ -3897,16 +4271,16 @@ mod tests {
     fn a_done_report_whose_claims_all_match_stays_done() {
         let evidence = [bash("cargo test --lib"), bash("npm run build"), bash("git status --porcelain")];
         let report = new_report("- `cargo test --lib`: ok.\n- `npm run build`: exit code 0.\n  More text about the build.\n");
-        assert_eq!(check_report(&report, &evidence, true), None);
+        assert_eq!(check_report(&report, &evidence, true, &[]), None);
         // A report that is not done, or a task without a transcript on this machine, is not checked.
-        assert_eq!(check_report(&report.replace("state: done", "state: failed"), &[], true), None);
-        assert_eq!(check_report(&report.replace("state: done", "state: needs-decision"), &[], true), None);
-        assert_eq!(check_report(&report, &[], false), None);
+        assert_eq!(check_report(&report.replace("state: done", "state: failed"), &[], true, &[]), None);
+        assert_eq!(check_report(&report.replace("state: done", "state: needs-decision"), &[], true, &[]), None);
+        assert_eq!(check_report(&report, &[], false, &[]), None);
         // A leading cd to a folder counts on neither side (answer to question 2 of the work run):
         // Claude Code stores the call without it when the shell already stands in the folder.
         let stored = [bash("git status --porcelain"), bash("cd /d/p/src-tauri && cargo test --lib")];
         let typed = new_report("- `cd /d/p && git status --porcelain`: empty.\n- `cargo test --lib`: ok.\n");
-        assert_eq!(check_report(&typed, &stored, true), None);
+        assert_eq!(check_report(&typed, &stored, true, &[]), None);
         // Only a cd with `&&` after its folder goes; another command stays different.
         assert_eq!(without_cd("cd \"D:/my project\" && npm run build"), "npm run build");
         assert_eq!(without_cd("  cd /d/p &&  npm test "), "npm test");
@@ -3914,27 +4288,27 @@ mod tests {
         assert_eq!(without_cd("cd /d/p"), "cd /d/p");
         assert_eq!(without_cd("cargo test"), "cargo test");
         let other = new_report("- `cd /d/p && npm run build`: ok.\n");
-        assert_eq!(check_report(&other, &stored, true).map(|(_, claims)| claims), Some(vec!["cd /d/p && npm run build".to_string()]));
+        assert_eq!(check_report(&other, &stored, true, &[]).map(|(_, claims)| claims), Some(vec!["cd /d/p && npm run build".to_string()]));
     }
 
     #[test]
     fn a_report_of_the_old_form_is_not_checked() {
         // The form of the reports before the rule: "What I did" and no Verification section.
         let old = "state: done\nneeds: nothing\nfiles: a.rs\nplan: plans/t-1.md\n\n# Report t-1\n\n## What I did\n- `task_stop` is new.\n\n## Open\n- none\n";
-        assert_eq!(check_report(old, &[], true), None);
-        assert_eq!(check_report("state: done\n\ndone\n", &[], true), None);
+        assert_eq!(check_report(old, &[], true, &[]), None);
+        assert_eq!(check_report("state: done\n\ndone\n", &[], true, &[]), None);
         // "What changed" stood in reports before the rule too, so alone it marks no new form
         // (answer to question 1 of the work run: the case of done-line-repeats).
         let what_changed = "state: done\n\n# Report\n\n## What changed\n- x\n\n## What I verified and how\n- `cargo test`\n";
-        assert_eq!(check_report(what_changed, &[], true), None);
+        assert_eq!(check_report(what_changed, &[], true, &[]), None);
         for heading in ["Why", "Files", "Follow-ups"] {
             let new = format!("state: done\n\n## What changed\n- x\n\n## {heading}\n- y\n");
-            assert!(check_report(&new, &[], true).is_some(), "{heading} marks the new form");
+            assert!(check_report(&new, &[], true, &[]).is_some(), "{heading} marks the new form");
         }
         // An old report with a Verification section is checked like a new one.
         let section = "state: done\n\n## What I did\n- x\n\n## Verification\n- `cargo test`: ok.\n";
-        assert_eq!(check_report(section, &[bash("cargo test")], true), None);
-        assert_eq!(check_report(section, &[], true).map(|(_, claims)| claims), Some(vec!["cargo test".to_string()]));
+        assert_eq!(check_report(section, &[bash("cargo test")], true, &[]), None);
+        assert_eq!(check_report(section, &[], true, &[]).map(|(_, claims)| claims), Some(vec!["cargo test".to_string()]));
     }
 
     /// An evidence line of a stage with its time, exit code and output, for the tests of the log.
@@ -4237,6 +4611,7 @@ evidence: no
             evidence: Vec::new(),
             unverified: Vec::new(),
             log: None,
+            checks: Vec::new(),
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };
@@ -4704,6 +5079,8 @@ if (args[0] === 'agents') {
         assert_eq!(read(&project.reports.join("t-1.state")), "planning\n");
         fs::remove_file(fake.join("fail.txt")).unwrap();
         assert_eq!(read(&project.session_file("t-1")), "plan sess-1\n", "a failed start adds no session");
+        // The checks that the user chose at Approve (ticket task-checks) go into the prompt by name.
+        write_file(&project.task_checks_file("t-1"), "unit\tcargo test --lib\nui \"e2e\"\tnpm run e2e\n").unwrap();
         // The resume on the work options starts a copy with its own session: the file gets its line.
         let (code, out) = run_script_env(&project, &fake, "done", &["approve", "t-1"], &[("FAKE_COPY", "sess-2")]);
         assert_eq!(code, 0, "{out}");
@@ -4712,6 +5089,8 @@ if (args[0] === 'agents') {
         fs::remove_file(fake.join("copy.txt")).unwrap();
         let resume = last_call(&fake);
         assert!(resume[0].starts_with("Plan approved: "), "{resume:?}");
+        assert!(resume[0].ends_with(" The user chose these checks: unit, ui 'e2e'. Run each with the command of the section Checks chosen of the plan, and name each in Verification with that exact command."), "{resume:?}");
+        fs::remove_file(project.task_checks_file("t-1")).unwrap();
         // The name goes with the resume: a resume on other options starts a copy of the session.
         assert_eq!(&resume[1..], ["--resume", "sess-1", "--bg", "--name", "t-1 [work]", "--model", "opus", "--effort", "xhigh", "--permission-mode", "auto", "--tools", "default", "--disallowedTools", "AskUserQuestion,SendMessage"]);
         // claude runs in the project folder, whatever the folder of the caller is.
@@ -5231,9 +5610,12 @@ if (args[0] === 'agents') {
         assert_no_merge_left(&project);
         assert!(listed_branch(&project, "t-1").exists);
 
-        set_merge_gate(cwd.clone(), "# limit 60\ncmd /c exit 0\n".to_string()).unwrap();
+        // The gate gets the ticket and the path of its checks file (ticket task-checks).
+        set_merge_gate(cwd.clone(), "# limit 60\necho %DISPATCH_TICKET%^|%DISPATCH_CHECKS%> .dispatch\\merge\\gate-env.txt\n".to_string()).unwrap();
         let merged = task_merge(cwd, "t-1".to_string()).unwrap();
         assert!(merged.starts_with("merged task/t-1"), "{merged}");
+        let seen = read(&project.merge_dir().join("gate-env.txt"));
+        assert_eq!(seen.trim(), format!("t-1|{}", project.task_checks_file("t-1").display()), "{seen}");
         assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
         assert_no_merge_left(&project);
         clean(&project);
@@ -5320,6 +5702,41 @@ if (args[0] === 'agents') {
         apply(&off, &[]).unwrap();
         set_branches(&off, false);
         apply(&off, &[]).unwrap();
+    }
+
+    /// Builds the scratch project of the proof of ticket task-checks when the variable
+    /// TASK_CHECKS_PROOF_DIR names an empty folder: `<dir>/proj`, a git repository with the setup
+    /// applied, a list of three checks (`unit` always recommended, `lint`, `net`), and the ticket t-1
+    /// in its plan state with a plan whose section Checks ticks `lint`. All of it is committed, so
+    /// Approve finds a clean tree. Writes the folder of the project into `<dir>/project.txt`.
+    #[test]
+    #[ignore]
+    fn task_checks_proof_project() {
+        let Ok(dir) = std::env::var("TASK_CHECKS_PROOF_DIR") else { return };
+        let dir = PathBuf::from(dir);
+        let root = dir.join("proj");
+        fs::create_dir_all(&root).unwrap();
+        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false };
+        git_init(&project);
+        project.in_git = true;
+        write_file(&project.root.join("README.md"), "scratch project of the task-checks proof\n").unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        set_checks(cwd.clone(), "# The checks of the scratch project\nunit | npm test | always\nlint | npx tsc --noEmit\nnet | node net-test.mjs\n".to_string()).unwrap();
+        apply(&project, &[0]).unwrap();
+        write_file(&project.briefs().join("t-1.md"), "# t-1: show the checks of a task\n\n## The user's words\n\"show the checks\"\n").unwrap();
+        write_file(
+            &project.plans().join("t-1.md"),
+            "# t-1: show the checks of a task\n\n## Summary\n- One file changes.\n- 0 decisions.\n\n## Goal\nThe proof plan.\n\n## Acceptance\n- `npm test`: passes.\n\n## Checks\n- [x] unit — always recommended in this project.\n- [x] lint — the types change.\n- [ ] net — no network code changes.\n\n## Decisions\n- none\n",
+        )
+        .unwrap();
+        write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        git_out(&project, &["add", "--all"]);
+        git_out(&project, &["commit", "-q", "-m", "scratch setup"]);
+        let list = task_list(cwd.clone()).unwrap();
+        let task = list.tasks.iter().find(|task| task.name == "t-1").unwrap();
+        assert_eq!(task.checks.iter().filter(|check| check.recommended).count(), 2);
+        assert!(list.dirty.is_empty(), "{:?}", list.dirty);
+        fs::write(dir.join("project.txt"), &cwd).unwrap();
     }
 
     /// Builds the scratch project of the proof of ticket merge-fail-list when the variable

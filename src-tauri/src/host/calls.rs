@@ -127,6 +127,7 @@ pub fn run(
         "set_project_options" => json(pipeline::set_project_options(a.req("cwd")?, a.req("options")?)?),
         "set_measure_commands" => json(pipeline::set_measure_commands(a.req("cwd")?, a.req("text")?)?),
         "set_merge_gate" => json(pipeline::set_merge_gate(a.req("cwd")?, a.req("text")?)?),
+        "set_checks" => json(pipeline::set_checks(a.req("cwd")?, a.req("text")?)?),
         "task_list" => json(pipeline::task_list(a.req("cwd")?)?),
         "ticket_add" => json(tickets::ticket_add(a.req("cwd")?, a.req("text")?)?),
         "ticket_update" => json(tickets::ticket_update(
@@ -140,6 +141,7 @@ pub fn run(
         "ticket_move" => json(tickets::ticket_move(a.req("cwd")?, a.req("id")?, a.req("status")?, a.req("ids")?, a.opt("note")?)?),
         "task_approve" => json(pipeline::task_approve(a.req("cwd")?, a.req("id")?)?),
         "task_decide" => json(pipeline::task_decide(a.req("cwd")?, a.req("id")?, a.req("text")?)?),
+        "task_checks" => json(pipeline::task_checks(a.req("cwd")?, a.req("id")?, a.req("names")?)?),
         "task_reject" => json(pipeline::task_reject(a.req("cwd")?, a.req("id")?, a.req("reason")?)?),
         "task_reply" => json(pipeline::task_reply(a.req("cwd")?, a.req("id")?, a.req("text")?)?),
         "task_stop" => json(pipeline::task_stop(a.req("cwd")?, a.req("id")?)?),

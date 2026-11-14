@@ -109,7 +109,11 @@
           <input type="checkbox" data-option="ignoreTasks" />
           <span><b>Task files local only.</b> Git ignores the folder <code>.dispatch</code>: tickets, briefs, plans, reports and logs stay on this computer, and a clone has none. Off, git tracks the folder and Dispatch commits it.</span>
         </label>
-        <p>Short reports changes the step "Triage role". Measure before the plan changes the steps "Task files", "Section in CLAUDE.md" and "Measure before the plan". Task branches changes the steps "Allow rules", "Section in CLAUDE.md" and "Task branches". Task files local only changes the steps "Task files", "Section in CLAUDE.md" and "Task files in git". After Apply, the next start of the workspace opens a new triage chat. The other settings apply at once.</p>
+        <label for="setup-checks" class="setup-checks-label">
+          <span><b>Checks.</b> The tests and gates that a task can run, one per line. The plan recommends some, and you tick them on the task card before Approve. Empty: no checks.</span>
+        </label>
+        <textarea id="setup-checks" rows="3" spellcheck="false" placeholder="name | command, one per line, for example: unit | npm test&#10;| always after the command: always recommended&#10;# a comment line" title="The checks that a task of this project can run, one per line: name | command, and | always for a check that is always recommended. The box saves when you leave it"></textarea>
+        <p>Short reports changes the step "Triage role". Measure before the plan changes the steps "Task files", "Section in CLAUDE.md" and "Measure before the plan". Task branches changes the steps "Allow rules", "Section in CLAUDE.md" and "Task branches". Task files local only changes the steps "Task files", "Section in CLAUDE.md" and "Task files in git". The first check in the list, and the last one out, changes the step "Section in CLAUDE.md". After Apply, the next start of the workspace opens a new triage chat. The other settings apply at once.</p>
       </fieldset>
       <section id="setup-rules-check">
         <h3>Rules that conflict with the pipeline</h3>
@@ -285,6 +289,7 @@
             <tr><td>Worker script</td><td><code>.dispatch/worker.ps1</code></td><td>Starts, resumes and stops a worker.</td></tr>
             <tr><td>Measure before the plan</td><td><code>.dispatch/measure-commands.txt</code></td><td>Optional: commands that the plan run may run.</td></tr>
             <tr><td>Task branches</td><td><code>.dispatch/merge-gate.txt</code></td><td>Optional: each task gets its own git branch.</td></tr>
+            <tr><td>Checks</td><td><code>.dispatch/checks.txt</code></td><td>Optional: the checks that a task can run.</td></tr>
             <tr><td>Task files in git</td><td><code>.gitignore</code></td><td>Optional: the task files stay on this computer; a clone has none.</td></tr>
             <tr><td>Triage role</td><td><code>.claude/triage.md</code></td><td>Tells triage to plan and check, not to implement.</td></tr>
           </tbody>
@@ -306,6 +311,7 @@
             <li><b>Measure before the plan.</b> Off: the step is done, and nothing changes. On: the plan run may run the commands of the box under the switch, and no other command, through the worker script. The step is done when the box has a command.</li>
             <li>Each command runs with cmd.exe in the project folder, one at a time in the project. It stops after 10 minutes; a first line <code># limit &lt;seconds&gt;</code> changes that. The output and the throw-away scripts go into <code>.dispatch/measure/&lt;task&gt;/</code>, which git ignores (Apply adds <code>measure/</code> to <code>.dispatch/.gitignore</code>). When a command changed files of the project, the task card says so.</li>
             <li><b>Task branches.</b> Off: the step is done, and nothing changes. On: each task works on its own branch <code>task/&lt;task&gt;</code>. Approve makes it from the branch that the project was on when the plan run started (the base). The worker commits there and never merges or pushes.</li>
+            <li><b>Checks.</b> Empty: nothing changes. With checks in the box, the plan gets a section Checks that ticks the ones it recommends for the task, and the section in CLAUDE.md says so. At Approve, Dispatch writes your choice at the end of the plan and into <code>.dispatch/&lt;task&gt;.checks</code>. The gate command of Task branches gets the path of that file as <code>DISPATCH_CHECKS</code>.</li>
             <li>When the report is written, Dispatch switches the project back to the base and commits the task files there. Then the task card shows <b>Merge</b>. The gate command of the box under the switch runs on the merged code first, for at most 4 hours; a first line <code># limit &lt;seconds&gt;</code> changes that.</li>
             <li>The log of the gate goes into <code>.dispatch/merge/</code>, which git ignores (Apply adds <code>merge/</code> to <code>.dispatch/.gitignore</code>). The step "Allow rules" adds a deny rule, so triage cannot merge.</li>
             <li><b>Task files in git.</b> Off: the step is done, and nothing changes. On: Apply adds the line <code>.dispatch/</code> with a comment line to <code>.gitignore</code> of the project, and takes the task files out of git in one commit "Dispatch: task files are local only". The files stay on the disk. Commit to git then commits <code>.gitignore</code>.</li>
@@ -505,6 +511,7 @@
           <li><b>Tasks</b> shows each task with its worker rows, its plan and its report. Click a row to open it.</li>
           <li>Each task shows two short lines: what it is about, and what was done or is in work.</li>
           <li><b>Plan ready.</b> Click <b>Approve all</b> to take the recommended options. Click <b>Decisions</b> to choose each option.</li>
+          <li><b>Checks.</b> A project with checks shows them on the Plan ready card as checkboxes, the recommended ones ticked. The worker runs the ticked ones, and the report must name each.</li>
           <li><b>Reject</b> sends the plan back with your reason.</li>
           <li><b>Questions.</b> A question of a worker shows its options as buttons. Click one for each question. A question that you answered does not come back as new.</li>
           <li><b>Merge.</b> With Task branches on, a finished task shows <b>Merge into &lt;branch&gt;</b>.</li>

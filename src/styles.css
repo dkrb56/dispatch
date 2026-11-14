@@ -890,6 +890,31 @@ button.task-head:hover {
   white-space: pre-wrap;
 }
 
+/* The checks of a task on the Plan ready card (ticket task-checks): one checkbox per line. */
+.task-card .card-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+}
+
+.task-card .card-checks-head {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
+.task-card .card-checks label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.task-card .card-checks .recommended {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
 /* The failed checks of a refused merge (ticket merge-fail-list): one line per check, no marks. */
 .task-card .merge-fails {
   margin: 4px 0 0;
@@ -962,6 +987,20 @@ button.task-head:hover {
 }
 
 .task-tokens .when {
+  color: var(--muted);
+}
+
+/* The checks that the user chose for a task at Approve (ticket task-checks): a row like the token rows. */
+.task-checks {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 3px 8px;
+  font-size: calc(12px * var(--text-scale));
+}
+
+.task-checks .when {
   color: var(--muted);
 }
 
@@ -2329,7 +2368,8 @@ button.task-head:hover {
 
 /* The commands of "Measure before the plan" and the gate command of "Task branches", under their switches. */
 #setup-measure-commands,
-#setup-merge-gate {
+#setup-merge-gate,
+#setup-checks {
   display: block;
   box-sizing: border-box;
   width: 100%;
@@ -2345,7 +2385,8 @@ button.task-head:hover {
 }
 
 #setup-measure-commands:disabled,
-#setup-merge-gate:disabled {
+#setup-merge-gate:disabled,
+#setup-checks:disabled {
   opacity: 0.5;
 }
 

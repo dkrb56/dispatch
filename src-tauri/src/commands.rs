@@ -203,6 +203,11 @@ pub fn set_merge_gate(cwd: String, text: String) -> Result<Plan, String> {
 }
 
 #[tauri::command(async)]
+pub fn set_checks(cwd: String, text: String) -> Result<Plan, String> {
+    pipeline::set_checks(cwd, text)
+}
+
+#[tauri::command(async)]
 pub fn task_list(cwd: String) -> Result<TaskList, String> {
     pipeline::task_list(cwd)
 }
@@ -230,6 +235,11 @@ pub fn task_approve(cwd: String, id: String) -> Result<String, String> {
 #[tauri::command(async)]
 pub fn task_decide(cwd: String, id: String, text: String) -> Result<u64, String> {
     pipeline::task_decide(cwd, id, text)
+}
+
+#[tauri::command(async)]
+pub fn task_checks(cwd: String, id: String, names: Vec<String>) -> Result<u64, String> {
+    pipeline::task_checks(cwd, id, names)
 }
 
 #[tauri::command(async)]

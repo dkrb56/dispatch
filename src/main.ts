@@ -45,6 +45,7 @@ import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
+import { type CheckInfo, checkRows, checksSentence, checksText, choiceNames, defaultChoice } from "./checks";
 import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards, triageFree } from "./pending";
 import { type FlowView, openFlow } from "./flow";
 import { drawLinks, type Link } from "./links";
@@ -1670,6 +1671,8 @@ interface TaskInfo {
   unverified?: string[];
   /** The log of the task in `.dispatch/logs` (ticket task-log); null or absent without one. */
   log?: FileEntry | null;
+  /** The checks of the project for the task, with the recommendation of the plan and the choice of the user (ticket task-checks). Absent from an older host. */
+  checks?: CheckInfo[];
 }
 
 /** One Bash command of a task with its result, from the transcripts (ticket task-evidence). */
@@ -1875,6 +1878,19 @@ function markAnswered(task: string, record: AnsweredReport): void {
 const questionChoices = new Map<string, { modified: number; choices: Map<number, string> }>();
 /** The text of the open Reject box of a task. A re-render keeps it. */
 const rejectDrafts = new Map<string, string>();
+/**
+ * The checkboxes of the Plan ready cards that the user changed (ticket task-checks), by project key
+ * and task name: the time of the plan file they belong to and the ticked names. A changed plan file
+ * drops the choice; without one the card shows the recommended checks.
+ */
+const checkChoices = new Map<string, { plan: number; names: Set<string> }>();
+
+/** The ticked checks of a task: the choice of the user on its card, else the default of the plan. */
+function checkChoice(task: Task): Set<string> {
+  const saved = checkChoices.get(queueKey(task));
+  if (saved && saved.plan === (task.info?.plan?.modified ?? 0)) return saved.names;
+  return defaultChoice(task.info?.checks ?? []);
+}
 /** The task whose Reject box was just opened and gets the focus once. */
 let rejectFocus: string | null = null;
 /** The tasks whose Stop row waits for the second click. A re-render keeps it. */
@@ -2006,7 +2022,11 @@ function approvePlans(): void {
       const choices = decisions.map((decision) => ({ decision, answer: decision.options[0]?.choice ?? "" }));
       void approveWithDecisions(task, choices, "by night mode (DEFAULT DECISION: all its decisions have a default; the recommended option of each is taken)");
     } else {
-      void taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name} approved automatically in Dispatch. The work run started.`);
+      // The checks of the plan with their default choice go into the plan first (ticket task-checks).
+      const checks = checksSentence(task.info.checks ?? [], checkChoice(task));
+      void writeDecisions(task, []).then((written) => {
+        if (written !== null) void taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name} approved automatically in Dispatch.${checks} The work run started.`);
+      });
     }
   }
 }
@@ -3308,6 +3328,62 @@ function actionError(task: Task): HTMLElement | null {
 }
 
 /**
+ * The checkboxes of the checks of a task on its Plan ready card (ticket task-checks). A change
+ * keeps the choice in `checkChoices`, so the next render of the card shows it.
+ */
+function checksElement(task: Task, checks: CheckInfo[], busy: boolean): HTMLElement {
+  const block = document.createElement("div");
+  block.className = "card-checks";
+  const head = document.createElement("div");
+  head.className = "card-checks-head";
+  head.textContent = "Checks for this task";
+  block.append(head);
+  for (const row of checkRows(checks, checkChoice(task))) {
+    const label = document.createElement("label");
+    label.title = row.title;
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = row.checked;
+    box.disabled = busy;
+    box.dataset.check = row.name;
+    box.addEventListener("change", () => {
+      const names = new Set(checkChoice(task));
+      if (box.checked) names.add(row.name);
+      else names.delete(row.name);
+      checkChoices.set(queueKey(task), { plan: task.info?.plan?.modified ?? 0, names });
+    });
+    const name = document.createElement("span");
+    name.textContent = row.name;
+    label.append(box, name);
+    if (row.recommended) {
+      const mark = document.createElement("span");
+      mark.className = "recommended";
+      mark.textContent = "recommended";
+      label.append(mark);
+    }
+    block.append(label);
+  }
+  return block;
+}
+
+/** The row of the checks that the user chose for a task, after Approve (ticket task-checks), or null. */
+function checksRow(checks: CheckInfo[]): HTMLElement | null {
+  const text = checksText(checks);
+  if (text === null) return null;
+  const row = document.createElement("div");
+  row.className = "task-checks";
+  const name = document.createElement("span");
+  name.className = "task-checks-name";
+  name.textContent = "Checks";
+  const when = document.createElement("span");
+  when.className = "when";
+  when.textContent = text;
+  row.title = checks.filter((check) => check.chosen === true).map((check) => `${check.name}: ${check.command}`).join("\n") || "The user chose no check at Approve.";
+  row.append(name, when);
+  return row;
+}
+
+/**
  * The card of a plan that waits for the user: the summary of the plan, Approve and Reject. Its
  * state lives outside the card.
  */
@@ -3337,6 +3413,10 @@ function planCard(task: Task): HTMLElement {
     note.textContent = `The plan run changed ${files} outside .dispatch:\n${changed.slice(0, 3).join("\n")}${more}`;
     card.append(note);
   }
+  // The checks of the project as checkboxes, the recommended ones ticked (ticket task-checks, user
+  // decision 4): Approve all and the Decisions window both take them.
+  const checks = task.info?.checks ?? [];
+  if (checks.length > 0) card.append(checksElement(task, checks, busy));
   const actions = document.createElement("div");
   actions.className = "actions";
   const decisions = task.info?.decisions ?? [];
@@ -3443,16 +3523,37 @@ function decisionLines(choices: DecisionAnswer[]): string[] {
  * Without decisions it only approves.
  */
 async function approveWithDecisions(task: Task, choices: DecisionAnswer[], how: string): Promise<boolean> {
+  const checks = checksSentence(task.info?.checks ?? [], checkChoice(task));
   if ((await writeDecisions(task, choices)) === null) return false;
-  const line = `Plan ${task.name} approved in Dispatch${how ? ` ${how}` : ""}. The work run started.`;
+  const line = `Plan ${task.name} approved in Dispatch${how ? ` ${how}` : ""}.${checks} The work run started.`;
   return taskAction(task, "task_approve", { id: task.name }, line);
 }
 
 /**
- * Writes the decisions into the plan. Gives the time of the plan file then (that of the plan as it
- * is without decisions), or null when the write failed; the card shows the failure.
+ * Writes the decisions into the plan, then the checks that the user ticked on the card (ticket
+ * task-checks): the section Checks chosen and the checks file of the task. Gives the time of the
+ * plan file then (that of the plan as it is without decisions and checks), or null when a write
+ * failed; the card shows the failure.
  */
 async function writeDecisions(task: Task, choices: DecisionAnswer[]): Promise<number | null> {
+  const checks = task.info?.checks ?? [];
+  const names = choiceNames(checks, checkChoice(task));
+  let written = await writeDecisionLines(task, choices);
+  if (written === null || checks.length === 0) return written;
+  try {
+    written = await call<number>(taskHost(task), "task_checks", { cwd: taskCwd(task), id: task.name, names });
+    // The written plan is the same plan: an automatic approval tries it once, not again.
+    autoApproved.set(task.name, written);
+    return written;
+  } catch (error) {
+    actionErrors.set(task.name, String(error));
+    renderChats();
+    return null;
+  }
+}
+
+/** Writes the decisions into the plan, as `writeDecisions` says; without decisions it writes nothing. */
+async function writeDecisionLines(task: Task, choices: DecisionAnswer[]): Promise<number | null> {
   if (choices.length === 0) return task.info?.plan?.modified ?? 0;
   const stamp = new Date().toLocaleString("sv-SE", { dateStyle: "short", timeStyle: "short" });
   const text = [
@@ -3484,6 +3585,7 @@ async function approveOrQueue(task: Task, choices: DecisionAnswer[], how: string
   busyTasks.add(task.name);
   actionErrors.delete(task.name);
   renderChats();
+  const checks = checksSentence(task.info?.checks ?? [], checkChoice(task));
   const written = await writeDecisions(task, choices);
   busyTasks.delete(task.name);
   if (written === null) return false;
@@ -3491,7 +3593,7 @@ async function approveOrQueue(task: Task, choices: DecisionAnswer[], how: string
   queuedApprovals.set(queueKey(task), written);
   saveQueued();
   autoApproved.set(task.name, written);
-  tellTriage(projectFor(taskHost(task), taskCwd(task)), `Plan ${task.name} approved in Dispatch${how ? ` ${how}` : ""}. ${wait.replace(/:\n[\s\S]*$/, ".")} Dispatch starts its work run then; do not start it yourself.`);
+  tellTriage(projectFor(taskHost(task), taskCwd(task)), `Plan ${task.name} approved in Dispatch${how ? ` ${how}` : ""}.${checks} ${wait.replace(/:\n[\s\S]*$/, ".")} Dispatch starts its work run then; do not start it yourself.`);
   // The plan file changed: the next refresh reads it again.
   tasksShown = "";
   await refreshTasks();
@@ -4862,6 +4964,9 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     }
     // The log of the task: the plan, each command with its output, the report (ticket task-log).
     if (info?.log) body.append(fileRow("Log", info.log, null, null));
+    // The checks that the user chose at Approve (ticket task-checks).
+    const checks = checksRow(info?.checks ?? []);
+    if (checks) body.append(checks);
     // What the task cost: one row per model under the report (ticket task-tokens).
     body.append(...(info?.tokens ?? []).map(tokenRow));
     // What the task ran: one row per Bash command from the transcripts (ticket task-evidence).

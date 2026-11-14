@@ -66,6 +66,7 @@ All in the open, each step listed before you apply it:
 - allow and deny rules, and two read folders, in `.claude/settings.local.json` of the project;
 - worktree isolation off, so workers edit the project itself;
 - optional, off by default: "Measure before the plan" lets the plan run run listed commands first, and "Task branches" gives each task its own branch `task/<task>`, which Dispatch merges on your click after a gate command passed (no push), and "Task files local only" puts `.dispatch/` into the root `.gitignore`, so tickets and task files stay on your computer and a clone has none;
+- optional: the checks of the project in `.dispatch/checks.txt` (tests, suites, gates, each a name and a command); a ready plan shows them as checkboxes on the task card, the recommended ones ticked, and the worker runs the ones you keep;
 - a "Background workers" section and optional working rules in `CLAUDE.md`;
 - the triage role in `.claude/triage.md`.
 
