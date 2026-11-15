@@ -84,7 +84,7 @@ import { lastRunVersion, newEntries } from "./changelog";
 import { alertActions, alertState, CHIME, newWaits, notificationText, type Wait } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
 import { alertOptions, compactOn, initOptions, pulseOn } from "./options";
-import { COMPACT_TEXT, compactEnded, compactHold, type CompactSend, promptEmpty, taskEnds, type TaskShape } from "./compact";
+import { COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, promptEmpty, taskEnds, type TaskShape } from "./compact";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
 import { initRules, openRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
@@ -1582,6 +1582,8 @@ interface CompactState {
   send: CompactSend | null;
   /** Why the compaction waits, for the tooltip of the Triage card. */
   waits: string;
+  /** The time of the last send that showed no summary within the limit; 0 after the next send. */
+  late: number;
 }
 
 /** The compaction of the triage chat of each project, by project key. A restart loses a mark; the next task end makes a new one. */
@@ -1592,7 +1594,7 @@ function markCompact(key: string): void {
   if (!key || !compactOn()) return;
   let state = triageCompacts.get(key);
   if (!state) {
-    state = { marked: 0, idleSince: 0, send: null, waits: "" };
+    state = { marked: 0, idleSince: 0, send: null, waits: "", late: 0 };
     triageCompacts.set(key, state);
   }
   if (!state.marked) state.marked = Date.now();
@@ -1618,7 +1620,11 @@ async function checkCompact(pane: Pane, info: PaneInfo): Promise<void> {
   const waits = state.waits;
   if (state.send) {
     const end = compactEnded(state.send, session?.compactions, now);
-    if (end === "late") console.warn("the compaction of the triage chat did not end within the limit", key);
+    if (end === "late") {
+      console.warn("the compaction of the triage chat did not end within the limit", key);
+      // The Triage card keeps a trace of it until the next send.
+      state.late = state.send.at;
+    }
     if (end) {
       state.send = null;
       renderFocus();
@@ -1651,6 +1657,7 @@ async function checkCompact(pane: Pane, info: PaneInfo): Promise<void> {
   state.send = { at: now, count: session.compactions ?? 0 };
   state.marked = 0;
   state.waits = "";
+  state.late = 0;
   renderFocus();
   try {
     await pane.chat.say(COMPACT_TEXT);
@@ -1866,6 +1873,8 @@ function triageContextLine(key: string): HTMLElement | null {
   const compact = triageCompacts.get(key);
   if (compact?.send) tips.push("Claude Code compacts the chat.");
   else if (compact?.marked && compact.waits) tips.push(`A compaction waits: ${compact.waits}`);
+  const late = compactLateLine(compact?.late ? new Date(compact.late).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
+  if (late) tips.push(late);
   line.title = tips.join("\n");
   return line;
 }

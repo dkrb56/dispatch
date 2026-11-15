@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { COMPACT_KEY, COMPACT_LIMIT_MS, COMPACT_QUIET_MS, COMPACT_TEXT, type CompactFacts, compactEnded, compactHold, parseCompact, promptEmpty, taskEnds, type TaskShape } from "../src/compact.ts";
+import { COMPACT_KEY, COMPACT_LIMIT_MS, COMPACT_QUIET_MS, COMPACT_TEXT, type CompactFacts, compactEnded, compactHold, compactLateLine, parseCompact, promptEmpty, taskEnds, type TaskShape } from "../src/compact.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const MAIN = read("../src/main.ts");
@@ -142,6 +142,16 @@ test("a compaction ends with a grown count of summaries or after the time limit"
   assert.equal(compactEnded(send, 2, T + COMPACT_LIMIT_MS), "late");
 });
 
+test("a compaction without a summary leaves a tooltip line with the time of its send", () => {
+  assert.equal(compactLateLine("20:41"), "The compaction sent at 20:41 showed no summary within 3 minutes.");
+  assert.equal(compactLateLine(""), "", "no late send, no line");
+  const check = MAIN.slice(MAIN.indexOf("async function checkCompact("), MAIN.indexOf("\n}\n", MAIN.indexOf("async function checkCompact(")));
+  assert.match(check, /state\.late = state\.send\.at/, "a late end keeps the time of its send");
+  assert.match(check, /state\.late = 0/, "the next send clears it");
+  const line = MAIN.slice(MAIN.indexOf("function triageContextLine("), MAIN.indexOf("\n}\n", MAIN.indexOf("function triageContextLine(")));
+  assert.match(line, /compactLateLine\(/);
+});
+
 test("main.ts marks task ends, checks the hold and sends /compact", () => {
   assert.match(MAIN, /from "\.\/compact"/);
   assert.match(MAIN, /compactHold\(/);
@@ -171,4 +181,5 @@ test("options.ts wires the switch and index.html shows it in Options and the Hel
   const section = HTML.slice(start, HTML.indexOf("<h3>Focus mode</h3>", start));
   assert.match(section, /\/compact/);
   assert.match(section, /Compact triage after each task/);
+  assert.match(section, /says when that compaction was sent/);
 });

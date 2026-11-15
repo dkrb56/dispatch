@@ -122,3 +122,11 @@ export function compactEnded(send: CompactSend, count: number | null | undefined
   if (now - send.at >= COMPACT_LIMIT_MS) return "late";
   return "";
 }
+
+/**
+ * The tooltip line of the Triage card after a compaction that showed no summary within the time
+ * limit (ticket triage-compact-never-fires): `time` is the clock time of its send, "" for none.
+ */
+export function compactLateLine(time: string): string {
+  return time ? `The compaction sent at ${time} showed no summary within 3 minutes.` : "";
+}
