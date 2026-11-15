@@ -2,6 +2,10 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.61 (2026-11-15)
+- After a task of a project ends, Dispatch compacts the triage chat of that project: the window that drives the host sends /compact at a quiet moment, when triage was idle for 30 seconds, no card or line is on its way, no menu is open and you did not type or click in Dispatch for 30 seconds. In the Terminal view it sends only when the prompt line is empty and you did not type a moment ago. It also runs in night mode. The lines of Dispatch and the tickets wait while it runs; the chat then shows the summary note of Claude Code. The switch "Compact triage after each task" in Options turns it off for all projects.
+- A done task whose report check found a command that the transcripts do not have gets the button "Take as done" on its card. One click closes the task without a question: the ticket goes to Done, the status reads "done · taken as done", and the chip of the report row keeps the count and shows the time of your click in its tooltip. The button also shows for a done report without a Verification section or without a command in it. The report file does not change.
+
 ## 0.1.60 (2026-11-15)
 - Dispatch ends an old worker session by itself 10 minutes after its run ended, from the window that drives the host. A run in progress, a plan that waits for Approve, a question and a permission prompt stay. When an end fails, the row shows the error, Dispatch tries again after 5 minutes and stops after 3 tries. The window Old sessions lists "Ended by Dispatch" for this run.
 - Approve starts the work run as a new session. It reads the brief, the plan and your decisions, and carries nothing of the plan run. A plan has the new section "Notes for the work run" with the facts from the code that the work run needs. Approve goes on when the plan session is gone, and refuses while a worker of the task still runs.
