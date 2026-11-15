@@ -130,3 +130,75 @@ export function compactEnded(send: CompactSend, count: number | null | undefined
 export function compactLateLine(time: string): string {
   return time ? `The compaction sent at ${time} showed no summary within 3 minutes.` : "";
 }
+
+/**
+ * The trace of the checks of the triage chat of one project (ticket triage-compact-trace-2): the Triage
+ * card shows it, so a missed compaction or a missed new chat tells which step stopped. Times in ms, 0 for none.
+ */
+export interface CheckTrace {
+  /** The last task end that marked the project. */
+  marked: number;
+  /** The start of the last check. */
+  started: number;
+  /** The end of the last check that ended without a failure. */
+  ended: number;
+  /** The step of the last check that runs now or ran last. */
+  step: string;
+  /** The last failed check: its time, its step and its error text. A newer failure replaces it. */
+  failed: number;
+  failStep: string;
+  failText: string;
+}
+
+/** A check that started this long ago and did not end counts as stuck: 3 polls of 10 seconds. */
+export const CHECK_STUCK_MS = 30_000;
+
+/** An empty trace. */
+export function newTrace(): CheckTrace {
+  return { marked: 0, started: 0, ended: 0, step: "", failed: 0, failStep: "", failText: "" };
+}
+
+/** The text of an error for the tooltip: the message of an Error, else the text of the value, cut to 200 characters. */
+export function errorText(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  return text.length > 200 ? `${text.slice(0, 199)}…` : text;
+}
+
+/**
+ * Runs one check and writes it into the trace: its start, each step that the check names, its end, or
+ * its failure. A failure throws again, so that the caller still logs it.
+ */
+export async function traceCheck(trace: CheckTrace, clock: () => number, check: (step: (name: string) => void) => Promise<void>): Promise<void> {
+  trace.started = clock();
+  trace.step = "";
+  try {
+    await check((name) => {
+      trace.step = name;
+    });
+    trace.ended = clock();
+  } catch (error) {
+    trace.failed = clock();
+    trace.failStep = trace.step;
+    trace.failText = errorText(error);
+    throw error;
+  }
+}
+
+/** The tooltip lines of a trace at the time `now`; `time` gives the clock time of a time in ms. */
+export function traceLines(trace: CheckTrace | undefined, now: number, time: (at: number) => string): string[] {
+  const one = trace ?? newTrace();
+  const lines: string[] = [];
+  lines.push(one.marked ? `Last task end noted: ${time(one.marked)}.` : "No task end noted since Dispatch started.");
+  const step = one.step || "unknown";
+  if (!one.started) lines.push("No check of the triage chat since Dispatch started.");
+  else if (one.started > Math.max(one.ended, one.failed)) {
+    lines.push(
+      now - one.started >= CHECK_STUCK_MS
+        ? `The check of the triage chat that started at ${time(one.started)} did not end. It stopped at the step ${step}.`
+        : `A check of the triage chat runs since ${time(one.started)} (step ${step}).`,
+    );
+  } else lines.push(`Last check of the triage chat: ${time(Math.max(one.ended, one.failed))}.`);
+  if (one.failed) lines.push(`The last failed check: ${time(one.failed)}, step ${one.failStep || "unknown"}: ${one.failText}`);
+  else lines.push("No check failed since Dispatch started.");
+  return lines;
+}

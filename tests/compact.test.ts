@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { COMPACT_KEY, COMPACT_LIMIT_MS, COMPACT_QUIET_MS, COMPACT_TEXT, type CompactFacts, compactEnded, compactHold, compactLateLine, parseCompact, promptEmpty, taskEnds, type TaskShape } from "../src/compact.ts";
+import { CHECK_STUCK_MS, COMPACT_KEY, COMPACT_LIMIT_MS, COMPACT_QUIET_MS, COMPACT_TEXT, type CompactFacts, compactEnded, compactHold, compactLateLine, errorText, newTrace, parseCompact, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "../src/compact.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const MAIN = read("../src/main.ts");
@@ -182,4 +182,73 @@ test("options.ts wires the switch and index.html shows it in Options and the Hel
   assert.match(section, /\/compact/);
   assert.match(section, /Compact triage after each task/);
   assert.match(section, /says when that compaction was sent/);
+  assert.match(section, /last task end that Dispatch noted, the last check of the triage chat/);
+});
+
+// The trace of the checks of the triage chat (ticket triage-compact-trace-2).
+const clockAt = (times: number[]) => () => times.shift() ?? 0;
+const hhmmss = (at: number) => `t+${(at - T) / 1000}`;
+
+test("a check that throws leaves its time, step and error in the tooltip lines and gives the error back", async () => {
+  const trace = newTrace();
+  await assert.rejects(
+    traceCheck(trace, clockAt([T, T + 2000]), async (step) => {
+      step("pane_info");
+      step("watchContext");
+      throw new Error("pane not found");
+    }),
+    /pane not found/,
+  );
+  assert.equal(trace.failed, T + 2000);
+  assert.equal(trace.failStep, "watchContext");
+  const lines = traceLines(trace, T + 5000, hhmmss);
+  assert.ok(lines.includes("The last failed check: t+2, step watchContext: pane not found"), lines.join("\n"));
+  assert.ok(lines.includes("Last check of the triage chat: t+2."), lines.join("\n"));
+  await assert.rejects(traceCheck(newTrace(), clockAt([T, T]), async () => Promise.reject("invoke: no such pane")), (error) => error === "invoke: no such pane");
+  assert.equal(errorText("plain text"), "plain text", "Tauri rejects with a plain string");
+  assert.equal(errorText("x".repeat(500)).length, 200);
+});
+
+test("a check that ends well sets its end time and keeps an older failure", async () => {
+  const trace = { ...newTrace(), failed: T - 60_000, failStep: "pane_info", failText: "old" };
+  await traceCheck(trace, clockAt([T, T + 1000]), async (step) => step("checkCompact"));
+  assert.equal(trace.started, T);
+  assert.equal(trace.ended, T + 1000);
+  const lines = traceLines(trace, T + 3000, hhmmss);
+  assert.ok(lines.includes("Last check of the triage chat: t+1."), lines.join("\n"));
+  assert.ok(lines.includes("The last failed check: t+-60, step pane_info: old"), "a failure stays until a newer one");
+});
+
+test("a check that started and did not end names its step, and after the stuck time it did not end", () => {
+  assert.equal(CHECK_STUCK_MS, 30_000);
+  const trace = { ...newTrace(), started: T, ended: T - 10_000, step: "send /compact" };
+  assert.ok(traceLines(trace, T + 5000, hhmmss).includes("A check of the triage chat runs since t+0 (step send /compact)."));
+  assert.ok(traceLines(trace, T + CHECK_STUCK_MS, hhmmss).includes("The check of the triage chat that started at t+0 did not end. It stopped at the step send /compact."));
+});
+
+test("no mark and no check give their own lines, and a mark gives its time", () => {
+  assert.deepEqual(traceLines(undefined, T, hhmmss), [
+    "No task end noted since Dispatch started.",
+    "No check of the triage chat since Dispatch started.",
+    "No check failed since Dispatch started.",
+  ]);
+  assert.equal(traceLines({ ...newTrace(), marked: T + 4000 }, T, hhmmss)[0], "Last task end noted: t+4.");
+});
+
+test("main.ts runs each check of a triage pane in the trace and shows the trace on the Triage card", () => {
+  const slice = (head: string) => MAIN.slice(MAIN.indexOf(head), MAIN.indexOf("\n}\n", MAIN.indexOf(head)));
+  const poll = slice("async function pollTriage(");
+  assert.match(poll, /traceCheck\(/);
+  for (const step of ["pane_info", "project_root", "watchContext", "checkCompact"]) assert.match(poll, new RegExp(`step\\("${step}"\\)`), step);
+  assert.match(poll, /console\.error\("triage chat check failed", error\)/, "the console line stays");
+  assert.match(slice("async function checkCompact("), /step\("send \/compact"\);\s*await pane\.chat\.say\(COMPACT_TEXT\)/);
+  const mark = slice("function markCompact(");
+  assert.ok(mark.indexOf(".marked = Date.now()") < mark.indexOf("compactOn()"), "the mark time comes before the switch guard");
+  assert.match(slice("function triageTraceTips("), /traceLines\(/);
+  const line = slice("function triageContextLine(");
+  assert.match(line, /triageTraceTips\(key\)/);
+  assert.match(line, /pointerenter/);
+  const focus = slice("function renderFocus(");
+  assert.match(focus, /triageTraceTips\(key\)/);
+  assert.match(focus, /triageRow\.addEventListener\("pointerenter"/);
 });

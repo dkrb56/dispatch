@@ -84,7 +84,7 @@ import { lastRunVersion, newEntries } from "./changelog";
 import { alertActions, alertState, CHIME, newWaits, notificationText, type Wait } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
 import { alertOptions, compactOn, initOptions, pulseOn } from "./options";
-import { COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, promptEmpty, taskEnds, type TaskShape } from "./compact";
+import { type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
 import { initRules, openRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
@@ -1503,20 +1503,28 @@ async function pollTriage(): Promise<void> {
   for (const pane of panes.values()) {
     if (pane.role !== "triage" || !pane.project) continue;
     try {
-      const info = await call<PaneInfo>(pane.host, "pane_info", { id: pane.id, cwd: pane.cwd });
-      const remembered = rememberedTriage(pane.host, pane.project);
-      if (info.session && remembered !== info.session.id) {
-        // A new chat started. Record the role that it got.
-        const { triageStamp } = await call<ProjectRoot>(pane.host, "project_root", { cwd: pane.project });
-        rememberTriage(pane.host, pane.project, { chat: info.session.id, role: triageStamp });
-        // The chat before it stays in the chat list, marked as an earlier triage chat. A switch ends here.
-        if (remembered) addEarlierTriage(paneKey(pane), remembered);
-        localStorage.removeItem(switchKey(paneKey(pane)));
-        // A new triage chat follows the Nightmode switch too.
-        void syncNight(pane.host, pane.project);
-      }
-      watchContext(pane, info);
-      await checkCompact(pane, info);
+      // The trace of the check shows on the Triage card which step stopped (triage-compact-trace-2).
+      await traceCheck(triageTrace(paneKey(pane)), Date.now, async (step) => {
+        if (!pane.project) return;
+        step("pane_info");
+        const info = await call<PaneInfo>(pane.host, "pane_info", { id: pane.id, cwd: pane.cwd });
+        const remembered = rememberedTriage(pane.host, pane.project);
+        if (info.session && remembered !== info.session.id) {
+          // A new chat started. Record the role that it got.
+          step("project_root");
+          const { triageStamp } = await call<ProjectRoot>(pane.host, "project_root", { cwd: pane.project });
+          rememberTriage(pane.host, pane.project, { chat: info.session.id, role: triageStamp });
+          // The chat before it stays in the chat list, marked as an earlier triage chat. A switch ends here.
+          if (remembered) addEarlierTriage(paneKey(pane), remembered);
+          localStorage.removeItem(switchKey(paneKey(pane)));
+          // A new triage chat follows the Nightmode switch too.
+          void syncNight(pane.host, pane.project);
+        }
+        step("watchContext");
+        watchContext(pane, info);
+        step("checkCompact");
+        await checkCompact(pane, info, step);
+      });
     } catch (error) {
       console.error("triage chat check failed", error);
     }
@@ -1589,8 +1597,28 @@ interface CompactState {
 /** The compaction of the triage chat of each project, by project key. A restart loses a mark; the next task end makes a new one. */
 const triageCompacts = new Map<string, CompactState>();
 
+/** The trace of the checks of the triage chat of each project, by project key (triage-compact-trace-2). In memory only. */
+const triageTraces = new Map<string, CheckTrace>();
+
+/** The trace of the project (by its key); a new one when none exists. */
+function triageTrace(key: string): CheckTrace {
+  let trace = triageTraces.get(key);
+  if (!trace) {
+    trace = newTrace();
+    triageTraces.set(key, trace);
+  }
+  return trace;
+}
+
+/** The tooltip lines of the trace of the project (by its key), with the clock times of now. */
+function triageTraceTips(key: string): string[] {
+  return traceLines(triageTraces.get(key), Date.now(), (at) => new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }));
+}
+
 /** Marks the triage chat of a project (by its key) for a compaction after a task end, when the switch is on. */
 function markCompact(key: string): void {
+  // The trace keeps the last task end that reached the project, also with the switch off.
+  if (key) triageTrace(key).marked = Date.now();
   if (!key || !compactOn()) return;
   let state = triageCompacts.get(key);
   if (!state) {
@@ -1609,7 +1637,7 @@ function compactRuns(key: string): boolean {
  * Ends a sent compaction when its summary shows or its time ran out, else sends `/compact` to a marked
  * triage chat at a quiet moment (the rule is `compactHold`). It runs in each poll of a triage pane.
  */
-async function checkCompact(pane: Pane, info: PaneInfo): Promise<void> {
+async function checkCompact(pane: Pane, info: PaneInfo, step: (name: string) => void): Promise<void> {
   const key = paneKey(pane);
   const state = triageCompacts.get(key);
   if (!state) return;
@@ -1660,6 +1688,7 @@ async function checkCompact(pane: Pane, info: PaneInfo): Promise<void> {
   state.late = 0;
   renderFocus();
   try {
+    step("send /compact");
     await pane.chat.say(COMPACT_TEXT);
   } catch (error) {
     state.send = null;
@@ -1841,12 +1870,29 @@ function triageContextLine(key: string): HTMLElement | null {
   if (!state) return null;
   const line = document.createElement("span");
   line.className = "triage-context";
-  const limit = triageLimit(key);
-  const tips: string[] = [];
+  // The tooltip reads the state at each call: a render runs only on a change, and the check times move.
+  const tips = (): string => {
+    const current = triageContexts.get(key) ?? state;
+    const limit = triageLimit(key);
+    const tips: string[] = [];
+    if (current.switching) {
+      tips.push("Dispatch closes this triage chat and starts a new one with a hand-off of the open tasks. The old chat stays in the chat list.");
+    } else if (current.tokens !== null) {
+      tips.push(`Context of the triage chat: ${current.tokens.toLocaleString()} tokens${current.window ? ` of ${current.window.toLocaleString()}` : ""}.`);
+    }
+    tips.push(limit ? `A new chat starts at ${tokenText(limit)} (the list above Triage).` : "No new chat: the list above Triage is off.");
+    if (current.waits) tips.push(current.waits);
+    const compact = triageCompacts.get(key);
+    if (compact?.send) tips.push("Claude Code compacts the chat.");
+    else if (compact?.marked && compact.waits) tips.push(`A compaction waits: ${compact.waits}`);
+    const late = compactLateLine(compact?.late ? new Date(compact.late).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
+    if (late) tips.push(late);
+    tips.push(...triageTraceTips(key));
+    return tips.join("\n");
+  };
   if (state.switching) {
     line.classList.add("switching");
     line.textContent = "starting a new chat…";
-    tips.push("Dispatch closes this triage chat and starts a new one with a hand-off of the open tasks. The old chat stays in the chat list.");
   } else if (state.tokens !== null) {
     const share = state.window ? Math.round((state.tokens / state.window) * 100) : null;
     const text = document.createElement("span");
@@ -1857,7 +1903,6 @@ function triageContextLine(key: string): HTMLElement | null {
     fill.style.width = `${Math.min(100, share ?? 0)}%`;
     bar.append(fill);
     line.append(bar, text);
-    tips.push(`Context of the triage chat: ${state.tokens.toLocaleString()} tokens${state.window ? ` of ${state.window.toLocaleString()}` : ""}.`);
     if (state.due) {
       const note = document.createElement("span");
       note.className = "triage-context-note";
@@ -1868,14 +1913,10 @@ function triageContextLine(key: string): HTMLElement | null {
   } else {
     return null;
   }
-  tips.push(limit ? `A new chat starts at ${tokenText(limit)} (the list above Triage).` : "No new chat: the list above Triage is off.");
-  if (state.waits) tips.push(state.waits);
-  const compact = triageCompacts.get(key);
-  if (compact?.send) tips.push("Claude Code compacts the chat.");
-  else if (compact?.marked && compact.waits) tips.push(`A compaction waits: ${compact.waits}`);
-  const late = compactLateLine(compact?.late ? new Date(compact.late).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "");
-  if (late) tips.push(late);
-  line.title = tips.join("\n");
+  line.title = tips();
+  line.addEventListener("pointerenter", () => {
+    line.title = tips();
+  });
   return line;
 }
 
@@ -8627,6 +8668,14 @@ function renderFocus(): void {
     // How full the triage chat is, and whether a new chat is due.
     const contextLine = triage ? triageContextLine(key) : null;
     if (contextLine) triageRow.append(contextLine);
+    else if (triage) {
+      // Without a context line the row shows the trace of the checks (triage-compact-trace-2).
+      const rowTips = () => ["The triage chat of this project", ...triageTraceTips(key)].join("\n");
+      triageRow.title = rowTips();
+      triageRow.addEventListener("pointerenter", () => {
+        triageRow.title = rowTips();
+      });
+    }
     triageRow.addEventListener("click", () => {
       setFocusCurrent(key);
       triage?.term.focus();
