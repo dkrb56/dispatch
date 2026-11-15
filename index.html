@@ -531,7 +531,7 @@
             <li>The pills show the projects of focus mode, or the projects with an open workspace when focus mode has none. A click goes in Focus to the column, in the Map to the graph, and in Details to the workspace (a project without a workspace gets one; it shows as a dashed pill with an empty dot until then).</li>
             <li>In Details the current project is an open group with a blue frame: its dot, its name, its state and its buttons. The current project is the one of the focused terminal, else the one you clicked or typed in last.</li>
             <li>The other projects are closed pills: a green number while workers work, "waits" in orange while something waits for you. A click on a closed pill opens its group; one group is open at a time. In Focus the bar shows closed pills only.</li>
-            <li><b>N old</b> shows only when the project has old sessions. After the buttons of the project comes ×: it closes the workspace of the project; the pill then shows dashed. A chat or terminal that is no workspace shows as a plain pill after the projects, with its own ×.</li>
+            <li><b>N old</b> shows only when the project has old sessions. After the buttons of the project comes ×: it closes the workspace of the project; the pill then shows dashed. A chat or terminal that is no workspace shows as a chat tab in the head of the triage pane, after Chat and Terminal, with its own ×. Click a chat tab to show that chat inside the triage pane; Chat or Terminal brings the triage chat back. Without an open workspace the chat fills the window.</li>
             <li>The agent view is closed at the start. A click on a worker row opens it too, and the <b>×</b> of its bar closes it. The workers go on working while it is closed.</li>
             <li>With two or more projects each project has a thin grey frame, and a blue frame marks the project you work in: the one you clicked or typed in last. Dispatch remembers focus mode and its projects at the next start.</li>
           </ul>
@@ -590,7 +590,7 @@
           <li>A ticket moves to In progress, Done or Canceled by itself as its task goes on.</li>
           <li>Click a title, or ✎, to rename it. Click the type tag to change the type.</li>
           <li><b>A yellow !</b> after the name of a project says that its tickets wait and do not go: the project is paused, triage does not run, or triage has not taken a ticket for a minute. Its tooltip says which. A click opens the board.</li>
-          <li><b>Chat</b> among the buttons of a project opens a plain Claude Code chat in the project folder; it shows as a plain pill after the projects. Ask a question there without a ticket; it is no triage chat and starts no task.</li>
+          <li><b>Chat</b> among the buttons of a project opens a plain Claude Code chat in the project folder; it shows as a chat tab in the head of the triage pane. Ask a question there without a ticket; it is no triage chat and starts no task.</li>
         </ul>
         <details class="help-more">
           <summary>Details</summary>
@@ -664,7 +664,7 @@
           <li><b>Merge.</b> With Task branches on, a finished task shows <b>Merge into &lt;branch&gt;</b>.</li>
           <li><b>Stop.</b> Ends a worker that runs. A stopped task cannot go on.</li>
           <li><b>Report check.</b> A done report must name the commands it ran. A claim without evidence keeps the task open.</li>
-          <li><b>Chats</b> lists your Claude Code chats. Click one to continue it; it shows as a plain pill after the projects.</li>
+          <li><b>Chats</b> lists your Claude Code chats. Click one to continue it; it shows as a chat tab in the head of the triage pane.</li>
         </ul>
         <details class="help-more">
           <summary>Details</summary>

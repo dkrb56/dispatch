@@ -63,7 +63,7 @@ test("Details lists the focus projects, then the other workspaces in their order
 });
 
 test("the bar rule: a workspace is a full pill, none is dashed, the open group has the only project close", () => {
-  const items = barItems(["a", "b", "c"], new Set(["a", "c"]), "c", []);
+  const items = barItems(["a", "b", "c"], new Set(["a", "c"]), "c");
   assert.deepEqual(items, [
     { kind: "full", key: "a", close: false },
     { kind: "dashed", key: "b", close: false },
@@ -73,22 +73,10 @@ test("the bar rule: a workspace is a full pill, none is dashed, the open group h
 });
 
 test("the bar rule: a project without a workspace is never the open group", () => {
-  const items = barItems(["a", "b"], new Set(["a"]), "b", []);
+  const items = barItems(["a", "b"], new Set(["a"]), "b");
   assert.deepEqual(items.map((item) => item.kind), ["full", "dashed"]);
   assert.ok(items.every((item) => !item.close));
-  assert.deepEqual(barItems([], new Set(), null, []), []);
-});
-
-test("the bar rule: a plain tab is a plain pill after the projects, with its own close", () => {
-  const items = barItems(["a"], new Set(["a"]), "a", [
-    { id: "t1", label: "chat", active: true },
-    { id: "t2", label: "pwsh", active: false },
-  ]);
-  assert.deepEqual(items, [
-    { kind: "open", key: "a", close: true },
-    { kind: "tab", id: "t1", label: "chat", active: true, close: true },
-    { kind: "tab", id: "t2", label: "pwsh", active: false, close: true },
-  ]);
+  assert.deepEqual(barItems([], new Set(), null), []);
 });
 
 test("the page has no tab strip, and Chats stands directly before Nightmode", () => {

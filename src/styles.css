@@ -5290,30 +5290,83 @@ body:not(.focus-mode):not(.map-mode):not(.overview-mode) #focus-projects {
   color: var(--muted);
 }
 
-/* A tab that is no workspace: a pill without a dot, with its own ×; the active one as the former tab. */
-#bar .tab-pill {
+/* The chat tabs in the head of a triage pane, after Chat and Terminal (chat-tabs-by-triage): a tab
+   that is no workspace, with its own ×. The bar wraps when the row is long. */
+.pane-bar .chat-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pane-bar .chat-tabs[hidden] {
+  display: none;
+}
+
+.chat-tabs .chat-tab {
   display: flex;
   flex: none;
   align-items: center;
-  gap: 4px;
-  padding: 0 4px 0 10px;
+  gap: 2px;
+  height: 20px;
+  padding: 0 2px 0 8px;
+  border-radius: 4px;
+  color: var(--text-2);
   white-space: nowrap;
   cursor: pointer;
 }
 
-#bar .tab-pill.active {
-  background: var(--bg);
-  box-shadow: inset 0 0 0 1px var(--hairline);
+/* The shown chat tab has the look of the active view. */
+.chat-tabs .chat-tab.active {
+  background: var(--card);
+  box-shadow: inset 0 0 0 1px var(--line);
+  color: var(--text);
   font-weight: 600;
 }
 
-#bar .tab-pill button {
+.chat-tabs .chat-tab button {
+  display: flex;
+  align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 16px;
+  height: 16px;
   padding: 0;
+  border: 0;
   border-radius: 4px;
+  background: none;
   color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chat-tabs .chat-tab button:hover {
+  color: var(--text);
+}
+
+/* Focus, Map and Overview show no chat tabs: a chat there is a tab of the window. */
+body.focus-mode .chat-tabs,
+body.map-mode .chat-tabs,
+body.overview-mode .chat-tabs {
+  display: none;
+}
+
+/* The slot under the head of a triage pane that holds a shown chat tab, in place of the terminal. */
+.chat-slot {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.chat-slot:empty {
+  display: none;
+}
+
+.chat-slot > .pane {
+  flex: 1;
+  border: 0;
+  border-radius: 0;
 }
 
 .project-tools {

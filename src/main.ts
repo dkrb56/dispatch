@@ -63,7 +63,8 @@ import { durationText, runTime } from "./duration";
 import { agentsText, fileRowTitle, rowParts, runChip, type RunChip, runCostText, runTokensTitle, tokenText } from "./workerrow";
 import { announcements, parseEnded, serializeEnded } from "./announce";
 import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, type FailedEnds, oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
-import { barItems, currentProject, detailsProjects, groupCount, pillCount, type PlainTab } from "./topbar";
+import { barItems, currentProject, detailsProjects, groupCount, pillCount } from "./topbar";
+import { type ChatTab, headState, isChatTab } from "./chattabs";
 import { PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
@@ -208,6 +209,10 @@ interface Pane extends SavedPane {
   pasting?: boolean;
   /** The arguments of its `pty_spawn` without the size: a reconnect to the host calls it again (remote-client-mode). */
   spawnArgs?: Record<string, unknown>;
+  /** The chat tabs in the head of a triage pane, after Chat and Terminal (chat-tabs-by-triage). */
+  chatTabsEl?: HTMLElement;
+  /** The slot under the bar of a triage pane that holds a shown chat tab. */
+  chatSlotEl?: HTMLElement;
 }
 
 /** The reply of the `pane_info` command. */
@@ -351,13 +356,24 @@ const tabs = new Map<string, Tab>();
 const panes = new Map<string, Pane>();
 /** The id of the visible tab. */
 let activeId: string | null = null;
+/**
+ * The chat tab that shows inside a triage pane, under its head (chat-tabs-by-triage), or null. It is
+ * not saved: at the next start the chat is a tab again, and `openChatTab` places it.
+ */
+let shownChat: { tabId: string; triage: string } | null = null;
 
 function tabPanes(tabId: string): Pane[] {
   return [...panes.values()].filter((pane) => pane.tabId === tabId);
 }
 
 function fitTab(tabId: string): void {
-  for (const pane of tabPanes(tabId)) fitPane(pane);
+  for (const pane of [...tabPanes(tabId), ...shownChatPanes(tabId)]) fitPane(pane);
+}
+
+/** The panes of the chat tab that shows inside a triage pane of this tab (chat-tabs-by-triage), else none. */
+function shownChatPanes(tabId: string): Pane[] {
+  if (!shownChat || panes.get(shownChat.triage)?.tabId !== tabId) return [];
+  return tabPanes(shownChat.tabId);
 }
 
 /** Below this size in pixels a terminal keeps its size: the element is hidden, collapsed or minimized. */
@@ -759,7 +775,9 @@ async function openChat(chat: Chat): Promise<void> {
   const recent = started && Date.now() - started.time < CHAT_START_MS ? started.pane : null;
   const open = panes.get(chat.pane ?? recent ?? "");
   if (open) {
-    activate(open.tabId);
+    // A chat stands in the head of the triage pane (chat-tabs-by-triage); a workspace pane is its tab.
+    if (open.role) activate(open.tabId);
+    else openChatTab(open.tabId);
     open.term.focus();
     await saveState();
     return;
@@ -767,20 +785,25 @@ async function openChat(chat: Chat): Promise<void> {
   const pane: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: chat.cwd, host: chat.host };
   startedChats.set(startKey, { pane: pane.id, time: Date.now() });
   const starts = new Map([[pane.id, { resume: chat.id }]]);
-  await openTab({ id: crypto.randomUUID(), layout: pane, focus: pane.id }, false, starts);
+  const tabId = crypto.randomUUID();
+  await openTab({ id: tabId, layout: pane, focus: pane.id }, false, starts);
+  openChatTab(tabId);
   await saveState();
 }
 
 /**
  * The Chat button of a project (ticket auto-todo, user decision 4): a new tab with a plain Claude
  * Code chat in the project folder, on the host of the project, without the triage role and outside
- * the pipeline, for a question without a ticket. The tab shows as a plain pill in Details, so the view goes there.
+ * the pipeline, for a question without a ticket. The tab shows as a chat tab in the head of the
+ * triage pane in Details (chat-tabs-by-triage), so the view goes there.
  */
 async function openProjectChat(ref: ProjectRef): Promise<void> {
   if (focusOn || mapOn || overviewOn) await setView("tabs");
   const pane: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: ref.root, host: ref.host };
   const starts = new Map<string, StartCommand>([[pane.id, { run: "claude" }]]);
-  await openTab({ id: crypto.randomUUID(), layout: pane, focus: pane.id }, false, starts);
+  const tabId = crypto.randomUUID();
+  await openTab({ id: tabId, layout: pane, focus: pane.id }, false, starts);
+  openChatTab(tabId);
   await saveState();
 }
 
@@ -963,10 +986,104 @@ type TriageView = "chat" | "terminal";
 
 /** Shows the chat view or the terminal of a triage pane. */
 function showTriageView(pane: Pane, view: TriageView): void {
+  // A chat tab that shows in this pane goes back to its tab first (chat-tabs-by-triage).
+  if (shownChat?.triage === pane.id) hideChatTab(pane);
   pane.chat?.setVisible(view === "chat");
   for (const button of pane.barEl.querySelectorAll<HTMLElement>(".view-switch button")) {
     button.classList.toggle("active", button.dataset.view === view);
   }
+  renderChatTabs();
+}
+
+/** The view of triage that a new triage pane shows: the last choice in localStorage `triage-view`. */
+function savedTriageView(): TriageView {
+  try {
+    if (localStorage.getItem("triage-view") === "terminal") return "terminal";
+  } catch {
+    // The pane then shows the chat view.
+  }
+  return "chat";
+}
+
+/**
+ * Shows a chat tab inside a triage pane, under its head (chat-tabs-by-triage, user decision 1):
+ * the panes of the chat tab move into the slot of the pane, and the head stays in view.
+ */
+function showChatTab(triage: Pane, tabId: string): void {
+  const tab = tabs.get(tabId);
+  if (!tab || !triage.chatSlotEl) return;
+  // One chat shows at a time: another triage pane gives its chat back first.
+  if (shownChat && shownChat.triage !== triage.id) {
+    const other = panes.get(shownChat.triage);
+    if (other) hideChatTab(other);
+  }
+  if (shownChat?.triage === triage.id && shownChat.tabId !== tabId) {
+    for (const pane of tabPanes(shownChat.tabId)) moveBack(pane);
+  }
+  if (activeId !== triage.tabId) activate(triage.tabId);
+  for (const pane of tabPanes(tabId)) moveInto(pane, triage.chatSlotEl, true);
+  triage.chat?.setVisible(false);
+  triage.termEl.hidden = true;
+  for (const button of triage.barEl.querySelectorAll<HTMLElement>(".view-switch button")) button.classList.remove("active");
+  shownChat = { tabId, triage: triage.id };
+  for (const pane of tabPanes(tabId)) pane.sideDue = 0;
+  panes.get(tab.focus ?? "")?.term.focus();
+  renderChatTabs();
+}
+
+/** Puts the shown chat tab of a triage pane back into its tab, and shows the view of triage again. */
+function hideChatTab(triage: Pane): void {
+  if (shownChat?.triage !== triage.id) return;
+  const tabId = shownChat.tabId;
+  shownChat = null;
+  for (const pane of tabPanes(tabId)) moveBack(pane);
+  triage.termEl.hidden = false;
+  showTriageView(triage, savedTriageView());
+  fitPane(triage);
+}
+
+/** Fills the chat tabs of the head of each triage pane, and marks the view or the chat tab that shows. */
+function renderChatTabs(): void {
+  const list = plainTabs();
+  for (const pane of panes.values()) {
+    if (!pane.chatTabsEl) continue;
+    const shown = shownChat?.triage === pane.id ? shownChat.tabId : null;
+    const state = headState(list, shown, pane.chat?.visible() === false ? "terminal" : "chat");
+    pane.chatTabsEl.replaceChildren(...state.tabs.map((item) => tabPill(item)));
+    pane.chatTabsEl.hidden = state.tabs.length === 0;
+    for (const button of pane.barEl.querySelectorAll<HTMLElement>(".view-switch button")) {
+      button.classList.toggle("active", button.dataset.view === state.view);
+    }
+  }
+}
+
+/** The triage pane of the current project in Details: the one of the open group of the bar. */
+function currentTriagePane(): Pane | undefined {
+  const workspaces = workspaceRefs();
+  const workspaceKeys = workspaces.map(refKey);
+  const keys = detailsProjects(focusProjects.map(refKey), workspaceKeys).filter((key) => workspaceKeys.includes(key));
+  const open = openWorkspaceKey(keys);
+  const ref = workspaces.find((known) => refKey(known) === open);
+  return ref ? workspacePanes(ref).triage : undefined;
+}
+
+/** The workspace of the open group of the bar in Details: the focused one, else the one the user chose last. */
+function openWorkspaceKey(workspaceKeys: string[]): string | null {
+  const pane = focusedPane();
+  const at = pane ? { host: pane.host, cwd: pane.project ?? pane.cwd ?? null } : null;
+  const focusedKey = at ? (workspaceKeys.find((key) => inProject(at, key)) ?? "") : "";
+  return currentProject(workspaceKeys, focusedKey, focusCurrent);
+}
+
+/**
+ * Shows a chat tab (chat-tabs-by-triage): in Details with a workspace inside the triage pane of the
+ * current project, else (Focus, Map, Overview, or no workspace) as a tab that fills the window.
+ */
+function openChatTab(tabId: string): void {
+  const details = !focusOn && !mapOn && !overviewOn;
+  const triage = details ? currentTriagePane() : undefined;
+  if (triage && triage.tabId !== tabId) showChatTab(triage, tabId);
+  else activate(tabId);
 }
 
 /** Runs when the user selects a view of a triage pane. A new triage pane starts with the last choice. */
@@ -1047,14 +1164,17 @@ function fillPaneBar(pane: Pane): void {
       button.addEventListener("click", () => selectTriageView(pane, view));
       views.append(button);
     }
-    label.after(views);
-    let view: TriageView = "chat";
-    try {
-      if (localStorage.getItem("triage-view") === "terminal") view = "terminal";
-    } catch {
-      // The pane then starts with the chat view.
-    }
-    showTriageView(pane, view);
+    // The chat tabs stand directly after Chat and Terminal (chat-tabs-by-triage); a shown chat
+    // tab stands in the slot under the bar, in place of the terminal.
+    const chatTabs = document.createElement("div");
+    chatTabs.className = "chat-tabs";
+    label.after(views, chatTabs);
+    const chatSlot = document.createElement("div");
+    chatSlot.className = "chat-slot";
+    pane.termEl.after(chatSlot);
+    pane.chatTabsEl = chatTabs;
+    pane.chatSlotEl = chatSlot;
+    showTriageView(pane, savedTriageView());
 
     ({ model: model.value, effort: effort.value } = triageChoice(key));
     const changed = () => {
@@ -7400,6 +7520,11 @@ async function closeTab(id: string): Promise<void> {
   const order = [...tabs.keys()];
   const index = order.indexOf(id);
   const closed = tabPanes(id);
+  // A shown chat goes back to its tab first (chat-tabs-by-triage): a closed triage pane gives its
+  // chat back, and the closed chat tab leaves the slot. Then each pane is in its tab again.
+  const shownTriage = shownChat ? panes.get(shownChat.triage) : undefined;
+  if (shownTriage && (shownChat?.tabId === id || closed.includes(shownTriage))) hideChatTab(shownTriage);
+  for (const pane of closed) moveBack(pane);
   tabs.delete(id);
   for (const pane of closed) {
     panes.delete(pane.id);
@@ -7967,7 +8092,7 @@ function workspacePanes(ref: ProjectRef): { triage?: Pane; agents?: Pane } {
 function shownPanes(): Pane[] {
   // The Overview shows the Chat view of each triage pane: its state, its question and its box need the reads.
   if (overviewOn) return overviewProjects().flatMap((root) => workspacePanes(root).triage ?? []);
-  if (!focusOn) return tabPanes(activeId ?? "");
+  if (!focusOn) return [...tabPanes(activeId ?? ""), ...shownChatPanes(activeId ?? "")];
   return focusProjects.flatMap((ref) => {
     const { triage, agents } = workspacePanes(ref);
     return [triage, agents, ...commandPanes(ref.host, ref.root)].filter((pane): pane is Pane => pane !== undefined);
@@ -8524,7 +8649,8 @@ function renderFocus(): void {
  * Details. The Overview branch stays, but no click reaches it while the group is hidden there.
  * In Details the bar has no tab strip (topbar-one-row): the focus projects and the other
  * workspaces are the pills, a project without a workspace is a dashed pill, the open group ends
- * with a × that closes the workspace, and each tab that is no workspace is a plain pill at the end.
+ * with a × that closes the workspace. A tab that is no workspace is a chat tab in the head of the
+ * triage pane (chat-tabs-by-triage), not a pill of the bar.
  */
 function renderPills(): void {
   const details = !focusOn && !mapOn && !overviewOn;
@@ -8540,21 +8666,11 @@ function renderPills(): void {
   let open: string | null = null;
   if (details) {
     // The open group is the workspace that the window shows below: a project with a workspace.
-    const workspaceKeys = keys.filter((key) => withWorkspace.has(key));
-    const pane = focusedPane();
-    const at = pane ? { host: pane.host, cwd: pane.project ?? pane.cwd ?? null } : null;
-    const focusedKey = at ? (workspaceKeys.find((key) => inProject(at, key)) ?? "") : "";
-    open = currentProject(workspaceKeys, focusedKey, focusCurrent);
+    open = openWorkspaceKey(keys.filter((key) => withWorkspace.has(key)));
   }
-  const items = barItems(keys, withWorkspace, open, details ? plainTabs() : []);
+  const items = barItems(keys, withWorkspace, open);
   const pills: HTMLElement[] = [];
   items.forEach((item, index) => {
-    if (item.kind === "tab") {
-      // One divider between the projects and the plain tabs.
-      if (index === keys.length && index > 0) pills.push(barDivider());
-      pills.push(tabPill(item));
-      return;
-    }
     const root = roots[index];
     const key = item.key;
     const state = focusState(root);
@@ -8625,6 +8741,8 @@ function renderPills(): void {
     pills.push(group);
   });
   focusProjectsEl.replaceChildren(...pills);
+  // The chat tabs in the head of each triage pane follow the bar (chat-tabs-by-triage).
+  renderChatTabs();
   showSetupButtons();
 }
 
@@ -8637,20 +8755,23 @@ function barDivider(): HTMLSpanElement {
 }
 
 /** The tabs that are no workspace: a chat, a Chat of a project, a plain shell (topbar-one-row). */
-function plainTabs(): PlainTab[] {
+function plainTabs(): ChatTab[] {
   return [...tabs.values()]
-    .filter((tab) => !tabPanes(tab.id).some((pane) => pane.role && pane.project))
+    .filter((tab) => isChatTab(tabPanes(tab.id)))
     .map((tab) => {
       const pane = panes.get(tab.focus ?? "");
       const label = pane ? (pane.cwd ? projectName({ host: pane.host, root: pane.cwd }) : pane.shell) : "";
-      return { id: tab.id, label, active: tab.id === activeId };
+      return { id: tab.id, label };
     });
 }
 
-/** The plain pill of a tab that is no workspace: the folder of its focused pane and its own ×. */
-function tabPill(item: PlainTab): HTMLElement {
+/**
+ * The chat tab of a tab that is no workspace, in the head of the triage pane after Chat and
+ * Terminal (chat-tabs-by-triage): the folder of its focused pane and its own ×.
+ */
+function tabPill(item: ChatTab & { active: boolean }): HTMLElement {
   const pill = document.createElement("div");
-  pill.className = `focus-pill tab-pill${item.active ? " active" : ""}`;
+  pill.className = `chat-tab${item.active ? " active" : ""}`;
   const pane = panes.get(tabs.get(item.id)?.focus ?? "");
   pill.title = pane?.cwd ? `${pane.shell}: ${pane.cwd}${backends().length > 1 ? ` on ${backendName(pane.host)}` : ""}` : (pane?.shell ?? "");
   const name = document.createElement("span");
@@ -8662,7 +8783,7 @@ function tabPill(item: PlainTab): HTMLElement {
   close.setAttribute("aria-label", `Close ${item.label}`);
   pill.append(name, close);
   pill.addEventListener("click", () => {
-    activate(item.id);
+    openChatTab(item.id);
     void saveState();
   });
   close.addEventListener("click", (event) => {
@@ -8892,6 +9013,11 @@ function mapProjects(): ProjectRef[] {
 
 /** Switches between the four views. */
 async function setView(mode: ViewMode): Promise<void> {
+  // A chat tab that shows in a triage pane goes back to its tab before a mode moves the triage pane.
+  if (mode !== "tabs" && shownChat) {
+    const triage = panes.get(shownChat.triage);
+    if (triage) hideChatTab(triage);
+  }
   // The Chat views go back into their panes first: Focus moves the panes, a tab shows them.
   if (overviewOn && mode !== "overview") showOverview(false);
   if (mode === "overview") {
@@ -9847,7 +9973,9 @@ async function start(): Promise<void> {
   if (tabs.size === 0) {
     await newTab("powershell", firstBackend());
   } else if (loaded?.active) {
-    activate(loaded.active);
+    // A saved chat tab shows in the head of the triage pane (chat-tabs-by-triage).
+    if (tabs.has(loaded.active) && isChatTab(tabPanes(loaded.active))) openChatTab(loaded.active);
+    else activate(loaded.active);
   }
   await saveState();
   // A window of hosts asks each host for its lease before the night check: only the driver sends its lines.

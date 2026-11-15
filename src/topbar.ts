@@ -1,5 +1,6 @@
 // The projects group of the top bar (ticket topbar-projects). In Details the current project is an
-// open group with its own buttons; the other projects are closed pills. No imports and no access to
+// open group with its own buttons; the other projects are closed pills. The chats stand in the head
+// of the triage pane (src/chattabs.ts). No imports and no access to
 // the page, so a test can load this file with Node (tests/topbar.test.ts).
 
 /** What a project has: the tasks that wait for the user, the workers that work, and the pause (ticket pause-tasks). */
@@ -53,35 +54,19 @@ export function detailsProjects(focusKeys: readonly string[], workspaceKeys: rea
   return keys;
 }
 
-/** A tab that is no workspace: a chat from the chat list, a Chat of a project, a plain shell. */
-export interface PlainTab {
-  id: string;
-  label: string;
-  active: boolean;
-}
-
-/** One item of the row: the open group, a full pill, a dashed pill, or a plain tab. */
-export type BarItem =
-  | { kind: "open"; key: string; close: true }
-  | { kind: "full" | "dashed"; key: string; close: false }
-  | { kind: "tab"; id: string; label: string; active: boolean; close: true };
+/** One item of the row: the open group, a full pill, or a dashed pill. */
+export type BarItem = { kind: "open"; key: string; close: true } | { kind: "full" | "dashed"; key: string; close: false };
 
 /**
- * The row of the bar in Details: one item per project, then one per plain tab. A project with a
- * workspace is a full pill, one without is a dashed pill. The open project is the open group, with
- * a close; it must have a workspace, else no group is open. Each plain tab has its own close.
+ * The row of the bar in Details: one item per project. A project with a workspace is a full pill,
+ * one without is a dashed pill. The open project is the open group, with a close; it must have a
+ * workspace, else no group is open. The tabs that are no workspace stand as chat tabs in the head
+ * of the triage pane (src/chattabs.ts, ticket chat-tabs-by-triage), not in the bar.
  */
-export function barItems(
-  keys: readonly string[],
-  withWorkspace: ReadonlySet<string>,
-  open: string | null,
-  tabs: readonly PlainTab[],
-): BarItem[] {
-  const items: BarItem[] = keys.map((key): BarItem => {
+export function barItems(keys: readonly string[], withWorkspace: ReadonlySet<string>, open: string | null): BarItem[] {
+  return keys.map((key): BarItem => {
     if (!withWorkspace.has(key)) return { kind: "dashed", key, close: false };
     if (key === open) return { kind: "open", key, close: true };
     return { kind: "full", key, close: false };
   });
-  for (const tab of tabs) items.push({ kind: "tab", id: tab.id, label: tab.label, active: tab.active, close: true });
-  return items;
 }
