@@ -30,6 +30,7 @@ import { onReturn } from "./chatend";
 import { markedProject, showMark, watchArea } from "./focusmark";
 import { removeAnswer, removeTexts } from "./removeproject";
 import { type ColumnAction, type ColumnChoice, applyAction, columnStates, dragPartner, mayMinimize, parseChoice } from "./focuslayout";
+import { type FoldPart, type Folds, foldOpen, parseFolds, setFold, splitNewest } from "./focuslists";
 import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode } from "./overview";
 import {
   allowanceLine,
@@ -6922,6 +6923,24 @@ const groupOpen = new Map<string, boolean>();
 /** The row "Older chats" is open. The choice is in localStorage `old-chats-open`. */
 let oldChatsOpen = false;
 
+/**
+ * The folds of the Tasks and Chats sections in Focus mode and of their Older groups, by project key
+ * and part (ticket focus-tickets-chats). In localStorage `focus-folds`.
+ */
+let focusFolds: Folds = {};
+const FOCUS_FOLDS_KEY = "focus-folds";
+
+/** Flips a fold of a project in Focus mode, saves the record and draws the columns again. */
+function toggleFocusFold(project: string, part: FoldPart): void {
+  focusFolds = setFold(focusFolds, project, part, !foldOpen(focusFolds, project, part));
+  try {
+    localStorage.setItem(FOCUS_FOLDS_KEY, JSON.stringify(focusFolds));
+  } catch {
+    // The choice then applies until the app closes.
+  }
+  renderFocus();
+}
+
 /** A saved project key with its host: a key without one (before remote-multi-host) belongs to the first backend. */
 function hostedKey(key: string): string {
   return projectKey(keyHost(key, firstBackend()), keyPath(key));
@@ -7010,6 +7029,11 @@ function inProject(chat: { cwd: string | null; host: HostId }, project: string):
 }
 
 function chatRow(chat: Chat): HTMLElement {
+  return chatRowWith(chat, openChat);
+}
+
+/** The row of a chat with the action of its click: in Focus mode the click goes to Details first. */
+function chatRowWith(chat: Chat, open: (chat: Chat) => Promise<void>): HTMLElement {
   const row = document.createElement("button");
   row.className = `chat${chat.running ? " running" : ""}${chat.pane ? " open" : ""}`;
   row.title = chat.cwd ? `${chat.title}\n${chat.cwd}` : chat.title;
@@ -7027,8 +7051,14 @@ function chatRow(chat: Chat): HTMLElement {
   when.className = "when";
   when.textContent = chatTime(chat.modified);
   row.append(title, when);
-  row.addEventListener("click", () => void openChat(chat));
+  row.addEventListener("click", () => void open(chat));
   return row;
+}
+
+/** A click on a chat in Focus mode: Details first, then the chat beside the triage pane (focus-tickets-chats, user decision 4). */
+async function openFocusChat(chat: Chat): Promise<void> {
+  await setView("tabs");
+  await openChat(chat);
 }
 
 function setChatScope(scope: "project" | "all"): void {
@@ -7200,7 +7230,8 @@ function renderChats(): void {
 
 /** Reads the chat list and shows it in the chat panel. */
 async function refreshChats(): Promise<void> {
-  if (chatsEl.hidden) return;
+  // Focus mode shows the chats of each project, also when the user hid the chat panel of Details.
+  if (chatsEl.hidden && !focusOn) return;
   // Every host gives its chats; a host that does not answer keeps its last list (remote-multi-host).
   const replies = await Promise.allSettled(backends().map((host) => call<Omit<Chat, "host">[]>(host, "chat_list")));
   if (replies.every((reply) => reply.status === "rejected")) throw (replies[0] as PromiseRejectedResult).reason;
@@ -8681,17 +8712,66 @@ function renderFocus(): void {
       triage?.term.focus();
       if (triage?.chat?.visible()) triage.chat.focus();
     });
-    items.push(heading("Triage"), triageRow, heading("Tasks"));
-    const record = projectTasks.get(key);
-    const tasks = record ? projectTaskList(record) : [];
-    const taskItems = withPending(tasks, tasks.map((task) => taskElement(task)), key);
-    if (taskItems.length === 0) {
+    items.push(heading("Triage"), triageRow);
+    // The Tasks and Chats sections (focus-tickets-chats): a fold heading, the 5 newest items and an
+    // Older group. Each fold is a part of the record `focus-folds` of the project.
+    const fold = (part: FoldPart, text: string, count: number, section: boolean, waits = 0) => {
+      const open = foldOpen(focusFolds, key, part);
+      const header = document.createElement("button");
+      header.className = `chat-group${section ? " focus-fold" : ""}${open ? " open" : ""}`;
+      header.title = `${open ? "Hide" : "Show"} ${text.toLowerCase()}`;
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = text;
+      const number = document.createElement("span");
+      number.className = "count";
+      number.textContent = String(count);
+      header.append(name);
+      // A folded Tasks section names the tasks that wait (user decision 5).
+      if (!open && waits > 0) {
+        const wait = document.createElement("span");
+        wait.className = "count focus-fold-waits";
+        wait.textContent = `${waits} wait`;
+        header.append(wait);
+      }
+      header.append(number);
+      header.addEventListener("click", () => toggleFocusFold(key, part));
+      items.push(header);
+      return open;
+    };
+    const note = (text: string) => {
       const none = document.createElement("p");
       none.className = "chat-note";
-      none.textContent = "No tasks yet. Give triage a task in its chat.";
+      none.textContent = text;
       items.push(none);
+    };
+    const record = projectTasks.get(key);
+    const tasks = record ? projectTaskList(record) : [];
+    // A task that waits for the user or runs never folds into Older tasks (user decision 1).
+    const waits = (task: Task) => taskWaits(task) || task.workers.some((worker) => worker.state === "blocked");
+    const runs = (task: Task) => waits(task) || task.workers.some((worker) => workerOrder(worker) < 2);
+    const split = splitNewest(tasks, runs);
+    if (fold("tasks", "Tasks", tasks.length, true, tasks.filter(waits).length)) {
+      const taskItems = withPending(split.shown, split.shown.map((task) => taskElement(task)), key);
+      if (taskItems.length === 0) note("No tasks yet. Give triage a task in its chat.");
+      items.push(...taskItems);
+      if (split.older.length > 0 && fold("older-tasks", "Older tasks", split.older.length, false)) {
+        items.push(...split.older.map((task) => taskElement(task)));
+      }
     }
-    items.push(...taskItems);
+    // The chats of the project, newest first, without the workers and the triage chat of the Triage card.
+    const workerChats = new Set(workerList.map((worker) => `${worker.host}|${worker.sessionId}`));
+    const chats = chatList
+      .filter((chat) => inProject(chat, key) && !workerChats.has(`${chat.host}|${chat.id}`) && chat.id !== remembered)
+      .sort((a, b) => b.modified - a.modified);
+    const chatSplit = splitNewest(chats);
+    if (fold("chats", "Chats", chats.length, true)) {
+      if (chats.length === 0) note("No other chats in this project.");
+      items.push(...chatSplit.shown.map((chat) => chatRowWith(chat, openFocusChat)));
+      if (chatSplit.older.length > 0 && fold("older-chats", "Older chats", chatSplit.older.length, false)) {
+        items.push(...chatSplit.older.map((chat) => chatRowWith(chat, openFocusChat)));
+      }
+    }
     column.sideEl.replaceChildren(...items);
   }
   renderPills();
@@ -9023,6 +9103,8 @@ async function setFocus(on: boolean): Promise<void> {
     for (const root of focusProjects) await ensureWorkspace(root);
     renderFocus();
     await refreshFocusTasks();
+    // The Chats sections of the columns: a hidden chat panel did not read the chat list.
+    refreshChats().catch((error) => console.error("chat list refresh failed", error));
   } else {
     for (const pane of [...panes.values()]) moveBack(pane);
     if (activeId) {
@@ -9875,6 +9957,11 @@ async function start(): Promise<void> {
     if (localStorage.getItem("chat-scope") === "all") chatScope = "all";
     chatsEl.hidden = localStorage.getItem("chats-hidden") === "true";
     oldChatsOpen = localStorage.getItem("old-chats-open") === "true";
+    try {
+      focusFolds = parseFolds(JSON.parse(localStorage.getItem(FOCUS_FOLDS_KEY) ?? "{}"));
+    } catch {
+      // A broken record: every section is open and every Older group closed.
+    }
     const chatsWidth = Number(localStorage.getItem(CHATS_WIDTH_KEY) ?? "");
     // A missing or broken value gives NaN or 0, outside the limits: the usual width stays.
     if (chatsWidth >= FOCUS_SIDE_MIN && chatsWidth <= FOCUS_SIDE_MAX) {

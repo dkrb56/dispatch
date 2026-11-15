@@ -5691,6 +5691,21 @@ body:not(.map-mode):not(.overview-mode) #stale-alert {
   margin-top: 4px;
 }
 
+/* The fold headings Tasks and Chats of a column (focus-tickets-chats): the size and colour of the headings above. */
+.focus-side .chat-group.focus-fold {
+  margin-top: 14px;
+  padding: 4px;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  font-weight: 400;
+}
+
+/* "N wait" on a folded Tasks heading. */
+.focus-side .chat-group .count.focus-fold-waits {
+  background: var(--wait-bg);
+  color: var(--wait);
+}
+
 .focus-main {
   gap: 10px;
   padding: 0 14px 14px 4px;

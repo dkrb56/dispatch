@@ -516,6 +516,7 @@
           <li>Each project has a pill in the bar: green while a worker works, orange while something waits for you, and it pulses while a task waits for your click.</li>
           <li>The head of each column has the buttons of its project: <b>Rules</b>, <b>Setup</b>, <b>N old</b> and the folder button. <b>Setup</b> pulses while the project misses setup steps.</li>
           <li><b>Workers</b> in the head of a column opens the agent view of that project. A second click closes it.</li>
+          <li>The left panel shows <b>Tasks</b> and <b>Chats</b> under the Triage card. Each shows its 5 newest; the rest wait in <b>Older tasks</b> and <b>Older chats</b>. Click a heading to fold or open it.</li>
           <li>With two or more projects, a blue frame marks the project you work in.</li>
         </ul>
         <details class="help-more">
@@ -523,6 +524,7 @@
           <ul>
             <li><b>Overview</b> shows less: for each project only the tasks in work and a message box.</li>
             <li>The <b>Triage</b> card at the top of the left panel shows how full the triage chat is: the tokens in use, the size of the window and the share, with a thin bar. It updates within about 10 seconds after a turn. At the limit it says "new chat when quiet", and "starting a new chat…" during the switch. Its tooltip says what the new chat waits for.</li>
+            <li>The <b>Tasks</b> section of a column shows the 5 newest tasks, and also every task that waits for you or runs: such a task never folds into <b>Older tasks</b>. A folded Tasks heading shows "N wait" in orange while tasks wait. The <b>Chats</b> section shows the 5 newest chats of the project without the triage chat and the workers; the others stand in <b>Older chats</b>. A click on a chat goes to Details and shows the chat beside the triage pane. Sections are open and Older groups closed at first; each project remembers what you folded, also after a restart.</li>
             <li>The first time, focus mode takes the projects whose workspace is open. The projects group with its pills and <b>+</b> stands in the bar in Details, Focus and Map; the Overview hides it.</li>
             <li><b>+</b> adds a project folder. The × of a column asks first, then removes the project from focus mode only: the project and its workers keep running, and <b>+</b> adds it back.</li>
             <li>A project that is not set up shows the Setup pipeline window first after <b>+</b>. Then its workspace starts and the project joins focus mode. A removed project keeps its workspace in Details.</li>
