@@ -573,8 +573,8 @@ pub fn has_transcript(projects: &Path, sessions: &[String]) -> bool {
 
 /// The tokens of the sessions of a task per model (ticket task-tokens): the transcripts of each
 /// session in every folder of `projects`, and the agents beside them. A reply counts once over all
-/// files of all sessions: Claude Code writes one reply on several lines, and a work run that
-/// resumes the plan session as a copy repeats its replies. A reply without a model counts under
+/// files of all sessions: Claude Code writes one reply on several lines, and a work run of an older
+/// script that resumed the plan session as a copy repeats its replies. A reply without a model counts under
 /// `unknown`. Sorted by model; an id that is no session id is left out.
 pub fn token_usage(projects: &Path, sessions: &[String]) -> Vec<ModelUsage> {
     let mut seen = std::collections::HashSet::new();
@@ -639,7 +639,7 @@ pub fn run_token_usage(projects: &Path, runs: &[(String, String)]) -> Vec<RunUsa
 /// The Bash commands of the runs of a task with their results (ticket task-evidence): `runs` are
 /// the `(run, session id)` lines of the session file, in its order. The transcripts of each session
 /// and its agents count (decision 3). A tool call counts once over all sessions, under the first
-/// run that has it: a work run that resumes the plan session as a copy repeats its lines. A call
+/// run that has it: a work run of an older script that resumed the plan session as a copy repeats its lines. A call
 /// without a result has the exit `unknown` and no output. Sorted by the time of the call; an id
 /// that is no session id is left out.
 pub fn evidence_of(projects: &Path, runs: &[(String, String)]) -> Vec<Evidence> {

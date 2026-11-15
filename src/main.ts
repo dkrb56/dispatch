@@ -3451,8 +3451,9 @@ function workerTask(worker: Worker): string {
 
 /**
  * The run that a worker of a task is. The name says it for a worker of the current script. For a
- * worker with the bare ticket id: the `plan` verb starts the first worker of a task; Approve and a
- * reply after it resume that session on the work options, which starts a copy with the same name.
+ * worker with the bare ticket id, of an older script: the `plan` verb started the first worker of a
+ * task; Approve and a reply after it resumed that session on the work options, which started a copy
+ * with the same name. The current script starts the work run as a new session (ticket work-fresh-session).
  * Thus while the task plans, each worker is the plan run; after that the first worker is the plan
  * run and each later one a work run.
  */

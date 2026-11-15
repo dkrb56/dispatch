@@ -1,8 +1,9 @@
 //! Prepares a project for the worker pipeline: a triage session starts background sessions
 //! of Claude Code (workers) through a script, and each worker writes a plan and a report to the
 //! folder `.dispatch` of the project, which git tracks and Dispatch commits (ticket
-//! reports-in-project). A task is two runs of one session: the plan run on the options
-//! of `plan-flags.txt`, and after the user's yes the work run on the options of `work-flags.txt`.
+//! reports-in-project). A task is two runs of one worker: the plan run on the options of
+//! `plan-flags.txt`, and after the user's yes the work run on the options of `work-flags.txt`, a new
+//! session that reads the brief and the approved plan (ticket work-fresh-session).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -617,12 +618,12 @@ impl Project {
             format!("Dispatch commits the files of `{reports}/` itself")
         };
         format!(
-            "- A task is two runs of one worker session. The plan run reads the code and writes a plan. The work run executes the approved plan. Triage starts and resumes a worker only with the script `{reports}/{SCRIPT_NAME}`, never with `claude --bg` or `claude --resume` directly. A worker works in the main checkout (`worktree.bgIsolation` is `none`).
+            "- A task is two runs of one worker. The plan run reads the code and writes a plan. The work run is a new session that reads the brief and the approved plan and executes the plan. Triage starts and resumes a worker only with the script `{reports}/{SCRIPT_NAME}`, never with `claude --bg` or `claude --resume` directly. A worker works in the main checkout (`worktree.bgIsolation` is `none`).
 - Triage writes each brief to `{reports}/briefs/<ticket-id>.md`: the user's words, the constraints, and the command that proves the work. The brief says nothing about the approach; the plan run decides that.
 - A message that Dispatch sends from its tickets board starts with the line `Ticket <id>: <title>`. Triage uses that id as the ticket id of the task. Dispatch keeps the tickets file `{reports}/tickets.jsonl`; triage and the workers do not edit it.
 - `{script} plan <ticket-id>` starts the plan run on the options in `{reports}/plan-flags.txt`: without the Edit tool, without the Agent tool and without a prompt; its Write tool may write only into `{reports}/plans/`. The plan run writes the plan to `{reports}/plans/<ticket-id>.md`, changes nothing else, and ends its turn.
-{measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; the word HOLD stands in no other line of this section); Do not touch; Size (files). No code in a plan.
-{checks}- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which resumes the same session on the options in `{reports}/work-flags.txt`, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when the working tree has uncommitted changes outside `{reports}/` (after Setup pipeline, the user commits the setup files first; {tasks_git}), when the worker still runs, or when the task was stopped.
+{measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Notes for the work run (the facts from the code that the other sections do not hold, because the work run starts without the context of the plan run: how the touched code works, why an anchor was chosen, traps it saw, and the command that showed a fact; one fact per line, 15 lines maximum); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; the word HOLD stands in no other line of this section); Do not touch; Size (files). No code in a plan.
+{checks}- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which starts the work run as a new session on the options in `{reports}/work-flags.txt`, with the brief, the plan and the user's decisions as its input, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when the working tree has uncommitted changes outside `{reports}/` (after Setup pipeline, the user commits the setup files first; {tasks_git}), when the worker still runs, or when the task was stopped.
 - The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It never pushes or merges. The user decides the push.
 {branches}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification lists each command the worker ran as a line that starts with a code span with the exact text of the Bash call, for example `` `cargo test --lib` ``, followed by what it showed. Only a line without indent is a claim: the results of a command stand as indented lines under it, and Dispatch does not compare them. Dispatch compares these spans with the Bash commands of the transcripts of the task, without a leading `cd <folder> && ` on both sides: a done report with a claim that no command matches, or without the section, counts as working, and its ticket stays open.
 - A worker starts no session and sends no message to a chat. It has no question tool. A question for the user goes into the report under the heading `## Questions`: numbered items, each with its options as list items, the recommended option first. Each option is one short line, because Dispatch shows it as a button and sends it back word for word; the details stand above the questions. The worker then writes `state: needs-decision` and `needs: decision` and ends its turn, also when the question is about a permission. `needs: permission` means: a refused tool call stopped the work, the report names the refused call and the rule it needs, and the work goes on with a follow-up `Continue` once the user changed the rule. The user answers in the task card of Dispatch, and the answer arrives as a follow-up `Answer to question N: <option>`. An answered question never comes back unchanged: after the answer the worker takes the question out of its report or writes what it decided and did, and ends with `state: done` or a new question. A follow-up `Continue` after an answer means: take the answers as given and go on.
@@ -782,7 +783,7 @@ fn list_limit(path: &Path, default: u32) -> u32 {
 const WORKER_SCRIPT: &str = r##"<#
 Dispatch worker script. Triage starts and resumes a worker only through this file.
   plan <ticket-id>              start the plan run (plan-flags.txt); state: planning
-  approve <ticket-id>           resume the same session for the work run (work-flags.txt); state: working
+  approve <ticket-id>           start the work run as a new session (work-flags.txt) that reads the brief and the plan; state: working
   reply <ticket-id> <message>   send the user's words to the worker; the state picks the options
   status                        the tasks with their state and the state of their worker
   stop <ticket-id>              stop the worker of a task; state: stopped
@@ -854,19 +855,40 @@ function Worker-State($Worker) {
 # so the agent view of Claude Code tells them apart. A worker of an older script has the bare id.
 function Run-Name([string]$Run) { "$Id [$Run]" }
 
-# The newest worker of a ticket, of either run.
-function Find-Worker($Workers, [string]$Ticket) {
+# The newest worker of a ticket, of either run. With a run: the newest worker named "<ticket> [<run>]"
+# when one exists, else the newest of any name (a worker of an older script has the bare id). The
+# plan run and the work run are two sessions (ticket work-fresh-session), and a follow-up of the work
+# run must resume the work session, never the plan session.
+function Find-Worker($Workers, [string]$Ticket, [string]$Run) {
   $names = @($Ticket, "$Ticket [plan]", "$Ticket [work]")
   $mine = @($Workers | Where-Object { $names -contains $_.name } | Sort-Object { $_.startedAt })
+  if ($Run) {
+    $named = @($mine | Where-Object { $_.name -eq "$Ticket [$Run]" })
+    if ($named.Count -gt 0) { $mine = $named }
+  }
   if ($mine.Count -eq 0) { return $null }
   $mine[$mine.Count - 1]
 }
 
-# A resume of a session that still runs starts a copy of it. Only a finished session is resumed,
-# and never one of a task that was stopped: a stopped task is ended, the next task starts clean.
-function Resume-Target {
+# Approve starts the work run as a new session and resumes nothing. It still refuses a stopped task,
+# and a worker of the ticket that still runs or waits at a prompt: the plan run must end first.
+# Without a worker of the ticket in the list (an ended or cleaned plan session) approve goes on.
+function Approve-Check {
   if ((Get-State) -eq 'stopped') { Refuse "the task $Id was stopped; start a new task" }
   $worker = Find-Worker (Get-Workers) $Id
+  if ($null -eq $worker) { return }
+  $state = Worker-State $worker
+  if ($state -eq 'working' -or $state -eq 'blocked') {
+    Refuse "the worker $Id still runs ($state); the work run starts when it has ended. A permission prompt is answered in the agent view: claude attach $($worker.id)"
+  }
+}
+
+# A resume of a session that still runs starts a copy of it. Only a finished session is resumed,
+# and never one of a task that was stopped: a stopped task is ended, the next task starts clean.
+# $Run picks the session of that run.
+function Resume-Target([string]$Run) {
+  if ((Get-State) -eq 'stopped') { Refuse "the task $Id was stopped; start a new task" }
+  $worker = Find-Worker (Get-Workers) $Id $Run
   if ($null -eq $worker) { Refuse "no worker named $Id" }
   $state = Worker-State $worker
   if ($state -eq 'working' -or $state -eq 'blocked') {
@@ -900,8 +922,9 @@ function Run-Claude([string[]]$Arguments, [string]$StateOnFailure, [string]$Bran
 # The session file of a ticket (ticket task-tokens): one line "<run> <session id>" per Claude session
 # of the task, in order. Dispatch sums the tokens of these sessions for the task card. The worker of
 # the job id that claude printed gives the session id; without it, the newest worker of the run name.
-# A resume of the same session adds nothing; a resume that starts a copy adds the copy. A missing id
-# is a warning, no refusal: the run has started.
+# The work run is its own session (ticket work-fresh-session), so Approve adds its line. A resume of
+# the same session adds nothing; a resume that starts a copy adds the copy. A missing id is a
+# warning, no refusal: the run has started.
 function Session-Path { Join-Path $Reports "$Id.session" }
 function Save-Session([string]$Run, [string[]]$Printed) {
   $words = @($Printed | ForEach-Object { "$_" -split '\s+' } | Where-Object { $_ })
@@ -1185,11 +1208,13 @@ switch ($Verb) {
       $dirty = @(& git -C $Project status --porcelain -- . ':(exclude).dispatch')
       if ($dirty.Count -gt 0) { Refuse "the working tree of $Project has uncommitted changes; commit or stash them first (after Setup pipeline, these are the setup files: Commit to git in the Setup pipeline window):`n$($dirty -join "`n")" }
     }
-    $worker = Resume-Target
+    Approve-Check
     $flags = Read-Flags 'work-flags.txt'
-    # The prompt names the report file: a worker planned with the paths of its plan run.
+    # The work run is a new session (ticket work-fresh-session): the prompt names the ticket, the
+    # brief, the plan and the report file, and the files are its whole input.
+    $brief = Join-Path $Reports "briefs\$Id.md"
     $report = Join-Path $Reports "$Id.md"
-    $prompt = "Plan approved: $plan. Execute it. A deviation goes into the report, not into the code. Write the report to $report."
+    $prompt = "Plan approved: $plan. This is the work run of ticket $Id. Read the brief $brief and the plan first: they are the whole context of this run, and the sections User decisions and Checks chosen of the plan hold the choices of the user. Execute the plan. A deviation goes into the report, not into the code. Write the report to $report."
     # The checks that the user chose at Approve (ticket task-checks): one line per check, the name, a
     # tab and the command. A quote of a name becomes an apostrophe, as in a reply.
     $chosen = Join-Path $Reports "$Id.checks"
@@ -1206,10 +1231,11 @@ switch ($Verb) {
       $prompt += " Task branches is on: the checkout is on the branch $((Read-BranchFile $Id).branch) of this task. Commit there; switch no branch, merge nothing, push nothing."
     }
     Set-State 'approved'
-    # A resume with other options than the saved ones of the session starts a copy of it (Claude
-    # Code 2.1.319). The name keeps the copy with the task and marks it as the work run: Dispatch and
-    # this script find a worker by its name.
-    $printed = Run-Claude (@($prompt, '--resume', $worker.sessionId, '--bg', '--name', (Run-Name 'work')) + $flags) 'planning' $back
+    # A new session, no resume: the work run gets the brief, the plan and the decisions of the user,
+    # and nothing of the context of the plan run (ticket work-fresh-session); the model switch stays.
+    # The name keeps the session with the task and marks it as the work run: Dispatch and this script
+    # find a worker by its name.
+    $printed = Run-Claude (@($prompt, '--bg', '--name', (Run-Name 'work')) + $flags) 'planning' $back
     Set-State 'working'
     Save-Session 'work' $printed
   }
@@ -1220,8 +1246,8 @@ switch ($Verb) {
     # line break a space, so the text can never cut or merge the arguments after it.
     $text = ((($Message -join ' ') -replace '"', "'") -replace "`r?`n", ' ').Trim()
     if (-not $text) { Refuse 'reply needs a message' }
-    $worker = Resume-Target
     $run = if ((Get-State) -eq 'planning') { 'plan' } else { 'work' }
+    $worker = Resume-Target $run
     $flags = Read-Flags "$run-flags.txt"
     # Task branches: a work run goes on on the branch of its task, also after Dispatch switched back.
     $branch = if ($run -eq 'work' -and (Branches-On)) { Read-BranchFile $Id } else { $null }
@@ -1604,7 +1630,7 @@ fn plan(project: &Project) -> Result<Plan, String> {
                 && plan_flags_current(project)
                 && work_flags_current(project),
             detail: format!(
-                "The folder .dispatch in the project for the task files: the reports of the workers, a folder for the briefs, a folder for the plans, and the state of each task. {} The options of the two runs go into plan-flags.txt and work-flags.txt, one argument per line; the files start with the defaults (plan run: {} {}, work run: {} {}). The work run names its permission mode ({}) and its tool list, because a copy of the plan session keeps the options it does not name again; an older file gets these lines and the paths of this folder, its choice stays.{}",
+                "The folder .dispatch in the project for the task files: the reports of the workers, a folder for the briefs, a folder for the plans, and the state of each task. {} The options of the two runs go into plan-flags.txt and work-flags.txt, one argument per line; the files start with the defaults (plan run: {} {}, work run: {} {}). The work run names its permission mode ({}) and its tool list, so that the file says in full what the new session of the work run gets; an older file gets these lines and the paths of this folder, its choice stays.{}",
                 if options.ignore_tasks {
                     "Git ignores it (Task files local only is on): the task files stay on this computer, and a clone has none. Approve does not count them as changes."
                 } else {
@@ -1930,10 +1956,10 @@ fn plan_flag_lines(project: &Project, plan: &Choice) -> Result<Vec<String>, Stri
     Ok(lines)
 }
 
-/// The fixed part of the work run. The work run is a copy of the plan session (Claude Code
-/// 2.1.319), and the copy keeps every option of the plan run that the work run does not name
-/// again: so the permission mode and the tool list are named here, or the work run would keep
-/// `dontAsk` and the four read tools of the plan run and get every edit refused. `auto`: Claude
+/// The fixed part of the work run. The work run is a new session (ticket work-fresh-session); the
+/// fixed part stays, so that the options file names the permission mode and the tools of the work
+/// run in full and an older work run that resumes the plan session never keeps `dontAsk` and the
+/// read tools of the plan run. `auto`: Claude
 /// Code allows the edits and the usual commands itself and asks only for a command it judges
 /// risky; that prompt blocks the worker until the user answers it in the agent view (user
 /// decision 2026-11-08, over `bypassPermissions` with no prompt at all). No question tool: a
@@ -4936,7 +4962,7 @@ if (args[0] === 'agents') {
 } else if (args[0] === 'stop') {
   process.stdout.write('stopped ' + args[1] + '\\n');
 } else {
-  // A resume on other options starts a copy with its own session id (FAKE_COPY): the agents list gives it from now on.
+  // A run that starts a new session, or a resume that starts a copy, has its own session id (FAKE_COPY): the agents list gives it from now on.
   if (process.env.FAKE_COPY) fs.writeFileSync(__dirname + '/copy.txt', process.env.FAKE_COPY);
   // The start of a run (ticket stale-report-loop): the branch of the checkout and the times of the
   // report and the state file of the ticket that watch.txt names.
@@ -5324,10 +5350,10 @@ if (args[0] === 'agents') {
         assert!(out.contains("bg-1"), "the script writes the output of claude on: {out}");
         assert_eq!(read(&project.session_file("t-1")), "plan sess-1\n");
 
-        // approve: refused while the worker runs or waits at a prompt, then resumed on the work options.
+        // approve: refused while the worker runs or waits at a prompt, then a new session on the work options.
         let (code, out) = run_script(&project, &fake, "working", &["approve", "t-1"]);
         assert_eq!(code, 2, "{out}");
-        assert!(out.contains("would start a copy"), "{out}");
+        assert!(out.contains("still runs (working)"), "{out}");
         let (code, out) = run_script(&project, &fake, "blocked/waiting", &["approve", "t-1"]);
         assert_eq!(code, 2, "{out}");
         assert!(out.contains("(blocked)"), "{out}");
@@ -5345,7 +5371,7 @@ if (args[0] === 'agents') {
         assert_eq!(read(&project.session_file("t-1")), "plan sess-1\n", "a failed start adds no session");
         // The checks that the user chose at Approve (ticket task-checks) go into the prompt by name.
         write_file(&project.task_checks_file("t-1"), "unit\tcargo test --lib\nui \"e2e\"\tnpm run e2e\n").unwrap();
-        // The resume on the work options starts a copy with its own session: the file gets its line.
+        // Approve starts the work run as a new session with its own id: the file gets its line.
         let (code, out) = run_script_env(&project, &fake, "done", &["approve", "t-1"], &[("FAKE_COPY", "sess-2")]);
         assert_eq!(code, 0, "{out}");
         assert_eq!(read(&project.reports.join("t-1.state")), "working\n");
@@ -5353,12 +5379,27 @@ if (args[0] === 'agents') {
         fs::remove_file(fake.join("copy.txt")).unwrap();
         let resume = last_call(&fake);
         assert!(resume[0].starts_with("Plan approved: "), "{resume:?}");
+        // The prompt names the brief and the plan: the new session reads them, not the plan run (ticket work-fresh-session).
+        assert!(resume[0].contains("This is the work run of ticket t-1. Read the brief ") && resume[0].contains("t-1.md and the plan first"), "{resume:?}");
         assert!(resume[0].ends_with(" The user chose these checks: unit, ui 'e2e'. Run each with the command of the section Checks chosen of the plan, and name each in Verification with that exact command."), "{resume:?}");
         fs::remove_file(project.task_checks_file("t-1")).unwrap();
-        // The name goes with the resume: a resume on other options starts a copy of the session.
-        assert_eq!(&resume[1..], ["--resume", "sess-1", "--bg", "--name", "t-1 [work]", "--model", "opus", "--effort", "xhigh", "--permission-mode", "auto", "--tools", "default", "--disallowedTools", "AskUserQuestion,SendMessage"]);
+        // No resume: a new session with the name of the work run and the work options.
+        assert!(!resume.iter().any(|arg| arg == "--resume"), "{resume:?}");
+        assert_eq!(&resume[1..], ["--bg", "--name", "t-1 [work]", "--model", "opus", "--effort", "xhigh", "--permission-mode", "auto", "--tools", "default", "--disallowedTools", "AskUserQuestion,SendMessage"]);
         // claude runs in the project folder, whatever the folder of the caller is.
         assert_eq!(Path::new(read(&fake.join("cwd.txt")).trim()), project.root.as_path());
+
+        // approve needs no worker of the ticket in the agent list (user decision 2 of work-fresh-session):
+        // the plan session can be gone, and the plan file is the input of the new session.
+        write_file(&project.reports.join("fake-name.txt"), "other [plan]").unwrap();
+        write_file(&project.reports.join("t-1.state"), "planning
+").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(read(&project.reports.join("t-1.state")), "working
+");
+        assert_eq!(&last_call(&fake)[1..4], ["--bg", "--name", "t-1 [work]"]);
+        fs::remove_file(project.reports.join("fake-name.txt")).unwrap();
 
         // reply: the words of the user first; the state working picks the work options.
         let (code, out) = run_script(&project, &fake, "done", &["reply", "t-1", "yes, go on"]);
