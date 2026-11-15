@@ -112,11 +112,15 @@
           <input type="checkbox" data-option="ignoreTasks" />
           <span><b>Task files local only.</b> Git ignores the folder <code>.dispatch</code>: tickets, briefs, plans, reports and logs stay on this computer, and a clone has none. Off, git tracks the folder and Dispatch commits it.</span>
         </label>
+        <label>
+          <input type="checkbox" data-option="notesInGit" />
+          <span><b>Project notes in git.</b> Git tracks the notes of Claude for this project in <code>.claude</code> (memory.md, mistakes.md, agents-override.md, triage.md, settings.json), so a clone has them, and Dispatch commits the notes with the task files. The rest of <code>.claude</code> stays on this computer. Off, a folder <code>.claude</code> that git ignores stays on this computer.</span>
+        </label>
         <label for="setup-checks" class="setup-checks-label">
           <span><b>Checks.</b> The tests and gates that a task can run, one per line. The plan recommends some, and you tick them on the task card before Approve. Empty: no checks.</span>
         </label>
         <textarea id="setup-checks" rows="3" spellcheck="false" placeholder="name | command, one per line, for example: unit | npm test&#10;| always after the command: always recommended&#10;# a comment line" title="The checks that a task of this project can run, one per line: name | command, and | always for a check that is always recommended. The box saves when you leave it"></textarea>
-        <p>Short reports changes the step "Triage role". Measure before the plan changes the steps "Task files", "Section in CLAUDE.md" and "Measure before the plan". Task branches changes the steps "Allow rules", "Section in CLAUDE.md" and "Task branches". Task files local only changes the steps "Task files", "Section in CLAUDE.md" and "Task files in git". The first check in the list, and the last one out, changes the step "Section in CLAUDE.md". After Apply, the next start of the workspace opens a new triage chat. The other settings apply at once.</p>
+        <p>Short reports changes the step "Triage role". Measure before the plan changes the steps "Task files", "Section in CLAUDE.md" and "Measure before the plan". Task branches changes the steps "Allow rules", "Section in CLAUDE.md" and "Task branches". Task files local only changes the steps "Task files", "Section in CLAUDE.md" and "Task files in git". Project notes in git changes the step "Project notes in git". The first check in the list, and the last one out, changes the step "Section in CLAUDE.md". After Apply, the next start of the workspace opens a new triage chat. The other settings apply at once.</p>
       </fieldset>
       <section id="setup-rules-check">
         <h3>Rules that conflict with the pipeline</h3>
@@ -341,7 +345,7 @@
             <li>Click a step to see its file and the text that it adds.</li>
             <li>Under the steps, the window lists the rules of the project that conflict with the pipeline, each with its file as a link. A click opens the file in the viewer, also for a rule outside the project. <b>Open in editor</b> there lets you change the rule yourself.</li>
             <li>Apply makes no commit, so you can look at the changes in git first. When all steps are done, <b>Commit to git</b> becomes available.</li>
-            <li><b>Commit to git</b> commits on the current branch: <code>CLAUDE.md</code>, two files in <code>.claude</code> (<code>settings.json</code> and <code>triage.md</code>; the allow rules in <code>settings.local.json</code> stay on this computer), and the script, the two options files, the measure commands and the gate command in <code>.dispatch</code>. With Task files local only on, it commits <code>.gitignore</code> instead of the files in <code>.dispatch</code>. Your other changes stay out of the commit. Dispatch makes no push.</li>
+            <li><b>Commit to git</b> commits on the current branch: <code>CLAUDE.md</code>, two files in <code>.claude</code> (<code>settings.json</code> and <code>triage.md</code>; the allow rules in <code>settings.local.json</code> stay on this computer), and the script, the two options files, the measure commands and the gate command in <code>.dispatch</code>. With Task files local only on, it commits <code>.gitignore</code> instead of the files in <code>.dispatch</code>. With Project notes in git on, it also commits <code>.gitignore</code> and the notes of Claude in <code>.claude</code>. Your other changes stay out of the commit. Dispatch makes no push.</li>
             <li>The window shows the commit, or the reason for no commit: no git repository, nothing to commit, or the error of git.</li>
             <li>A work run starts only when the project has no uncommitted changes outside <code>.dispatch</code>. Without the setup commit, the first approval is refused and names the setup files. Dispatch commits the task files in <code>.dispatch</code> itself, unless Task files local only is on.</li>
             <li>The workspace opens below the bar with two terminals. Claude Code starts in both.</li>
@@ -367,6 +371,7 @@
             <tr><td>Task branches</td><td><code>.dispatch/merge-gate.txt</code></td><td>Optional: each task gets its own git branch.</td></tr>
             <tr><td>Checks</td><td><code>.dispatch/checks.txt</code></td><td>Optional: the checks that a task can run.</td></tr>
             <tr><td>Task files in git</td><td><code>.gitignore</code></td><td>Optional: the task files stay on this computer; a clone has none.</td></tr>
+            <tr><td>Project notes in git</td><td><code>.gitignore</code></td><td>Optional: the notes of Claude reach a clone.</td></tr>
             <tr><td>Triage role</td><td><code>.claude/triage.md</code></td><td>Tells triage to plan and check, not to implement.</td></tr>
           </tbody>
         </table>
@@ -393,6 +398,8 @@
             <li>The log of the gate goes into <code>.dispatch/merge/</code>, which git ignores (Apply adds <code>merge/</code> to <code>.dispatch/.gitignore</code>). The step "Allow rules" adds a deny rule, so triage cannot merge.</li>
             <li><b>Task files in git.</b> Off: the step is done, and nothing changes. On: Apply adds the line <code>.dispatch/</code> with a comment line to <code>.gitignore</code> of the project, and takes the task files out of git in one commit "Dispatch: task files are local only". The files stay on the disk. Commit to git then commits <code>.gitignore</code>.</li>
             <li>With the switch on, tickets and task files are local only: a clone has no tickets, briefs, plans, reports or logs. Off again, Apply removes the line of Dispatch and commits the task files again. A line <code>.dispatch/</code> that you wrote yourself stays.</li>
+            <li><b>Project notes in git.</b> Off: the step is done, and nothing changes. On: git tracks the notes of Claude for the project: <code>.claude/memory.md</code>, <code>mistakes.md</code>, <code>agents-override.md</code>, <code>triage.md</code> and <code>settings.json</code>. When git ignores one of them, Apply adds lines under a comment line at the end of <code>.gitignore</code>: <code>!.claude/</code>, <code>.claude/*</code> and one <code>!</code> line per file. Your own line <code>.claude/</code> stays. <code>settings.local.json</code> and the folder <code>.claude/state</code> stay on this computer. Commit to git then commits <code>.gitignore</code> and the notes, and Dispatch commits later changes of memory.md, mistakes.md and agents-override.md with the task files.</li>
+            <li>Off again, Apply removes only the lines of Dispatch. The notes that git tracks stay in git. To take a file out, run <code>git rm --cached &lt;file&gt;</code>; the file stays on the disk. Commit to git then commits <code>.gitignore</code>.</li>
             <li><b>Triage role.</b> The text tells the session in the Triage terminal that it is triage: it plans and checks, and it does no implementation. The project settings change this text.</li>
           </ul>
         </details>
@@ -400,7 +407,7 @@
         <h3>Continue on a second computer</h3>
         <p class="tldr">Push on one computer, pull on the other, click Apply once, and go on. The other computer can use another Claude account.</p>
         <ol>
-          <li>On the first computer, keep Task files local only off. Push the project.</li>
+          <li>On the first computer, keep Task files local only off. Turn Project notes in git on when the notes of Claude shall travel too. Push the project.</li>
           <li>On the second computer, clone the project. Open the folder in Dispatch.</li>
           <li>Click <b>Apply</b> once. <span class="does">It writes the allow rules of this computer. It changes no file that git shares, so Commit to git is not necessary.</span></li>
           <li>Go on. <span class="does">The tickets, plans and reports are there. You can approve a plan and start new tasks.</span></li>
@@ -416,6 +423,7 @@
             <li>The models in the Workers bar are one choice for the project. When the other account cannot use a model, the run fails with the message of Claude. Then choose another model in the Workers bar there.</li>
             <li>Finish on one computer and push before you continue on the other.</li>
             <li>With Task files local only on, the second computer gets the setup, but no tickets, briefs, plans, reports or logs.</li>
+            <li>With Project notes in git off, a clone has no notes of Claude when the project ignores the folder <code>.claude</code>.</li>
             <li>No part of your Claude account goes into git: no login, no transcript, no email address.</li>
           </ul>
         </details>

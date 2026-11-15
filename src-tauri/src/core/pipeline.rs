@@ -56,6 +56,20 @@ const LOCAL_SETTINGS: &str = ".claude/settings.local.json";
 const LOCAL_SETTINGS_MARK: &str = "# Dispatch: the allow rules stay on this computer; Apply writes them on each computer";
 /// The message of the commit that takes a tracked `LOCAL_SETTINGS` out of git.
 const LOCAL_SETTINGS_MESSAGE: &str = "Dispatch: the local settings stay on each computer";
+/// The comment line that Dispatch writes above the block of "Project notes in git" in the root
+/// `.gitignore` (ticket project-notes-in-git). Apply removes only this block.
+const NOTES_IGNORE_MARK: &str =
+    "# Dispatch: the project notes go into git (setting \"Project notes in git\"); the rest of .claude stays on this computer";
+/// The notes of Claude for the project that "Project notes in git" lets into git, as git takes a path
+/// (user decision 2 of project-notes-in-git).
+const NOTES_FILES: [&str; 5] = [".claude/memory.md", ".claude/mistakes.md", ".claude/agents-override.md", ".claude/triage.md", ".claude/settings.json"];
+/// The notes that Dispatch commits with the task files; the other two are setup files.
+const NOTES_WITH_TASKS: [&str; 3] = [".claude/memory.md", ".claude/mistakes.md", ".claude/agents-override.md"];
+/// The two lines of the block that open the folder `.claude` again: git cannot re-include a file
+/// under an excluded folder, so the block cancels the folder line, then ignores its content again.
+const NOTES_REOPEN: [&str; 2] = ["!.claude/", ".claude/*"];
+/// The title of the step of "Project notes in git".
+const NOTES_STEP: &str = "Project notes in git";
 
 /// The folder where the app saves pasted images. The app sets it at its start.
 pub(crate) static PASTED_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -112,6 +126,10 @@ pub struct Options {
     /// files stay on this computer and a clone has none (ticket ignore-tasks). Off at the start; a
     /// settings file without the field is off.
     ignore_tasks: bool,
+    /// Git tracks the notes of Claude for the project in `.claude` (`NOTES_FILES`), also when the
+    /// root `.gitignore` ignores the folder, and Dispatch commits the notes with the task files
+    /// (ticket project-notes-in-git). Off at the start; a settings file without the field is off.
+    notes_in_git: bool,
     /// Dispatch sends no ticket of New to triage and starts no work run for the project while it is
     /// on (ticket pause-tasks). A worker that runs finishes. Off at the start; a settings file without
     /// the field is off.
@@ -122,7 +140,7 @@ pub struct Options {
 // field it does not know, so such a file reads without an error.
 impl Default for Options {
     fn default() -> Self {
-        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, paused: false }
+        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false }
     }
 }
 
@@ -406,6 +424,20 @@ impl Project {
         self.in_git && git(&self.root, &["ls-files", "--", TASKS_DIR]).is_some_and(|files| !files.trim().is_empty())
     }
 
+    /// An ignore rule of git names at least one of the notes files (ticket project-notes-in-git).
+    /// `git check-ignore` with several paths exits 0 when any is ignored; `-q` takes only one path,
+    /// so the output is dropped instead. False outside git.
+    fn notes_ignored(&self) -> bool {
+        let mut args = vec!["check-ignore", "--no-index"];
+        args.extend(NOTES_FILES);
+        self.in_git && git(&self.root, &args).is_some()
+    }
+
+    /// The root `.gitignore` has the mark of the notes block of Dispatch.
+    fn notes_block_present(&self) -> bool {
+        self.root_ignore_lines().iter().any(|line| line == NOTES_IGNORE_MARK)
+    }
+
     /// The permitted measuring commands: the lines of the list that are not empty and do not start
     /// with `#`. The script numbers them the same way.
     fn measure_commands(&self) -> Vec<String> {
@@ -577,21 +609,28 @@ impl Project {
         // Off again, the commit takes the removal of the line of Dispatch, while HEAD still has it.
         // The line of the local settings (ticket second-computer) makes it a setup file too.
         let local_line = self.root_ignore_lines().iter().any(|line| line == LOCAL_SETTINGS_MARK);
-        if self.options().ignore_tasks || local_line || self.committed_tasks_ignore() {
+        // "Project notes in git" (ticket project-notes-in-git): the commit takes the notes that
+        // exist, and the block of Dispatch or its removal. A missing file is absent from `git status`.
+        let notes = self.options().notes_in_git;
+        if notes {
+            files.extend(NOTES_WITH_TASKS);
+        }
+        if self.options().ignore_tasks || local_line || notes || self.notes_block_present() || self.committed_tasks_ignore() {
             files.push(".gitignore");
         }
         files
     }
 
     /// The root `.gitignore` of HEAD has a line of Dispatch under its mark: the task folder, or the
-    /// local settings.
+    /// local settings, or the block of the project notes.
     fn committed_tasks_ignore(&self) -> bool {
         self.in_git
             && git(&self.root, &["show", "HEAD:.gitignore"]).is_some_and(|text| {
                 let lines: Vec<&str> = text.lines().map(str::trim).collect();
-                lines.windows(2).any(|pair| {
-                    (pair[0] == TASKS_IGNORE_MARK && pair[1] == ROOT_TASKS_IGNORE) || (pair[0] == LOCAL_SETTINGS_MARK && pair[1] == LOCAL_SETTINGS)
-                })
+                lines.contains(&NOTES_IGNORE_MARK)
+                    || lines.windows(2).any(|pair| {
+                        (pair[0] == TASKS_IGNORE_MARK && pair[1] == ROOT_TASKS_IGNORE) || (pair[0] == LOCAL_SETTINGS_MARK && pair[1] == LOCAL_SETTINGS)
+                    })
             })
     }
 
@@ -1796,6 +1835,7 @@ fn plan(project: &Project) -> Result<Plan, String> {
         measure_step(project, options.measure_before_plan)?,
         branches_step(project, options.task_branches),
         ignore_step(project, options.ignore_tasks),
+        notes_step(project, options.notes_in_git),
     ];
     let measure_commands = fs::read_to_string(project.measure_commands_file()).unwrap_or_default().replace("\r\n", "\n");
     let merge_gate = fs::read_to_string(project.merge_gate_file()).unwrap_or_default().replace("\r\n", "\n");
@@ -1891,6 +1931,75 @@ fn remove_root_ignore(project: &Project) -> Result<(), String> {
         }
         kept.push_str(lines[at]);
         at += 1;
+    }
+    write_file(&project.root_ignore(), &kept)
+}
+
+/// The lines of the notes block under its mark: the two lines that open the folder `.claude`
+/// again, then one `!` line per notes file.
+fn notes_block_lines() -> Vec<String> {
+    NOTES_REOPEN.iter().map(|line| line.to_string()).chain(NOTES_FILES.iter().map(|file| format!("!{file}"))).collect()
+}
+
+/// The step "Project notes in git" (ticket project-notes-in-git). On, it is done when git ignores
+/// none of the notes files; Apply then writes nothing (user decision 1). Off, it is done when the
+/// block of Dispatch is absent; the notes that git tracks stay in git.
+fn notes_step(project: &Project, on: bool) -> Step {
+    let target = project.root_ignore().to_string_lossy().into_owned();
+    let files = NOTES_FILES.join(", ");
+    if !on {
+        let ours = project.notes_block_present();
+        let detail = if ours {
+            "Off. Apply removes the lines of Dispatch from .gitignore; your line .claude/ ignores the folder again. The notes that git tracks stay in git; take a file out with git rm --cached (it stays on the disk). Commit to git then commits .gitignore.".to_string()
+        } else {
+            "Off. The notes of Claude in .claude stay as they are.".to_string()
+        };
+        return Step { title: NOTES_STEP, target, done: !ours, detail, rules: None };
+    }
+    let detail = format!(
+        "Git tracks the notes of Claude for this project: {files}. A clone has them. When git ignores one of them, Apply adds these lines under a comment line at the end of .gitignore of the project: {}. Your own line .claude/ stays. {LOCAL_SETTINGS} and .claude/state stay on this computer. Commit to git then commits .gitignore and the notes. Dispatch commits later changes of memory.md, mistakes.md and agents-override.md with the task files.",
+        notes_block_lines().join(", ")
+    );
+    Step { title: NOTES_STEP, target, done: !project.notes_ignored(), detail, rules: None }
+}
+
+/// Removes an old notes block of Dispatch and adds the block at the end of the root `.gitignore`,
+/// so it stands after a line `.claude/` of the user. Makes the file when it is absent.
+fn add_notes_block(project: &Project) -> Result<(), String> {
+    remove_notes_block(project)?;
+    let mut text = fs::read_to_string(project.root_ignore()).unwrap_or_default();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&format!("{NOTES_IGNORE_MARK}\n"));
+    for line in notes_block_lines() {
+        text.push_str(&format!("{line}\n"));
+    }
+    write_file(&project.root_ignore(), &text)
+}
+
+/// Removes each notes block of Dispatch from the root `.gitignore`: the mark line and each directly
+/// following line of the block. The other lines stay as they are, with their line ends. Without a
+/// mark the file stays untouched.
+fn remove_notes_block(project: &Project) -> Result<(), String> {
+    if !project.notes_block_present() {
+        return Ok(());
+    }
+    let block = notes_block_lines();
+    let text = fs::read_to_string(project.root_ignore()).unwrap_or_default();
+    let mut kept = String::new();
+    let mut in_block = false;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim();
+        if trimmed == NOTES_IGNORE_MARK {
+            in_block = true;
+            continue;
+        }
+        if in_block && block.iter().any(|ours| ours == trimmed) {
+            continue;
+        }
+        in_block = false;
+        kept.push_str(line);
     }
     write_file(&project.root_ignore(), &kept)
 }
@@ -3829,6 +3938,15 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
             keep_tasks_committed(project)?;
         }
     }
+    // "Project notes in git" (ticket project-notes-in-git). On: the block, last in the file. Off:
+    // only the block goes; the notes that git tracks stay in git.
+    if !done(10) {
+        if project.options().notes_in_git {
+            add_notes_block(project)?;
+        } else {
+            remove_notes_block(project)?;
+        }
+    }
     Ok(())
 }
 
@@ -3904,16 +4022,35 @@ fn keep_tasks_committed(project: &Project) -> Result<usize, String> {
     if !project.in_git || project.options().ignore_tasks {
         return Ok(0);
     }
+    // "Project notes in git" (ticket project-notes-in-git): the status also names the notes that
+    // Dispatch commits with the task files.
+    let mut status_args = vec!["status", "--porcelain", "--untracked-files=all", "--", TASKS_DIR];
+    if project.options().notes_in_git {
+        status_args.extend(NOTES_WITH_TASKS);
+    }
     // `--untracked-files=all`: a new folder shows its files, not only the folder.
-    let status = run_git(&project.root, &["status", "--porcelain", "--untracked-files=all", "--", TASKS_DIR])?;
-    let changed = status.lines().filter(|line| !line.trim().is_empty()).count();
+    let status = run_git(&project.root, &status_args)?;
+    let paths: Vec<&str> = status.lines().filter_map(|line| line.get(3..)).map(|path| path.trim().trim_matches('"')).filter(|path| !path.is_empty()).collect();
+    // `git add` of an ignored untracked path fails, so only the notes that the status listed go in.
+    let notes: Vec<&str> = NOTES_WITH_TASKS.iter().copied().filter(|note| paths.contains(note)).collect();
+    let tasks = paths.len() - notes.len();
+    let changed = tasks + notes.len();
     if changed == 0 {
         return Ok(0);
     }
-    run_git(&project.root, &["add", "--all", "--", TASKS_DIR])?;
-    let message = format!("Dispatch: {changed} task {}", if changed == 1 { "file" } else { "files" });
+    let mut pathspec: Vec<&str> = if tasks > 0 { vec![TASKS_DIR] } else { Vec::new() };
+    pathspec.extend(&notes);
+    let mut add = vec!["add", "--all", "--"];
+    add.extend(&pathspec);
+    run_git(&project.root, &add)?;
+    let mut message = format!("Dispatch: {tasks} task {}", if tasks == 1 { "file" } else { "files" });
+    if !notes.is_empty() {
+        message.push_str(&format!(" and {} {}", notes.len(), if notes.len() == 1 { "note" } else { "notes" }));
+    }
     // A commit with paths takes only these paths.
-    run_git(&project.root, &["commit", "-m", &message, "--", TASKS_DIR])?;
+    let mut commit = vec!["commit", "-m", &message, "--"];
+    commit.extend(&pathspec);
+    run_git(&project.root, &commit)?;
     Ok(changed)
 }
 
@@ -5999,6 +6136,80 @@ if (args[0] === 'agents') {
         clean(&project);
     }
 
+    #[test]
+    fn the_notes_switch_lets_the_notes_into_git_and_back() {
+        let project = git_scratch("notes-switch");
+        let root = project.root.clone();
+        let git = |args: &[&str]| run_git(&root, args).unwrap();
+        let ignored = |path: &str| git_ok(&root, &["check-ignore", "-q", "--no-index", path]);
+        // The repository ignores the folder `.claude` by a line of the user.
+        write_file(&root.join(".gitignore"), "node_modules\n.claude/\n").unwrap();
+        apply(&project, &[0]).unwrap();
+        // The line `.claude/` ignores the local settings already: Apply writes no pair of its own.
+        assert_eq!(read(&root.join(".gitignore")), "node_modules\n.claude/\n");
+        write_file(&root.join(".claude/memory.md"), "memory\n").unwrap();
+        write_file(&root.join(".claude/state/x.json"), "{}\n").unwrap();
+        git(&["add", "--all"]);
+        git(&["commit", "-q", "-m", "setup"]);
+        assert_eq!(git(&["ls-files", "--", ".claude"]), "");
+        // Off and no block: the step is done, and Apply changes nothing.
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+
+        // On: the step is to do; Apply writes the block after the line of the user.
+        set_notes(&project, true);
+        assert!(open_steps(&project).contains(&NOTES_STEP), "{:?}", open_steps(&project));
+        apply(&project, &[]).unwrap();
+        let block = format!(
+            "{NOTES_IGNORE_MARK}\n!.claude/\n.claude/*\n!.claude/memory.md\n!.claude/mistakes.md\n!.claude/agents-override.md\n!.claude/triage.md\n!.claude/settings.json\n"
+        );
+        assert_eq!(read(&root.join(".gitignore")), format!("node_modules\n.claude/\n{block}"));
+        assert!(!ignored(".claude/memory.md") && !ignored(".claude/triage.md"));
+        assert!(ignored(".claude/settings.local.json") && ignored(".claude/state/x.json"));
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+
+        // Commit to git takes .gitignore and the notes, and not the local settings.
+        commit_setup(&project).unwrap();
+        let shown = git(&["show", "--name-only", "--format=", "HEAD"]);
+        let mut committed: Vec<&str> = shown.lines().filter(|line| !line.is_empty()).collect();
+        committed.sort_unstable();
+        assert_eq!(committed, [".claude/memory.md", ".claude/settings.json", ".claude/triage.md", ".gitignore"]);
+
+        // A later change of a note goes into the commit of Dispatch with the task files.
+        write_file(&root.join(".claude/memory.md"), "memory two\n").unwrap();
+        assert_eq!(keep_tasks_committed(&project), Ok(2), "the settings file of the switch and the note");
+        assert_eq!(git(&["log", "-1", "--format=%s"]).trim(), "Dispatch: 1 task file and 1 note");
+        let shown = git(&["show", "--name-only", "--format=", "HEAD"]);
+        assert!(shown.lines().any(|line| line == ".claude/memory.md"), "{shown}");
+        assert_eq!(git(&["status", "--porcelain"]), "");
+
+        // A line `.claude/` that the user appends later wins again: the step is to do, and Apply
+        // moves the block to the end, with no second block.
+        let text = read(&root.join(".gitignore"));
+        write_file(&root.join(".gitignore"), &format!("{text}.claude/\n")).unwrap();
+        assert!(open_steps(&project).contains(&NOTES_STEP), "{:?}", open_steps(&project));
+        apply(&project, &[]).unwrap();
+        assert_eq!(read(&root.join(".gitignore")), format!("node_modules\n.claude/\n.claude/\n{block}"));
+        write_file(&root.join(".gitignore"), &format!("node_modules\n.claude/\n{block}")).unwrap();
+
+        // Off: Apply removes only the block; the notes stay tracked.
+        set_notes(&project, false);
+        assert!(open_steps(&project).contains(&NOTES_STEP), "{:?}", open_steps(&project));
+        apply(&project, &[]).unwrap();
+        assert_eq!(read(&root.join(".gitignore")), "node_modules\n.claude/\n");
+        assert_eq!(git(&["ls-files", "--", ".claude/memory.md"]).trim(), ".claude/memory.md");
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        // HEAD has the block: Commit to git takes its removal.
+        assert!(project.setup_files().contains(&".gitignore"));
+        commit_setup(&project).unwrap();
+        assert_eq!(git(&["show", "--name-only", "--format=", "HEAD"]).trim(), ".gitignore");
+        clean(&project);
+    }
+
+    /// Runs git in a folder and says whether it exited with 0.
+    fn git_ok(root: &Path, args: &[&str]) -> bool {
+        run_git(root, args).is_ok()
+    }
+
     /// A clone of a scratch project into a sibling folder with another name: the project on a
     /// second computer (ticket second-computer). It has the git identity of the scratch repositories.
     fn clone_of(project: &Project, name: &str) -> Project {
@@ -6154,6 +6365,12 @@ if (args[0] === 'agents') {
         write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
     }
 
+    /// Turns "Project notes in git" on or off in the settings file, as the switch does.
+    fn set_notes(project: &Project, on: bool) {
+        let options = Options { notes_in_git: on, ..project.options() };
+        write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
+    }
+
     /// Runs git in a scratch project and gives its output; a failure fails the test.
     fn git_out(project: &Project, args: &[&str]) -> String {
         run_git(&project.root, args).unwrap().trim().to_string()
@@ -6276,6 +6493,10 @@ if (args[0] === 'agents') {
         assert_eq!(serde_json::to_value(&shown.options).unwrap()["taskBranches"], json!(false));
         assert_eq!(serde_json::to_value(&shown.options).unwrap()["ignoreTasks"], json!(false));
         assert!(shown.steps.iter().any(|step| step.title == "Task files in git" && step.done));
+        // No field for "Project notes in git" either (ticket project-notes-in-git): off, and done.
+        assert!(!project.options().notes_in_git);
+        assert_eq!(serde_json::to_value(&shown.options).unwrap()["notesInGit"], json!(false));
+        assert!(shown.steps.iter().any(|step| step.title == NOTES_STEP && step.done));
         assert_eq!(shown.merge_gate, "");
         assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
         apply(&project, &[]).unwrap();

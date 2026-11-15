@@ -28,6 +28,8 @@ interface Options {
   taskBranches: boolean;
   /** Git ignores the task folder `.dispatch`, so the task files stay on this computer (ticket ignore-tasks). Off at the start. */
   ignoreTasks: boolean;
+  /** Git tracks the notes of Claude in `.claude`, also when the folder is ignored, and Dispatch commits them with the task files (ticket project-notes-in-git). Off at the start. */
+  notesInGit: boolean;
   /** Dispatch sends no ticket of New and starts no work run for the project (ticket pause-tasks). Off at the start. */
   paused: boolean;
 }
