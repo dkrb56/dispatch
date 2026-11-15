@@ -1880,6 +1880,337 @@ button.task-head:hover {
   resize: vertical;
 }
 
+/* The Actions panel (ticket project-actions): the frame of the tickets board, one card per action,
+   the last run with a state chip in the colours of ok, wait and fail, and the editor. */
+#actions {
+  width: min(860px, 94vw);
+  max-height: 86vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 50%);
+  color: var(--text);
+  font-size: calc(13px * var(--text-scale));
+}
+
+#actions[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#actions::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+#actions header {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 8px 8px 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+#actions h2 {
+  margin: 0;
+  font-size: calc(16px * var(--text-scale));
+  font-weight: 600;
+}
+
+#actions-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(11px * var(--text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#actions-new {
+  padding: 5px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#actions-close {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: calc(18px * var(--text-scale));
+  cursor: pointer;
+}
+
+#actions-close:hover {
+  background: var(--card);
+}
+
+#actions-error {
+  flex: none;
+  margin: 0;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--danger-bg);
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+
+#actions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 14px 20px 20px;
+  overflow-y: auto;
+}
+
+.action-empty {
+  margin: 0;
+  color: var(--muted);
+}
+
+.action-card,
+.action-edit {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.action-edit {
+  flex: none;
+  max-height: 55vh;
+  margin: 14px 20px 0;
+  overflow-y: auto;
+  border-color: var(--accent-line);
+}
+
+.action-edit h3 {
+  margin: 0 0 8px;
+  font-size: calc(14px * var(--text-scale));
+  font-weight: 600;
+}
+
+.action-head,
+.action-tools,
+.action-step-title {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.action-tools {
+  margin-top: 8px;
+}
+
+.action-name {
+  font-weight: 600;
+}
+
+.action-steps {
+  flex: 1;
+  color: var(--text-2);
+}
+
+#actions button:not(#actions-new, #actions-close) {
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text-2);
+  font: inherit;
+  font-size: calc(12px * var(--text-scale));
+  cursor: pointer;
+}
+
+#actions button:not(#actions-new, #actions-close):hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--text);
+}
+
+#actions button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#actions .action-run-button:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.action-run {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 6px;
+  color: var(--text-2);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.action-chip {
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+}
+
+.action-chip.ok {
+  border-color: var(--work-line);
+  background: var(--work-bg);
+  color: var(--work);
+}
+
+.action-chip.wait {
+  border-color: var(--wait-line);
+  background: var(--wait-bg);
+  color: var(--wait);
+}
+
+.action-chip.fail {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.action-note {
+  color: var(--wait);
+}
+
+.action-detail {
+  margin-top: 6px;
+}
+
+.action-detail summary {
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  cursor: pointer;
+}
+
+.action-step-list {
+  margin: 6px 0 0;
+  padding-left: 20px;
+}
+
+.action-step {
+  margin-bottom: 6px;
+}
+
+.action-step > span,
+.action-step > code {
+  margin-right: 8px;
+}
+
+.action-step code {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+  word-break: break-all;
+}
+
+.action-step-kind {
+  color: var(--text-2);
+}
+
+.action-step-state {
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.action-step.done .action-step-state {
+  color: var(--work);
+}
+
+.action-step.failed .action-step-state {
+  color: var(--danger);
+}
+
+.action-step.running .action-step-state {
+  color: var(--wait);
+}
+
+.action-output {
+  max-height: 240px;
+  margin: 4px 0 0;
+  padding: 6px 8px;
+  overflow: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--term-fg);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(11px * var(--text-scale));
+  white-space: pre;
+}
+
+.action-step-edit {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+}
+
+.action-row {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px;
+  align-items: start;
+  margin-top: 6px;
+}
+
+.action-row > span {
+  padding-top: 5px;
+  color: var(--text-2);
+}
+
+.action-row input,
+.action-row textarea {
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.action-row textarea {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+  resize: vertical;
+}
+
+.action-check {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-2);
+}
+
+.action-hint {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.action-error {
+  margin: 8px 0 0;
+  color: var(--danger);
+}
+
 #stale,
 #changelog,
 #remove-project {

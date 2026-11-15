@@ -178,3 +178,12 @@ test("main.ts: approvePlans passes the pause, and night mode answers nothing on 
   const facts = MAIN.slice(MAIN.indexOf("function waitFacts("));
   assert.match(facts.slice(0, facts.indexOf("\n}\n")), /paused/);
 });
+
+test("a candidate of an action approves itself; HOLD stops it (ticket project-actions)", () => {
+  const facts = (task: StartCandidate): StartFacts => ({ dirty: 0, merging: null, running: null, leased: null, queued: null, auto: false, night: false, tasks: [task] });
+  assert.deepEqual(chooseStart(facts({ ...candidate("release-0.1.62"), auto: true })), { task: "release-0.1.62", kind: "auto" });
+  assert.equal(chooseStart(facts({ ...candidate("release-0.1.62"), auto: true, hold: true })), null, "a HOLD decision waits for the user's click");
+  assert.equal(chooseStart(facts(candidate("release-0.1.62"))), null, "without the switch of the action, nothing starts by itself");
+  assert.equal(chooseStart({ ...facts({ ...candidate("release-0.1.62"), auto: true }), paused: true }), null, "Pause holds it");
+  assert.equal(chooseStart({ ...facts({ ...candidate("release-0.1.62"), auto: true }), night: true })?.kind, "night");
+});

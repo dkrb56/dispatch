@@ -105,7 +105,7 @@ pub struct Options {
     /// Dispatch sends no ticket of New to triage and starts no work run for the project while it is
     /// on (ticket pause-tasks). A worker that runs finishes. Off at the start; a settings file without
     /// the field is off.
-    paused: bool,
+    pub(crate) paused: bool,
 }
 
 // A settings file of an older version has a field for answers in the triage chat. Serde drops a
@@ -271,7 +271,7 @@ impl Project {
         Some(parent.join(format!("{}-reports", name.to_string_lossy())))
     }
 
-    fn briefs(&self) -> PathBuf {
+    pub(crate) fn briefs(&self) -> PathBuf {
         self.reports.join("briefs")
     }
 
@@ -428,6 +428,16 @@ impl Project {
         self.reports.join(format!("{ticket}.taken"))
     }
 
+    /// The actions of the Actions panel of the project (ticket project-actions).
+    pub(crate) fn actions_file(&self) -> PathBuf {
+        self.reports.join("actions.json")
+    }
+
+    /// The runs of the actions, one JSON file per run (ticket project-actions).
+    pub(crate) fn actions_dir(&self) -> PathBuf {
+        self.reports.join("actions")
+    }
+
     /// The checks of the list of the project, in the order of the file. Empty without the file.
     fn checks(&self) -> Vec<Check> {
         parse_checks(&fs::read_to_string(self.checks_file()).unwrap_or_default())
@@ -480,7 +490,7 @@ impl Project {
     }
 
     /// The settings of the project. Without the file, each setting is on.
-    fn options(&self) -> Options {
+    pub(crate) fn options(&self) -> Options {
         fs::read_to_string(self.options_file())
             .ok()
             .and_then(|text| serde_json::from_str(text.trim_start_matches('\u{feff}')).ok())
@@ -2804,6 +2814,22 @@ pub fn task_take_done(cwd: String, id: String) -> Result<u64, String> {
     Ok(now)
 }
 
+/// How the task of a ticket ended, for the Claude step of an action (ticket project-actions):
+/// `Some(true)` when its report says done after the report check (also a task taken as done),
+/// `Some(false)` when it says failed or the task was stopped, `None` while it runs. Reads the task list.
+pub(crate) fn task_end(cwd: &str, ticket: &str) -> Result<Option<bool>, String> {
+    let list = task_list(cwd.to_string())?;
+    let Some(task) = list.tasks.iter().find(|task| task.name == ticket) else { return Ok(None) };
+    if task.state == "stopped" {
+        return Ok(Some(false));
+    }
+    Ok(match task.header.as_ref().map(|header| header.state.as_str()) {
+        Some("done") => Some(true),
+        Some("failed") => Some(false),
+        _ => None,
+    })
+}
+
 /// One task of a project, from the files of the reports folder. The frontend joins it with the
 /// workers of the same name.
 #[derive(Serialize)]
@@ -2867,6 +2893,9 @@ pub struct TaskInfo {
     /// The checks of the project for this task, with the recommendation of the plan and the choice
     /// of the user (ticket task-checks). Empty without the list of the project.
     checks: Vec<CheckInfo>,
+    /// A running action run names this ticket in a Claude step with "Approve the plan by itself"
+    /// (ticket project-actions): the driver window approves its plan without the project setting.
+    auto: bool,
 }
 
 /// The decision of the user to take a task as done (ticket take-as-done): the time of the click
@@ -3168,6 +3197,8 @@ pub struct TaskList {
     merging: Option<String>,
     /// The gate command of the merge step, for the Merge card; empty without one.
     gate: String,
+    /// The actions of the Actions panel and their last runs (ticket project-actions).
+    actions: crate::core::actions::ActionList,
 }
 
 /// The files with an extension in a folder: the name without the extension, the path, the entry.
@@ -3223,7 +3254,7 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
 }
 
 /// The lock of the task reads of a project folder: a second read waits until the first one has ended.
-fn read_lock(root: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
+pub(crate) fn read_lock(root: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
     type Locks = std::sync::Mutex<std::collections::HashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>>;
     static LOCKS: std::sync::OnceLock<Locks> = std::sync::OnceLock::new();
     let mut locks = LOCKS.get_or_init(Default::default).lock().unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -3264,6 +3295,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             taken: None,
             log: None,
             checks: Vec::new(),
+            auto: false,
         });
         tasks.len() - 1
     }
@@ -3363,6 +3395,13 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             task.about = ticket.title.clone();
         }
     }
+    // The actions and their runs (ticket project-actions): a command step whose process ended with
+    // Dispatch is marked failed, and a task of a running Claude step with "Approve the plan by
+    // itself" gets `auto`.
+    let actions = crate::core::actions::list(project);
+    for task in tasks.iter_mut() {
+        task.auto = actions.approves(&task.name);
+    }
     // The log of each task with a plan (ticket task-log): a first one with the plan, a new one when
     // the report or the plan is newer than the log, before the commit of the task files.
     for task in tasks.iter_mut() {
@@ -3430,7 +3469,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     };
     let setup = setup_time(&project);
     let options = project.options();
-    Ok((TaskList { tasks, dirty, auto_approve: options.auto_approve, paused: options.paused, setup, tickets, merging, gate: project.merge_gate() }, moved))
+    Ok((TaskList { tasks, dirty, auto_approve: options.auto_approve, paused: options.paused, setup, tickets, merging, gate: project.merge_gate(), actions }, moved))
 }
 
 /// At most this many open tasks get their own part in the hand-off; the rest are counted.
@@ -3536,7 +3575,7 @@ pub fn triage_handoff(cwd: String, live: Vec<String>, queued: Vec<String>, token
 }
 
 /// A ticket id is a file name and an argument of the script. Nothing else is accepted.
-fn check_ticket(id: &str) -> Result<(), String> {
+pub(crate) fn check_ticket(id: &str) -> Result<(), String> {
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
         return Err(format!("invalid ticket id: {id}"));
     }
@@ -3545,7 +3584,7 @@ fn check_ticket(id: &str) -> Result<(), String> {
 
 /// Runs the worker script with a verb and its arguments. The script's exit code 2 is a refusal,
 /// and its reason on stderr is the error; the output of claude is the result.
-fn run_script(project: &Project, args: &[&str]) -> Result<String, String> {
+pub(crate) fn run_script(project: &Project, args: &[&str]) -> Result<String, String> {
     // The merge verb refuses a caller with this variable: Claude Code sets it in its sessions. Dispatch
     // is no such session, also when a session started it (`session_variables` removes it there too).
     let output = Command::new("powershell")
@@ -3824,7 +3863,7 @@ pub fn set_paused(cwd: String, on: bool) -> Result<bool, String> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -3844,7 +3883,7 @@ mod tests {
     }
 
     /// Removes the scratch folders of a test that passed. A failed test keeps them for a look.
-    fn clean(project: &Project) {
+    pub(crate) fn clean(project: &Project) {
         let _ = fs::remove_dir_all(project.root.parent().unwrap());
     }
 
@@ -4966,6 +5005,7 @@ evidence: no
             taken: None,
             log: None,
             checks: Vec::new(),
+            auto: false,
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };
@@ -5610,8 +5650,24 @@ if (args[0] === 'agents') {
         clean(&project);
     }
 
+    /// A git scratch project after Apply, with the fake `claude` next to it (ticket
+    /// project-actions): the tests of actions.rs start their plan runs through the script with it.
+    pub(crate) fn action_scratch(name: &str) -> (Project, PathBuf) {
+        let project = git_scratch(name);
+        apply(&project, &[]).unwrap();
+        let fake = fake_claude(project.root.parent().unwrap());
+        (project, fake)
+    }
+
+    /// Runs the script with the fake `claude` as `run_script` of the module does: exit code 0 gives
+    /// the output, another code the error (ticket project-actions).
+    pub(crate) fn fake_script(project: &Project, fake: &Path, args: &[&str]) -> Result<String, String> {
+        let (code, text) = run_script(project, fake, "done", args);
+        if code == 0 { Ok(text) } else { Err(text) }
+    }
+
     /// Makes a git repository of a scratch project, with an identity and no global ignore file.
-    fn git_scratch(name: &str) -> Project {
+    pub(crate) fn git_scratch(name: &str) -> Project {
         let mut project = scratch(name);
         let root = project.root.clone();
         for args in [

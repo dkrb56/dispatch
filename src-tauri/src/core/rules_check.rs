@@ -238,7 +238,7 @@ fn check_with(items: Vec<RuleItem>, description: &str, scope: Scope, model: Stri
 
 /// Ends a process and its children: `cmd` starts `claude`, and a kill of `cmd` alone leaves it.
 #[cfg(windows)]
-fn end_tree(pid: u32) {
+pub(crate) fn end_tree(pid: u32) {
     let _ = Command::new("taskkill")
         .args(["/T", "/F", "/PID", &pid.to_string()])
         .stdin(Stdio::null())
@@ -250,7 +250,7 @@ fn end_tree(pid: u32) {
 
 /// Ends a process and its children: `claude` can start programs of its own.
 #[cfg(not(windows))]
-fn end_tree(pid: u32) {
+pub(crate) fn end_tree(pid: u32) {
     let parents = crate::core::info::parent_pids();
     let mut pids: Vec<String> =
         parents.keys().filter(|&&other| crate::core::info::is_descendant(&parents, other, pid)).map(u32::to_string).collect();

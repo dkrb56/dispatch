@@ -91,6 +91,8 @@ export interface StartCandidate {
   planTime: number | null;
   /** The time of the plan file at the earlier automatic try, if one was made. */
   tried: number | undefined;
+  /** A running action approves this plan by itself (ticket project-actions). */
+  auto?: boolean;
 }
 
 /** The facts of one project at one poll. */
@@ -110,13 +112,13 @@ export type StartKind = "queued" | "night" | "auto";
 
 /**
  * The one task to start at this poll, or null. Nothing starts while the project is busy. An
- * approval of the user that waited comes first; then, with the setting or night mode on, the first
- * ready plan without HOLD, not busy, and not tried before with the same plan file.
+ * approval of the user that waited comes first; then the first ready plan without HOLD, not busy,
+ * and not tried before with the same plan file, with the setting or night mode on, or of a task
+ * that a running action approves by itself (ticket project-actions).
  */
 export function chooseStart(facts: StartFacts): { task: string; kind: StartKind } | null {
   if (projectBusy(facts)) return null;
   if (facts.queued) return { task: facts.queued, kind: "queued" };
-  if (!facts.auto && !facts.night) return null;
-  const task = facts.tasks.find((task) => task.ready && !task.hold && !task.busy && task.planTime !== null && task.tried !== task.planTime);
+  const task = facts.tasks.find((task) => task.ready && !task.hold && !task.busy && task.planTime !== null && task.tried !== task.planTime && (facts.auto || facts.night || !!task.auto));
   return task ? { task: task.name, kind: facts.night ? "night" : "auto" } : null;
 }

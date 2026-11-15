@@ -600,6 +600,32 @@ pub fn ticket_add(cwd: String, text: String) -> Result<Ticket, String> {
     Ok(ticket)
 }
 
+/// Opens a ticket with a given id directly in In progress (ticket project-actions): the Claude step
+/// of an action is a task without the triage chat, so its ticket stands on the board and follows
+/// the task, and Dispatch does not send it to triage. Refused when a ticket or a task has the id.
+pub(crate) fn open_in_progress(project: &Project, id: &str, title: &str, text: &str) -> Result<Ticket, String> {
+    let tickets = list(project);
+    if taken_names(project, &tickets).contains(id) {
+        return Err(format!("the ticket {id} exists already"));
+    }
+    let at = now();
+    let ticket = Ticket {
+        id: id.to_string(),
+        title: title.to_string(),
+        kind: kind_of(text).to_string(),
+        summary: text.trim().to_string(),
+        status: IN_PROGRESS.to_string(),
+        order: None,
+        task: String::new(),
+        note: String::new(),
+        created: at,
+        updated: at,
+        renamed: false,
+    };
+    append(project, &[open_event(&ticket)])?;
+    Ok(ticket)
+}
+
 /// Changes the title (the user renamed it), the type, the task or the end word of a ticket.
 pub fn ticket_update(cwd: String, id: String, title: Option<String>, kind: Option<String>, task: Option<String>, note: Option<String>) -> Result<Ticket, String> {
     let project = Project::find(&cwd)?;

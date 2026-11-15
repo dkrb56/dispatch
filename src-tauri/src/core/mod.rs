@@ -5,6 +5,7 @@
 //! (`lib.rs`, `commands.rs`) is that program; the headless host of docs/remote-client.md
 //! (task 3, `remote-host`) is the second one.
 
+pub mod actions;
 pub mod chats;
 pub mod context;
 pub mod flow;

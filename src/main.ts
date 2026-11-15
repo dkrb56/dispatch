@@ -68,6 +68,7 @@ import { PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
+import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { mergedWords, outsideLine, refusalGoes } from "./merged";
 import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
@@ -1876,6 +1877,8 @@ interface TaskInfo {
   log?: FileEntry | null;
   /** The checks of the project for the task, with the recommendation of the plan and the choice of the user (ticket task-checks). Absent from an older host. */
   checks?: CheckInfo[];
+  /** A running action approves the plan of this task by itself (ticket project-actions). Absent from an older host. */
+  auto?: boolean;
 }
 
 /** One Bash command of a task with its result, from the transcripts (ticket task-evidence). */
@@ -1955,6 +1958,8 @@ interface TaskListReply {
   merging?: string | null;
   /** The gate command of the merge step; empty without one. Absent from an older host. */
   gate?: string;
+  /** The actions of the Actions panel and their last runs (ticket project-actions). Absent from an older host. */
+  actions?: ActionList;
 }
 
 /** The tasks of one project, from its last `task_list` reply. Each task carries it, so a click acts on its own project. */
@@ -1974,6 +1979,8 @@ interface ProjectTasks {
   merging: string | null;
   /** The gate command of the merge step; empty without one. */
   gate: string;
+  /** The actions of the Actions panel and their last runs (ticket project-actions). */
+  actions: ActionList;
 }
 
 /** The record of a project of a host from a reply of `task_list`. */
@@ -1989,6 +1996,7 @@ function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTa
     tickets: reply.tickets ?? [],
     merging: reply.merging ?? null,
     gate: reply.gate ?? "",
+    actions: reply.actions ?? EMPTY_ACTIONS,
   };
 }
 
@@ -2270,6 +2278,7 @@ function approvePlans(): void {
         busy: busyTasks.has(task.name),
         planTime: task.info?.plan?.modified ?? null,
         tried: autoApproved.get(task.name),
+        auto: !!task.info?.auto,
       })),
     });
     const task = choice ? tasks.find((task) => task.name === choice.task) : undefined;
@@ -2287,12 +2296,15 @@ function approvePlans(): void {
     } else {
       // The checks of the plan with their default choice go into the plan first (ticket task-checks).
       const checks = checksSentence(task.info.checks ?? [], checkChoice(task));
+      // A Claude step of an action with "Approve the plan by itself" (ticket project-actions).
+      const by = task.info.auto && !project.autoApprove ? "by the action in Dispatch" : "automatically in Dispatch";
       void leasedStart(task, async () => {
         if ((await writeDecisions(task, [])) === null) return false;
-        return taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name} approved automatically in Dispatch.${checks} The work run started.`);
+        return taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name} approved ${by}.${checks} The work run started.`);
       });
     }
   }
+  advanceActions();
 }
 
 /**
@@ -5044,6 +5056,386 @@ function initTickets(): void {
   });
 }
 
+// ---- The Actions panel (ticket project-actions) ---------------------------------------------------
+// One window for one project: the user's own buttons. An action has a name and steps; a step is a
+// command on the host of the project in its folder, or a Claude task through the pipeline. Run
+// starts the first step on the host; the window that drives the host moves the chain on
+// (`advanceActions`). The panel shows the last run of each action from the last task read.
+
+const actionsDialog = document.querySelector<HTMLDialogElement>("#actions")!;
+const actionsTitleEl = document.querySelector<HTMLElement>("#actions-title")!;
+const actionsPathEl = document.querySelector<HTMLElement>("#actions-path")!;
+const actionsErrorEl = document.querySelector<HTMLElement>("#actions-error")!;
+const actionsListEl = document.querySelector<HTMLElement>("#actions-list")!;
+
+/** The project of the open panel, or null. */
+let actionsRef: ProjectRef | null = null;
+/** The error of the last action call of the panel; it shows at its top until the next call. */
+let actionsError = "";
+/** The action that the editor holds: a copy, saved only by Save. Null while the editor is closed. */
+let editingAction: { id: string | null; name: string; steps: Step[] } | null = null;
+/** The editor element of the open panel, kept across the renders of the list. */
+let actionsEditEl: HTMLElement | null = null;
+/** The action whose Delete waits for the second click, until this time. */
+let deleteArmed: { id: string; until: number } | null = null;
+/** The last list that the panel drew, as JSON: a poll without a change draws nothing. */
+let actionsShown = "";
+/** The runs whose `action_step` call runs now, by project key and run id. */
+const busyRuns = new Set<string>();
+/** The run state at a refused `action_step`, by project key and run id: the same state is not tried again. */
+const refusedRuns = new Map<string, string>();
+
+/** Runs an action command for a project (by its key), reads the list again and renders. True on success. */
+async function actionCall(project: string, command: string, args: Record<string, unknown>): Promise<boolean> {
+  const { host, cwd } = projectCwd(project);
+  actionsError = "";
+  try {
+    await call(host, command, { cwd, ...args });
+    await readProjectTasks(host, cwd);
+    return true;
+  } catch (error) {
+    actionsError = String(error);
+    console.error(`${command} failed`, error);
+    return false;
+  } finally {
+    actionsShown = "";
+    renderChats();
+  }
+}
+
+/**
+ * Moves the runs of the actions on (user decision 1): only the window that drives the host calls
+ * `action_step` when a step waits or the task of a Claude step ended; the host checks the files and
+ * refuses a double start. A refused call waits until the run changes.
+ */
+function advanceActions(): void {
+  for (const project of projectTasks.values()) {
+    if (!driverOf(project.host)) continue;
+    const key = projectKey(project.host, project.cwd);
+    const tasks: StepTask[] = project.infos.map((info) => ({ name: info.name, state: info.state, header: info.header }));
+    for (const run of project.actions.runs) {
+      const runKey = `${key}\n${run.id}`;
+      if (busyRuns.has(runKey) || !runReady(run, tasks, project.paused)) continue;
+      const step = run.steps[run.step];
+      const task = tasks.find((one) => one.name === step?.ticket);
+      const signature = JSON.stringify([run.state, run.step, step?.state, task?.state, task?.header?.state]);
+      if (refusedRuns.get(runKey) === signature) continue;
+      busyRuns.add(runKey);
+      call<ActionRun>(project.host, "action_step", { cwd: project.cwd, run: run.id })
+        .then(() => {
+          refusedRuns.delete(runKey);
+          return readProjectTasks(project.host, project.cwd);
+        })
+        .catch((error) => {
+          refusedRuns.set(runKey, signature);
+          console.warn("action_step refused", run.id, error);
+        })
+        .finally(() => {
+          busyRuns.delete(runKey);
+          actionsShown = "";
+          renderChats();
+        });
+    }
+  }
+}
+
+/** The text of the Actions button of each project: "Actions", or with the count of the runs that run or wait. */
+function showActionButtons(): void {
+  for (const button of document.querySelectorAll<HTMLButtonElement>(".project-actions")) {
+    const list = projectTasks.get(button.dataset.project ?? "")?.actions ?? EMPTY_ACTIONS;
+    const running = runningCount(list);
+    button.textContent = actionsButtonText(running);
+    button.title = `The Actions panel of this project: ${list.actions.length} action${list.actions.length === 1 ? "" : "s"}${running > 0 ? `, ${running} running` : ""}. Your own buttons for commands and Claude tasks.`;
+  }
+  if (actionsDialog.open) renderActions();
+}
+
+/** Opens the Actions panel of a project. */
+function openActions(ref: ProjectRef): void {
+  actionsRef = ref;
+  actionsError = "";
+  editingAction = null;
+  actionsEditEl?.remove();
+  actionsEditEl = null;
+  deleteArmed = null;
+  actionsShown = "";
+  if (!actionsDialog.open) actionsDialog.showModal();
+  renderActions();
+  // A project that no view reads gets its list now; the task poll reads it while the panel shows.
+  if (!projectTasks.has(refKey(ref))) {
+    readProjectTasks(ref.host, ref.root)
+      .then(() => {
+        actionsShown = "";
+        renderActions();
+      })
+      .catch((error) => {
+        actionsError = `The actions of this project could not be read: ${error}`;
+        actionsShown = "";
+        renderActions();
+      });
+  }
+}
+
+/** Draws the panel: the header, the error, the editor and one card per action. */
+function renderActions(): void {
+  if (!actionsRef) return;
+  const key = refKey(actionsRef);
+  const list = projectTasks.get(key)?.actions ?? EMPTY_ACTIONS;
+  const shown = JSON.stringify([key, list, actionsError, deleteArmed, editingAction !== null]);
+  if (shown === actionsShown) return;
+  actionsShown = shown;
+  actionsTitleEl.textContent = `Actions · ${projectName(actionsRef)}`;
+  actionsPathEl.textContent = actionsRef.root;
+  const error = actionsError || list.error;
+  actionsErrorEl.hidden = !error;
+  actionsErrorEl.textContent = error;
+  if (editingAction && !actionsEditEl) {
+    actionsEditEl = actionEditor(key, list);
+    actionsListEl.before(actionsEditEl);
+  } else if (!editingAction && actionsEditEl) {
+    actionsEditEl.remove();
+    actionsEditEl = null;
+  }
+  const open = new Set([...actionsListEl.querySelectorAll<HTMLDetailsElement>("details[open]")].map((details) => details.dataset.run ?? ""));
+  actionsListEl.replaceChildren();
+  if (list.actions.length === 0 && !editingAction) {
+    actionsListEl.append(mapElement("p", "action-empty", "No action yet. New action makes a button for a command on this computer, a Claude task, or both in a row."));
+    return;
+  }
+  for (const action of list.actions) actionsListEl.append(actionCard(key, action, lastRun(list, action.id), open));
+}
+
+/** The card of one action: its name and steps, Run, Edit, Delete, and its last run. */
+function actionCard(key: string, action: Action, run: ActionRun | undefined, open: Set<string>): HTMLElement {
+  const card = mapElement("div", "action-card");
+  const head = mapElement("div", "action-head");
+  const name = mapElement("strong", "action-name", action.name);
+  const steps = mapElement("span", "action-steps", stepSummary(action.steps));
+  const busy = run?.state === "running" || run?.state === "held";
+  const runButton = ticketButton("Run", busy ? "This action runs now" : `Run ${action.name} now`, () => {
+    void actionCall(key, "action_run", { id: action.id });
+  }, busy);
+  runButton.classList.add("action-run-button");
+  const edit = ticketButton("Edit", `Change ${action.name}`, () => {
+    editingAction = { id: action.id, name: action.name, steps: action.steps.map((step) => ({ ...step })) };
+    actionsEditEl?.remove();
+    actionsEditEl = null;
+    actionsShown = "";
+    renderActions();
+  });
+  const armed = deleteArmed?.id === action.id && deleteArmed.until > Date.now();
+  const remove = ticketButton(armed ? "Delete?" : "Delete", armed ? "Click again to delete this action and its runs" : `Delete ${action.name}`, () => {
+    if (armed) {
+      deleteArmed = null;
+      void actionCall(key, "action_delete", { id: action.id });
+      return;
+    }
+    deleteArmed = { id: action.id, until: Date.now() + 4000 };
+    actionsShown = "";
+    renderActions();
+    setTimeout(() => {
+      actionsShown = "";
+      if (actionsDialog.open) renderActions();
+    }, 4100);
+  }, busy);
+  head.append(name, steps, runButton, edit, remove);
+  card.append(head);
+  const line = mapElement("div", "action-run");
+  const chip = mapElement("span", `action-chip ${run ? runLook(run) : ""}`, run ? run.state : "new");
+  line.append(chip, mapElement("span", "", lastRunText(run)));
+  if (run?.note) line.append(mapElement("span", "action-note", run.note));
+  card.append(line);
+  if (run) {
+    const details = mapElement("details", "action-detail");
+    details.dataset.run = run.id;
+    details.open = open.has(run.id) || run.state === "running" || run.state === "held" || run.state === "failed";
+    details.append(mapElement("summary", "", `Steps of the last run: ${runStateWord(run)}`));
+    const items = mapElement("ol", "action-step-list");
+    for (const step of run.steps) items.append(runStepItem(step));
+    details.append(items);
+    card.append(details);
+  }
+  return card;
+}
+
+/** The look of a run state: ok, wait or fail. */
+function runLook(run: ActionRun): string {
+  if (run.state === "done") return "ok";
+  if (run.state === "failed") return "fail";
+  return "wait";
+}
+
+/** One step of a run: its kind, its text or ticket, its state, and the output tail of a command. */
+function runStepItem(step: ActionRun["steps"][number]): HTMLElement {
+  const item = mapElement("li", `action-step ${step.state}`);
+  const what = step.kind === "claude" ? step.ticket : step.text;
+  const state = [step.state, step.exit !== null ? `exit ${step.exit}` : "", step.ended ? shortTime(step.ended) : ""].filter(Boolean).join(" · ");
+  item.append(mapElement("span", "action-step-kind", stepWord(step.kind)), mapElement("code", "", what), mapElement("span", "action-step-state", state));
+  if (step.note) item.append(mapElement("div", "action-note", step.note));
+  if (step.kind === "command" && step.output) item.append(mapElement("pre", "action-output", step.output));
+  return item;
+}
+
+/** The editor of a new or changed action: the name, the steps, the example Release, Save and Cancel. */
+function actionEditor(key: string, list: ActionList): HTMLElement {
+  const form = mapElement("div", "action-edit");
+  const draw = () => {
+    const editing = editingAction;
+    if (!editing) return;
+    form.replaceChildren();
+    form.append(mapElement("h3", "", editing.id ? `Change ${editing.name}` : "New action"));
+    const nameRow = mapElement("label", "action-row");
+    const nameBox = mapElement("input");
+    nameBox.type = "text";
+    nameBox.value = editing.name;
+    nameBox.placeholder = "Name of the button, for example Release";
+    nameBox.addEventListener("input", () => (editing.name = nameBox.value));
+    nameRow.append(mapElement("span", "", "Name"), nameBox);
+    form.append(nameRow);
+    for (const [at, step] of editing.steps.entries()) form.append(stepEditor(editing.steps, at, step, draw));
+    const add = mapElement("div", "action-tools");
+    add.append(
+      ticketButton("+ Command", "Add a step that runs a command on the computer of this project, in the project folder", () => {
+        editing.steps.push({ kind: "command", command: "" });
+        draw();
+      }),
+      ticketButton("+ Claude task", "Add a step that gives Claude a task through the pipeline: a ticket, a plan, a work run and a report", () => {
+        editing.steps.push({ kind: "claude", brief: "", ticket: "", auto: false });
+        draw();
+      }),
+      ticketButton("Release example", "Fill in the example Release: a release task that approves its plan by itself, then the tag and the push to GitHub. Nothing is saved until Save.", () => {
+        editing.name = RELEASE_EXAMPLE.name;
+        editing.steps = RELEASE_EXAMPLE.steps.map((step) => ({ ...step }));
+        draw();
+      }),
+    );
+    form.append(add);
+    const values = list.runs[0]?.values ?? {};
+    const hint = Object.keys(values).length > 0 ? ` At the last run, {next} was "${expandPlaceholders("{next}", values)}".` : "";
+    form.append(mapElement("p", "action-hint", `Placeholders: ${PLACEHOLDERS.join(" ")}. A run fills them once at the click.${hint}`));
+    const error = mapElement("p", "action-error");
+    error.hidden = true;
+    const save = ticketButton("Save", "Save this action", () => {
+      const id = editing.id ?? uniqueId(editing.name, list.actions.map((action) => action.id));
+      const action: Action = { id, name: editing.name.trim(), steps: editing.steps };
+      const problem = checkAction(action);
+      if (problem) {
+        error.hidden = false;
+        error.textContent = problem;
+        return;
+      }
+      void actionCall(key, "action_save", { action }).then((saved) => {
+        if (!saved) return;
+        editingAction = null;
+        actionsShown = "";
+        renderActions();
+      });
+    });
+    const cancel = ticketButton("Cancel", "Close the editor without saving", () => {
+      editingAction = null;
+      actionsShown = "";
+      renderActions();
+    });
+    const buttons = mapElement("div", "action-tools");
+    buttons.append(save, cancel);
+    form.append(error, buttons);
+  };
+  draw();
+  return form;
+}
+
+/** The fields of one step in the editor, with Up, Down and Remove. */
+function stepEditor(steps: Step[], at: number, step: Step, redraw: () => void): HTMLElement {
+  const row = mapElement("div", "action-step-edit");
+  const title = mapElement("div", "action-step-title");
+  title.append(mapElement("strong", "", `Step ${at + 1}: ${stepWord(step.kind)}`));
+  const move = (to: number) => {
+    if (to < 0 || to >= steps.length) return;
+    [steps[at], steps[to]] = [steps[to], steps[at]];
+    redraw();
+  };
+  title.append(
+    ticketButton("↑", "Move this step up", () => move(at - 1), at === 0),
+    ticketButton("↓", "Move this step down", () => move(at + 1), at === steps.length - 1),
+    ticketButton("Remove", "Remove this step", () => {
+      steps.splice(at, 1);
+      redraw();
+    }),
+  );
+  row.append(title);
+  if (step.kind === "command") {
+    const box = mapElement("input");
+    box.type = "text";
+    box.value = step.command;
+    box.placeholder = "One line, for example npm run build && npm test";
+    box.addEventListener("input", () => (step.command = box.value));
+    const limit = mapElement("input");
+    limit.type = "number";
+    limit.min = "1";
+    limit.max = "86400";
+    limit.value = step.limit === undefined ? "" : String(step.limit);
+    limit.placeholder = "3600";
+    limit.addEventListener("input", () => {
+      if (limit.value.trim() === "") delete step.limit;
+      else step.limit = Number(limit.value);
+    });
+    const commandRow = mapElement("label", "action-row");
+    commandRow.append(mapElement("span", "", "Command"), box);
+    const limitRow = mapElement("label", "action-row");
+    limitRow.append(mapElement("span", "", "Time limit (s)"), limit);
+    row.append(commandRow, limitRow);
+  } else {
+    const ticket = mapElement("input");
+    ticket.type = "text";
+    ticket.value = step.ticket;
+    ticket.placeholder = "Ticket id, for example release-{next}";
+    ticket.addEventListener("input", () => (step.ticket = ticket.value.trim()));
+    const brief = mapElement("textarea");
+    brief.rows = 6;
+    brief.value = step.brief;
+    brief.placeholder = "What Claude should do, in your words. It becomes the brief of the task.";
+    brief.addEventListener("input", () => (step.brief = brief.value));
+    const auto = mapElement("input");
+    auto.type = "checkbox";
+    auto.checked = step.auto;
+    auto.addEventListener("change", () => (step.auto = auto.checked));
+    const ticketRow = mapElement("label", "action-row");
+    ticketRow.append(mapElement("span", "", "Ticket"), ticket);
+    const briefRow = mapElement("label", "action-row");
+    briefRow.append(mapElement("span", "", "Brief"), brief);
+    const autoRow = mapElement("label", "action-check");
+    autoRow.title = "Dispatch approves the plan of this task without your click. A plan with a HOLD decision still waits for you.";
+    autoRow.append(auto, document.createTextNode(" Approve the plan by itself (a HOLD decision still waits for you)"));
+    row.append(ticketRow, briefRow, autoRow);
+  }
+  return row;
+}
+
+/** Connects the buttons of the panel. */
+function initActions(): void {
+  document.querySelector("#actions-close")!.addEventListener("click", () => actionsDialog.close());
+  document.querySelector("#actions-new")!.addEventListener("click", () => {
+    if (!actionsRef) return;
+    editingAction = { id: null, name: "", steps: [{ kind: "command", command: "" }] };
+    actionsEditEl?.remove();
+    actionsEditEl = null;
+    actionsShown = "";
+    renderActions();
+  });
+  actionsDialog.addEventListener("click", (event) => {
+    if (event.target === actionsDialog) actionsDialog.close();
+  });
+  actionsDialog.addEventListener("close", () => {
+    actionsRef = null;
+    editingAction = null;
+    actionsEditEl?.remove();
+    actionsEditEl = null;
+    deleteArmed = null;
+    actionsShown = "";
+    focusedPane()?.term.focus();
+  });
+}
+
 // ---------------------------------------------------------------------------------------------
 // The window Token usage (ticket token-usage): the button Tokens next to Tickets opens it for its
 // project; "All projects" shows every project with a workspace. It reads `token_report` per shown
@@ -5471,6 +5863,7 @@ function showTicketButtons(): void {
     button.title = `The tickets board of this project: ${countText(tickets)}. Dispatch sends the New tickets to triage one at a time, in their order.`;
   }
   showPauseButtons();
+  showActionButtons();
 }
 
 /** The Pause button of each project (ticket pause-tasks): its text, tooltip and pressed state from the task list. */
@@ -7433,7 +7826,7 @@ const FOLDER_ICON =
   '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" /></svg>';
 
 /**
- * The buttons of one project (topbar-projects): Tickets (ticket tickets), Chat (ticket auto-todo), Tokens (ticket token-usage), Pause, Rules, Setup, "N old" and the folder button. They
+ * The buttons of one project (topbar-projects): Tickets (ticket tickets), Chat (ticket auto-todo), Tokens (ticket token-usage), Actions (ticket project-actions), Pause, Rules, Setup, "N old" and the folder button. They
  * stand in the open group of the bar in Details and in the head of the column in Focus. Each acts on
  * this project, not on the focused terminal. "N old" is hidden while the project has no old session.
  */
@@ -7468,6 +7861,10 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   // The window Token usage (ticket token-usage) of this project.
   const tokensButton = tool("Tokens", `How many tokens ${name} used, when and by whom: the window Token usage`, () => openTokens(ref));
   tokensButton.classList.add("project-tokens");
+  // The Actions panel (ticket project-actions): `showActionButtons` sets the text.
+  const actions = tool("Actions", `The actions of ${name}: your own buttons for commands and Claude tasks`, () => openActions(ref));
+  actions.classList.add("project-actions");
+  actions.dataset.project = key;
   // Pause tasks (ticket pause-tasks): `showPauseButtons` sets the text and the pressed state.
   const pause = tool("Pause", "", () => void setPaused(ref, !projectPaused(key)));
   pause.classList.add("project-pause");
@@ -7489,7 +7886,7 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   folder.classList.add("project-folder");
   folder.setAttribute("aria-label", `Open the workspace of ${name}`);
   folder.innerHTML = FOLDER_ICON;
-  el.append(tickets, chat, tokensButton, pause, rules, setup, oldEl, folder);
+  el.append(tickets, chat, tokensButton, actions, pause, rules, setup, oldEl, folder);
   showOldButton(oldEl, key);
   showTicketButtons();
   markSetupButton(setup, key, name);
@@ -9318,6 +9715,7 @@ async function start(): Promise<void> {
   initRemoveProject();
   initTickets();
   initTokens();
+  initActions();
   void pollSide();
   // A click on the alert opens the first worker that waits.
   workerAlertEl.addEventListener("click", () => {

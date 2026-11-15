@@ -42,7 +42,7 @@ test("main.ts: setPaused writes the setting, tells triage, and at Resume starts 
   assert.match(head, /tellTriage\(key, pauseLine\(on\)\)/);
   assert.match(head, /if \(!on\) \{\s*approvePlans\(\);\s*void dispatchTickets\(\);/);
   assert.match(MAIN, /pause\.classList\.add\("project-pause"\)/);
-  assert.match(MAIN, /el\.append\(tickets, chat, tokensButton, pause, rules, setup, oldEl, folder\)/);
+  assert.match(MAIN, /el\.append\(tickets, chat, tokensButton, actions, pause, rules, setup, oldEl, folder\)/);
   assert.match(MAIN, /setAttribute\("aria-pressed", String\(paused\)\)/);
   assert.match(CSS, /\.project-tool\[aria-pressed="true"\]/);
   assert.match(PIPELINE, /paused: boolean;/);

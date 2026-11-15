@@ -185,6 +185,16 @@
       <p id="tickets-paused" hidden><span id="tickets-paused-text"></span> <button id="tickets-resume" title="Resume this project: Dispatch sends the next ticket and starts the next approved plan">Resume</button></p>
       <div id="tickets-columns"></div>
     </dialog>
+    <dialog id="actions" aria-labelledby="actions-title">
+      <header>
+        <h2 id="actions-title">Actions</h2>
+        <span id="actions-path"></span>
+        <button id="actions-new" title="Make a new button: a command on this computer, a Claude task, or both in a row">New action</button>
+        <button id="actions-close" title="Close (Esc)">&times;</button>
+      </header>
+      <p id="actions-error" hidden></p>
+      <div id="actions-list"></div>
+    </dialog>
     <dialog id="tokens" aria-labelledby="tokens-title">
       <header>
         <h2 id="tokens-title">Token usage</h2>
@@ -556,6 +566,27 @@
           </ul>
         </details>
 
+        <h3>Actions</h3>
+        <p class="tldr">Your own buttons for a project: a command, a Claude task, or both in a row.</p>
+        <ul>
+          <li><b>Actions</b> among the buttons of a project opens its panel. <b>New action</b> makes a button with a name and one or more steps.</li>
+          <li>A <b>command</b> step runs on the computer of the project, in the project folder. The panel shows its output and exit code. A <b>Claude task</b> step goes through the pipeline as a ticket: a plan, a work run, a report.</li>
+          <li><b>Approve the plan by itself</b> on a Claude step starts the work run without your click. A plan with a HOLD decision still waits for you.</li>
+          <li><b>Run</b> starts the first step. The next step starts when a step ends well; the chain stops at the first step that fails.</li>
+        </ul>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li><b>The files.</b> The actions are in <code>.dispatch/actions.json</code> of the project, each run in <code>.dispatch/actions/</code>, so every window and the host show the same buttons. Each card shows the last run with its time and result; "Steps of the last run" shows each step, the ticket of a Claude task, and the last 200 lines of the output of a command.</li>
+            <li><b>Placeholders.</b> A run fills <code>{date}</code> (today, UTC), <code>{last_tag}</code> (the last git tag), <code>{next}</code> (that tag with its last number plus one), <code>{commits}</code> (the commits since that tag) and <code>{project}</code> (the project folder) once at the click, in the briefs, the ticket ids and the commands. A placeholder in a command is pasted as text into the command line.</li>
+            <li><b>A Claude task</b> gets the ticket id of its step, In progress on the tickets board, and a brief whose first line says that Dispatch wrote it from the action; the triage chat does not see it. A ticket id that a ticket or a task has already fails the run. The step ends when the report says done (also after Take as done) or failed, or when you stop the task.</li>
+            <li><b>Commands.</b> One line each; join commands with <code>&amp;&amp;</code>. Windows runs it with <code>cmd.exe</code>. A command stops after its time limit (one hour unless the step says other). A command runs only at your click, never at a start or on a timer. A command that ran while Dispatch ended shows as failed.</li>
+            <li><b>Pause.</b> A paused project holds the Claude steps: the run says "held: the project is paused" and goes on at Resume. A command step runs at your click also in a paused project.</li>
+            <li><b>The window that drives the host</b> moves the chain on, as it approves plans. A push to GitHub happens only in an action that you click and whose command names it.</li>
+            <li><b>Release example</b> in the editor fills in a Release: a Claude task <code>release-{next}</code> that sets the version and writes the changelog entry, approved by itself, then the command <code>git tag v{next} &amp;&amp; git push origin main v{next}</code>. Check the texts before Save; nothing exists until then.</li>
+          </ul>
+        </details>
+
         <h3>Night mode</h3>
         <p class="tldr">The work goes on while you are away.</p>
         <ul>
@@ -680,7 +711,7 @@
         <p class="tldr">The rest of the buttons.</p>
         <ul>
           <li><b>The four icons</b> split the terminal right or down, close it, and show or hide the side panels.</li>
-          <li><b>The buttons of a project.</b> <b>Tickets</b>, <b>Rules</b>, <b>Setup</b>, <b>N old</b> and the folder button act on that project.</li>
+          <li><b>The buttons of a project.</b> <b>Tickets</b>, <b>Actions</b>, <b>Rules</b>, <b>Setup</b>, <b>N old</b> and the folder button act on that project.</li>
           <li><b>A pulsing Setup button</b> means that the project misses setup steps. Its tooltip names them. A click calms the pulse to a still mark; Apply in the Setup pipeline window makes the mark go.</li>
           <li><b>Rules</b> shows all the rules that Claude Code gets in the project. <b>Analyse rules</b> finds old or bad rules.</li>
           <li><b>Update to …</b> shows when a new version is ready. Click it to install the update.</li>
@@ -693,7 +724,7 @@
         <details class="help-more">
           <summary>Details</summary>
           <ul>
-            <li>In Details the buttons of a project stand in the group of the current project in the bar; in Focus in the head of each column. <b>Tickets</b> opens the tickets board. <b>Setup</b> opens the Setup pipeline window. <b>N old</b> shows only when the project has old sessions. The folder button opens the workspace; a project that is not set up shows the Setup pipeline window first.</li>
+            <li>In Details the buttons of a project stand in the group of the current project in the bar; in Focus in the head of each column. <b>Tickets</b> opens the tickets board. <b>Actions</b> opens the Actions panel. <b>Setup</b> opens the Setup pipeline window. <b>N old</b> shows only when the project has old sessions. The folder button opens the workspace; a project that is not set up shows the Setup pipeline window first.</li>
             <li>In the Map and the Overview the right side of the top bar keeps <b>Rules</b>, <b>Setup pipeline</b> and <b>N old sessions</b>. Rules and Setup pipeline act on the project of the focused terminal there, and N old sessions shows the old sessions of all projects.</li>
             <li><b>Copy all</b> puts the rules into the clipboard as text. The three lists left of <b>Analyse rules</b> set the time limit of the check (3 to 30 minutes), the model and the effort. The Setup pipeline window uses the same values. While a check runs, the line above the findings shows the time that passed and the limit.</li>
             <li>Each finding has a link with the name of its file; a click opens the file in the viewer.</li>

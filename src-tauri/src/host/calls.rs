@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use dispatch_lib::core::{chats, context, flow, info, pipeline, pty, rules, rules_check, status, store, tickets, tokens, Core};
+use dispatch_lib::core::{actions, chats, context, flow, info, pipeline, pty, rules, rules_check, status, store, tickets, tokens, Core};
 
 use crate::clients::{Clients, Spawn};
 
@@ -148,6 +148,10 @@ pub fn run(
         "task_reply" => json(pipeline::task_reply(a.req("cwd")?, a.req("id")?, a.req("text")?)?),
         "task_stop" => json(pipeline::task_stop(a.req("cwd")?, a.req("id")?)?),
         "task_merge" => json(pipeline::task_merge(a.req("cwd")?, a.req("id")?)?),
+        "action_save" => json(actions::action_save(a.req("cwd")?, a.req("action")?)?),
+        "action_delete" => json(actions::action_delete(a.req("cwd")?, a.req("id")?)?),
+        "action_run" => json(actions::action_run(a.req("cwd")?, a.req("id")?)?),
+        "action_step" => json(actions::action_step(a.req("cwd")?, a.req("run")?)?),
         "triage_handoff" => {
             json(pipeline::triage_handoff(a.req("cwd")?, a.req("live")?, a.req("queued")?, a.req("tokens")?)?)
         }

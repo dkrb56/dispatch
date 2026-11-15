@@ -9,6 +9,7 @@ use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, State};
 
 use crate::core::tickets::{self, Ticket};
+use crate::core::actions::{self, Action, ActionList, ActionRun};
 use crate::core::chats::{self, Chat, ChatView, Worker};
 use crate::core::context::{self, ContextUsage};
 use crate::core::flow::{self, FlowFile};
@@ -271,6 +272,26 @@ pub fn task_stop(cwd: String, id: String) -> Result<String, String> {
 #[tauri::command(async)]
 pub fn task_merge(cwd: String, id: String) -> Result<String, String> {
     pipeline::task_merge(cwd, id)
+}
+
+#[tauri::command(async)]
+pub fn action_save(cwd: String, action: Action) -> Result<ActionList, String> {
+    actions::action_save(cwd, action)
+}
+
+#[tauri::command(async)]
+pub fn action_delete(cwd: String, id: String) -> Result<ActionList, String> {
+    actions::action_delete(cwd, id)
+}
+
+#[tauri::command(async)]
+pub fn action_run(cwd: String, id: String) -> Result<ActionRun, String> {
+    actions::action_run(cwd, id)
+}
+
+#[tauri::command(async)]
+pub fn action_step(cwd: String, run: String) -> Result<ActionRun, String> {
+    actions::action_step(cwd, run)
 }
 
 #[tauri::command(async)]
