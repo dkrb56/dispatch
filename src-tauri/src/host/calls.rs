@@ -143,6 +143,7 @@ pub fn run(
         "task_approve" => json(pipeline::task_approve(a.req("cwd")?, a.req("id")?)?),
         "task_decide" => json(pipeline::task_decide(a.req("cwd")?, a.req("id")?, a.req("text")?)?),
         "task_checks" => json(pipeline::task_checks(a.req("cwd")?, a.req("id")?, a.req("names")?)?),
+        "task_take_done" => json(pipeline::task_take_done(a.req("cwd")?, a.req("id")?)?),
         "task_reject" => json(pipeline::task_reject(a.req("cwd")?, a.req("id")?, a.req("reason")?)?),
         "task_reply" => json(pipeline::task_reply(a.req("cwd")?, a.req("id")?, a.req("text")?)?),
         "task_stop" => json(pipeline::task_stop(a.req("cwd")?, a.req("id")?)?),

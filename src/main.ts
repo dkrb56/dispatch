@@ -1866,6 +1866,12 @@ interface TaskInfo {
    * report-check). Such a report has the header state `working`, and `did` gives the reason. Absent from an older host.
    */
   unverified?: string[];
+  /**
+   * The user took the task as done although the report check sent it back (ticket take-as-done):
+   * the time in milliseconds and the reason of the check. The header then says `done` and
+   * `unverified` keeps the claims. Null or absent else, and absent from an older host.
+   */
+  taken?: { at: number; reason: string } | null;
   /** The log of the task in `.dispatch/logs` (ticket task-log); null or absent without one. */
   log?: FileEntry | null;
   /** The checks of the project for the task, with the recommendation of the plan and the choice of the user (ticket task-checks). Absent from an older host. */
@@ -4475,6 +4481,37 @@ function permissionCard(task: Task): HTMLElement {
 }
 
 /**
+ * The card of a done report that the report check sent back (ticket take-as-done): the reason, the
+ * claims, and one button that closes the task by hand (user decision 1: one click).
+ */
+function takeDoneCard(task: Task): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "task-card";
+  const title = document.createElement("div");
+  title.className = "card-title";
+  title.textContent = "Report not verified";
+  const text = document.createElement("div");
+  text.className = "card-question";
+  text.textContent = [task.info?.did ?? "", ...(task.info?.unverified ?? []).map((claim) => `No command: ${claim}`)].filter(Boolean).join("\n");
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const button = document.createElement("button");
+  button.className = "primary";
+  button.textContent = "Take as done";
+  button.title = "Close the task by hand: it shows as done and its ticket goes to Done. The report and the worker stay as they are.";
+  button.disabled = busyTasks.has(task.name);
+  button.addEventListener("click", () => {
+    const line = `Task ${task.name} taken as done in Dispatch; its report check found claims without a command.`;
+    void taskAction(task, "task_take_done", { id: task.name }, line);
+  });
+  actions.append(button);
+  card.append(title, text, actions);
+  const error = actionError(task);
+  if (error) card.append(error);
+  return card;
+}
+
+/**
  * The card of a report that asks again what the user answered (ticket answered-question-repeat):
  * each question with the answer of the user, and three buttons (decision 3 of the plan). Continue
  * tells the worker to go on, Send the answer again sends the first reply word for word, Stop ends
@@ -4780,6 +4817,7 @@ function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"
   if (task.info?.state === "stopped") return { kind: "failed", text: "stopped" };
   if (!task.info?.report && task.workers.some((worker) => worker.state === "failed")) return { kind: "failed", text: "failed" };
   if (reportUnverified(task)) return { kind: "waits", text: `report not verified · ${unverifiedText(task.info?.unverified ?? [], "status")}` };
+  if (task.info?.taken) return { kind: "done", text: "done · taken as done" };
   const state = task.info?.header?.state ?? (task.info?.report ? "done" : task.info?.plan ? `plan ${task.info.state || "written"}` : (task.workers[0]?.state ?? ""));
   return { kind: /fail|stop/.test(state) ? "failed" : "done", text: state || "done" };
 }
@@ -5938,6 +5976,11 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
       if (reportUnverified(task)) {
         const claims = info.unverified ?? [];
         addUnverifiedChip(report, unverifiedText(claims, "chip"), [info.did, ...claims.map((claim) => `No command: ${claim}`)].join("\n"));
+      } else if (info.taken) {
+        // The user took the task as done (ticket take-as-done): the chip keeps the count and says so.
+        const claims = info.unverified ?? [];
+        const title = [`You took the task as done on ${chatTime(info.taken.at)}.`, info.taken.reason, ...claims.map((claim) => `No command: ${claim}`)];
+        addUnverifiedChip(report, `${unverifiedText(claims, "chip")} · taken as done`, title.join("\n"));
       }
       body.append(report);
     }
@@ -5959,6 +6002,8 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   else if (questions.length > 0) made.append(questionCard(task, questions));
   else if (permissionWaits(task)) made.append(permissionCard(task));
   if (mergeWaits(task)) made.append(mergeCard(task));
+  // A running reply rewrites the report, so the button waits for the end of the worker (ticket take-as-done).
+  if (reportUnverified(task) && !task.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) made.append(takeDoneCard(task));
   return made;
 }
 

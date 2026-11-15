@@ -75,6 +75,7 @@ pub fn run() {
             commands::task_approve,
             commands::task_decide,
             commands::task_checks,
+            commands::task_take_done,
             commands::task_reject,
             commands::task_reply,
             commands::task_stop,

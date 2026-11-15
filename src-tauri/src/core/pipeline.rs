@@ -422,6 +422,12 @@ impl Project {
         self.reports.join(format!("{ticket}.checks"))
     }
 
+    /// The decision of the user to take a task as done that the report check sent back (ticket
+    /// take-as-done): one line, `taken: <millis> <iso time>`.
+    fn taken_file(&self, ticket: &str) -> PathBuf {
+        self.reports.join(format!("{ticket}.taken"))
+    }
+
     /// The checks of the list of the project, in the order of the file. Empty without the file.
     fn checks(&self) -> Vec<Check> {
         parse_checks(&fs::read_to_string(self.checks_file()).unwrap_or_default())
@@ -2284,6 +2290,23 @@ fn check_report(text: &str, evidence: &[crate::core::flow::Evidence], has_transc
     Some((format!("The report says done, but {claims} no command of the transcript."), unverified))
 }
 
+/// Applies the result of `check_report` to a task (ticket report-check) with the content of its
+/// taken file (ticket take-as-done). Without a taken file a sent-back report gets the header
+/// `working` and its reason in `did`. With one the header stays `done`, `did` keeps the gist, and
+/// the result gives the time and the reason. Gives the claims and the taken note.
+fn apply_report_check(header: &mut Option<ReportHeader>, did: &mut String, check: Option<(String, Vec<String>)>, taken: Option<&str>) -> (Vec<String>, Option<TakenInfo>) {
+    let Some((reason, unverified)) = check else { return (Vec::new(), None) };
+    if let Some(taken) = taken {
+        let at = taken.trim().strip_prefix("taken:").and_then(|rest| rest.split_whitespace().next()).and_then(|number| number.parse().ok()).unwrap_or(0);
+        return (unverified, Some(TakenInfo { at, reason }));
+    }
+    if let Some(header) = header.as_mut() {
+        header.state = "working".to_string();
+    }
+    *did = reason;
+    (unverified, None)
+}
+
 /// The lines that the task card shows for a plan, and whether a decision of the plan is `HOLD:`.
 /// The lines come from the section `Summary`; a plan without it gives its `Goal`; a plan without
 /// both gives its first lines. At most `SUMMARY_LINES` lines.
@@ -2765,6 +2788,22 @@ pub fn task_checks(cwd: String, id: String, names: Vec<String>) -> Result<u64, S
     Ok(file_entry(&path).map_or(0, |entry| entry.modified))
 }
 
+/// Takes a done task as done although the report check sent it back (ticket take-as-done): writes
+/// `<ticket>.taken` with the time. The report file does not change. Refuses without a report whose
+/// header says `done`. Gives the time in milliseconds.
+pub fn task_take_done(cwd: String, id: String) -> Result<u64, String> {
+    check_ticket(&id)?;
+    let project = Project::find(&cwd)?;
+    let path = project.reports.join(format!("{id}.md"));
+    let text = fs::read_to_string(&path).map_err(|error| format!("no report at {}: {error}", path.display()))?;
+    if parse_report(&text).0.is_none_or(|header| header.state != "done") {
+        return Err(format!("the report of {id} does not say done"));
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
+    write_file(&project.taken_file(&id), &format!("taken: {now} {}\n", crate::core::tickets::iso(now)))?;
+    Ok(now)
+}
+
 /// One task of a project, from the files of the reports folder. The frontend joins it with the
 /// workers of the same name.
 #[derive(Serialize)]
@@ -2820,11 +2859,23 @@ pub struct TaskInfo {
     /// (ticket report-check). With a claim here, or without a Verification section, the header
     /// says `working` and `did` gives the reason. Empty when the report passes or is not checked.
     unverified: Vec<String>,
+    /// The user took the task as done although the report check sent it back (ticket
+    /// take-as-done): the header then says `done` and `unverified` keeps the claims. None else.
+    taken: Option<TakenInfo>,
     /// The log of the task in `.dispatch/logs` (ticket task-log), when it exists.
     log: Option<FileEntry>,
     /// The checks of the project for this task, with the recommendation of the plan and the choice
     /// of the user (ticket task-checks). Empty without the list of the project.
     checks: Vec<CheckInfo>,
+}
+
+/// The decision of the user to take a task as done (ticket take-as-done): the time of the click
+/// in milliseconds and the reason of the report check.
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TakenInfo {
+    at: u64,
+    reason: String,
 }
 
 /// The branch of a task (ticket task-branches): from its branch file and from git.
@@ -3210,6 +3261,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             run_tokens: Vec::new(),
             evidence: Vec::new(),
             unverified: Vec::new(),
+            taken: None,
             log: None,
             checks: Vec::new(),
         });
@@ -3267,13 +3319,9 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         let chosen = chosen_checks(&task.checks);
         if task.header.as_ref().is_some_and(|header| header.state == "done") && (transcript || !chosen.is_empty()) {
             let text = fs::read_to_string(project.reports.join(format!("{}.md", task.name))).unwrap_or_default();
-            if let Some((reason, unverified)) = check_report(&text, &task.evidence, transcript, &chosen) {
-                if let Some(header) = task.header.as_mut() {
-                    header.state = "working".to_string();
-                }
-                task.did = reason;
-                task.unverified = unverified;
-            }
+            let taken = fs::read_to_string(project.taken_file(&task.name)).ok();
+            let check = check_report(&text, &task.evidence, transcript, &chosen);
+            (task.unverified, task.taken) = apply_report_check(&mut task.header, &mut task.did, check, taken.as_deref());
         }
     }
     // A brief alone makes no task; a task that exists gets its brief. The title of the brief is
@@ -4545,6 +4593,31 @@ mod tests {
     }
 
     #[test]
+    fn a_taken_file_keeps_a_sent_back_report_done() {
+        let evidence = [bash("cargo test --lib")];
+        let report = new_report("- `cargo test --lib`: ok.\n- `npm run build`: exit code 0.\n");
+        let reason = "The report says done, but 1 Verification claim matches no command of the transcript.";
+        let run = |text: &str, taken: Option<&str>| {
+            let mut header = parse_report(text).0;
+            let mut did = report_gist(text);
+            let (unverified, note) = apply_report_check(&mut header, &mut did, check_report(text, &evidence, true, &[]), taken);
+            (header.unwrap().state, did, unverified, note)
+        };
+        // Without a taken file: working and the reason in did, so the card shows the button.
+        assert_eq!(run(&report, None), ("working".to_string(), reason.to_string(), vec!["npm run build".to_string()], None));
+        // With a taken file: done, the gist stays, the claim stays, the note holds the time and the reason.
+        let note = TakenInfo { at: 1763200000000, reason: reason.to_string() };
+        assert_eq!(run(&report, Some("taken: 1763200000000 2025-11-15T10:26:40Z\n")), ("done".to_string(), report_gist(&report), vec!["npm run build".to_string()], Some(note)));
+        // A file without a number counts as taken at time 0.
+        assert_eq!(run(&report, Some("")).3.map(|note| note.at), Some(0));
+        // A report that passes, or a failed report, gets no change from a taken file.
+        let passing = new_report("- `cargo test --lib`: ok.\n");
+        assert_eq!(run(&passing, Some("taken: 5")), ("done".to_string(), report_gist(&passing), Vec::new(), None));
+        let failed = report.replace("state: done", "state: failed");
+        assert_eq!(run(&failed, Some("taken: 5")), ("failed".to_string(), report_gist(&failed), Vec::new(), None));
+    }
+
+    #[test]
     fn a_done_report_whose_claims_all_match_stays_done() {
         let evidence = [bash("cargo test --lib"), bash("npm run build"), bash("git status --porcelain")];
         let report = new_report("- `cargo test --lib`: ok.\n- `npm run build`: exit code 0.\n  More text about the build.\n");
@@ -4890,6 +4963,7 @@ evidence: no
             run_tokens: Vec::new(),
             evidence: Vec::new(),
             unverified: Vec::new(),
+            taken: None,
             log: None,
             checks: Vec::new(),
         };

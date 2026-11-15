@@ -249,6 +249,11 @@ pub fn task_checks(cwd: String, id: String, names: Vec<String>) -> Result<u64, S
 }
 
 #[tauri::command(async)]
+pub fn task_take_done(cwd: String, id: String) -> Result<u64, String> {
+    pipeline::task_take_done(cwd, id)
+}
+
+#[tauri::command(async)]
 pub fn task_reject(cwd: String, id: String, reason: String) -> Result<String, String> {
     pipeline::task_reject(cwd, id, reason)
 }
