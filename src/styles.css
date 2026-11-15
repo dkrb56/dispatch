@@ -1346,6 +1346,11 @@ button.task-head:hover {
   border-top: 2px dashed var(--accent);
 }
 
+.tokens-key-dotted {
+  width: 14px;
+  border-top: 2px dotted #3987e5;
+}
+
 .tokens-key-event,
 .tokens-event {
   box-sizing: border-box;

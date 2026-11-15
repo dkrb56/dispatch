@@ -4947,18 +4947,23 @@ function shownTokenRefs(): ProjectRef[] {
   return tokensProject === "all" ? tokensRefs : tokensRefs.filter((ref) => refKey(ref) === tokensProject);
 }
 
-/** Reads the tokens of the shown projects and the history of the weekly allowance, then draws. */
+/**
+ * Reads the tokens of every project of the group and the history of the weekly allowance, then
+ * draws. The reports reach back 7 days at least: the line of the weekly allowance takes the tokens
+ * of all projects of the week; the other parts take the shown projects in the range.
+ */
 async function readTokens(): Promise<void> {
   const read = ++tokensRead;
   const refs = shownTokenRefs();
-  const since = rangeStart(tokensRange, Date.now());
+  const now = Date.now();
+  const since = Math.min(rangeStart(tokensRange, now), now - 7 * 86_400_000);
   tokensLoading = tokensReports.size === 0;
   renderTokens();
   // The history of the host of the shown project; in All projects the one of the first backend.
   const historyHost = tokensProject === "all" ? firstBackend() : (refs[0]?.host ?? firstBackend());
   try {
     const [reports, history] = await Promise.all([
-      Promise.all(refs.map((ref) => call<TokenReport>(ref.host, "token_report", { cwd: ref.root, since }).then((report) => [refKey(ref), report] as const))),
+      Promise.all(tokensRefs.map((ref) => call<TokenReport>(ref.host, "token_report", { cwd: ref.root, since }).then((report) => [refKey(ref), report] as const))),
       call<UsageHistory>(historyHost, "usage_history"),
     ]);
     if (read !== tokensRead) return;
@@ -5055,12 +5060,19 @@ function renderTokens(): void {
   state.classList.toggle("error", Boolean(tokensError));
   state.textContent = tokensError || (tokensLoading ? "Reading the transcripts…" : "");
 
-  // The rows, consumers and events of the shown projects, each with the key of its project.
+  // The rows, consumers and events of the shown projects, each with the key of its project. The
+  // line of the weekly allowance takes the rows of all projects of the week (`weekRows`); the bars,
+  // tiles, ranking and model table take the rows of the shown projects in the range.
+  const shown = new Set(shownTokenRefs().map(refKey));
+  const from = rangeStart(tokensRange, now);
+  const weekRows: TokenRow[] = [];
   const rows: TokenRow[] = [];
   const consumers: TokenConsumer[] = [];
   const events: TokenEvent[] = [];
   for (const [key, report] of tokensReports) {
-    rows.push(...report.rows.map((row) => ({ ...row, project: key })));
+    weekRows.push(...report.rows);
+    if (!shown.has(key)) continue;
+    rows.push(...report.rows.filter((row) => row.hour >= from).map((row) => ({ ...row, project: key })));
     consumers.push(...report.consumers.map((consumer) => ({ ...consumer, project: key })));
     events.push(...report.events);
     for (const consumer of report.consumers) {
@@ -5071,7 +5083,7 @@ function renderTokens(): void {
   const ranked = ranking(rows, consumers, tokenConsumerName, tokenProjectName);
   const chart = bars(rows, buckets(tokensRange, now));
   const tileValues = tiles(tokensRange, rows, ranked);
-  const line = tokensHistory ? allowanceLine(tokensHistory, events, now) : null;
+  const line = tokensHistory ? allowanceLine(tokensHistory, events, now, weekRows) : null;
   const models = modelTable(rows);
 
   document.querySelector<HTMLElement>("#tokens-body")!.hidden = tokensTable;
@@ -5179,15 +5191,19 @@ function renderTokens(): void {
     shape("line", { x1: "0", y1: "2", x2: "700", y2: "2", stroke: "#22282f", "stroke-width": "1", "stroke-dasharray": "2 4" });
     shape("line", { x1: "0", y1: "199", x2: "700", y2: "199", stroke: "#2b323a", "stroke-width": "1" });
     if (line.resetAt !== null) shape("line", { x1: "700", y1: "0", x2: "700", y2: "199", stroke: "#2b323a", "stroke-width": "1", "stroke-dasharray": "4 4" });
-    shape("polyline", {
-      class: "tokens-used",
-      points: line.points.map((point) => `${px(point.x)},${py(point.y)}`).join(" "),
-      fill: "none",
-      stroke: "#3987e5",
-      "stroke-width": "2",
-      "stroke-linejoin": "round",
-      "vector-effect": "non-scaling-stroke",
-    });
+    // One polyline per piece: a measured piece solid, a rebuilt piece thinner and dotted in the same blue.
+    for (const piece of line.pieces) {
+      shape("polyline", {
+        class: piece.rebuilt ? "tokens-rebuilt" : "tokens-used",
+        points: piece.points.map((point) => `${px(point.x)},${py(point.y)}`).join(" "),
+        fill: "none",
+        stroke: "#3987e5",
+        "stroke-width": piece.rebuilt ? "1.25" : "2",
+        ...(piece.rebuilt ? { "stroke-dasharray": "2 3" } : {}),
+        "stroke-linejoin": "round",
+        "vector-effect": "non-scaling-stroke",
+      });
+    }
     if (line.trend.length > 0) {
       shape("polyline", {
         class: "tokens-trend",

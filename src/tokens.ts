@@ -353,24 +353,59 @@ export function eventTime(event: Pick<TokenEvent, "time" | "local">): number | n
 export const NO_WEEKLY =
   "No weekly allowance to show: /usage of Claude Code on this computer gave no weekly line yet. Dispatch keeps one reading per hour from the bottom bar.";
 
+/** A vertex of the drawn line: a time and its percent. */
+export interface Vertex {
+  at: number;
+  y: number;
+}
+
 /**
- * The percent of the line at a time, so an event point stands on the line: between the nearest
- * earlier and the nearest later reading on the straight piece that joins them; after the last
- * reading its percent; before the first reading 0.
+ * The percent of the drawn line at a time, so an event point stands on the line: between the
+ * nearest earlier and the nearest later vertex on the straight piece that joins them; after the
+ * last vertex its percent; before the first vertex 0.
  */
-export function lineAt(points: readonly Reading[], time: number): number {
-  const before = [...points].reverse().find((point) => point.at <= time);
+export function lineAt(vertices: readonly Vertex[], time: number): number {
+  const before = [...vertices].reverse().find((vertex) => vertex.at <= time);
   if (!before) return 0;
-  const after = points.find((point) => point.at > time);
-  if (!after) return before.percent;
-  return before.percent + ((after.percent - before.percent) * (time - before.at)) / (after.at - before.at);
+  const after = vertices.find((vertex) => vertex.at > time);
+  if (!after) return before.y;
+  return before.y + ((after.y - before.y) * (time - before.at)) / (after.at - before.at);
+}
+
+/** Two readings at most this far apart are joined by a measured piece; a reading comes every 55 minutes at most. */
+const MEASURED_GAP_MS = 2 * HOUR_MS;
+
+/**
+ * The vertices of a rebuilt piece from (t0, p0) to (t1, p1): the rows whose hour overlaps the
+ * piece, summed per hour; one vertex at the end of each hour (or at t1) with the share of the
+ * cumulative tokens, then the end vertex. Zero tokens give the two end vertices.
+ */
+function rebuiltPiece(from: Vertex, to: Vertex, rows: readonly TokenRow[]): Vertex[] {
+  const perHour = new Map<number, number>();
+  for (const row of rows) {
+    if (row.hour + HOUR_MS <= from.at || row.hour >= to.at) continue;
+    perHour.set(row.hour, (perHour.get(row.hour) ?? 0) + rowTotal(row));
+  }
+  const total = [...perHour.values()].reduce((sum, tokens) => sum + tokens, 0);
+  if (total <= 0) return [from, to];
+  const made: Vertex[] = [from];
+  let sum = 0;
+  for (const hour of [...perHour.keys()].sort((a, b) => a - b)) {
+    sum += perHour.get(hour)!;
+    made.push({ at: Math.min(hour + HOUR_MS, to.at), y: from.y + ((to.y - from.y) * sum) / total });
+  }
+  made.push(to);
+  return made;
 }
 
 /** The line of the weekly allowance as the figure draws it: x in 0 to 1 over the week, y in percent. */
 export interface AllowanceLine {
   start: number;
   end: number;
+  /** The readings of the week, for the Table view. */
   points: { x: number; y: number; at: number }[];
+  /** The drawn line: measured pieces between close readings, rebuilt pieces from the transcripts elsewhere. */
+  pieces: { rebuilt: boolean; points: { x: number; y: number; at: number }[] }[];
   trend: { x: number; y: number }[];
   events: { x: number; y: number; at: number; tip: string }[];
   /** The text of the label: "runs out Sun 03:40", "lasts to the reset", or "" without a trend. */
@@ -386,11 +421,15 @@ export interface AllowanceLine {
 
 /**
  * The line of the weekly allowance: the week that ends at the reset of the newest reading (without
- * a reset text: seven days from the first reading), the readings, the trend from the newest reading
- * to the run-out time or the end of the week, the run-out label, and the events of the week up to
- * now, each on the line (`lineAt`). No readings give null: the figure shows `NO_WEEKLY`.
+ * a reset text: seven days from the first reading), the readings, the drawn pieces, the trend from
+ * the newest reading to the run-out time or the end of the week, the run-out label, and the events
+ * of the week up to now, each on the drawn line (`lineAt`). The drawn line starts at 0 at the reset
+ * and passes through each reading; a piece between two readings at most 2 hours apart is measured,
+ * every other piece is rebuilt from `rows` (the tokens per hour of all projects), scaled to meet
+ * the reading at its end. Without a trend of the host, a line from the reset gives the trend of its
+ * last 24 hours. No readings give null: the figure shows `NO_WEEKLY`.
  */
-export function allowanceLine(history: UsageHistory, events: readonly TokenEvent[], now: number): AllowanceLine | null {
+export function allowanceLine(history: UsageHistory, events: readonly TokenEvent[], now: number, rows: readonly TokenRow[]): AllowanceLine | null {
   const points = history.points;
   if (points.length === 0) return null;
   const last = points[points.length - 1];
@@ -398,20 +437,48 @@ export function allowanceLine(history: UsageHistory, events: readonly TokenEvent
   const end = resetAt ?? points[0].at + 7 * DAY_MS;
   const start = end - 7 * DAY_MS;
   const x = (time: number) => Math.min(1, Math.max(0, (time - start) / (end - start)));
-  const trendData = history.trend;
+  const week = points.filter((point) => point.at >= start && point.at <= end);
+  // The anchors of the drawn line: the reset at 0 (no reading), then each reading of the week.
+  const anchors: (Vertex & { reading: boolean })[] = [
+    ...(resetAt !== null ? [{ at: start, y: 0, reading: false }] : []),
+    ...week.map((point) => ({ at: point.at, y: point.percent, reading: true })),
+  ];
+  const drawn: { rebuilt: boolean; vertices: Vertex[] }[] = [];
+  for (let at = 1; at < anchors.length; at += 1) {
+    const from = anchors[at - 1];
+    const to = anchors[at];
+    const measured = from.reading && to.reading && to.at - from.at <= MEASURED_GAP_MS;
+    const ends = [{ at: from.at, y: from.y }, { at: to.at, y: to.y }];
+    drawn.push(measured ? { rebuilt: false, vertices: ends } : { rebuilt: true, vertices: rebuiltPiece(ends[0], ends[1], rows) });
+  }
+  // The vertices of the whole drawn line; without a piece, the anchors.
+  const vertices: Vertex[] = drawn.length === 0 ? anchors.map(({ at, y }) => ({ at, y })) : [];
+  for (const piece of drawn) vertices.push(...(vertices.length > 0 ? piece.vertices.slice(1) : piece.vertices));
+  let trendData = history.trend;
+  if (!trendData && resetAt !== null && week.length > 0) {
+    const from = Math.max(start, last.at - DAY_MS);
+    if (last.at > from) {
+      const pace = (last.percent - lineAt(vertices, from)) / ((last.at - from) / HOUR_MS);
+      trendData = { from, pace, runsOut: pace > 0 ? last.at + ((100 - last.percent) / pace) * HOUR_MS : null };
+    }
+  }
   let trend: { x: number; y: number }[] = [];
   let label = "";
   let outX: number | null = null;
-  if (trendData) {
-    const at = (time: number) => Math.min(100, last.percent + (trendData.pace * (time - last.at)) / HOUR_MS);
-    const stop = trendData.runsOut !== null && trendData.runsOut <= end ? trendData.runsOut : end;
+  // The events stand on the drawn line and, after the newest reading, on the trend.
+  const onLine = [...vertices];
+  const trendNow = trendData;
+  if (trendNow) {
+    const at = (time: number) => Math.min(100, last.percent + (trendNow.pace * (time - last.at)) / HOUR_MS);
+    const stop = trendNow.runsOut !== null && trendNow.runsOut <= end ? trendNow.runsOut : end;
     trend = [
       { x: x(last.at), y: last.percent },
       { x: x(stop), y: at(stop) },
     ];
-    if (trendData.runsOut !== null && trendData.runsOut <= end) {
-      label = `runs out ${dayTime(trendData.runsOut)}`;
-      outX = x(trendData.runsOut);
+    if (stop > last.at) onLine.push({ at: stop, y: at(stop) });
+    if (trendNow.runsOut !== null && trendNow.runsOut <= end) {
+      label = `runs out ${dayTime(trendNow.runsOut)}`;
+      outX = x(trendNow.runsOut);
     } else {
       label = "lasts to the reset";
     }
@@ -420,13 +487,15 @@ export function allowanceLine(history: UsageHistory, events: readonly TokenEvent
     .map((event) => ({ event, at: eventTime(event) }))
     .filter((item): item is { event: TokenEvent; at: number } => item.at !== null && item.at >= start && item.at <= Math.min(now, end))
     .sort((a, b) => a.at - b.at)
-    .map(({ event, at }) => ({ x: x(at), y: lineAt(points, at), at, tip: `${dayTime(at)} · ${event.text}` }));
+    .map(({ event, at }) => ({ x: x(at), y: lineAt(onLine, at), at, tip: `${dayTime(at)} · ${event.text}` }));
   const days = Array.from({ length: 7 }, (_, at) => DAYS[new Date(start + at * DAY_MS + DAY_MS / 2).getDay()]);
   const usedNow = `${Math.round(last.percent)}%`;
+  const rebuilt = drawn.some((piece) => piece.rebuilt);
   return {
     start,
     end,
-    points: points.filter((point) => point.at >= start && point.at <= end).map((point) => ({ x: x(point.at), y: point.percent, at: point.at })),
+    points: week.map((point) => ({ x: x(point.at), y: point.percent, at: point.at })),
+    pieces: drawn.map((piece) => ({ rebuilt: piece.rebuilt, points: piece.vertices.map((vertex) => ({ x: x(vertex.at), y: vertex.y, at: vertex.at })) })),
     trend,
     events: placed,
     label,
@@ -435,7 +504,7 @@ export function allowanceLine(history: UsageHistory, events: readonly TokenEvent
     resetText: resetAt === null ? "" : `reset ${dayTime(resetAt)}`,
     days,
     usedNow,
-    aria: `Line of the weekly allowance used: ${usedNow}${label ? `; at the pace of the last day it ${label === "lasts to the reset" ? "lasts to the reset" : `reaches 100% on ${label.slice("runs out ".length)}`}` : ""}`,
+    aria: `Line of the weekly allowance used: ${usedNow}${label ? `; at the pace of the last day it ${label === "lasts to the reset" ? "lasts to the reset" : `reaches 100% on ${label.slice("runs out ".length)}`}` : ""}${rebuilt ? "; the pieces without readings are rebuilt from the transcripts" : ""}`,
   };
 }
 
@@ -466,6 +535,10 @@ export function tableRows(
   }
   if (line) {
     for (const point of line.points) rows.push({ section: "Weekly allowance", label: dayTime(point.at), value: `${point.y}%` });
+    for (const piece of line.pieces) {
+      if (!piece.rebuilt) continue;
+      rows.push({ section: "Weekly allowance", label: "Rebuilt", value: `${dayTime(piece.points[0].at)} to ${dayTime(piece.points[piece.points.length - 1].at)}` });
+    }
     for (const event of line.events) rows.push({ section: "Events", label: dayTime(event.at), value: event.tip.split(" · ").slice(1).join(" · ") });
     if (line.label) rows.push({ section: "Weekly allowance", label: "Trend", value: line.label });
     if (line.resetText) rows.push({ section: "Weekly allowance", label: "Reset", value: line.resetText.slice("reset ".length) });

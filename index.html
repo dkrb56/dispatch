@@ -210,13 +210,14 @@
             <h3 id="tokens-line-title">Weekly allowance: used so far, and when it runs out at this pace</h3>
             <div class="tokens-legend" role="list" aria-label="Legend">
               <span role="listitem"><span aria-hidden="true" class="tokens-key-line"></span>Used, all models</span>
+              <span role="listitem"><span aria-hidden="true" class="tokens-key-dotted"></span>Rebuilt from the transcripts</span>
               <span role="listitem"><span aria-hidden="true" class="tokens-key-dash"></span>Trend of the last 24 h</span>
               <span role="listitem"><span aria-hidden="true" class="tokens-key-event"></span>Event</span>
             </div>
           </div>
           <div id="tokens-line"></div>
           <p class="tokens-note">
-            The line is the weekly percent that Claude Code reports in /usage, read every hour as the bottom bar does. A point marks an event: a release, a plan approved, night mode on or off, a new triage chat; hover names it. The dashed line continues the pace of the last 24 hours; where it crosses 100% stands "runs out", before or after the reset.
+            The line is the weekly percent that Claude Code reports in /usage, read every hour as the bottom bar does. Where Dispatch took no reading, a thin dotted piece follows the tokens of the transcripts, scaled to meet the next reading. A point marks an event: a release, a plan approved, night mode on or off, a new triage chat; hover names it. The dashed line continues the pace of the last 24 hours; where it crosses 100% stands "runs out", before or after the reset.
           </p>
         </section>
         <div id="tokens-columns">

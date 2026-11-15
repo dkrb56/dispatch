@@ -186,7 +186,7 @@ const events = [
 
 test("the line of the week: the points, the trend, the run-out label and the events", () => {
   // 42 % left at 11/24 % per hour: about 91.6 hours after Sat 12:00, after the reset.
-  const lasts = allowanceLine(history(11 / 24, at(14, 12) + 91.6 * 3_600_000), events, NOW)!;
+  const lasts = allowanceLine(history(11 / 24, at(14, 12) + 91.6 * 3_600_000), events, NOW, [])!;
   assert.equal(lasts.label, "lasts to the reset");
   assert.equal(lasts.outX, null);
   assert.equal(lasts.end, at(16, 9));
@@ -197,7 +197,7 @@ test("the line of the week: the points, the trend, the run-out label and the eve
   // The trend ends at the reset.
   assert.equal(lasts.trend[1].x, 1);
   // A faster pace runs out on Sun 03:40, before the reset.
-  const out = allowanceLine(history(2.65, at(15, 3, 40)), events, NOW)!;
+  const out = allowanceLine(history(2.65, at(15, 3, 40)), events, NOW, [])!;
   assert.equal(out.label, "runs out Sun 03:40");
   assert.ok(out.outX !== null && out.outX < 1 && out.outX > out.points[4].x);
   assert.equal(out.trend[1].x, out.outX);
@@ -211,28 +211,123 @@ test("the line of the week: the points, the trend, the run-out label and the eve
       ["Fri 18:00 · plan approved: t-1", 49.75],
     ],
   );
-  const points = history(1, null).points;
+  const points = history(1, null).points.map((point) => ({ at: point.at, y: point.percent }));
   assert.deepEqual([lineAt(points, at(9, 0)), lineAt(points, at(10, 12)), lineAt(points, at(14, 20))], [0, 11, 58]);
-  // Without a trend: no label. Without readings: no line, graph 2 shows the sentence.
-  assert.equal(allowanceLine({ points: history(1, null).points.slice(0, 1), trend: null }, [], NOW)!.label, "");
-  assert.equal(allowanceLine({ points: [], trend: null }, events, NOW), null);
+  // Without a trend and without a reset text: no line from the reset, so no label. Without
+  // readings: no line, graph 2 shows the sentence.
+  assert.equal(allowanceLine({ points: [{ ...history(1, null).points[0], resets: null }], trend: null }, [], NOW, [])!.label, "");
+  assert.equal(allowanceLine({ points: [], trend: null }, events, NOW, []), null);
   assert.match(NO_WEEKLY, /no weekly line/);
+});
+
+// Ticket allowance-graph-line: the drawn line runs from 0 at the reset to the newest reading; a
+// piece without readings is rebuilt from the tokens per hour of the transcripts.
+const RESETS = "Nov 16, 9:00am (Europe/Example)";
+const tokensAt = (hour: number, tokens: number, project = "p") => row(hour, "t", "work", "claude-opus-5-5", [0, 0, tokens, 0], project);
+const shape = (piece: { points: { at: number; y: number }[] }) => piece.points.map((point) => [dayTime(point.at), +point.y.toFixed(4)]);
+
+test("one reading and the rows give a rebuilt line from 0 at the reset to the reading, shaped like the cumulative tokens", () => {
+  const history: UsageHistory = { points: [{ at: at(14, 12), percent: 64, resets: RESETS }], trend: null };
+  // Before the week and after the reading: not in the piece. Two projects count together.
+  const tokenRows = [tokensAt(at(8, 10), 999), tokensAt(at(10, 10), 100), tokensAt(at(12, 10), 300, "q"), tokensAt(at(14, 13), 999)];
+  const line = allowanceLine(history, [{ time: at(11, 11), local: null, kind: "release", text: "release" }], NOW, tokenRows)!;
+  assert.equal(line.pieces.length, 1);
+  assert.equal(line.pieces[0].rebuilt, true);
+  assert.deepEqual(shape(line.pieces[0]), [
+    ["Mon 09:00", 0],
+    ["Tue 11:00", 16],
+    ["Thu 11:00", 64],
+    ["Sat 12:00", 64],
+  ]);
+  // The event before the first reading stands on the rebuilt line, half way from 16 to 64.
+  assert.deepEqual(line.events.map((event) => event.y), [40]);
+  // Decision 1: the trend comes from the drawn line; no rise in the last 24 hours lasts to the reset.
+  assert.equal(line.trend.length, 2);
+  assert.equal(line.label, "lasts to the reset");
+  assert.match(line.aria, /rebuilt from the transcripts/);
+});
+
+test("one reading and the rows of the last day give a trend and a run-out label from the drawn line", () => {
+  const history: UsageHistory = { points: [{ at: at(14, 12), percent: 64, resets: RESETS }], trend: null };
+  const line = allowanceLine(history, [], NOW, [tokensAt(at(14, 0), 100), tokensAt(at(14, 10), 100)])!;
+  assert.deepEqual(shape(line.pieces[0]), [
+    ["Mon 09:00", 0],
+    ["Sat 01:00", 32],
+    ["Sat 11:00", 64],
+    ["Sat 12:00", 64],
+  ]);
+  // 24 hours before the reading (Fri 12:00, 99 of the 112 hours to Sat 01:00) the line stands at 32 * 99 / 112.
+  const pace = (64 - (32 * 99) / 112) / 24;
+  const runsOut = at(14, 12) + (36 / pace) * 3_600_000;
+  assert.equal(line.label, `runs out ${dayTime(runsOut)}`);
+  assert.ok(line.outX !== null && line.outX < 1);
+});
+
+test("two readings with a gap give a rebuilt piece that ends at the second reading; zero tokens give a straight piece", () => {
+  const history: UsageHistory = {
+    points: [
+      { at: at(13, 12), percent: 40, resets: RESETS },
+      { at: at(14, 12), percent: 64, resets: RESETS },
+    ],
+    trend: null,
+  };
+  const line = allowanceLine(history, [], NOW, [tokensAt(at(13, 20), 100), tokensAt(at(14, 2), 100)])!;
+  assert.deepEqual(
+    line.pieces.map((piece) => piece.rebuilt),
+    [true, true],
+  );
+  assert.deepEqual(shape(line.pieces[0]), [
+    ["Mon 09:00", 0],
+    ["Fri 12:00", 40],
+  ]);
+  assert.deepEqual(shape(line.pieces[1]), [
+    ["Fri 12:00", 40],
+    ["Fri 21:00", 52],
+    ["Sat 03:00", 64],
+    ["Sat 12:00", 64],
+  ]);
+  const empty = allowanceLine(history, [], NOW, [])!;
+  assert.deepEqual(shape(empty.pieces[1]), [
+    ["Fri 12:00", 40],
+    ["Sat 12:00", 64],
+  ]);
+});
+
+test("readings 1 hour apart give a measured straight piece", () => {
+  const history: UsageHistory = {
+    points: [
+      { at: at(14, 11), percent: 60, resets: RESETS },
+      { at: at(14, 12), percent: 64, resets: RESETS },
+    ],
+    trend: null,
+  };
+  const line = allowanceLine(history, [], NOW, [tokensAt(at(14, 11), 100)])!;
+  assert.deepEqual(
+    line.pieces.map((piece) => piece.rebuilt),
+    [true, false],
+  );
+  assert.deepEqual(shape(line.pieces[1]), [
+    ["Sat 11:00", 60],
+    ["Sat 12:00", 64],
+  ]);
 });
 
 test("the Table view has every number of the window as a row", () => {
   const ranked = ranking(rows, consumers, (consumer) => consumer.id, () => "p");
   const chart = bars(rows, buckets("today", NOW));
-  const line = allowanceLine(history(2.65, at(15, 3, 40)), events, NOW);
+  const line = allowanceLine(history(2.65, at(15, 3, 40)), events, NOW, []);
   const models = modelTable(rows);
   const table = tableRows(tiles("today", rows, ranked), chart.bars, line, ranked, models);
   const count = (section: string) => table.filter((one) => one.section === section).length;
   assert.equal(count("Tiles"), 4);
   assert.equal(count("Tokens over time"), 24);
-  assert.equal(count("Weekly allowance"), 5 + 2);
+  // 5 readings, 5 rebuilt pieces (the readings are a day apart), the trend and the reset.
+  assert.equal(count("Weekly allowance"), 5 + 5 + 2);
+  assert.ok(table.some((one) => one.label === "Rebuilt" && one.value === "Mon 09:00 to Mon 12:00"));
   assert.equal(count("Events"), 2);
   assert.equal(count("Who used the most"), ranked.length);
   assert.equal(count("Per model"), 3);
-  assert.equal(table.length, 4 + 24 + 7 + 2 + ranked.length + 3);
+  assert.equal(table.length, 4 + 24 + 12 + 2 + ranked.length + 3);
   assert.ok(table.some((one) => one.section === "Per model" && one.value.includes("cache write 1,000, cache read 6,700,000")));
   assert.deepEqual(
     tableRows(tiles("today", [], []), [], null, [], []).filter((one) => one.section === "Weekly allowance"),
