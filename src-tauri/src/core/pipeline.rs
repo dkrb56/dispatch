@@ -31,6 +31,9 @@ const TASKS_DIR: &str = ".dispatch";
 /// The pathspec that leaves the task files out: Approve does not count them as changes.
 const NOT_TASKS: &str = ":(exclude).dispatch";
 
+/// The line of `.dispatch/.gitattributes` that makes git join the ticket lines of two computers: the
+/// tickets file only grows, so a merge keeps the lines of both sides (ticket tickets-in-git).
+const TICKETS_UNION: &str = "tickets.jsonl merge=union";
 /// The line of `.dispatch/.gitignore` that keeps the scratch folder of the measuring out of git.
 const MEASURE_IGNORE: &str = "measure/";
 /// The time limit of a measuring command in seconds, when the list names none.
@@ -380,6 +383,12 @@ impl Project {
         self.reports.join(".gitignore")
     }
 
+    /// The attributes file of the task folder. Its line `tickets.jsonl merge=union` joins the ticket
+    /// lines of two computers.
+    fn tasks_attributes(&self) -> PathBuf {
+        self.reports.join(".gitattributes")
+    }
+
     /// The ignore file of the project root. With "Task files local only" on, its line `.dispatch/`
     /// keeps the whole task folder out of git (ticket ignore-tasks).
     fn root_ignore(&self) -> PathBuf {
@@ -549,6 +558,11 @@ impl Project {
     /// The ignore file of the task folder has a line.
     fn ignores(&self, line: &str) -> bool {
         fs::read_to_string(self.tasks_ignore()).is_ok_and(|text| text.lines().any(|known| known.trim() == line))
+    }
+
+    /// The attributes file of the task folder has the line that joins the ticket lines.
+    fn joins_tickets(&self) -> bool {
+        fs::read_to_string(self.tasks_attributes()).is_ok_and(|text| text.lines().any(|known| known.trim() == TICKETS_UNION))
     }
 
     fn options_file(&self) -> PathBuf {
@@ -1209,7 +1223,8 @@ function Enter-TaskBranch {
 # Merges the task branch into the base in the main checkout: git merge --no-ff --no-commit, the gate
 # command on the merged code, then the merge commit, or git merge --abort. A conflict only in the task
 # files of .dispatch takes the version of the base, where Dispatch keeps them current. Gives the
-# reason of a refusal, or '' after the merge; $script:Merged holds the commit then.
+# reason of a refusal, or '' after the merge; $script:Merged holds the commit then. The verb merge
+# commits the changed task files first.
 function Merge-Branch($Info, [string]$Gate, [int]$Limit) {
   $branch = $Info.branch
   $merge = Invoke-Git @('merge', '--no-ff', '--no-commit', $branch)
@@ -1426,9 +1441,17 @@ switch ($Verb) {
     $current = Current-Branch
     if ($current -ne $info.base) { Refuse "the checkout is on $current, not on the base $($info.base); Dispatch switches back when the work run has ended" }
     if ((Invoke-Git @('rev-parse', '-q', '--verify', 'MERGE_HEAD')).Code -eq 0) { Refuse 'the checkout has an unfinished merge; finish it or run git merge --abort first' }
-    $dirty = @((Invoke-Git @('status', '--porcelain', '--untracked-files=no')).Lines | Where-Object { $_ })
+    $dirty = @((Invoke-Git @('status', '--porcelain', '--untracked-files=no', '--', '.', ':(exclude).dispatch')).Lines | Where-Object { $_ })
     if ($dirty.Count -gt 0) { Refuse "the checkout has uncommitted changes; commit or stash them first:`n$($dirty -join "`n")" }
-    $gate = "$(@(Command-Lines 'merge-gate.txt') | Select-Object -First 1)"
+    # The changed task files (the tickets file among them) go into one commit first, so git merge
+    # never meets a changed file of .dispatch.
+    $tasks = @((Invoke-Git @('status', '--porcelain', '--untracked-files=all', '--', '.dispatch')).Lines | Where-Object { $_ })
+    if ($tasks.Count -gt 0) {
+      Invoke-Git @('add', '--all', '--', '.dispatch') | Out-Null
+      $saved = Invoke-Git @('commit', '-q', '-m', "Dispatch: task files before the merge of $Id", '--', '.dispatch')
+      if ($saved.Code -ne 0) { Refuse "git could not commit the task files before the merge: $($saved.Text)" }
+    }
+    $gate ="$(@(Command-Lines 'merge-gate.txt') | Select-Object -First 1)"
     $limit = Command-Limit 'merge-gate.txt' 14400
     Enter-Lock (Merge-Lock) 0 'merge'
     $script:Merged = ''
@@ -1763,9 +1786,10 @@ fn plan(project: &Project) -> Result<Plan, String> {
                 && project.briefs().is_dir()
                 && project.plans().is_dir()
                 && plan_flags_current(project)
-                && work_flags_current(project),
+                && work_flags_current(project)
+                && project.joins_tickets(),
             detail: format!(
-                "The folder .dispatch in the project for the task files: the reports of the workers, a folder for the briefs, a folder for the plans, and the state of each task. {} The options of the two runs go into plan-flags.txt and work-flags.txt, one argument per line; the files start with the defaults (plan run: {} {}, work run: {} {}). The work run names its permission mode ({}) and its tool list, so that the file says in full what the new session of the work run gets; an older file gets these lines and the paths of this folder, its choice stays. The files name this folder relative to the project, so they are the same on each computer.{}",
+                "The folder .dispatch in the project for the task files: the reports of the workers, a folder for the briefs, a folder for the plans, and the state of each task. {} Git joins the lines of the tickets file of two computers (.dispatch/.gitattributes). The options of the two runs go into plan-flags.txt and work-flags.txt, one argument per line; the files start with the defaults (plan run: {} {}, work run: {} {}). The work run names its permission mode ({}) and its tool list, so that the file says in full what the new session of the work run gets; an older file gets these lines and the paths of this folder, its choice stays. The files name this folder relative to the project, so they are the same on each computer.{}",
                 if options.ignore_tasks {
                     "Git ignores it (Task files local only is on): the task files stay on this computer, and a clone has none. Approve does not count them as changes."
                 } else {
@@ -2081,6 +2105,21 @@ fn ignore_line(project: &Project, line: &str) -> Result<(), String> {
     text.push_str(line);
     text.push('\n');
     write_file(&project.tasks_ignore(), &text)
+}
+
+/// Adds the line `tickets.jsonl merge=union` to `.dispatch/.gitattributes`, and makes the file when it
+/// is absent. The other lines stay.
+fn join_tickets(project: &Project) -> Result<(), String> {
+    if project.joins_tickets() {
+        return Ok(());
+    }
+    let mut text = fs::read_to_string(project.tasks_attributes()).unwrap_or_default();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(TICKETS_UNION);
+    text.push('\n');
+    write_file(&project.tasks_attributes(), &text)
 }
 
 /// A model and an effort for one run of a worker. Empty: the settings of the user apply.
@@ -3892,6 +3931,7 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
         fs::create_dir_all(project.briefs()).map_err(err)?;
         fs::create_dir_all(project.plans()).map_err(err)?;
         default_flags(project)?;
+        join_tickets(project)?;
     }
     if !done(1) {
         add_rules(project)?;
@@ -5876,7 +5916,9 @@ if (args[0] === 'agents') {
         // One checked rule, so the step "Working rules" is done too.
         apply(&project, &[0]).unwrap();
         assert!(!old.exists(), "the old folder is gone");
-        assert_eq!(count_files(&project.reports), before, "each file moved, none added");
+        // Each file moved; Apply adds only `.gitattributes` (ticket tickets-in-git).
+        assert_eq!(count_files(&project.reports), before + 1, "each file moved, one added");
+        assert!(project.joins_tickets());
         assert_eq!(read(&project.briefs().join("t-2.md")), "brief two\n");
         assert_eq!(read(&project.reports.join("t-1.state")), "working\n");
         // The options files keep the choice of the user and get the paths of this folder, relative
@@ -5905,7 +5947,7 @@ if (args[0] === 'agents') {
         let before = count_files(&old);
         apply(&project, &[]).unwrap();
         assert!(!old.exists());
-        assert_eq!(count_files(&project.reports), before + 1, "the moved files and the planned entry");
+        assert_eq!(count_files(&project.reports), before + 2, "the moved files, the planned entry and `.gitattributes`");
         assert_eq!(read(&project.backlog_dir().join("e-1.md")), "sent: 1\norder: 1\n\nplanned\n");
         assert_eq!(read(&project.plans().join("t-1.md")), "# Plan t-1: one\n");
         clean(&project);
@@ -6613,6 +6655,92 @@ if (args[0] === 'agents') {
         assert_no_merge_left(&project);
         let branch = listed_branch(&project, "t-1");
         assert!(branch.exists && branch.merge.is_empty(), "{branch:?}");
+        clean(&project);
+    }
+
+    /// A ticket line of the tickets file that opens the ticket `id`.
+    fn ticket_line(id: &str) -> String {
+        format!("{{\"op\":\"open\",\"id\":\"{id}\",\"ts\":1,\"title\":\"Ticket {id}\",\"type\":\"feature\",\"summary\":\"\",\"tags\":[],\"status\":\"todo\",\"order\":1}}\n")
+    }
+
+    /// Adds a ticket line at the end of the tickets file.
+    fn add_ticket(project: &Project, id: &str) {
+        let text = fs::read_to_string(project.tickets_file()).unwrap_or_default();
+        write_file(&project.tickets_file(), &format!("{text}{}", ticket_line(id))).unwrap();
+    }
+
+    #[test]
+    fn approve_and_merge_do_not_count_a_changed_tickets_file() {
+        let (project, fake, base) = branch_project("tickets-in-git");
+        add_ticket(&project, "a");
+        git_out(&project, &["add", "--", ".dispatch/tickets.jsonl"]);
+        git_out(&project, &["commit", "-q", "-m", "first ticket"]);
+        write_file(&project.briefs().join("t-1.md"), "# t-1: a scratch task\n").unwrap();
+        write_file(&project.reports.join("fake-name.txt"), "t-1").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["plan", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+
+        // Approve: a changed tracked tickets file does not count, a changed file of the user does.
+        add_ticket(&project, "b");
+        write_file(&project.root.join("README.md"), "changed by the user\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("README.md") && !out.contains("tickets.jsonl"), "{out}");
+        git_out(&project, &["checkout", "--", "README.md"]);
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).unwrap(), base);
+
+        // Merge: the same rule.
+        add_ticket(&project, "c");
+        write_file(&project.root.join("README.md"), "changed by the user\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["merge", "t-1"]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("README.md") && !out.contains("tickets.jsonl"), "{out}");
+        git_out(&project, &["checkout", "--", "README.md"]);
+        let (code, out) = run_script(&project, &fake, "done", &["merge", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        let log = git_out(&project, &["log", "--format=%s", "-3", &base]);
+        assert!(log.contains("Dispatch: task files before the merge of t-1") && log.contains("Merge task/t-1"), "{log}");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
+
+        // The tickets file has each line once, and git has it.
+        let tickets = read(&project.tickets_file());
+        assert_eq!(tickets, format!("{}{}{}", ticket_line("a"), ticket_line("b"), ticket_line("c")), "{tickets}");
+        assert_eq!(git_out(&project, &["status", "--porcelain", "--", ".dispatch/tickets.jsonl"]), "");
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    #[test]
+    fn two_computers_keep_the_ticket_lines_of_both() {
+        let project = git_scratch("tickets-union");
+        apply(&project, &[0]).unwrap();
+        assert!(read(&project.tasks_attributes()).lines().any(|line| line == TICKETS_UNION));
+        add_ticket(&project, "first");
+        git_out(&project, &["add", "--all"]);
+        git_out(&project, &["commit", "-q", "-m", "setup and the first ticket"]);
+        let main = current_branch(&project).unwrap();
+
+        // The other computer adds a ticket.
+        git_out(&project, &["checkout", "-q", "-b", "other"]);
+        add_ticket(&project, "b");
+        git_out(&project, &["commit", "-q", "-am", "ticket b"]);
+
+        // This computer adds a ticket too, then pulls.
+        git_out(&project, &["checkout", "-q", &main]);
+        add_ticket(&project, "a");
+        git_out(&project, &["commit", "-q", "-am", "ticket a"]);
+        git_out(&project, &["merge", "-q", "--no-edit", "other"]);
+
+        let tickets = read(&project.tickets_file());
+        for id in ["first", "a", "b"] {
+            assert_eq!(tickets.matches(&ticket_line(id)).count(), 1, "{tickets}");
+        }
+        assert_eq!(tickets.lines().count(), 3, "{tickets}");
+        assert_eq!(crate::core::tickets::fold(&tickets).len(), 3);
         clean(&project);
     }
 
