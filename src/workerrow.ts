@@ -83,6 +83,29 @@ export function rowParts<T>(waitingFor: string | null, time: T | null, agents: n
   return parts.filter((part): part is string | T => part !== null && part !== "");
 }
 
+/** The state chip of a run row: its text, its class and a tooltip line (empty for none). */
+export interface RunChip {
+  text: string;
+  cls: string;
+  title: string;
+}
+
+/** The tooltip line of a run whose idle session Dispatch ended after the run finished. */
+const ENDED_TITLE =
+  "The run finished and ended its turn; Dispatch ended its idle session later. The task, its files and its state did not change.";
+
+/**
+ * The state chip of a run row (ticket ended-session-label). A `stopped` session whose run left its
+ * result (the plan or the report) and that the user did not stop shows "ended" with the neutral look:
+ * Dispatch ended the idle session after the run finished (automatic end or End in Old sessions).
+ * Every other case shows the state as it is, so a stop by the user and a session that ended before
+ * its result stay `stopped`.
+ */
+export function runChip(state: string | null, finished: boolean, userStopped: boolean): RunChip {
+  if (state === "stopped" && finished && !userStopped) return { text: "ended", cls: "ended", title: ENDED_TITLE };
+  return { text: state ?? "unknown", cls: state ?? "", title: "" };
+}
+
 /**
  * The tooltip of a file row of a task card (ticket task-plan-row-chip). The plan row has no state
  * chip, so that it does not look like a run; the state of the task script stands here, on a

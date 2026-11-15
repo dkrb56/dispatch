@@ -60,7 +60,7 @@ import { agentListShown, asksAgain, backKey, BACK_TITLE, LIST_TITLE } from "./ag
 import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, type FileInfo, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
-import { agentsText, fileRowTitle, rowParts, runCostText, runTokensTitle, tokenText } from "./workerrow";
+import { agentsText, fileRowTitle, rowParts, runChip, type RunChip, runCostText, runTokensTitle, tokenText } from "./workerrow";
 import { announcements, parseEnded, serializeEnded } from "./announce";
 import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, type FailedEnds, oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
 import { barItems, currentProject, detailsProjects, groupCount, pillCount, type PlainTab } from "./topbar";
@@ -3600,7 +3600,7 @@ function workerRun(task: Task, worker: Worker): "plan" | "work" | undefined {
   return (worker.startedAt ?? Infinity) > first ? "work" : "plan";
 }
 
-function workerRow(worker: Worker, run?: "plan" | "work", models?: ModelUsage[]): HTMLElement {
+function workerRow(worker: Worker, run: "plan" | "work" | undefined, models: ModelUsage[] | undefined, chip: RunChip): HTMLElement {
   const row = document.createElement("button");
   row.className = `chat worker ${worker.state ?? ""}`;
   row.title = `${worker.name ?? worker.id}\n${worker.cwd ?? ""}`;
@@ -3611,9 +3611,10 @@ function workerRow(worker: Worker, run?: "plan" | "work", models?: ModelUsage[])
   const state = document.createElement("span");
   state.className = "when";
   // The state is a chip. The cause of a wait, how long the worker took and its agents come after it.
-  const chip = document.createElement("span");
-  chip.className = `chip ${worker.state ?? ""}`;
-  chip.textContent = worker.state ?? "unknown";
+  // A session that Dispatch ended after its run finished shows "ended", not red "stopped" (ticket ended-session-label).
+  const chipEl = document.createElement("span");
+  chipEl.className = `chip ${chip.cls}`;
+  chipEl.textContent = chip.text;
   const details = document.createElement("span");
   const running = worker.state === "working" || worker.state === "blocked";
   const took = runTime(worker.startedAt, worker.endedAt, running, Date.now());
@@ -3629,7 +3630,7 @@ function workerRow(worker: Worker, run?: "plan" | "work", models?: ModelUsage[])
   // The agents that the worker started show only when it started one; else the row ends after the time.
   const parts = rowParts(worker.waitingFor, time.textContent ? time : null, worker.agents, worker.agentsActive);
   parts.forEach((part, at) => details.append(...(at > 0 ? [" · ", part] : [part])));
-  state.append(chip, details);
+  state.append(chipEl, details);
   // The tokens of the run and its model stand on a second line across the row (ticket
   // card-run-rows); the exact numbers per model stand in the tooltip (ticket run-tokens).
   const costText = runCostText(models);
@@ -3644,6 +3645,7 @@ function workerRow(worker: Worker, run?: "plan" | "work", models?: ModelUsage[])
     const end = running ? "" : took !== null ? ` · ended ${chatTime(ended)}` : "; the end is not known";
     row.title += `\nStarted ${chatTime(worker.startedAt)}${end}`;
   }
+  if (chip.title) row.title += `\n${chip.title}`;
   row.append(name, state);
   if (costText) row.append(cost);
   row.addEventListener("click", () => void openWorker(worker));
@@ -6387,7 +6389,16 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     body.className = "task-body";
     // Each run row gets the tokens of its run by the session id of the worker (ticket run-tokens).
     const runTokens = task.info?.runTokens ?? [];
-    body.append(...task.workers.map((worker) => workerRow(worker, workerRun(task, worker), runTokens.find((run) => run.session === worker.sessionId)?.models)));
+    // The newest run of the task: a stopped task's newest session is the one the user stopped (ticket ended-session-label).
+    const newest = task.workers.reduce<Worker | null>((best, worker) => (!best || (worker.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity) ? worker : best), null);
+    body.append(
+      ...task.workers.map((worker) => {
+        const kind = workerRun(task, worker);
+        const finished = kind === "plan" ? !!task.info?.plan : kind === "work" ? !!task.info?.report : !!(task.info?.plan || task.info?.report);
+        const userStopped = task.info?.state === "stopped" && worker === newest;
+        return workerRow(worker, kind, runTokens.find((run) => run.session === worker.sessionId)?.models, runChip(worker.state, finished, userStopped));
+      }),
+    );
     const info = task.info;
     // The plan row is a file, so it has no chip: a chip there read as a second run (task-plan-row-chip).
     // The state of the script stands in the header of the card and in the tooltip of the plan row.

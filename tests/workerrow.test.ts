@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { agentsText, fileRowTitle, rowParts, runCostText, runModelText, runTokensText, runTokensTitle, tokenText } from "../src/workerrow.ts";
+import { agentsText, fileRowTitle, rowParts, runChip, runCostText, runModelText, runTokensText, runTokensTitle, tokenText } from "../src/workerrow.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const HTML = read("../index.html");
@@ -164,4 +164,98 @@ test("the Help says that the plan row has no state chip and where the state stan
   assert.match(HTML, /The plan row shows when the plan file changed and has no state chip, so it does not look like a run/);
   assert.match(HTML, /the state of the task stands in the header of the card and in the tooltip of the row/);
   assert.match(HTML, /The report row shows the state from the first line of the report\./);
+});
+
+// Ticket ended-session-label: a session that Dispatch ended after its run finished shows "ended"
+// in the neutral look; a stop by the user and a session without the result of its run stay red.
+
+/** A run of a task as the open card sees it: its run, its session state, its start. */
+interface CardRun {
+  run: "plan" | "work" | undefined;
+  state: string | null;
+  startedAt: number;
+}
+
+/** The chips of the run rows of a card, with the facts that the card in main.ts hands to runChip. */
+function cardChips(runs: CardRun[], taskState: string, plan: boolean, report: boolean) {
+  const newest = runs.reduce((best, run) => (run.startedAt > best.startedAt ? run : best));
+  return runs.map((run) => {
+    const finished = run.run === "plan" ? plan : run.run === "work" ? report : plan || report;
+    return runChip(run.state, finished, taskState === "stopped" && run === newest);
+  });
+}
+
+test("the card of the screenshot: the plan run that Dispatch ended shows ended, the work run done", () => {
+  // bucket-title-wider: the plan session was stopped by the automatic end; the task state stays working.
+  const [plan, work] = cardChips(
+    [
+      { run: "plan", state: "stopped", startedAt: 1 },
+      { run: "work", state: "done", startedAt: 2 },
+    ],
+    "working",
+    true,
+    true,
+  );
+  assert.equal(plan.text, "ended");
+  assert.equal(plan.cls, "ended");
+  assert.match(plan.title, /Dispatch ended its idle session later/);
+  assert.deepEqual(work, { text: "done", cls: "done", title: "" });
+});
+
+test("a task that the user stopped keeps the red stopped chip on the run that the user stopped", () => {
+  const [only] = cardChips([{ run: "work", state: "stopped", startedAt: 1 }], "stopped", true, true);
+  assert.deepEqual(only, { text: "stopped", cls: "stopped", title: "" });
+  // The mixed task: the older plan run that Dispatch ended shows ended, the newest run stays stopped.
+  const [plan, work] = cardChips(
+    [
+      { run: "plan", state: "stopped", startedAt: 1 },
+      { run: "work", state: "stopped", startedAt: 2 },
+    ],
+    "stopped",
+    true,
+    false,
+  );
+  assert.equal(plan.text, "ended");
+  assert.deepEqual(work, { text: "stopped", cls: "stopped", title: "" });
+});
+
+test("a session that stopped before its run left its result stays stopped", () => {
+  const [plan] = cardChips([{ run: "plan", state: "stopped", startedAt: 1 }], "planning", false, false);
+  assert.deepEqual(plan, { text: "stopped", cls: "stopped", title: "" });
+  const [, work] = cardChips(
+    [
+      { run: "plan", state: "done", startedAt: 1 },
+      { run: "work", state: "stopped", startedAt: 2 },
+    ],
+    "working",
+    true,
+    false,
+  );
+  assert.deepEqual(work, { text: "stopped", cls: "stopped", title: "" });
+  // A worker without a known run counts the plan or the report as its result.
+  assert.equal(cardChips([{ run: undefined, state: "stopped", startedAt: 1 }], "working", false, true)[0].text, "ended");
+});
+
+test("the other states of a run row stay as they are", () => {
+  for (const state of ["failed", "working", "blocked", "done"]) {
+    assert.deepEqual(runChip(state, true, false), { text: state, cls: state, title: "" });
+    assert.deepEqual(runChip(state, false, true), { text: state, cls: state, title: "" });
+  }
+  assert.deepEqual(runChip(null, true, false), { text: "unknown", cls: "", title: "" });
+});
+
+test("the ended chip meets the page: the run row takes its chip from runChip; the Help names Ended", () => {
+  assert.match(MAIN, /import \{[^}]*runChip[^}]*\} from "\.\/workerrow"/);
+  assert.match(MAIN, /function workerRow\(worker: Worker, run: "plan" \| "work" \| undefined, models: ModelUsage\[\] \| undefined, chip: RunChip\)/);
+  assert.match(MAIN, /chipEl\.className = `chip \$\{chip\.cls\}`;/);
+  assert.match(MAIN, /chipEl\.textContent = chip\.text;/);
+  assert.match(MAIN, /if \(chip\.title\) row\.title \+= /);
+  assert.match(MAIN, /runChip\(worker\.state, finished, userStopped\)/);
+  assert.match(MAIN, /task\.info\?\.state === "stopped" && worker === newest/);
+  // The window Old sessions still shows the state of the session as it is.
+  assert.match(MAIN, /chip\.className = `chip \$\{worker\.state \?\? ""\}`;\s*chip\.textContent = worker\.state \?\? "unknown";/);
+  // The neutral look is the base chip: no rule of its own.
+  assert.doesNotMatch(CSS, /\.chip\.ended/);
+  assert.match(HTML, /shows <b>Ended<\/b> in grey: the run ended normally\. <b>Stopped<\/b> stays red for a task that you stopped/);
+  assert.match(HTML, /The card of the task then shows the run as <b>Ended<\/b>\./);
 });
