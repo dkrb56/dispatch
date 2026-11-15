@@ -106,69 +106,6 @@ summary:focus-visible {
   user-select: none;
 }
 
-#tabs {
-  display: flex;
-  gap: 4px;
-  min-width: 0;
-  margin-left: 6px;
-  overflow: hidden;
-}
-
-.tab {
-  display: flex;
-  flex: 0 1 auto;
-  align-items: center;
-  gap: 4px;
-  min-width: 56px;
-  height: 30px;
-  padding: 0 4px 0 12px;
-  border-radius: 6px;
-  white-space: nowrap;
-  cursor: default;
-}
-
-/* In a narrow window, a tab name becomes shorter. The close button stays. */
-.tab span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.tab.active {
-  background: var(--bg);
-  box-shadow: inset 0 0 0 1px var(--hairline);
-  color: var(--text);
-  font-weight: 600;
-}
-
-/* A dot in the accent color marks the tab that shows. */
-.tab.active::before {
-  flex: none;
-  width: 6px;
-  height: 6px;
-  margin-right: 2px;
-  border-radius: 50%;
-  background: var(--accent-bg);
-  content: "";
-}
-
-/* The tab of a project with a card that has the signal (ticket card-attention): a yellow dot before
-   the name, also on a tab that does not show. */
-.tab.attention::before {
-  flex: none;
-  width: 7px;
-  height: 7px;
-  margin-right: 2px;
-  border-radius: 50%;
-  background: var(--wait);
-  box-shadow: 0 0 0 3px var(--wait-glow);
-  content: "";
-}
-
-.tab.attention.pulse::before {
-  animation: attention-dot 1.6s ease-in-out infinite;
-}
-
 #bar button {
   display: flex;
   flex: none;
@@ -200,16 +137,6 @@ summary:focus-visible {
   background: var(--bg);
   color: inherit;
   font: inherit;
-}
-
-/* The button that closes a tab. */
-#bar .tab button {
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border-radius: 4px;
-  color: var(--muted);
 }
 
 /* The buttons with an outline open a panel or a popup. */
@@ -4412,7 +4339,6 @@ button.task-head:hover {
 
 /* Focus mode hides the tools of the tabs and the chat list. */
 body.focus-mode #toggle-chats,
-body.focus-mode #tabs,
 body.focus-mode #pane-tools,
 body.focus-mode #chats {
   display: none;
@@ -4584,8 +4510,7 @@ body.focus-mode #chats {
   #bar #setup-pipeline.attention.pulse,
   .task.attention.pulse,
   .task.attention.pulse .task-dot,
-  .focus-dot.attention.pulse,
-  .tab.attention.pulse::before {
+  .focus-dot.attention.pulse {
     animation: none;
   }
 }
@@ -4907,8 +4832,7 @@ body {
   color: var(--text);
 }
 
-/* In Details the projects group keeps its width, so the open group and every pill stay visible; the
-   terminal tabs shrink instead (they cut their names). */
+/* In Details the projects group keeps its width, so the open group and every pill stay visible. */
 body:not(.focus-mode):not(.map-mode):not(.overview-mode) #bar-projects,
 body:not(.focus-mode):not(.map-mode):not(.overview-mode) #focus-projects {
   flex-shrink: 0;
@@ -4977,6 +4901,54 @@ body:not(.focus-mode):not(.map-mode):not(.overview-mode) #focus-projects {
   width: 1px;
   height: 16px;
   background: var(--line);
+}
+
+/* A project without a workspace in Details (topbar-one-row): a dashed pill with an empty dot. */
+#bar .focus-pill.dashed {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.focus-dot.empty {
+  box-sizing: border-box;
+  border: 1px solid var(--muted);
+  background: none;
+}
+
+/* The × at the end of the open group closes the workspace of the project. */
+#bar .project-group .project-close {
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  padding: 0;
+  border-radius: 6px;
+  color: var(--muted);
+}
+
+/* A tab that is no workspace: a pill without a dot, with its own ×; the active one as the former tab. */
+#bar .tab-pill {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px 0 10px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+#bar .tab-pill.active {
+  background: var(--bg);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  font-weight: 600;
+}
+
+#bar .tab-pill button {
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 4px;
+  color: var(--muted);
 }
 
 .project-tools {
@@ -5523,6 +5495,16 @@ body:not(.map-mode):not(.overview-mode) #stale-alert {
   margin-right: 6px;
 }
 
+/* In Details Chats stands at the right edge before Nightmode and takes the push (topbar-one-row);
+   the other views hide Chats, so Nightmode keeps it there. */
+body:not(.focus-mode):not(.map-mode):not(.overview-mode) #bar #toggle-chats {
+  margin-left: auto;
+}
+
+body:not(.focus-mode):not(.map-mode):not(.overview-mode) #bar #night-mode {
+  margin-left: 6px;
+}
+
 #night-mode + #pane-tools {
   margin-left: 0;
 }
@@ -5796,7 +5778,6 @@ body:not(.focus-mode) .pane-bar .workers-hide {
    The Map: each project as a graph of you, triage, its tasks with their runs, and the agents. */
 
 body.map-mode #toggle-chats,
-body.map-mode #tabs,
 body.map-mode #pane-tools,
 body.map-mode #chats {
   display: none;
@@ -6580,7 +6561,6 @@ svg.links {
 
 body.overview-mode #bar-projects,
 body.overview-mode #toggle-chats,
-body.overview-mode #tabs,
 body.overview-mode #pane-tools,
 body.overview-mode #chats,
 body.overview-mode .chats-resize {

@@ -63,7 +63,7 @@ import { durationText, runTime } from "./duration";
 import { agentsText, fileRowTitle, rowParts, runCostText, runTokensTitle, tokenText } from "./workerrow";
 import { announcements, parseEnded, serializeEnded } from "./announce";
 import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, type FailedEnds, oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
-import { currentProject, groupCount, pillCount } from "./topbar";
+import { barItems, currentProject, detailsProjects, groupCount, pillCount, type PlainTab } from "./topbar";
 import { PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
@@ -295,8 +295,6 @@ interface Tab {
   id: string;
   /** Holds one pane, or a tree of `.split` elements with panes. */
   view: HTMLDivElement;
-  button: HTMLDivElement;
-  label: HTMLSpanElement;
   focus: string | null;
 }
 
@@ -336,7 +334,6 @@ const PROMPT_WAIT_MS = 8000;
 /** Claude Code needs some seconds to start. Only then the chat list gives the terminal of a chat. */
 const CHAT_START_MS = 15_000;
 
-const tabsEl = document.querySelector<HTMLDivElement>("#tabs")!;
 const panesEl = document.querySelector<HTMLElement>("#panes")!;
 const chatsEl = document.querySelector<HTMLElement>("#chats")!;
 const workerAlertEl = document.querySelector<HTMLButtonElement>("#worker-alert")!;
@@ -773,7 +770,7 @@ async function openChat(chat: Chat): Promise<void> {
 /**
  * The Chat button of a project (ticket auto-todo, user decision 4): a new tab with a plain Claude
  * Code chat in the project folder, on the host of the project, without the triage role and outside
- * the pipeline, for a question without a ticket. The tabs show in Details, so the view goes there.
+ * the pipeline, for a question without a ticket. The tab shows as a plain pill in Details, so the view goes there.
  */
 async function openProjectChat(ref: ProjectRef): Promise<void> {
   if (focusOn || mapOn || overviewOn) await setView("tabs");
@@ -6563,14 +6560,12 @@ function folderName(path: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : path;
 }
 
-/** The tab shows the folder of its focused pane. */
+/** The plain pill of a tab shows the folder of its focused pane (ticket topbar-one-row). */
 function updateLabel(tab: Tab): void {
-  const pane = panes.get(tab.focus ?? "");
-  if (!pane) return;
-  tab.label.textContent = pane.cwd ? projectName({ host: pane.host, root: pane.cwd }) : pane.shell;
-  tab.button.title = pane.cwd ? `${pane.shell}: ${pane.cwd}${backends().length > 1 ? ` on ${backendName(pane.host)}` : ""}` : pane.shell;
+  if (!panes.has(tab.focus ?? "")) return;
   // The chat panel shows the chats of the folder of the focused terminal.
   renderChats();
+  renderPills();
 }
 
 /** Reads the layout of a tab from its elements. */
@@ -6620,10 +6615,7 @@ function activate(id: string): void {
   const tab = tabs.get(id);
   if (!tab) return;
   activeId = id;
-  for (const other of tabs.values()) {
-    other.view.classList.toggle("active", other === tab);
-    other.button.classList.toggle("active", other === tab);
-  }
+  for (const other of tabs.values()) other.view.classList.toggle("active", other === tab);
   fitTab(id);
   for (const pane of tabPanes(id)) pane.sideDue = 0;
   panes.get(tab.focus ?? "")?.term.focus();
@@ -6808,20 +6800,23 @@ async function closeTab(id: string): Promise<void> {
     showGallery(pane.thumbsEl, [], () => {});
   }
   tab.view.remove();
-  tab.button.remove();
   for (const pane of closed) {
     await call(pane.host, "pty_kill", { id: pane.id });
   }
 
+  // The × of the last workspace keeps the window (ticket topbar-one-row, user decision 3): a plain
+  // shell tab opens on the first backend, as at a start without tabs.
   if (tabs.size === 0) {
     activeId = null;
+    await newTab("powershell", firstBackend());
     await saveState();
-    await getCurrentWindow().close();
     return;
   }
   if (activeId === id) {
     activate(order[index + 1] ?? order[index - 1]);
   }
+  // The pill of the closed tab goes, also when it was not the active one.
+  renderPills();
   await saveState();
 }
 
@@ -7176,30 +7171,12 @@ async function openTab(
   view.append(buildNode(id, saved.layout, created));
   panesEl.append(view);
 
-  const button = document.createElement("div");
-  button.className = "tab";
-  const label = document.createElement("span");
-  const close = document.createElement("button");
-  close.textContent = "×";
-  close.title = "Close tab";
-  button.append(label, close);
-  tabsEl.append(button);
-
   const focus = created.some((pane) => pane.id === saved.focus) ? saved.focus : created[0].id;
-  const tab: Tab = { id, view, button, label, focus };
+  const tab: Tab = { id, view, focus };
   tabs.set(id, tab);
   updateLabel(tab);
   // The view must be visible before the terminals can measure their size.
   activate(id);
-
-  button.addEventListener("click", () => {
-    activate(id);
-    void saveState();
-  });
-  close.addEventListener("click", (event) => {
-    event.stopPropagation();
-    void closeTab(id);
-  });
 
   for (const pane of created) {
     await startPane(pane, restore, starts?.get(pane.id));
@@ -7932,30 +7909,53 @@ function renderFocus(): void {
  * Focus shows its projects; the other modes show the projects of the Map.
  * In Details the current project is an open group with its own buttons (topbar-projects): the
  * project of the focused terminal, else the one clicked or typed in last, else the first.
- * A click goes to the project: its column in Focus, its graph in the Map, its workspace tab in
+ * A click goes to the project: its column in Focus, its graph in the Map, its workspace in
  * Details. The Overview branch stays, but no click reaches it while the group is hidden there.
+ * In Details the bar has no tab strip (topbar-one-row): the focus projects and the other
+ * workspaces are the pills, a project without a workspace is a dashed pill, the open group ends
+ * with a × that closes the workspace, and each tab that is no workspace is a plain pill at the end.
  */
 function renderPills(): void {
-  const roots = focusOn ? focusProjects : mapProjects();
+  const details = !focusOn && !mapOn && !overviewOn;
+  const workspaces = workspaceRefs();
+  let roots = focusOn ? focusProjects : mapProjects();
+  if (details) {
+    const byKey = new Map([...focusProjects, ...workspaces].map((ref) => [refKey(ref), ref]));
+    roots = detailsProjects(focusProjects.map(refKey), workspaces.map(refKey)).map((key) => byKey.get(key)!);
+  }
   const keys = roots.map(refKey);
+  // Outside Details every pill keeps the full look; only the bar of Details changes.
+  const withWorkspace = new Set(details ? workspaces.map(refKey) : keys);
   let open: string | null = null;
-  if (!focusOn && !mapOn && !overviewOn) {
+  if (details) {
+    // The open group is the workspace that the window shows below: a project with a workspace.
+    const workspaceKeys = keys.filter((key) => withWorkspace.has(key));
     const pane = focusedPane();
     const at = pane ? { host: pane.host, cwd: pane.project ?? pane.cwd ?? null } : null;
-    const focusedKey = at ? (keys.find((key) => inProject(at, key)) ?? "") : "";
-    open = currentProject(keys, focusedKey, focusCurrent);
+    const focusedKey = at ? (workspaceKeys.find((key) => inProject(at, key)) ?? "") : "";
+    open = currentProject(workspaceKeys, focusedKey, focusCurrent);
   }
-  const pills = roots.map((root) => {
-    const key = refKey(root);
+  const items = barItems(keys, withWorkspace, open, details ? plainTabs() : []);
+  const pills: HTMLElement[] = [];
+  items.forEach((item, index) => {
+    if (item.kind === "tab") {
+      // One divider between the projects and the plain tabs.
+      if (index === keys.length && index > 0) pills.push(barDivider());
+      pills.push(tabPill(item));
+      return;
+    }
+    const root = roots[index];
+    const key = item.key;
     const state = focusState(root);
-    const isOpen = key === open;
+    const isOpen = item.kind === "open";
+    const dashed = item.kind === "dashed";
     const badge = isOpen ? groupCount(state) : pillCount(state);
     const pill = document.createElement("button");
     const signal = attentionClasses(projectSignal(key));
-    pill.className = `${isOpen ? "project-group-head" : "focus-pill"}${signal}`;
+    pill.className = `${isOpen ? "project-group-head" : "focus-pill"}${dashed ? " dashed" : ""}${signal}`;
     pill.title = backends().length > 1 ? `${root.root}\non ${backendName(root.host)}` : root.root;
     const dot = document.createElement("span");
-    dot.className = `focus-dot ${badge.kind}${signal}`;
+    dot.className = `focus-dot ${badge.kind}${dashed ? " empty" : ""}${signal}`;
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = projectName(root);
@@ -7980,37 +7980,90 @@ function renderPills(): void {
         if (triage) {
           activate(triage.tabId);
           triage.term.focus();
-        } else void openWorkspace(root.host, root.root).then(renderPills);
+        } else {
+          // A dashed pill starts the workspace as + does: the Setup pipeline window first when the
+          // project is not set up (topbar-one-row).
+          openProject(root)
+            .then(renderPills)
+            .catch((error) => console.error("project open failed", error));
+        }
         renderPills();
       }
     });
-    if (!isOpen) return pill;
-    // The open group: the head of the pill, a divider, and the buttons of the project.
+    if (!isOpen) {
+      pills.push(pill);
+      return;
+    }
+    // The open group: the head of the pill, a divider, the buttons of the project, a divider and ×.
     const group = document.createElement("div");
     group.className = "project-group";
     group.dataset.project = key;
-    const divider = document.createElement("span");
-    divider.className = "project-divider";
-    divider.setAttribute("aria-hidden", "true");
-    group.append(pill, divider, projectTools(root).el);
-    return group;
+    const close = document.createElement("button");
+    close.className = "project-close";
+    close.textContent = "×";
+    close.title = `Close the workspace of ${projectName(root)}: triage and the agent view end`;
+    close.setAttribute("aria-label", `Close the workspace of ${projectName(root)}`);
+    close.addEventListener("click", (event) => {
+      // A click on × is not a click on the pill.
+      event.stopPropagation();
+      const { triage, agents } = workspacePanes(root);
+      const tabId = (triage ?? agents)?.tabId;
+      if (tabId) void closeTab(tabId);
+    });
+    group.append(pill, barDivider(), projectTools(root).el, barDivider(), close);
+    pills.push(group);
   });
   focusProjectsEl.replaceChildren(...pills);
-  markTabs();
   showSetupButtons();
 }
 
-/** Marks the tab of each project with a task that has the signal (ticket card-attention). */
-function markTabs(): void {
-  for (const tab of tabs.values()) {
-    const keys = new Set(tabPanes(tab.id).flatMap((pane) => (pane.project ? [paneKey(pane)] : [])));
-    toggleAttention(tab.button, [...keys].some((key) => projectSignal(key)));
-  }
+/** A thin divider of the bar. */
+function barDivider(): HTMLSpanElement {
+  const divider = document.createElement("span");
+  divider.className = "project-divider";
+  divider.setAttribute("aria-hidden", "true");
+  return divider;
+}
+
+/** The tabs that are no workspace: a chat, a Chat of a project, a plain shell (topbar-one-row). */
+function plainTabs(): PlainTab[] {
+  return [...tabs.values()]
+    .filter((tab) => !tabPanes(tab.id).some((pane) => pane.role && pane.project))
+    .map((tab) => {
+      const pane = panes.get(tab.focus ?? "");
+      const label = pane ? (pane.cwd ? projectName({ host: pane.host, root: pane.cwd }) : pane.shell) : "";
+      return { id: tab.id, label, active: tab.id === activeId };
+    });
+}
+
+/** The plain pill of a tab that is no workspace: the folder of its focused pane and its own ×. */
+function tabPill(item: PlainTab): HTMLElement {
+  const pill = document.createElement("div");
+  pill.className = `focus-pill tab-pill${item.active ? " active" : ""}`;
+  const pane = panes.get(tabs.get(item.id)?.focus ?? "");
+  pill.title = pane?.cwd ? `${pane.shell}: ${pane.cwd}${backends().length > 1 ? ` on ${backendName(pane.host)}` : ""}` : (pane?.shell ?? "");
+  const name = document.createElement("span");
+  name.className = "name";
+  name.textContent = item.label;
+  const close = document.createElement("button");
+  close.textContent = "×";
+  close.title = "Close tab";
+  close.setAttribute("aria-label", `Close ${item.label}`);
+  pill.append(name, close);
+  pill.addEventListener("click", () => {
+    activate(item.id);
+    void saveState();
+  });
+  close.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void closeTab(item.id);
+  });
+  return pill;
 }
 
 /**
  * Shows the signal of each project at once, after a press in a card or a full render: the pills,
- * the tabs, the dots of the Focus columns, the Overview cards and the Map heads.
+ * the dots of the Focus columns, the Overview cards and the Map heads.
  */
 function showProjectAttention(): void {
   renderPills();

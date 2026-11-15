@@ -34,9 +34,54 @@ export function groupCount(state: ProjectState): { text: string; kind: CountKind
 /**
  * The project whose group is open: the project of the focused terminal when it has a pill, else the
  * project that the user clicked or typed in last, else the first pill. Without pills none.
+ * In Details the keys are the projects with a workspace, so the open group is always a workspace.
  */
 export function currentProject(keys: readonly string[], focused: string, remembered: string): string | null {
   if (keys.includes(focused)) return focused;
   if (keys.includes(remembered)) return remembered;
   return keys[0] ?? null;
+}
+
+/**
+ * The projects of the bar in Details (ticket topbar-one-row): the projects of focus mode in their
+ * saved order, then each project with a workspace that focus mode does not have, in the order the
+ * workspaces opened. The bar has no tab strip, so every workspace needs a pill.
+ */
+export function detailsProjects(focusKeys: readonly string[], workspaceKeys: readonly string[]): string[] {
+  const keys = [...focusKeys];
+  for (const key of workspaceKeys) if (!keys.includes(key)) keys.push(key);
+  return keys;
+}
+
+/** A tab that is no workspace: a chat from the chat list, a Chat of a project, a plain shell. */
+export interface PlainTab {
+  id: string;
+  label: string;
+  active: boolean;
+}
+
+/** One item of the row: the open group, a full pill, a dashed pill, or a plain tab. */
+export type BarItem =
+  | { kind: "open"; key: string; close: true }
+  | { kind: "full" | "dashed"; key: string; close: false }
+  | { kind: "tab"; id: string; label: string; active: boolean; close: true };
+
+/**
+ * The row of the bar in Details: one item per project, then one per plain tab. A project with a
+ * workspace is a full pill, one without is a dashed pill. The open project is the open group, with
+ * a close; it must have a workspace, else no group is open. Each plain tab has its own close.
+ */
+export function barItems(
+  keys: readonly string[],
+  withWorkspace: ReadonlySet<string>,
+  open: string | null,
+  tabs: readonly PlainTab[],
+): BarItem[] {
+  const items: BarItem[] = keys.map((key): BarItem => {
+    if (!withWorkspace.has(key)) return { kind: "dashed", key, close: false };
+    if (key === open) return { kind: "open", key, close: true };
+    return { kind: "full", key, close: false };
+  });
+  for (const tab of tabs) items.push({ kind: "tab", id: tab.id, label: tab.label, active: tab.active, close: true });
+  return items;
 }

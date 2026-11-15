@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { currentProject, groupCount, pillCount } from "../src/topbar.ts";
+import { barItems, currentProject, detailsProjects, groupCount, pillCount } from "../src/topbar.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 
@@ -53,4 +53,53 @@ test("paused: the pill and the group say paused; something that waits still says
   assert.deepEqual(groupCount({ waits: 0, working: 1, paused: true }), { text: "1 working · paused", kind: "working" });
   assert.deepEqual(groupCount({ waits: 2, working: 1, paused: true }), { text: "2 wait", kind: "waits" });
   assert.deepEqual(groupCount({ waits: 0, working: 0, paused: false }), { text: "idle", kind: "idle" });
+});
+
+// One row of pills in Details (ticket topbar-one-row): no tab strip; the pills are the one list.
+test("Details lists the focus projects, then the other workspaces in their order", () => {
+  assert.deepEqual(detailsProjects(["a", "b"], ["c", "a", "d"]), ["a", "b", "c", "d"]);
+  assert.deepEqual(detailsProjects([], ["c", "d"]), ["c", "d"]);
+  assert.deepEqual(detailsProjects(["a"], []), ["a"]);
+});
+
+test("the bar rule: a workspace is a full pill, none is dashed, the open group has the only project close", () => {
+  const items = barItems(["a", "b", "c"], new Set(["a", "c"]), "c", []);
+  assert.deepEqual(items, [
+    { kind: "full", key: "a", close: false },
+    { kind: "dashed", key: "b", close: false },
+    { kind: "open", key: "c", close: true },
+  ]);
+  assert.equal(items.filter((item) => item.close).length, 1);
+});
+
+test("the bar rule: a project without a workspace is never the open group", () => {
+  const items = barItems(["a", "b"], new Set(["a"]), "b", []);
+  assert.deepEqual(items.map((item) => item.kind), ["full", "dashed"]);
+  assert.ok(items.every((item) => !item.close));
+  assert.deepEqual(barItems([], new Set(), null, []), []);
+});
+
+test("the bar rule: a plain tab is a plain pill after the projects, with its own close", () => {
+  const items = barItems(["a"], new Set(["a"]), "a", [
+    { id: "t1", label: "chat", active: true },
+    { id: "t2", label: "pwsh", active: false },
+  ]);
+  assert.deepEqual(items, [
+    { kind: "open", key: "a", close: true },
+    { kind: "tab", id: "t1", label: "chat", active: true, close: true },
+    { kind: "tab", id: "t2", label: "pwsh", active: false, close: true },
+  ]);
+});
+
+test("the page has no tab strip, and Chats stands directly before Nightmode", () => {
+  const html = read("../index.html");
+  const main = read("../src/main.ts");
+  assert.doesNotMatch(html, /id="tabs"/);
+  assert.doesNotMatch(main, /tabsEl/);
+  assert.doesNotMatch(main, /className = "tab"/);
+  // Between Chats and Nightmode stand only the hidden alert buttons.
+  const between = html.match(/<button id="toggle-chats"[\s\S]*?<\/button>([\s\S]*?)<button id="night-mode"/);
+  assert.ok(between, "Chats stands before Nightmode");
+  const ids = [...between[1].matchAll(/<(\w+) id="([^"]+)"/g)].map((m) => m[2]);
+  assert.ok(ids.every((id) => id.endsWith("-alert")), `only alerts between Chats and Nightmode: ${ids.join(", ")}`);
 });
