@@ -6,7 +6,24 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ageText, belongsTo, oldButtonText, rowTexts, sessionRun, type StaleSession, staleButtonText, staleCounts, staleSessions, type StaleTask } from "../src/stale.ts";
+import {
+  AUTO_END_DELAY_MS,
+  AUTO_END_MAX_TRIES,
+  AUTO_END_RETRY_MS,
+  ageText,
+  autoEndCandidates,
+  belongsTo,
+  endedText,
+  type FailedEnds,
+  oldButtonText,
+  rowTexts,
+  sessionRun,
+  type StaleSession,
+  staleButtonText,
+  staleCounts,
+  staleSessions,
+  type StaleTask,
+} from "../src/stale.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const DAY = 86_400_000;
@@ -122,6 +139,62 @@ test("the newest session comes first", () => {
   assert.deepEqual(rows.map((row) => row.task), ["b", "a"]);
 });
 
+// The automatic end (ticket old-sessions-auto-end): the rule of the brief.
+const MIN = 60_000;
+const endedAgo = (ms: number) => new Date(NOW - ms).toISOString();
+const due = (tasks: StaleTask[], failed: Map<string, FailedEnds> = new Map()) =>
+  autoEndCandidates(staleSessions(tasks), NOW, failed, (s) => s.id).map((row) => row.session.name);
+
+test("a session of a done task is endable after the delay, not before", () => {
+  assert.equal(AUTO_END_DELAY_MS, 10 * MIN);
+  const late = session("t-done [work]", "done", NOW - DAY, { held: true, endedAt: endedAgo(11 * MIN) });
+  assert.deepEqual(due([task("t-done", "done", [late])]), ["t-done [work]"]);
+  const early = session("t-done [work]", "done", NOW - DAY, { held: true, endedAt: endedAgo(2 * MIN) });
+  assert.deepEqual(due([task("t-done", "done", [early])]), []);
+  // Failed, stopped and a task that waits for Merge are finished too.
+  for (const phase of ["failed", "stopped", "merge"]) {
+    assert.deepEqual(due([task("t-end", phase, [session("t-end [work]", "done", NOW - DAY, { held: true, endedAt: endedAgo(DAY) })])]), ["t-end [work]"], phase);
+  }
+  // An older run that a newer run replaced counts too.
+  const old = session("t-old [plan]", "done", NOW - 2 * DAY, { held: true, endedAt: endedAgo(DAY) });
+  const newer = session("t-old [work]", "done", NOW - DAY);
+  assert.deepEqual(due([task("t-old", "done", [old, newer])]), ["t-old [plan]"]);
+});
+
+test("without an end time the start counts; without both the session never counts", () => {
+  assert.deepEqual(due([task("t-s", "done", [session("t-s [work]", "done", NOW - 11 * MIN, { held: true })])]), ["t-s [work]"]);
+  assert.deepEqual(due([task("t-s", "done", [session("t-s [work]", "done", NOW - 2 * MIN, { held: true })])]), []);
+  const none = { id: "n1", name: "t-n [work]", state: "done", held: true, pid: null, startedAt: null, endedAt: null };
+  assert.deepEqual(autoEndCandidates([{ session: none, task: "t-n", run: "work", reason: "x" }], NOW, new Map(), (s) => s.id), []);
+});
+
+test("a task that waits for Approve, an answer or a permission, or that runs, is never endable", () => {
+  const ended = () => session("t-w [plan]", "done", NOW - 2 * DAY, { held: true, endedAt: endedAgo(DAY) });
+  // A written and unapproved plan: Approve resumes this session.
+  assert.deepEqual(due([task("t-w", "plan-ready", [ended()])]), []);
+  // A waiting question or permission: the answer or Continue resumes it.
+  assert.deepEqual(due([task("t-w", "question", [ended()])]), []);
+  assert.deepEqual(due([task("t-w", "permission", [ended()])]), []);
+  // A running worker, or one at a permission prompt: the task is left out whole.
+  assert.deepEqual(due([task("t-w", "working", [ended(), session("t-w [work]", "working", NOW - MIN, { held: true })])]), []);
+  assert.deepEqual(due([task("t-w", "prompt", [ended(), session("t-w [work]", "blocked", NOW - MIN, { held: true })])]), []);
+  // An approval that waits for the project, or a run that is starting.
+  assert.deepEqual(due([task("t-w", "queued", [ended()], true)]), []);
+});
+
+test("a failed end waits before the next try and stops after the last one", () => {
+  const s = session("t-f [work]", "done", NOW - DAY, { held: true, endedAt: endedAgo(DAY) });
+  const tasks = [task("t-f", "done", [s])];
+  assert.deepEqual(due(tasks, new Map([[s.id, { count: 1, at: NOW - MIN }]])), []);
+  assert.deepEqual(due(tasks, new Map([[s.id, { count: 1, at: NOW - AUTO_END_RETRY_MS - MIN }]])), ["t-f [work]"]);
+  assert.deepEqual(due(tasks, new Map([[s.id, { count: AUTO_END_MAX_TRIES, at: NOW - DAY }]])), []);
+});
+
+test("the line of a session that Dispatch ended", () => {
+  assert.equal(endedText({ name: "t-1 [work]", task: "t-1", run: "work", at: NOW }, () => "14:05"), "Ended by Dispatch at 14:05: Work run of t-1 (t-1 [work])");
+  assert.equal(endedText({ name: "t-2", task: "t-2", run: undefined, at: NOW }, () => "9:00"), "Ended by Dispatch at 9:00: Worker of t-2 (t-2)");
+});
+
 test("the list meets the page: main.ts uses the module and the command, the Help names the button", () => {
   const main = read("../src/main.ts");
   const html = read("../index.html");
@@ -130,6 +203,9 @@ test("the list meets the page: main.ts uses the module and the command, the Help
   assert.match(html, /id="stale-alert"/);
   assert.match(html, /<dialog id="stale"/);
   assert.match(html, /<b>Old sessions\.<\/b>/);
+  // The automatic end (ticket old-sessions-auto-end): the page uses the rule, and the Help says so.
+  assert.match(main, /autoEndCandidates\(/);
+  assert.match(html, /<b>Old sessions\.<\/b> Dispatch ends finished worker sessions by itself/);
 });
 
 test("a done task whose branch waits for Merge: its finished work run is an old session (ticket task-branches)", () => {

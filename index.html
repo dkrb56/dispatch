@@ -25,7 +25,7 @@
         Chats
       </button>
       <button id="worker-alert" hidden></button>
-      <button id="stale-alert" hidden title="Worker sessions that Claude Code still keeps open after their task ended. Click to see them and end each one."></button>
+      <button id="stale-alert" hidden title="Worker sessions that Claude Code still keeps open after their task ended. Dispatch ends them by itself about 10 minutes after their task ended; click to see them, what Dispatch ended, and to end one now."></button>
       <button id="update-alert" hidden></button>
       <div id="tabs"></div>
       <button id="night-mode" role="switch" aria-checked="false" title="Nightmode is off. Turn it on when you go away: work goes on with the recommended default for each decision, and you get a morning list. Dispatch keeps the switch over a restart, and the triage chats follow it. While it is on, the PC that does the work does not go to sleep.">
@@ -242,7 +242,8 @@
       </header>
       <p id="stale-intro">
         Claude Code still keeps these worker sessions open, but their task is finished or a newer run of the task took over.
-        End closes one session. Its task, report and state do not change.
+        Dispatch ends them by itself about 10 minutes after their task ended. End closes one session now. Its task, report and state do not change.
+        A session that Dispatch could not end shows the error, and Dispatch tries again later.
       </p>
       <div id="stale-body"></div>
     </dialog>
@@ -422,7 +423,7 @@
           <li><b>Environment</b> in the side panel shows the shell, folder, branch and session of a terminal. Its <b>Remote Control</b> switch turns Remote Control on or off.</li>
           <li><b>The yellow button</b> in the top bar shows when a worker waits for you. Click it to open that worker.</li>
           <li><b>A pulsing card</b> waits for you. The pill or tab of its project pulses too when the project is not in view. A click on the card stops it; Options and the system setting for reduced motion turn the motion off.</li>
-          <li><b>Old sessions.</b> The button <b>N old</b> lists finished worker sessions that Claude Code still keeps open. <b>End</b> closes one.</li>
+          <li><b>Old sessions.</b> Dispatch ends finished worker sessions by itself after about 10 minutes. The button <b>N old</b> lists the ones that still wait and what Dispatch ended. <b>End</b> closes one now.</li>
           <li>The folder button of a project opens its workspace again and continues its last triage chat.</li>
         </ul>
         <details class="help-more">

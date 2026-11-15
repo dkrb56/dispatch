@@ -62,7 +62,7 @@ import { type FileEntry, type FileInfo, initViewer, onHost, openViewer, showGall
 import { durationText, runTime } from "./duration";
 import { agentsText, fileRowTitle, rowParts, runCostText, runTokensTitle, tokenText } from "./workerrow";
 import { announcements, parseEnded, serializeEnded } from "./announce";
-import { oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
+import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, type FailedEnds, oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
 import { currentProject, groupCount, pillCount } from "./topbar";
 import { PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
@@ -2406,7 +2406,9 @@ function projectTaskList(project: ProjectTasks): Task[] {
 // their task ended or after a newer run took over. The rule is in src/stale.ts; this part gives it
 // the tasks of the projects that the window reads, and shows the rows in the window "Old sessions"
 // behind the button in the top bar. End runs `claude stop` on the host of the session; the files of
-// the task do not change, and the triage chat gets no line.
+// the task do not change, and the triage chat gets no line. Since ticket old-sessions-auto-end the
+// window that drives the host of a row ends it by itself after the delay (`autoEndStale`); End stays
+// for a session whose end failed.
 
 /** A stale session and its project. */
 interface StaleEntry {
@@ -2418,6 +2420,14 @@ interface StaleEntry {
 const endingSessions = new Set<string>();
 /** The refusal of the last End click of a session, by `workerKey`. */
 const staleErrors = new Map<string, string>();
+/** The failed automatic ends of each session, by `workerKey` (ticket old-sessions-auto-end). */
+const autoEndFailures = new Map<string, FailedEnds & { error: string }>();
+/** The sessions that this window ended by itself in this run, newest first, with their project key (user decision 3). */
+let autoEnded: (EndedSession & { project: string })[] = [];
+/** At most this many entries in the list "Ended by Dispatch". */
+const AUTO_ENDED_MAX = 50;
+/** A batch of automatic ends runs. */
+let autoEnding = false;
 const staleDialog = document.querySelector<HTMLDialogElement>("#stale")!;
 let staleShown: StaleEntry[] = [];
 /** The project whose rows the window shows after a click on its "N old" button; null shows every project (topbar-projects). */
@@ -2471,11 +2481,13 @@ function renderStale(): void {
   const body = document.querySelector<HTMLElement>("#stale-body")!;
   // After a click on "N old" of a project, only the rows of that project (topbar-projects).
   const shown = staleFilter === null ? staleShown : staleShown.filter((entry) => staleKey(entry) === staleFilter);
+  const ended = endedParts();
   if (shown.length === 0) {
     const none = document.createElement("p");
     none.className = "stale-none";
-    none.textContent = "No old session. Every worker session that Claude Code still keeps belongs to a task that works or waits for you.";
-    body.replaceChildren(none);
+    none.textContent =
+      "No old session. Every worker session that Claude Code still keeps belongs to a task that works or waits for you. Dispatch ends a finished session by itself about 10 minutes after its task ended.";
+    body.replaceChildren(none, ...ended);
     return;
   }
   const groups = new Map<string, StaleEntry[]>();
@@ -2536,7 +2548,24 @@ function renderStale(): void {
       parts.push(made);
     }
   }
-  body.replaceChildren(...parts);
+  body.replaceChildren(...parts, ...ended);
+}
+
+/** The list "Ended by Dispatch": the sessions that this window ended by itself in this run, newest first (ticket old-sessions-auto-end). */
+function endedParts(): HTMLElement[] {
+  const entries = staleFilter === null ? autoEnded : autoEnded.filter((entry) => entry.project === staleFilter);
+  if (entries.length === 0) return [];
+  const heading = document.createElement("h3");
+  heading.className = "stale-project";
+  heading.textContent = "Ended by Dispatch";
+  const time = (at: number) => new Date(at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  const lines = entries.map((entry) => {
+    const line = document.createElement("p");
+    line.className = "stale-age";
+    line.textContent = endedText(entry, time);
+    return line;
+  });
+  return [heading, ...lines];
 }
 
 /** The End button of a row: `claude stop` on the host of the session, then a new read of the workers. */
@@ -2567,6 +2596,72 @@ async function endSession(worker: Worker): Promise<void> {
   }
   updateStaleAlert();
   renderStale();
+}
+
+/**
+ * Ends the old sessions whose delay ran out (ticket old-sessions-auto-end). Only the rows of the
+ * hosts that this window drives (the driver lease), so two windows never end one session twice. The
+ * ends run one after the other; a failed one is logged, shown in its row, and tried again after the
+ * retry wait of `autoEndCandidates`. The caller does not wait for it: the task poll never blocks.
+ * Like End, an ended session is quiet for triage (`endingSessions`) and the task files do not change.
+ */
+async function autoEndStale(): Promise<void> {
+  if (autoEnding) return;
+  const entries = staleShown.filter((entry) => driverOf(entry.row.session.host) && !endingSessions.has(workerKey(entry.row.session)));
+  const due = autoEndCandidates(
+    entries.map((entry) => entry.row),
+    Date.now(),
+    autoEndFailures,
+    workerKey,
+  );
+  if (due.length === 0) return;
+  autoEnding = true;
+  const byKey = new Map(entries.map((entry) => [workerKey(entry.row.session), entry]));
+  const fail = (key: string, worker: Worker, error: string) => {
+    endingSessions.delete(key);
+    const count = (autoEndFailures.get(key)?.count ?? 0) + 1;
+    autoEndFailures.set(key, { count, at: Date.now(), error });
+    staleErrors.set(key, `Dispatch could not end this session (try ${count} of ${AUTO_END_MAX_TRIES}): ${error}`);
+    console.warn("automatic end of an old session failed", worker.name ?? worker.id, error);
+  };
+  try {
+    const stopped: StaleRow<Worker>[] = [];
+    for (const row of due) {
+      const worker = row.session;
+      const key = workerKey(worker);
+      endingSessions.add(key);
+      if (staleDialog.open) renderStale();
+      try {
+        await call<string>(worker.host, "worker_end", { id: worker.id });
+        stopped.push(row);
+      } catch (error) {
+        fail(key, worker, String(error));
+      }
+    }
+    try {
+      await refreshWorkers();
+    } catch (error) {
+      console.error("worker list refresh failed", error);
+    }
+    for (const row of stopped) {
+      const worker = row.session;
+      const key = workerKey(worker);
+      // `claude stop` returned, but Claude Code may still hold the session, as at the End button.
+      const after = workerList.find((known) => workerKey(known) === key);
+      if (after?.held && after.state !== "stopped") {
+        fail(key, worker, `claude stop returned, but Claude Code still lists the session as ${after.state ?? "unknown"}.`);
+        continue;
+      }
+      autoEndFailures.delete(key);
+      staleErrors.delete(key);
+      const project = byKey.get(key);
+      autoEnded = [{ name: worker.name ?? worker.id, task: row.task, run: row.run, at: Date.now(), project: project ? staleKey(project) : "" }, ...autoEnded].slice(0, AUTO_ENDED_MAX);
+    }
+  } finally {
+    autoEnding = false;
+  }
+  updateStaleAlert();
+  if (staleDialog.open) renderStale();
 }
 
 function initStale(): void {
@@ -7235,7 +7330,7 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   setup.classList.add("project-setup");
   setup.dataset.project = key;
   setup.dataset.name = name;
-  const oldEl = tool("", `The worker sessions of ${name} that Claude Code still keeps after their task ended. Click to see them and end each one.`, () => openStale(key));
+  const oldEl = tool("", `The worker sessions of ${name} that Claude Code still keeps after their task ended. Dispatch ends them by itself about 10 minutes after their task ended; click to see them, what Dispatch ended, and to end one now.`, () => openStale(key));
   oldEl.classList.add("project-old");
   const folder = tool("", `Open the workspace of ${name}: triage and the agent view. A project that is not set up shows the Setup pipeline window first.`, () => {
     openProject(ref).catch((error) => console.error("project open failed", error));
@@ -8003,6 +8098,8 @@ async function refreshFocusTasks(): Promise<void> {
   );
   // First the old sessions per project: their count stands in the columns and the pills.
   updateStaleAlert();
+  // The old sessions whose delay ran out end without a wait of the poll (ticket old-sessions-auto-end).
+  autoEndStale().catch((error) => console.error("automatic end of old sessions failed", error));
   renderFocus();
   renderMap();
   renderOverview();

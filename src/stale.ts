@@ -2,6 +2,8 @@
 // holds after their task ended, or after a newer run of the task took over. The agent view of
 // Claude Code shows them under "Needs input" for days. The window lists them with a button that
 // ends each one (`worker_end`, which runs `claude stop`); the files of the task do not change.
+// Since ticket old-sessions-auto-end Dispatch ends them by itself after a delay (`autoEndCandidates`);
+// the End button stays for a session whose end failed.
 // No access to the page, so a test can load this file with Node (tests/stale.test.ts).
 import { durationText } from "./duration.ts";
 
@@ -47,6 +49,19 @@ const FINISHED: Record<string, string> = {
   merge: "its task is done and waits for Merge",
 };
 
+/** The time after the end of a session before Dispatch ends it by itself (ticket old-sessions-auto-end, user decision 1). */
+export const AUTO_END_DELAY_MS = 10 * 60_000;
+/** The time after a failed automatic end before the next try. */
+export const AUTO_END_RETRY_MS = 5 * 60_000;
+/** The tries of the automatic end per session; after them only the End button ends it. */
+export const AUTO_END_MAX_TRIES = 3;
+
+/** The failed automatic ends of one session: how many, and when the last one was. */
+export interface FailedEnds {
+  count: number;
+  at: number;
+}
+
 const RUN_NAME = /^(.*) \[(plan|work)\]$/;
 
 /** The run of a session from its name; a session of an older script has the bare ticket id. */
@@ -87,6 +102,45 @@ export function staleSessions<S extends StaleSession>(tasks: readonly StaleTask<
     }
   }
   return rows.sort((a, b) => (b.session.startedAt ?? 0) - (a.session.startedAt ?? 0));
+}
+
+/**
+ * The stale rows that Dispatch ends by itself now (ticket old-sessions-auto-end): the session ended
+ * at least `delay` ago (its `endedAt`, else its `startedAt`; a session without both never counts).
+ * A row whose last failed try is younger than the retry wait, or that failed `AUTO_END_MAX_TRIES`
+ * times, is left out. The exceptions of the task (a run in progress, a plan that waits for Approve,
+ * a question or a permission) are already outside `staleSessions`. `failed` is keyed by `keyOf`.
+ */
+export function autoEndCandidates<S extends StaleSession>(
+  rows: readonly StaleRow<S>[],
+  now: number,
+  failed: ReadonlyMap<string, FailedEnds>,
+  keyOf: (session: S) => string,
+  delay: number = AUTO_END_DELAY_MS,
+): StaleRow<S>[] {
+  return rows.filter((row) => {
+    const ended = Date.parse(row.session.endedAt ?? "");
+    const end = Number.isNaN(ended) ? row.session.startedAt : ended;
+    if (!end || now - end < delay) return false;
+    const tries = failed.get(keyOf(row.session));
+    if (!tries) return true;
+    return tries.count < AUTO_END_MAX_TRIES && now - tries.at >= AUTO_END_RETRY_MS;
+  });
+}
+
+/** A session that Dispatch ended by itself, for the list "Ended by Dispatch" of the window. */
+export interface EndedSession {
+  name: string;
+  task: string;
+  run: "plan" | "work" | undefined;
+  /** When Dispatch ended it, in ms. */
+  at: number;
+}
+
+/** The line of an ended session: "Ended by Dispatch at 14:05: Work run of t-1 (t-1 [work])". */
+export function endedText(ended: EndedSession, time: (at: number) => string): string {
+  const run = ended.run === "plan" ? "Plan run" : ended.run === "work" ? "Work run" : "Worker";
+  return `Ended by Dispatch at ${time(ended.at)}: ${run} of ${ended.task} (${ended.name})`;
 }
 
 /** An age: under a day as the task cards write a duration, from a day "2 d 5 h". */
