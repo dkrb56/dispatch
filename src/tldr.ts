@@ -9,6 +9,7 @@ export type TaskPhase =
   | "plan-ready"
   | "queued"
   | "starting"
+  | "elsewhere"
   | "working"
   | "prompt"
   | "question"
@@ -71,6 +72,9 @@ export function taskTldr(input: TldrInput): Tldr {
       case "starting":
       case "working":
         return prefixed("In work: ", first);
+      case "elsewhere":
+        // A run of another computer without its result here (ticket second-computer).
+        return first ? `On another computer: ${first}` : "On another computer.";
       case "question":
         return prefixed("Asks: ", input.question.trim());
       case "repeated":

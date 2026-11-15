@@ -341,7 +341,7 @@
             <li>Click a step to see its file and the text that it adds.</li>
             <li>Under the steps, the window lists the rules of the project that conflict with the pipeline, each with its file as a link. A click opens the file in the viewer, also for a rule outside the project. <b>Open in editor</b> there lets you change the rule yourself.</li>
             <li>Apply makes no commit, so you can look at the changes in git first. When all steps are done, <b>Commit to git</b> becomes available.</li>
-            <li><b>Commit to git</b> commits on the current branch: <code>CLAUDE.md</code>, the three files in <code>.claude</code>, and the script, the two options files, the measure commands and the gate command in <code>.dispatch</code>. With Task files local only on, it commits <code>.gitignore</code> instead of the files in <code>.dispatch</code>. Your other changes stay out of the commit. Dispatch makes no push.</li>
+            <li><b>Commit to git</b> commits on the current branch: <code>CLAUDE.md</code>, two files in <code>.claude</code> (<code>settings.json</code> and <code>triage.md</code>; the allow rules in <code>settings.local.json</code> stay on this computer), and the script, the two options files, the measure commands and the gate command in <code>.dispatch</code>. With Task files local only on, it commits <code>.gitignore</code> instead of the files in <code>.dispatch</code>. Your other changes stay out of the commit. Dispatch makes no push.</li>
             <li>The window shows the commit, or the reason for no commit: no git repository, nothing to commit, or the error of git.</li>
             <li>A work run starts only when the project has no uncommitted changes outside <code>.dispatch</code>. Without the setup commit, the first approval is refused and names the setup files. Dispatch commits the task files in <code>.dispatch</code> itself, unless Task files local only is on.</li>
             <li>The workspace opens below the bar with two terminals. Claude Code starts in both.</li>
@@ -358,7 +358,7 @@
           <tbody>
             <tr><td>Task files</td><td><code>.dispatch</code></td><td>Holds the briefs, plans, reports and the state of each task.</td></tr>
             <tr><td>Task logs</td><td><code>.dispatch/logs</code></td><td>One log per task: the plan, each command with its output, the report.</td></tr>
-            <tr><td>Allow rules</td><td><code>.claude/settings.local.json</code></td><td>Triage runs the worker script without a permission prompt.</td></tr>
+            <tr><td>Allow rules</td><td><code>.claude/settings.local.json</code></td><td>Triage runs the worker script without a permission prompt. Stays on this computer.</td></tr>
             <tr><td>Worktree isolation off</td><td><code>.claude/settings.json</code></td><td>Workers work in the project folder, so you see their changes.</td></tr>
             <tr><td>Section in CLAUDE.md</td><td><code>CLAUDE.md</code></td><td>Adds the rules for triage and the workers.</td></tr>
             <tr><td>Working rules</td><td><code>CLAUDE.md</code></td><td>Adds rules for the work, for example plain words.</td></tr>
@@ -378,8 +378,9 @@
             <li>The options of the two runs are in <code>plan-flags.txt</code> and <code>work-flags.txt</code>. The lists above Workers change them.</li>
             <li>With Task files local only off, git tracks the folder, so a clone has the history of the tasks. Dispatch commits these files itself (the commit message starts with "Dispatch:"), except while a work run runs without a report. Approve does not count them as changes.</li>
             <li>A project of an older version has the folder <code>&lt;project&gt;-reports</code> next to it. Apply moves its files into <code>.dispatch</code> and overwrites nothing. The step shows the number of files first.</li>
-            <li><b>Allow rules.</b> Triage can run the worker script and check workers without a prompt. A deny rule keeps the approve verb of the script for the Approve button. Each session can read and write the task files in <code>.dispatch</code> without a prompt.</li>
+            <li><b>Allow rules.</b> Triage can run the worker script and check workers without a prompt. A deny rule keeps the approve verb of the script for the Approve button. Each session can read and write the task files in <code>.dispatch</code> without a prompt. The rules name the folder <code>.dispatch</code> relative to the project, so they work at any path.</li>
             <li>Apply removes the rules of an older version that name <code>&lt;project&gt;-reports</code>. Triage can also read the job folders of the workers (<code>%USERPROFILE%\.claude\jobs</code>), where a worker keeps the screenshots of its visual test.</li>
+            <li>These rules and folders belong to your user on this computer. Apply adds the line <code>.claude/settings.local.json</code> with a comment line to <code>.gitignore</code>, so git ignores the file. When git tracked the file, Apply takes it out of git in one commit "Dispatch: the local settings stay on each computer". The file stays on the disk. A line <code>.claude/</code> of your own does the same.</li>
             <li><b>Worktree isolation off.</b> A worker works in the project folder, not in a separate copy.</li>
             <li><b>Section in CLAUDE.md.</b> The section "Background workers": a task is two runs of one worker, the plan run edits nothing, your yes starts the work run as a new session that reads the brief and the plan, and the worker ends with one local commit and never pushes. Apply replaces a section with an older text.</li>
             <li><b>Working rules.</b> The section "Working rules": plain words, no duration estimates, only the user's words are approval, reproduce a bug before the fix, scripts write the proof, and more. Each rule has a checkbox. Apply adds the checked rules. With no checked rule, Apply adds no section.</li>
@@ -393,6 +394,29 @@
             <li><b>Task files in git.</b> Off: the step is done, and nothing changes. On: Apply adds the line <code>.dispatch/</code> with a comment line to <code>.gitignore</code> of the project, and takes the task files out of git in one commit "Dispatch: task files are local only". The files stay on the disk. Commit to git then commits <code>.gitignore</code>.</li>
             <li>With the switch on, tickets and task files are local only: a clone has no tickets, briefs, plans, reports or logs. Off again, Apply removes the line of Dispatch and commits the task files again. A line <code>.dispatch/</code> that you wrote yourself stays.</li>
             <li><b>Triage role.</b> The text tells the session in the Triage terminal that it is triage: it plans and checks, and it does no implementation. The project settings change this text.</li>
+          </ul>
+        </details>
+
+        <h3>Continue on a second computer</h3>
+        <p class="tldr">Push on one computer, pull on the other, click Apply once, and go on. The other computer can use another Claude account.</p>
+        <ol>
+          <li>On the first computer, keep Task files local only off. Push the project.</li>
+          <li>On the second computer, clone the project. Open the folder in Dispatch.</li>
+          <li>Click <b>Apply</b> once. <span class="does">It writes the allow rules of this computer. It changes no file that git shares, so Commit to git is not necessary.</span></li>
+          <li>Go on. <span class="does">The tickets, plans and reports are there. You can approve a plan and start new tasks.</span></li>
+        </ol>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li>The files that git shares name no path of your computer and no user folder. The same text works on both computers.</li>
+            <li>A task that ran on the other computer says "ran on another computer · no worker here" on its card. It does not block other tasks or the commits of the task files.</li>
+            <li>When such a task has a plan, <b>Approve</b> starts its work run again on this computer, from the brief and the plan. A plan run that did not finish: ask triage to start it again.</li>
+            <li>An answer to a question of a worker works only on the computer where the worker ran.</li>
+            <li>A pull brings the results of the other computer.</li>
+            <li>The models in the Workers bar are one choice for the project. When the other account cannot use a model, the run fails with the message of Claude. Then choose another model in the Workers bar there.</li>
+            <li>Finish on one computer and push before you continue on the other.</li>
+            <li>With Task files local only on, the second computer gets the setup, but no tickets, briefs, plans, reports or logs.</li>
+            <li>No part of your Claude account goes into git: no login, no transcript, no email address.</li>
           </ul>
         </details>
 

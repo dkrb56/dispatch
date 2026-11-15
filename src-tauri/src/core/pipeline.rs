@@ -3,7 +3,9 @@
 //! folder `.dispatch` of the project, which git tracks and Dispatch commits (ticket
 //! reports-in-project). A task is two runs of one worker: the plan run on the options of
 //! `plan-flags.txt`, and after the user's yes the work run on the options of `work-flags.txt`, a new
-//! session that reads the brief and the approved plan (ticket work-fresh-session).
+//! session that reads the brief and the approved plan (ticket work-fresh-session). The setup files
+//! name the task folder relative to the project, and the allow rules stay in the local settings of
+//! each computer, so a clone on another computer continues after one Apply (ticket second-computer).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,6 +48,14 @@ const ROOT_TASKS_IGNORE: &str = ".dispatch/";
 const TASKS_IGNORE_MARK: &str = "# Dispatch: the task files stay on this computer (setting \"Task files local only\")";
 /// The message of the commit that takes the task files out of git when the option goes on.
 const TASKS_LOCAL_MESSAGE: &str = "Dispatch: task files are local only";
+/// The local settings of Claude Code in the project, relative to its top folder, as git takes a
+/// path. They hold the allow rules and the folders of the user of this computer, so each computer
+/// keeps its own and git ignores the file (ticket second-computer, user decision 3).
+const LOCAL_SETTINGS: &str = ".claude/settings.local.json";
+/// The comment line that Dispatch writes above `LOCAL_SETTINGS` in the root `.gitignore`.
+const LOCAL_SETTINGS_MARK: &str = "# Dispatch: the allow rules stay on this computer; Apply writes them on each computer";
+/// The message of the commit that takes a tracked `LOCAL_SETTINGS` out of git.
+const LOCAL_SETTINGS_MESSAGE: &str = "Dispatch: the local settings stay on each computer";
 
 /// The folder where the app saves pasted images. The app sets it at its start.
 pub(crate) static PASTED_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -147,12 +157,19 @@ fn branches_rule(reports: &str, script: &str) -> String {
     )
 }
 
-/// A folder with `/` as a permission rule writes it: `D:/folder` is `//d/folder`. The worker
-/// script is PowerShell and the rules need a drive, so the pipeline stops here on other systems.
-fn rule_form(path: &str) -> Result<String, String> {
+/// The worker script is PowerShell, so the pipeline stops on other systems. `plan` calls this
+/// first; Apply starts from a plan.
+fn windows_only() -> Result<(), String> {
     if cfg!(not(windows)) {
         return Err("the worker pipeline runs on Windows only in this version".to_string());
     }
+    Ok(())
+}
+
+/// A folder with `/` as a permission rule writes it: `D:/folder` is `//d/folder`. The rules of
+/// this version name the task folder relative to the project (ticket second-computer); this form
+/// only finds the absolute rules of an older version, which Apply removes.
+fn rule_form(path: &str) -> Result<String, String> {
     match path.split_once(":/") {
         Some((drive, rest)) if drive.len() == 1 => Ok(format!("//{}/{rest}", drive.to_ascii_lowercase())),
         _ => Err(format!("the project is not on a drive: {path}")),
@@ -367,6 +384,23 @@ impl Project {
         self.root_ignore_lines().windows(2).any(|pair| pair[0] == TASKS_IGNORE_MARK && pair[1] == ROOT_TASKS_IGNORE)
     }
 
+    /// An ignore rule of git names the local settings file, by Dispatch or by hand (a line `.claude/`
+    /// ignores it too). `--no-index`: the rule counts also while git still tracks the file.
+    fn local_settings_ignored(&self) -> bool {
+        self.in_git && git(&self.root, &["check-ignore", "-q", "--no-index", LOCAL_SETTINGS]).is_some()
+    }
+
+    /// Git tracks the local settings file. False outside git.
+    fn local_settings_tracked(&self) -> bool {
+        self.in_git && git(&self.root, &["ls-files", "--", LOCAL_SETTINGS]).is_some_and(|files| !files.trim().is_empty())
+    }
+
+    /// The local settings file stays on this computer: git ignores it and does not track it. Always
+    /// true outside git.
+    fn local_settings_private(&self) -> bool {
+        !self.in_git || (self.local_settings_ignored() && !self.local_settings_tracked())
+    }
+
     /// Git tracks at least one file of the task folder. False outside git.
     fn tasks_tracked(&self) -> bool {
         self.in_git && git(&self.root, &["ls-files", "--", TASKS_DIR]).is_some_and(|files| !files.trim().is_empty())
@@ -524,7 +558,9 @@ impl Project {
     /// only these. The task files of `.dispatch` (briefs, plans, reports, state files and the
     /// other options files) are committed by Dispatch at each task read (`keep_tasks_committed`).
     /// With "Task files local only" on, the root `.gitignore` is a setup file too, so the commit
-    /// takes its line (decision 6 of the series); git then ignores the files of `.dispatch`.
+    /// takes its line (decision 6 of the series); git then ignores the files of `.dispatch`. The same
+    /// for the line that keeps the local settings on this computer (ticket second-computer); git then
+    /// ignores `.claude/settings.local.json`, so the commit leaves it out.
     fn setup_files(&self) -> Vec<&'static str> {
         let mut files = vec![
             "CLAUDE.md",
@@ -539,38 +575,49 @@ impl Project {
             ".dispatch/checks.txt",
         ];
         // Off again, the commit takes the removal of the line of Dispatch, while HEAD still has it.
-        if self.options().ignore_tasks || self.committed_tasks_ignore() {
+        // The line of the local settings (ticket second-computer) makes it a setup file too.
+        let local_line = self.root_ignore_lines().iter().any(|line| line == LOCAL_SETTINGS_MARK);
+        if self.options().ignore_tasks || local_line || self.committed_tasks_ignore() {
             files.push(".gitignore");
         }
         files
     }
 
-    /// The root `.gitignore` of HEAD has the line of Dispatch under its mark.
+    /// The root `.gitignore` of HEAD has a line of Dispatch under its mark: the task folder, or the
+    /// local settings.
     fn committed_tasks_ignore(&self) -> bool {
         self.in_git
             && git(&self.root, &["show", "HEAD:.gitignore"]).is_some_and(|text| {
                 let lines: Vec<&str> = text.lines().map(str::trim).collect();
-                lines.windows(2).any(|pair| pair[0] == TASKS_IGNORE_MARK && pair[1] == ROOT_TASKS_IGNORE)
+                lines.windows(2).any(|pair| {
+                    (pair[0] == TASKS_IGNORE_MARK && pair[1] == ROOT_TASKS_IGNORE) || (pair[0] == LOCAL_SETTINGS_MARK && pair[1] == LOCAL_SETTINGS)
+                })
             })
     }
 
-    /// The reports folder with `/`, as `CLAUDE.md` gives it.
+    /// The reports folder as `CLAUDE.md`, the triage role, the rules and the options files give
+    /// it: `.dispatch`, relative to the project root (ticket second-computer). Triage and the workers
+    /// start in the project root, so the same text works in a clone on another path or computer.
     fn reports_text(&self) -> String {
-        self.reports.to_string_lossy().replace('\\', "/")
+        TASKS_DIR.to_string()
     }
 
-    /// The reports folder as a permission rule writes it: `D:\folder` is `//d/folder`.
-    fn rule_path(&self) -> Result<String, String> {
-        rule_form(&self.reports_text())
+    /// The reports folder as a permission rule writes it: relative to the project, as Claude Code
+    /// takes a rule path without `//` and `~/` from the folder that the session starts in.
+    fn rule_path(&self) -> String {
+        self.reports_text()
     }
 
-    /// The texts by which a permission rule names the reports folder of the old layout: the
-    /// script path and the rule path, each with a `/` at its end. Empty without an old folder.
+    /// The texts by which a permission rule of an older version names a reports folder with its
+    /// absolute path: the folder of the old layout and the task folder of this project, each as the
+    /// script path and as the rule path, with a `/` at its end. Apply removes such rules.
     fn old_rule_texts(&self) -> Vec<String> {
-        let Some(old) = self.old_reports() else { return Vec::new() };
-        let text = old.to_string_lossy().replace('\\', "/");
-        let mut texts = vec![format!("{text}/")];
-        texts.extend(rule_form(&text).ok().map(|rule| format!("{rule}/")));
+        let mut texts = Vec::new();
+        for folder in self.old_reports().into_iter().chain([self.reports.clone()]) {
+            let text = folder.to_string_lossy().replace('\\', "/");
+            texts.extend(rule_form(&text).ok().map(|rule| format!("{rule}/")));
+            texts.push(format!("{text}/"));
+        }
         texts
     }
 
@@ -578,7 +625,7 @@ impl Project {
     /// let each session read and write the reports, without a prompt.
     fn allow_rules(&self) -> Result<Vec<String>, String> {
         let reports = self.reports_text();
-        let rule_path = self.rule_path()?;
+        let rule_path = self.rule_path();
         Ok(vec![
             format!("Bash({} *)", script_command(&reports)),
             "Bash(claude agents --json --all)".to_string(),
@@ -809,6 +856,8 @@ Exit codes: 0 done, 2 refused (the reason is on stderr), 124 a measuring command
 time limit, other: the exit code of claude or of the measuring command.
 The gate command of merge gets DISPATCH_TICKET (the ticket id) and DISPATCH_CHECKS (the path of
 <ticket-id>.checks: the checks that the user chose, one line each, the name, a tab and the command).
+The script finds the project from its own folder, and the options files name paths relative to the
+project, so a clone on another path or computer needs no change.
 #>
 param(
   [Parameter(Mandatory = $true, Position = 0)]
@@ -834,11 +883,19 @@ function Need-Id {
   if (-not $Id) { Refuse "the verb $Verb needs a ticket id" }
 }
 
-# The options of a run, one argument per line. Setup pipeline writes the files.
+# The options of a run, one argument per line. Setup pipeline writes the files. The settings file
+# after --settings is relative to the project; claude gets it as an absolute path.
 function Read-Flags([string]$Name) {
   $file = Join-Path $Reports $Name
   if (-not (Test-Path -LiteralPath $file)) { Refuse "$file is missing; run Setup pipeline" }
-  @(Get-Content -LiteralPath $file | Where-Object { $_.Trim() -ne '' })
+  $lines = @(Get-Content -LiteralPath $file | Where-Object { $_.Trim() -ne '' })
+  for ($at = 1; $at -lt $lines.Count; $at++) {
+    $value = $lines[$at].Trim()
+    if ($lines[$at - 1].Trim() -eq '--settings' -and -not [IO.Path]::IsPathRooted($value)) {
+      $lines[$at] = [IO.Path]::GetFullPath((Join-Path $Project $value))
+    }
+  }
+  $lines
 }
 
 function State-Path { Join-Path $Reports "$Id.state" }
@@ -905,7 +962,7 @@ function Approve-Check {
 function Resume-Target([string]$Run) {
   if ((Get-State) -eq 'stopped') { Refuse "the task $Id was stopped; start a new task" }
   $worker = Find-Worker (Get-Workers) $Id $Run
-  if ($null -eq $worker) { Refuse "no worker named $Id" }
+  if ($null -eq $worker) { Refuse "no worker named $Id on this computer. A run that started on another computer cannot be resumed here: start the task again, or answer on the computer where it ran" }
   $state = Worker-State $worker
   if ($state -eq 'working' -or $state -eq 'blocked') {
     Refuse "the worker $Id still runs ($state); a resume now would start a copy. A permission prompt is answered in the agent view: claude attach $($worker.id)"
@@ -1615,6 +1672,7 @@ fn move_old_reports(project: &Project) -> Result<usize, String> {
 }
 
 fn plan(project: &Project) -> Result<Plan, String> {
+    windows_only()?;
     let show = |path: PathBuf| path.to_string_lossy().into_owned();
     let changes = rule_changes(project)?;
     let options = project.options();
@@ -1633,6 +1691,28 @@ fn plan(project: &Project) -> Result<Plan, String> {
         lines.extend(changes.missing_dirs.iter().map(|dir| format!("read folder: {dir}")));
         lines.join("\n")
     };
+    // The local settings stay on this computer (ticket second-computer, user decision 3).
+    let private = project.local_settings_private();
+    let rules_detail = if !project.in_git {
+        rules_detail
+    } else if private {
+        format!("{rules_detail}\n\nGit ignores {LOCAL_SETTINGS}: these rules stay on this computer, and Apply writes them on each computer.")
+    } else {
+        let mut text = format!("{rules_detail}\n\nThe rules and the folders stay on this computer: ");
+        if !project.local_settings_ignored() {
+            text.push_str(&format!("Apply adds the line {LOCAL_SETTINGS} with a comment line to .gitignore of the project"));
+        }
+        if project.local_settings_tracked() {
+            if !project.local_settings_ignored() {
+                text.push_str(", and ");
+            } else {
+                text.push_str("Apply ");
+            }
+            text.push_str(&format!("takes the file out of git (it stays on the disk) with the commit \"{LOCAL_SETTINGS_MESSAGE}\""));
+        }
+        text.push_str(". Apply writes the file on each computer.");
+        text
+    };
     let script_done = fs::read_to_string(project.script()).is_ok_and(|text| text.replace("\r\n", "\n") == WORKER_SCRIPT);
     // The reports folder of the old layout, while it still exists: Apply moves it.
     let old_reports = project.old_reports().filter(|old| old.is_dir());
@@ -1646,7 +1726,7 @@ fn plan(project: &Project) -> Result<Plan, String> {
                 && plan_flags_current(project)
                 && work_flags_current(project),
             detail: format!(
-                "The folder .dispatch in the project for the task files: the reports of the workers, a folder for the briefs, a folder for the plans, and the state of each task. {} The options of the two runs go into plan-flags.txt and work-flags.txt, one argument per line; the files start with the defaults (plan run: {} {}, work run: {} {}). The work run names its permission mode ({}) and its tool list, so that the file says in full what the new session of the work run gets; an older file gets these lines and the paths of this folder, its choice stays.{}",
+                "The folder .dispatch in the project for the task files: the reports of the workers, a folder for the briefs, a folder for the plans, and the state of each task. {} The options of the two runs go into plan-flags.txt and work-flags.txt, one argument per line; the files start with the defaults (plan run: {} {}, work run: {} {}). The work run names its permission mode ({}) and its tool list, so that the file says in full what the new session of the work run gets; an older file gets these lines and the paths of this folder, its choice stays. The files name this folder relative to the project, so they are the same on each computer.{}",
                 if options.ignore_tasks {
                     "Git ignores it (Task files local only is on): the task files stay on this computer, and a clone has none. Approve does not count them as changes."
                 } else {
@@ -1671,7 +1751,7 @@ fn plan(project: &Project) -> Result<Plan, String> {
         Step {
             title: "Allow rules",
             target: show(project.local_settings()),
-            done: changes.none(),
+            done: changes.none() && private,
             detail: rules_detail,
             rules: None,
         },
@@ -1783,11 +1863,17 @@ fn add_root_ignore(project: &Project) -> Result<(), String> {
     if project.root_ignores_tasks() {
         return Ok(());
     }
+    add_ignore_pair(project, TASKS_IGNORE_MARK, ROOT_TASKS_IGNORE)
+}
+
+/// Adds a mark line of Dispatch and its ignore line at the end of the root `.gitignore`, and makes
+/// the file when it is absent.
+fn add_ignore_pair(project: &Project, mark: &str, line: &str) -> Result<(), String> {
     let mut text = fs::read_to_string(project.root_ignore()).unwrap_or_default();
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(&format!("{TASKS_IGNORE_MARK}\n{ROOT_TASKS_IGNORE}\n"));
+    text.push_str(&format!("{mark}\n{line}\n"));
     write_file(&project.root_ignore(), &text)
 }
 
@@ -1813,18 +1899,28 @@ fn remove_root_ignore(project: &Project) -> Result<(), String> {
 /// index of its own, made from HEAD, so the staged changes of the user stay staged (user decision 2).
 /// Then the index of the repository drops the task files too. The files stay on the disk.
 fn untrack_tasks(project: &Project) -> Result<(), String> {
+    untrack(project, TASKS_DIR, TASKS_LOCAL_MESSAGE)
+}
+
+/// Commits the removal of a file or a folder from git with a message, as `untrack_tasks` does: through
+/// an index of its own, so the staged changes of the user stay staged. The files stay on the disk.
+/// Also for the local settings (ticket second-computer): a commit with paths would take the file on
+/// the disk again, so "Commit to git" cannot commit its removal.
+fn untrack(project: &Project, path: &str, message: &str) -> Result<(), String> {
     // In the temp folder: `.git` is a file in a worktree.
-    let index = std::env::temp_dir().join(format!("dispatch-untrack-{}-{}.index", std::process::id(), stamp(&project.reports_text())));
-    // Without a commit that has task files (no commit yet, or the files are only staged), there is
+    let index = std::env::temp_dir().join(format!("dispatch-untrack-{}-{}.index", std::process::id(), stamp(&project.root.to_string_lossy())));
+    // Without a commit that has the files (no commit yet, or the files are only staged), there is
     // nothing to commit: the index of the repository drops them, and that is all.
-    let in_head = git(&project.root, &["ls-tree", "-r", "--name-only", "HEAD", "--", TASKS_DIR]).is_some_and(|files| !files.trim().is_empty());
+    let in_head = git(&project.root, &["ls-tree", "-r", "--name-only", "HEAD", "--", path]).is_some_and(|files| !files.trim().is_empty());
     let result = (|| {
         if in_head {
             run_git_index(&project.root, Some(&index), &["read-tree", "HEAD"])?;
-            run_git_index(&project.root, Some(&index), &["rm", "-r", "--cached", "-q", "--", TASKS_DIR])?;
-            run_git_index(&project.root, Some(&index), &["commit", "-q", "-m", TASKS_LOCAL_MESSAGE])?;
+            run_git_index(&project.root, Some(&index), &["rm", "-r", "--cached", "-q", "--", path])?;
+            run_git_index(&project.root, Some(&index), &["commit", "-q", "-m", message])?;
         }
-        run_git(&project.root, &["rm", "-r", "--cached", "-q", "--ignore-unmatch", "--", TASKS_DIR]).map(|_| ())
+        // `-f`: after the commit the index entry differs from HEAD, and from a file that Apply changed
+        // (the local settings); `--cached` leaves the file on the disk.
+        run_git(&project.root, &["rm", "-r", "-f", "--cached", "-q", "--ignore-unmatch", "--", path]).map(|_| ())
     })();
     let _ = fs::remove_file(&index);
     result
@@ -1909,7 +2005,7 @@ const WORK_DEFAULT: (&str, &str) = ("opus", "xhigh");
 /// on, the list also allows the `measure` verb of the worker script, which runs only the listed
 /// commands, and Write in the scratch folder of the measuring; off, the lines are those of 0.1.54.
 fn plan_fixed_lines(project: &Project) -> Result<Vec<String>, String> {
-    let rule_path = project.rule_path()?;
+    let rule_path = project.rule_path();
     let plans = format!("{rule_path}/plans/**");
     let allowed = if project.options().measure_before_plan {
         let script = script_command(&project.reports_text());
@@ -1985,14 +2081,20 @@ fn plan_flag_lines(project: &Project, plan: &Choice) -> Result<Vec<String>, Stri
 /// its questions and results reach the user only through the report and the Tasks card.
 const WORK_FIXED_FLAGS: [&str; 6] = ["--permission-mode", "auto", "--tools", "default", "--disallowedTools", "AskUserQuestion,SendMessage"];
 
+/// The settings file of the workers as `work-flags.txt` names it: relative to the project, so the
+/// file is the same on each computer (ticket second-computer). The script makes it absolute.
+fn worker_settings_text() -> String {
+    format!("{TASKS_DIR}/worker-settings.json")
+}
+
 /// The work options file has the fixed part of this version. An older file lacks it.
-/// A file that names the settings file of the workers must name the one of this project: a file
-/// from the old layout names the folder `<project>-reports`.
+/// A file that names the settings file of the workers must name it relative to the project: a
+/// file of an older version names it with an absolute path (also of the old layout).
 fn work_flags_current(project: &Project) -> bool {
     let fixed = WORK_FIXED_FLAGS.join("\n");
     let Ok(text) = fs::read_to_string(project.work_flags()) else { return false };
     let text = text.replace("\r\n", "\n");
-    let settings = project.worker_settings().to_string_lossy().replace('\\', "/");
+    let settings = worker_settings_text();
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
     let settings_here = lines.iter().position(|line| *line == "--settings").map_or(true, |at| lines.get(at + 1) == Some(&settings.as_str()));
     text.contains(&fixed) && settings_here
@@ -2014,8 +2116,8 @@ fn work_flag_lines(project: &Project, work: &Choice, agents: &str) -> Result<Vec
         let file = project.worker_settings();
         write_file(&file, &format!("{}\n", serde_json::to_string_pretty(&settings).map_err(err)?))?;
         lines.push("--settings".to_string());
-        // The path has `/`. Thus each shell reads it the same.
-        lines.push(file.to_string_lossy().replace('\\', "/"));
+        // Relative to the project with `/`: each computer and each shell reads it the same.
+        lines.push(worker_settings_text());
     }
     Ok(lines)
 }
@@ -2896,6 +2998,10 @@ pub struct TaskInfo {
     /// A running action run names this ticket in a Claude step with "Approve the plan by itself"
     /// (ticket project-actions): the driver window approves its plan without the project setting.
     auto: bool,
+    /// The newest line of `<ticket>.session` names a session without a transcript on this computer:
+    /// the run started on another computer, and no worker of it runs here (ticket second-computer).
+    /// False without the file.
+    elsewhere: bool,
 }
 
 /// The decision of the user to take a task as done (ticket take-as-done): the time of the click
@@ -3296,6 +3402,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             log: None,
             checks: Vec::new(),
             auto: false,
+            elsewhere: false,
         });
         tasks.len() - 1
     }
@@ -3335,6 +3442,9 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     // The tokens of each task from the transcripts of its sessions (ticket task-tokens), and the
     // Bash commands of its runs (ticket task-evidence).
     let projects = claude_projects_dir();
+    // The tasks with sessions of which no transcript is on this computer (ticket second-computer):
+    // their log keeps what the computer of the sessions wrote.
+    let mut no_transcript: Vec<String> = Vec::new();
     for task in tasks.iter_mut() {
         let sessions = read_session_file(&project.session_file(&task.name));
         let mut transcript = false;
@@ -3344,6 +3454,10 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             task.run_tokens = crate::core::flow::run_token_usage(projects, &runs);
             task.evidence = crate::core::flow::evidence_of(projects, &runs);
             transcript = crate::core::flow::has_transcript(projects, &sessions);
+            task.elsewhere = runs.last().is_some_and(|(_, newest)| !crate::core::flow::has_transcript(projects, std::slice::from_ref(newest)));
+            if !transcript {
+                no_transcript.push(task.name.clone());
+            }
         }
         // A done report needs a command of the evidence for each Verification claim (ticket
         // report-check), and a claim for each check that the user chose (ticket task-checks, also
@@ -3408,7 +3522,9 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         let path = project.log_file(&task.name);
         let plan = task.plan.as_ref().map(|entry| entry.modified);
         let report = task.report.as_ref().map(|entry| entry.modified);
-        if log_needed(plan, report, file_entry(&path).map(|entry| entry.modified)) {
+        // Without a transcript here the log would lose the commands and the tokens of the other
+        // computer, and the two computers would commit their logs in turn.
+        if !no_transcript.contains(&task.name) && log_needed(plan, report, file_entry(&path).map(|entry| entry.modified)) {
             let plan_text = fs::read_to_string(project.plans().join(format!("{}.md", task.name))).unwrap_or_default();
             let report_text = task.report.is_some().then(|| fs::read_to_string(project.reports.join(format!("{}.md", task.name))).unwrap_or_default());
             let newest = plan.into_iter().chain(report).max().unwrap_or(0);
@@ -3432,9 +3548,10 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         task.log = file_entry(&path);
     }
     // Dispatch commits the task files, but not while a work run may commit itself: a task approved
-    // or working without a report. A failure (an index lock of a git command of the user, no git
+    // or working without a report. A run of another computer does not hold the commit (ticket
+    // second-computer). A failure (an index lock of a git command of the user, no git
     // identity) is logged, and the next task read tries again.
-    let work_live = tasks.iter().any(|task| matches!(task.state.as_str(), "approved" | "working") && task.report.is_none());
+    let work_live = tasks.iter().any(|task| matches!(task.state.as_str(), "approved" | "working") && task.report.is_none() && !task.elsewhere);
     if !work_live {
         if let Err(error) = keep_tasks_committed(&project) {
             eprintln!("task files not committed: {error}");
@@ -3492,6 +3609,11 @@ fn handoff_state(task: &TaskInfo, live: bool, queued: bool) -> Option<String> {
     }
     if queued {
         return Some("approved in Dispatch, its work run waits until the project is free".to_string());
+    }
+    // A run of another computer without its result here (ticket second-computer).
+    let open_run = (task.state == "planning" && task.plan.is_none()) || (matches!(task.state.as_str(), "approved" | "working") && task.report.is_none());
+    if task.elsewhere && open_run {
+        return Some("started on another computer; no worker of it runs here".to_string());
     }
     if needs == "permission" && task.questions.is_empty() {
         return Some("its worker stopped at a refused step; it waits for the user to change the rule and click Continue in its task card".to_string());
@@ -3664,6 +3786,13 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
     }
     if !done(1) {
         add_rules(project)?;
+        // The local settings stay on each computer (ticket second-computer, user decision 3).
+        if project.in_git && !project.local_settings_ignored() {
+            add_ignore_pair(project, LOCAL_SETTINGS_MARK, LOCAL_SETTINGS)?;
+        }
+        if project.local_settings_tracked() {
+            untrack(project, LOCAL_SETTINGS, LOCAL_SETTINGS_MESSAGE)?;
+        }
     }
     if !done(2) {
         set_isolation(project)?;
@@ -3953,7 +4082,7 @@ pub(crate) mod tests {
     fn plan_lines(project: &Project, choice_lines: &str) -> String {
         format!(
             "{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,Write\n--allowedTools\nBash(git status*),Bash(git log *),Bash(git diff *),Write({}/plans/**)\n",
-            project.rule_path().unwrap()
+            project.rule_path()
         )
     }
 
@@ -3969,7 +4098,7 @@ pub(crate) mod tests {
 
         assert!(project.briefs().is_dir() && project.plans().is_dir());
         assert_eq!(read(&project.plan_flags()), plan_lines(&project, "--model\nfable\n--effort\nxhigh\n"));
-        assert!(read(&project.plan_flags()).contains("/proj/.dispatch/plans/**)\n"), "the Write rule names the plans folder");
+        assert!(read(&project.plan_flags()).contains("Write(.dispatch/plans/**)\n"), "the Write rule names the plans folder relative to the project");
         assert_eq!(read(&project.work_flags()), format!("--model\nopus\n--effort\nxhigh\n{WORK_FIXED}"));
         assert_eq!(read(&project.script()), WORKER_SCRIPT);
 
@@ -4000,18 +4129,21 @@ pub(crate) mod tests {
         assert!(claude_md.contains("An answered question never comes back unchanged") && claude_md.contains("ends with `state: done` or a new question"), "{claude_md}");
 
         // The task files are in `.dispatch` of the project: the section, the rules, the role and
-        // the plan options name that folder, and the script finds the project as its parent.
+        // the plan options name that folder relative to the project (ticket second-computer), and
+        // the script finds the project as its parent.
         let tasks = project.reports_text();
-        assert!(tasks.ends_with("/proj/.dispatch"), "{tasks}");
+        assert_eq!(tasks, ".dispatch");
         for path in ["/briefs/<ticket-id>.md", "/plans/<ticket-id>.md", "/<ticket-id>.md", "/<ticket-id>.state", "/worker.ps1 approve <ticket-id>"] {
             assert!(claude_md.contains(&format!("{tasks}{path}")), "{path} missing: {claude_md}");
         }
         assert!(claude_md.contains(&format!("uncommitted changes outside `{tasks}/`")), "{claude_md}");
-        let rule_path = project.rule_path().unwrap();
-        assert!(rule_path.ends_with("/proj/.dispatch"), "{rule_path}");
-        let named: Vec<&&str> = allow.iter().filter(|rule| rule.contains("/proj/.dispatch/")).collect();
+        let rule_path = project.rule_path();
+        assert_eq!(rule_path, ".dispatch");
+        let named: Vec<&&str> = allow.iter().filter(|rule| rule.contains(" .dispatch/") || rule.contains("(.dispatch/")).collect();
         assert_eq!(named.len(), 3, "the script, Edit and Read rules: {allow:?}");
-        assert!(deny[0].contains("/proj/.dispatch/worker.ps1 approve *)"), "{deny:?}");
+        assert!(!allow.iter().chain(deny.iter()).any(|rule| rule.contains("/proj/")), "no rule names the absolute path: {allow:?} {deny:?}");
+        assert!(deny[0].contains(" .dispatch/worker.ps1 approve *)"), "{deny:?}");
+        assert!(!claude_md.contains("/proj/") && !role.contains("/proj/"), "no absolute path in the shared files");
         assert!(role.contains(&format!("{tasks}/worker.ps1 plan <ticket-id>")), "{role}");
         assert!(read(&project.plan_flags()).contains(&format!("Write({rule_path}/plans/**)")));
         assert!(WORKER_SCRIPT.contains("$Project = Split-Path -Parent $Reports") && !WORKER_SCRIPT.contains("-reports"));
@@ -4092,8 +4224,9 @@ pub(crate) mod tests {
         write_file(&project.work_flags(), &format!("--model\nsonnet\n--disallowedTools\nAskUserQuestion\n--settings\n{settings}\n")).unwrap();
         assert!(!plan(&project).unwrap().steps[0].done, "the step is to do while the fixed part is missing");
 
+        // The absolute path of the old file becomes the path relative to the project (ticket second-computer).
         apply(&project, &[]).unwrap();
-        assert_eq!(read(&project.work_flags()), format!("--model\nsonnet\n{WORK_FIXED}--settings\n{settings}\n"));
+        assert_eq!(read(&project.work_flags()), format!("--model\nsonnet\n{WORK_FIXED}--settings\n.dispatch/worker-settings.json\n"));
         assert!(plan(&project).unwrap().steps[0].done);
         // A current file is left as it is.
         write_worker_flags(&project, &choice("", ""), &choice("", ""), "").unwrap();
@@ -5006,6 +5139,7 @@ evidence: no
             log: None,
             checks: Vec::new(),
             auto: false,
+            elsewhere: false,
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };
@@ -5157,7 +5291,7 @@ if (args[0] === 'agents') {
     /// The expected `plan-flags.txt` with "Measure before the plan" on: the lines of `plan_lines`
     /// with the measure verb of the script and the measure folder in the allowed list.
     fn plan_lines_measuring(project: &Project, choice_lines: &str) -> String {
-        let rule = project.rule_path().unwrap();
+        let rule = project.rule_path();
         let script = script_command(&project.reports_text());
         format!(
             "{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,Write\n--allowedTools\nBash(git status*),Bash(git log *),Bash(git diff *),Bash({script} measure *),Write({rule}/plans/**),Write({rule}/measure/**)\n"
@@ -5459,7 +5593,7 @@ if (args[0] === 'agents') {
         assert!(start[0].starts_with("Plan ticket t-1. Read the brief "), "{start:?}");
         assert_eq!(&start[1..6], ["--bg", "--name", "t-1 [plan]", "--model", "fable"]);
         assert_eq!(start[start.len() - 3], "Read,Grep,Glob,Bash,Write");
-        assert_eq!(start.last().unwrap(), &format!("Bash(git status*),Bash(git log *),Bash(git diff *),Write({}/plans/**)", project.rule_path().unwrap()));
+        assert_eq!(start.last().unwrap(), &format!("Bash(git status*),Bash(git log *),Bash(git diff *),Write({}/plans/**)", project.rule_path()));
         // The session file names the session of the plan run (ticket task-tokens); claude printed bg-1.
         assert!(out.contains("bg-1"), "the script writes the output of claude on: {out}");
         assert_eq!(read(&project.session_file("t-1")), "plan sess-1\n");
@@ -5608,9 +5742,10 @@ if (args[0] === 'agents') {
         assert_eq!(count_files(&project.reports), before, "each file moved, none added");
         assert_eq!(read(&project.briefs().join("t-2.md")), "brief two\n");
         assert_eq!(read(&project.reports.join("t-1.state")), "working\n");
-        // The options files keep the choice of the user and get the paths of this folder.
+        // The options files keep the choice of the user and get the paths of this folder, relative
+        // to the project (ticket second-computer).
         assert_eq!(read(&project.plan_flags()), plan_lines(&project, "--model\nsonnet\n--effort\nhigh\n"));
-        assert_eq!(read(&project.work_flags()), format!("--model\nopus\n{WORK_FIXED}--settings\n{}\n", project.worker_settings().to_string_lossy().replace('\\', "/")));
+        assert_eq!(read(&project.work_flags()), format!("--model\nopus\n{WORK_FIXED}--settings\n.dispatch/worker-settings.json\n"));
         assert!(project.options().auto_approve, "the settings of the project moved too");
         // The rules of the old folder are gone; the rule of the user stays.
         let settings = read_settings(&project.local_settings()).unwrap();
@@ -5806,6 +5941,9 @@ if (args[0] === 'agents') {
         write_file(&root.join(".gitignore"), "node_modules\n").unwrap();
         // One checked rule, so the step "Working rules" is done too.
         apply(&project, &[0]).unwrap();
+        // Apply keeps the local settings on this computer with a pair of its own (ticket second-computer).
+        let local = format!("{LOCAL_SETTINGS_MARK}\n{LOCAL_SETTINGS}\n");
+        assert_eq!(read(&root.join(".gitignore")), format!("node_modules\n{local}"));
         write_file(&project.briefs().join("t-1.md"), "brief\n").unwrap();
         git(&["add", "--all"]);
         git(&["commit", "-q", "-m", "setup with task files"]);
@@ -5820,7 +5958,7 @@ if (args[0] === 'agents') {
         set_ignore(&project, true);
         assert!(open_steps(&project).contains(&"Task files in git"), "{:?}", open_steps(&project));
         apply(&project, &[]).unwrap();
-        assert_eq!(read(&root.join(".gitignore")), format!("node_modules\n{TASKS_IGNORE_MARK}\n{ROOT_TASKS_IGNORE}\n"));
+        assert_eq!(read(&root.join(".gitignore")), format!("node_modules\n{local}{TASKS_IGNORE_MARK}\n{ROOT_TASKS_IGNORE}\n"));
         assert_eq!(git(&["ls-files", "--", ".dispatch"]), "");
         assert_eq!(git(&["log", "-1", "--format=%s"]).trim(), TASKS_LOCAL_MESSAGE);
         let removed = git(&["show", "--name-status", "--format=", "HEAD"]);
@@ -5842,7 +5980,7 @@ if (args[0] === 'agents') {
         set_ignore(&project, false);
         assert!(open_steps(&project).contains(&"Task files in git"), "{:?}", open_steps(&project));
         apply(&project, &[]).unwrap();
-        assert_eq!(read(&root.join(".gitignore")), "node_modules\n");
+        assert_eq!(read(&root.join(".gitignore")), format!("node_modules\n{local}"));
         assert_eq!(git(&["ls-files", "--", ".dispatch"]).lines().count(), tracked + 2, "the new brief and the settings file");
         let subject = git(&["log", "-1", "--format=%s"]);
         assert!(subject.starts_with("Dispatch: ") && subject.trim().ends_with(" task files"), "{subject}");
@@ -5850,13 +5988,157 @@ if (args[0] === 'agents') {
         assert!(!read(&project.instructions()).contains("git ignores `"));
         assert!(git(&["status", "--porcelain"]).contains("A  staged.txt"));
         commit_setup(&project).unwrap();
-        assert!(!project.setup_files().contains(&".gitignore"));
+        // The pair of the local settings keeps .gitignore a setup file.
+        assert!(project.setup_files().contains(&".gitignore"));
 
         // A line that the user wrote by hand: off, the step is done, and Apply leaves the file.
-        write_file(&root.join(".gitignore"), "node_modules\n.dispatch/\n").unwrap();
+        write_file(&root.join(".gitignore"), &format!("node_modules\n{local}.dispatch/\n")).unwrap();
         assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
         apply(&project, &[]).unwrap();
-        assert_eq!(read(&root.join(".gitignore")), "node_modules\n.dispatch/\n");
+        assert_eq!(read(&root.join(".gitignore")), format!("node_modules\n{local}.dispatch/\n"));
+        clean(&project);
+    }
+
+    /// A clone of a scratch project into a sibling folder with another name: the project on a
+    /// second computer (ticket second-computer). It has the git identity of the scratch repositories.
+    fn clone_of(project: &Project, name: &str) -> Project {
+        let base = project.root.parent().unwrap();
+        let target = base.join(name);
+        run_git(base, &["clone", "-q", &project.root.to_string_lossy(), &target.to_string_lossy()]).unwrap();
+        for args in [
+            &["config", "user.name", "Dispatch test"][..],
+            &["config", "user.email", "test@example.invalid"],
+            &["config", "commit.gpgsign", "false"],
+            &["config", "core.excludesFile", "no-such-ignore-file"],
+        ] {
+            run_git(&target, args).unwrap();
+        }
+        Project::find(&target.to_string_lossy()).unwrap()
+    }
+
+    #[test]
+    fn second_computer_clone_is_set_up_without_a_change_of_a_tracked_file() {
+        let project = git_scratch("second-computer");
+        let git = |root: &Path, args: &[&str]| run_git(root, args).unwrap();
+        // A project that committed its local settings: Apply takes them out of git in a commit of
+        // their own, and the file stays on the disk.
+        write_file(&project.local_settings(), "{ \"permissions\": { \"allow\": [\"Bash(npm run build)\"] } }\n").unwrap();
+        git(&project.root, &["add", "--all"]);
+        git(&project.root, &["commit", "-q", "-m", "local settings in git"]);
+        apply(&project, &[0]).unwrap();
+        assert_eq!(git(&project.root, &["log", "-1", "--format=%s"]).trim(), LOCAL_SETTINGS_MESSAGE);
+        assert_eq!(git(&project.root, &["show", "--name-status", "--format=", "HEAD"]).trim(), format!("D\t{LOCAL_SETTINGS}"));
+        assert!(read(&project.local_settings()).contains("Bash(npm run build)"), "the rule of the user stays on the disk");
+        write_worker_flags(&project, &choice("fable", "xhigh"), &choice("opus", "xhigh"), "2").unwrap();
+        // A project in use has a brief and a plan; git keeps no empty folder.
+        write_file(&project.briefs().join("t-1.md"), "# t-1\n").unwrap();
+        write_file(&project.plans().join("t-1.md"), "# Plan t-1: one\n").unwrap();
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        git(&project.root, &["add", "--all"]);
+        git(&project.root, &["commit", "-q", "-m", "setup and task files"]);
+        // The local settings with the rules and the folders of this user stay here.
+        assert_eq!(git(&project.root, &["ls-files", "--", LOCAL_SETTINGS]), "");
+        assert!(project.local_settings().is_file());
+
+        let clone = clone_of(&project, "elsewhere");
+        assert_ne!(clone.root, project.root);
+        assert!(!clone.local_settings().exists(), "the local settings did not travel");
+        assert_eq!(open_steps(&clone), vec!["Allow rules"]);
+        assert_eq!(clone.section(), project.section(), "the section has the same mark on both paths");
+        apply(&clone, &[]).unwrap();
+        assert_eq!(git(&clone.root, &["status", "--porcelain", "--untracked-files=all"]), "", "Apply changed no tracked file");
+        let settings = read_settings(&clone.local_settings()).unwrap();
+        assert_eq!(settings["permissions"]["additionalDirectories"], json!(clone.extra_directories()));
+        assert!(open_steps(&clone).is_empty(), "{:?}", open_steps(&clone));
+        assert_eq!(read_worker_flags(&clone).agents, "2", "the agent limit travels");
+        clean(&project);
+    }
+
+    #[test]
+    fn second_computer_clone_tasks() {
+        let project = git_scratch("second-computer-tasks");
+        let git = |root: &Path, args: &[&str]| run_git(root, args).unwrap();
+        apply(&project, &[0]).unwrap();
+        // Sessions of the other account: no transcript of them is on this computer.
+        let unknown = |n: u32| format!("5ec0d000-0000-4000-8000-{n:012}");
+        for (id, title) in [("t-done", "Done task"), ("t-plan", "Planning task"), ("t-work", "Working task")] {
+            crate::core::tickets::open_in_progress(&project, id, title, title).unwrap();
+            write_file(&project.briefs().join(format!("{id}.md")), &format!("# {id}: {title}\n")).unwrap();
+        }
+        write_file(&project.plans().join("t-done.md"), "# Plan t-done: done\n\n## Summary\nOne line.\n").unwrap();
+        write_file(&project.reports.join("t-done.md"), "state: done\nneeds: nothing\nfiles: none\nplan: plans/t-done.md\n\n## What changed\nIt works.\n").unwrap();
+        write_file(&project.reports.join("t-done.state"), "working\n").unwrap();
+        write_file(&project.session_file("t-done"), &format!("plan {}\nwork {}\n", unknown(1), unknown(2))).unwrap();
+        write_file(&project.log_file("t-done"), "# the log of the other computer\n").unwrap();
+        write_file(&project.reports.join("t-plan.state"), "planning\n").unwrap();
+        write_file(&project.session_file("t-plan"), &format!("plan {}\n", unknown(3))).unwrap();
+        write_file(&project.plans().join("t-work.md"), "# Plan t-work: work\n\n## Summary\nTwo lines.\n").unwrap();
+        write_file(&project.reports.join("t-work.state"), "working\n").unwrap();
+        write_file(&project.session_file("t-work"), &format!("plan {}\nwork {}\n", unknown(4), unknown(5))).unwrap();
+        // The read on the first computer commits the task files: the work run without a report has
+        // no transcript here either, so it holds no commit.
+        task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        git(&project.root, &["add", "--all"]);
+        git(&project.root, &["commit", "-q", "-m", "setup"]);
+
+        let clone = clone_of(&project, "elsewhere");
+        let head = git(&clone.root, &["rev-parse", "HEAD"]);
+        let log = read(&clone.log_file("t-done"));
+        let list = task_list(clone.root.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(list.tasks.len(), 3);
+        assert_eq!(list.tickets.len(), 3);
+        let task = |name: &str| list.tasks.iter().find(|task| task.name == name).unwrap();
+        let done = task("t-done");
+        assert!(done.plan.is_some() && done.report.is_some() && done.brief.is_some());
+        assert_eq!(done.header.as_ref().unwrap().state, "done");
+        assert!(done.unverified.is_empty(), "{:?}", done.unverified);
+        assert!(task("t-plan").elsewhere && task("t-work").elsewhere);
+        let away = Some("started on another computer; no worker of it runs here".to_string());
+        assert_eq!(handoff_state(task("t-plan"), false, false), away);
+        assert_eq!(handoff_state(task("t-work"), false, false), away);
+        assert_eq!(read(&clone.log_file("t-done")), log, "the log of the other computer stays");
+        assert_eq!(keep_tasks_committed(&clone), Ok(0));
+        assert_eq!(git(&clone.root, &["rev-parse", "HEAD"]), head, "no new commit");
+        assert_eq!(git(&clone.root, &["status", "--porcelain", "--untracked-files=all"]), "");
+        clean(&project);
+    }
+
+    #[test]
+    fn second_computer_clone_script() {
+        let project = git_scratch("second-computer-script");
+        let git = |root: &Path, args: &[&str]| run_git(root, args).unwrap();
+        apply(&project, &[0]).unwrap();
+        write_worker_flags(&project, &choice("", ""), &choice("", ""), "2").unwrap();
+        write_file(&project.briefs().join("t-1.md"), "# t-1: one\n").unwrap();
+        git(&project.root, &["add", "--all"]);
+        git(&project.root, &["commit", "-q", "-m", "setup"]);
+
+        let clone = clone_of(&project, "elsewhere");
+        apply(&clone, &[]).unwrap();
+        let fake = fake_claude(clone.root.parent().unwrap());
+        let origin = project.root.to_string_lossy().into_owned();
+        let (code, text) = run_script(&clone, &fake, "done", &["plan", "t-1"]);
+        assert_eq!(code, 0, "{text}");
+        let call = last_call(&fake);
+        assert!(call[0].contains(&clone.plans().join("t-1.md").to_string_lossy().into_owned()), "{call:?}");
+        assert!(call.iter().any(|arg| arg.contains("Write(.dispatch/plans/**)")), "{call:?}");
+        assert!(!call.iter().any(|arg| arg.contains(&origin)), "{call:?}");
+        assert_eq!(read(&fake.join("cwd.txt")).to_lowercase(), clone.root.to_string_lossy().to_lowercase());
+
+        let (code, text) = run_script(&clone, &fake, "done", &["approve", "t-1"]);
+        assert_eq!(code, 0, "{text}");
+        let call = last_call(&fake);
+        assert!(call[0].contains(&clone.reports.join("t-1.md").to_string_lossy().into_owned()), "{call:?}");
+        let at = call.iter().position(|arg| arg == "--settings").unwrap();
+        assert_eq!(call[at + 1], clone.worker_settings().to_string_lossy(), "{call:?}");
+        assert!(!call.iter().any(|arg| arg.contains(&origin)), "{call:?}");
+        assert_eq!(read(&fake.join("cwd.txt")).to_lowercase(), clone.root.to_string_lossy().to_lowercase());
+
+        // A follow-up of a run of the other computer: no worker of that name runs here.
+        write_file(&clone.reports.join("fake-name.txt"), "t-other").unwrap();
+        let (code, text) = run_script(&clone, &fake, "done", &["reply", "t-1", "hello"]);
+        assert_eq!(code, 2, "{text}");
+        assert!(text.contains("another computer"), "{text}");
         clean(&project);
     }
 

@@ -36,6 +36,12 @@ test("the plan run: nothing before its first plan file, then the plan so far", (
   assert.equal(lines("prompt", { run: "plan" }).now, "Plan so far: A task whose worker runs gets a Stop row.");
 });
 
+test("a run that started on another computer (ticket second-computer)", () => {
+  assert.equal(lines("elsewhere").now, "On another computer: A task whose worker runs gets a Stop row.");
+  assert.equal(lines("elsewhere", { hasPlan: false, summary: [] }).now, "On another computer.");
+  assert.equal(lines("elsewhere").about, ABOUT);
+});
+
 test("a plan that waits for the user", () => {
   assert.equal(lines("plan-ready").now, "Plan: A task whose worker runs gets a Stop row.");
 });

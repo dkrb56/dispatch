@@ -1879,6 +1879,11 @@ interface TaskInfo {
   checks?: CheckInfo[];
   /** A running action approves the plan of this task by itself (ticket project-actions). Absent from an older host. */
   auto?: boolean;
+  /**
+   * The newest session of the task has no transcript on this computer: the run started on another
+   * computer (ticket second-computer). Absent from an older host.
+   */
+  elsewhere?: boolean;
 }
 
 /** One Bash command of a task with its result, from the transcripts (ticket task-evidence). */
@@ -2360,13 +2365,14 @@ function nextQueued(project: ProjectTasks, tasks: Task[]): Task | undefined {
     const task = tasks.find((task) => task.name === name);
     if (!task?.info) continue;
     const planTime = task.info.plan?.modified ?? 0;
-    if (task.info.state !== "planning" || planTime > modified) {
+    // A plan whose work run ran on another computer waits for Approve too (ticket second-computer).
+    if ((task.info.state !== "planning" && !awayPlan(task)) || planTime > modified) {
       queuedApprovals.delete(key);
       saveQueued();
       continue;
     }
     // An older time: the list was read before the decisions were written.
-    if (planTime === modified && planReady(task) && !busyTasks.has(task.name)) return task;
+    if (planTime === modified && (planReady(task) || awayPlan(task)) && !busyTasks.has(task.name)) return task;
   }
   return undefined;
 }
@@ -3655,7 +3661,7 @@ interface Task {
 
 /** The user approved the plan while the project was not free: its work run waits for the project. */
 function approvalQueued(task: Task): boolean {
-  return planReady(task) && queuedApprovals.has(queueKey(task));
+  return (planReady(task) || awayPlan(task)) && queuedApprovals.has(queueKey(task));
 }
 
 /** The plan run of a task is done, and its plan waits for the user. */
@@ -3663,6 +3669,27 @@ function planReady(task: Task): boolean {
   const info = task.info;
   const live = task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
   return info?.state === "planning" && info.plan !== null && !live;
+}
+
+/**
+ * A run of the task started on another computer and has no result here (ticket second-computer):
+ * a plan run without plan, or a work run without report, and no worker of the task in the list.
+ * It holds no queue; a pull brings the result of the other computer.
+ */
+function awayRun(task: Task): boolean {
+  const info = task.info;
+  if (!info?.elsewhere || task.workers.length > 0) return false;
+  if (info.state === "planning") return info.plan === null;
+  return (info.state === "approved" || info.state === "working") && info.report === null;
+}
+
+/**
+ * The work run of the task started on another computer and has no report here: its plan gets
+ * Approve again, which starts a new work run on this computer (user decision 2 of second-computer).
+ * Only the click of the user starts it; an automatic approval does not.
+ */
+function awayPlan(task: Task): boolean {
+  return awayRun(task) && task.info?.state !== "planning" && !!task.info?.plan;
 }
 
 /**
@@ -3675,7 +3702,8 @@ function workRun(tasks: Task[]): Task | undefined {
   return tasks.find((task) => {
     const info = task.info;
     if (info?.state !== "approved" && info?.state !== "working") return false;
-    if (task.workers.length === 0) return info.report === null;
+    // A run of another computer edits nothing here (ticket second-computer).
+    if (task.workers.length === 0) return info.report === null && !info.elsewhere;
     return task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
   });
 }
@@ -4826,6 +4854,7 @@ function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"
     return live.state === "blocked" ? { kind: "waits", text: `${name} waits at a prompt` } : { kind: "working", text: `${name} working` };
   }
   if (mergeWaits(task)) return { kind: "waits", text: mergeRunning(task) ? "merging its branch" : "branch waits for Merge" };
+  if (awayRun(task)) return { kind: "waits", text: "ran on another computer · no worker here" };
   if (task.info?.state === "stopped") return { kind: "failed", text: "stopped" };
   if (!task.info?.report && task.workers.some((worker) => worker.state === "failed")) return { kind: "failed", text: "failed" };
   if (reportUnverified(task)) return { kind: "waits", text: `report not verified · ${unverifiedText(task.info?.unverified ?? [], "status")}` };
@@ -4921,6 +4950,7 @@ function taskPhase(task: Task): TaskPhase {
   if (info.header?.state === "failed") return "failed";
   if (reportUnverified(task)) return "unverified";
   if (info.report) return "done";
+  if (awayRun(task)) return "elsewhere";
   if (info.state === "approved" || info.state === "working") return "starting";
   if (info.state === "planning") return "planning";
   return "none";
@@ -6388,7 +6418,7 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     if (stop) body.append(stop);
     if (body.childElementCount > 0) made.append(body);
   }
-  if (planReady(task)) made.append(planCard(task));
+  if (planReady(task) || awayPlan(task)) made.append(planCard(task));
   const questions = openQuestions(task);
   const repeats = repeatedQuestionsOf(task);
   if (repeats) made.append(repeatCard(task, repeats));
