@@ -81,7 +81,8 @@ import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersio
 import { lastRunVersion, newEntries } from "./changelog";
 import { alertActions, alertState, CHIME, newWaits, notificationText, type Wait } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
-import { alertOptions, initOptions, pulseOn } from "./options";
+import { alertOptions, compactOn, initOptions, pulseOn } from "./options";
+import { COMPACT_TEXT, compactEnded, compactHold, type CompactSend, promptEmpty, taskEnds, type TaskShape } from "./compact";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
 import { initRules, openRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
@@ -219,6 +220,8 @@ interface PaneInfo {
     status: string | null;
     model: string | null;
     contextTokens: number | null;
+    /** The count of compact summaries in the transcript. Absent from an older host. */
+    compactions?: number;
     remoteControl: boolean;
     /** The MCP servers of the session. `state` is `connected`, `pending` or `failed`. */
     connectors: { name: string; state: string }[];
@@ -1392,6 +1395,7 @@ async function pollTriage(): Promise<void> {
         void syncNight(pane.host, pane.project);
       }
       watchContext(pane, info);
+      await checkCompact(pane, info);
     } catch (error) {
       console.error("triage chat check failed", error);
     }
@@ -1403,7 +1407,8 @@ async function pollTriage(): Promise<void> {
 // The context of the triage chats (triage-context-rollover). The Triage card in focus mode shows
 // how full the chat is. At the limit of the project, Dispatch waits for a quiet moment, closes
 // Claude Code in the triage pane with `/exit` and starts a new triage chat there; its first message
-// is a hand-off of the open tasks. The old chat is kept and shows as "earlier triage".
+// is a hand-off of the open tasks. The old chat is kept and shows as "earlier triage". After each
+// task end, Dispatch also sends `/compact` at a quiet moment (triage-compact-after-task, src/compact.ts).
 
 /** What Dispatch knows of the context of the triage chat of a project, and of its switch. */
 interface TriageContext {
@@ -1443,6 +1448,95 @@ function switchRuns(key: string): boolean {
     return localStorage.getItem(switchKey(key)) !== null;
   } catch {
     return false;
+  }
+}
+
+/** The compaction of the triage chat of a project after a task (triage-compact-after-task). In memory only. */
+interface CompactState {
+  /** The time of the task end that marked the chat; 0 without a mark. */
+  marked: number;
+  /** Since when the session is idle; 0 while it is not. */
+  idleSince: number;
+  /** The compaction that Dispatch sent and that did not end yet. */
+  send: CompactSend | null;
+  /** Why the compaction waits, for the tooltip of the Triage card. */
+  waits: string;
+}
+
+/** The compaction of the triage chat of each project, by project key. A restart loses a mark; the next task end makes a new one. */
+const triageCompacts = new Map<string, CompactState>();
+
+/** Marks the triage chat of a project (by its key) for a compaction after a task end, when the switch is on. */
+function markCompact(key: string): void {
+  if (!key || !compactOn()) return;
+  let state = triageCompacts.get(key);
+  if (!state) {
+    state = { marked: 0, idleSince: 0, send: null, waits: "" };
+    triageCompacts.set(key, state);
+  }
+  if (!state.marked) state.marked = Date.now();
+}
+
+/** A compaction runs in the triage chat of the project (by its key): its lines and tickets wait. */
+function compactRuns(key: string): boolean {
+  return Boolean(triageCompacts.get(key)?.send);
+}
+
+/**
+ * Ends a sent compaction when its summary shows or its time ran out, else sends `/compact` to a marked
+ * triage chat at a quiet moment (the rule is `compactHold`). It runs in each poll of a triage pane.
+ */
+async function checkCompact(pane: Pane, info: PaneInfo): Promise<void> {
+  const key = paneKey(pane);
+  const state = triageCompacts.get(key);
+  if (!state) return;
+  const session = info.session;
+  const now = Date.now();
+  const status = session?.status ?? null;
+  state.idleSince = status === "idle" ? state.idleSince || now : 0;
+  const waits = state.waits;
+  if (state.send) {
+    const end = compactEnded(state.send, session?.compactions, now);
+    if (end === "late") console.warn("the compaction of the triage chat did not end within the limit", key);
+    if (end) {
+      state.send = null;
+      renderFocus();
+    }
+    return;
+  }
+  const context = triageContexts.get(key);
+  const reason = compactHold({
+    on: compactOn(),
+    driver: driverOf(pane.host),
+    marked: state.marked > 0,
+    status,
+    menu: parseMenu(menuLines(pane.term)) !== null,
+    switchDue: Boolean(context?.due || context?.switching) || switchRuns(key),
+    inFlight: projectPending(key).length > 0,
+    queued: triageQueue.some((line) => line.project === key),
+    view: pane.chat?.visible() ? "chat" : "terminal",
+    boxQuiet: pane.chat?.quiet() ?? false,
+    typing: userTypes(pane),
+    promptEmpty: promptEmpty(terminalLines(pane.term)),
+    idleSince: state.idleSince,
+    lastInput,
+    now,
+  });
+  state.waits = state.marked ? reason : "";
+  if (reason || !pane.chat || !session) {
+    if (state.waits !== waits) renderFocus();
+    return;
+  }
+  state.send = { at: now, count: session.compactions ?? 0 };
+  state.marked = 0;
+  state.waits = "";
+  renderFocus();
+  try {
+    await pane.chat.say(COMPACT_TEXT);
+  } catch (error) {
+    state.send = null;
+    console.warn("the compaction of the triage chat was not sent", error);
+    renderFocus();
   }
 }
 
@@ -1517,6 +1611,8 @@ function checkSwitch(pane: Pane, session: NonNullable<PaneInfo["session"]>, stat
   if (state.failedTokens === tokens) return hold("The last try did not close the chat; the next try comes after the next turn of triage.");
   const reason = nightOf(pane.host)
     ? "Night mode is on; the new chat starts after it ends."
+    : compactRuns(key)
+      ? "A compaction of the chat runs."
     : session.status === "busy"
       ? "Triage works."
       : session.status === "shell"
@@ -1646,6 +1742,9 @@ function triageContextLine(key: string): HTMLElement | null {
   }
   tips.push(limit ? `A new chat starts at ${tokenText(limit)} (the list above Triage).` : "No new chat: the list above Triage is off.");
   if (state.waits) tips.push(state.waits);
+  const compact = triageCompacts.get(key);
+  if (compact?.send) tips.push("Claude Code compacts the chat.");
+  else if (compact?.marked && compact.waits) tips.push(`A compaction waits: ${compact.waits}`);
   line.title = tips.join("\n");
   return line;
 }
@@ -1913,7 +2012,17 @@ function storeProjectTasks(key: string, record: ProjectTasks): void {
     const line = old && !old.branch?.merge ? outsideLine(info.name, branch) : null;
     if (line) tellTriage(projectFor(record.host, record.cwd), line);
   }
+  // A task end marks the triage chat of the project for a compaction (triage-compact-after-task).
+  if (before && taskEnds(taskShape(before), taskShape(record)).length > 0) markCompact(projectFor(record.host, record.cwd));
   projectTasks.set(key, record);
+}
+
+/** The tasks and tickets of a project record in the shape of the task-end rule of src/compact.ts. */
+function taskShape(record: ProjectTasks): TaskShape {
+  return {
+    tasks: record.infos.map((info) => ({ name: info.name, state: info.header?.state ?? null })),
+    tickets: record.tickets.map((ticket) => ({ id: ticket.id, status: ticket.status })),
+  };
 }
 
 /** The last reply of the `task_list` command, for the folder of the focused terminal. */
@@ -2919,7 +3028,7 @@ async function dispatchTickets(): Promise<void> {
       // A paused project sends no ticket; a ticket in flight goes on (ticket pause-tasks).
       const ticket = nextTicket(record.tickets, [], (id) => ticketSent(key, id), record.paused);
       if (!ticket) continue;
-      if (switchRuns(key) || triageQueue.some((line) => line.project === key)) continue;
+      if (switchRuns(key) || compactRuns(key) || triageQueue.some((line) => line.project === key)) continue;
       if (!triageFree(await triageStatus(pane).catch(() => null))) continue;
       if (parseMenu(menuLines(pane.term)) !== null) continue;
       // A ticket goes through the same prompt as the keys of the user (typing-sent-by-line).
@@ -3338,14 +3447,15 @@ async function flushTriageQueue(): Promise<void> {
       // The lines for a host that this window does not drive wait in its queue (remote-shared-state).
       if (!driverOf(keyHost(line.project, firstBackend()))) continue;
       // While Dispatch switches the project to a new triage chat, its lines wait for the new chat.
-      if (switchRuns(line.project)) continue;
+      // During a compaction of the chat they wait for its end.
+      if (switchRuns(line.project) || compactRuns(line.project)) continue;
       const pane = triagePane(line.project);
       if (!pane?.chat) continue;
       try {
         if (!(await triageReady(pane))) continue;
         // The user types in the terminal of triage: the line waits for the next poll.
         if (userTypes(pane)) continue;
-        if (switchRuns(line.project)) continue;
+        if (switchRuns(line.project) || compactRuns(line.project)) continue;
         await pane.chat.say(lineText(line));
         triageQueue.splice(triageQueue.indexOf(line), 1);
         saveTriageQueue();
@@ -3421,6 +3531,8 @@ function announceWorkerChanges(workers: Worker[]): void {
     const project = projectFor(worker.host, worker.cwd);
     if (!lines.has(project)) lines.set(project, []);
     lines.get(project)!.push(line);
+    // A worker that ended marks the triage chat of its project for a compaction (triage-compact-after-task).
+    if (now === "done" || now === "failed") markCompact(project);
   }
   for (const [project, text] of lines) tellTriage(project, text.join(" "));
   // An ended session leaves the quiet set once Claude Code reports it stopped or lists it no more.

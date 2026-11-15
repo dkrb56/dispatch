@@ -1,7 +1,9 @@
 // The Options screen (ticket alerts-options): the three switches of the alerts when a task waits for
-// the user, and the colour theme and text size lists (main.ts wires those two, as before).
+// the user, the switch of the triage compaction after a task (ticket triage-compact-after-task), and
+// the colour theme and text size lists (main.ts wires those two, as before).
 import { ALERT_OPTIONS_KEY, type AlertOptions, parseAlertOptions } from "./alerts";
 import { parsePulse, PULSE_KEY } from "./attention";
+import { COMPACT_KEY, parseCompact } from "./compact";
 import { cleanAddress, DEFAULT_PORT, type HostEntry, hostSettings, setHostSettings, windowCall } from "./backend";
 
 const dialog = document.querySelector<HTMLDialogElement>("#options")!;
@@ -209,6 +211,14 @@ export function pulseOn(): boolean {
   return pulse;
 }
 
+/** The switch "Compact triage after each task": one for all projects, on until the user turns it off. */
+let compact = parseCompact(null);
+
+/** The switch "Compact triage after each task" is on. */
+export function compactOn(): boolean {
+  return compact;
+}
+
 function save(): void {
   try {
     localStorage.setItem(ALERT_OPTIONS_KEY, JSON.stringify(options));
@@ -259,6 +269,23 @@ export function initOptions(onClose: () => void, onHostChange: () => unknown): v
       pulse = pulseInput.checked;
       try {
         localStorage.setItem(PULSE_KEY, String(pulse));
+      } catch {
+        // The switch stays for this run of the app.
+      }
+    });
+  }
+  try {
+    compact = parseCompact(localStorage.getItem(COMPACT_KEY));
+  } catch {
+    // Without the storage, the compaction is on.
+  }
+  const compactInput = dialog.querySelector<HTMLInputElement>('input[data-compact="triage"]');
+  if (compactInput) {
+    compactInput.checked = compact;
+    compactInput.addEventListener("change", () => {
+      compact = compactInput.checked;
+      try {
+        localStorage.setItem(COMPACT_KEY, String(compact));
       } catch {
         // The switch stays for this run of the app.
       }

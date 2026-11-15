@@ -87,6 +87,8 @@ struct SessionInfo {
     status: Option<String>,
     model: Option<String>,
     context_tokens: Option<u64>,
+    /// The count of compact summaries in the transcript (ticket triage-compact-after-task).
+    compactions: u32,
     /// The session is connected to Remote Control.
     remote_control: bool,
     connectors: Vec<Connector>,
@@ -338,6 +340,9 @@ struct Entry {
     kind: String,
     #[serde(default)]
     is_sidechain: bool,
+    /// The user line that `/compact` writes: the summary of the earlier messages.
+    #[serde(default)]
+    is_compact_summary: bool,
     cwd: Option<String>,
     message: Option<Message>,
     attachment: Option<Attachment>,
@@ -368,8 +373,16 @@ struct FailedServer {
 struct Message {
     model: Option<String>,
     usage: Option<Usage>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "parts")]
     content: Vec<Part>,
+}
+
+/// The parts of a message. A user line can hold its text as a plain string (the compact summary does): it has no parts.
+fn parts<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<Part>, D::Error> {
+    match Value::deserialize(de)? {
+        Value::String(_) => Ok(Vec::new()),
+        value => serde_json::from_value(value).map_err(serde::de::Error::custom),
+    }
 }
 
 #[derive(Deserialize)]
@@ -399,6 +412,8 @@ struct Transcript {
     outputs: Vec<String>,
     context_tokens: Option<u64>,
     model: Option<String>,
+    /// The count of compact summary lines of the main session in the file.
+    compactions: u32,
     /// The MCP tools that the session has. The name of a tool is `mcp__<server>__<tool>`.
     mcp_tools: HashSet<String>,
     /// The MCP servers that did not connect, as the last attachment gave them.
@@ -458,6 +473,10 @@ impl Transcript {
                     self.failed_servers = failed.into_iter().map(|server| server.name).collect();
                 }
             }
+            return;
+        }
+        if entry.kind == "user" && entry.is_compact_summary && !entry.is_sidechain {
+            self.compactions += 1;
             return;
         }
         let (true, Some(message)) = (entry.kind == "assistant", entry.message) else {
@@ -550,7 +569,10 @@ impl Transcript {
         for line in bytes[..end].split(|&byte| byte == b'\n') {
             let Ok(line) = std::str::from_utf8(line) else { continue };
             // A fast test before the JSON parse. Most lines are not assistant messages or tool lists.
-            if !line.contains("\"type\":\"assistant\"") && !line.contains("\"deferred_tools_delta\"") {
+            if !line.contains("\"type\":\"assistant\"")
+                && !line.contains("\"deferred_tools_delta\"")
+                && !line.contains("\"isCompactSummary\":true")
+            {
                 continue;
             }
             if let Ok(entry) = serde_json::from_str::<Entry>(line) {
@@ -585,6 +607,7 @@ pub fn pane_info(core: &Core, id: String, cwd: Option<String>) -> PaneInfo {
         status: session.status,
         model: transcript.model.clone(),
         context_tokens: transcript.context_tokens,
+        compactions: transcript.compactions,
         remote_control: session.bridge_session_id.is_some(),
         connectors: transcript.connectors(),
     });
@@ -724,6 +747,28 @@ fn drive_roots() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_transcript_counts_its_compact_summaries() {
+        let root = std::env::temp_dir().join(format!("dispatch-compact-{}", std::process::id()));
+        let dir = root.join("projects").join("D--x");
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("s1.jsonl");
+        let lines = [
+            r#"{"type":"assistant","message":{"model":"m","usage":{"input_tokens":5,"cache_read_input_tokens":90000},"content":[]}}"#,
+            r#"{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued."}}"#,
+            r#"{"type":"user","message":{"role":"user","content":"hello"}}"#,
+            r#"{"type":"assistant","message":{"model":"m","usage":{"input_tokens":7,"cache_read_input_tokens":12000},"content":[]}}"#,
+        ];
+        fs::write(&file, format!("{}\n", lines.join("\n"))).unwrap();
+        let mut transcript = Transcript::default();
+        transcript.update(&root, "s1");
+        assert_eq!(transcript.compactions, 1);
+        assert_eq!(transcript.context_tokens, Some(12007));
+        transcript.update(&root, "s1");
+        assert_eq!(transcript.compactions, 1, "no new lines keep the count");
+        fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn the_newest_morning_list_of_a_project() {
