@@ -6,6 +6,7 @@
 //! (task 3, `remote-host`) is the second one.
 
 pub mod actions;
+pub mod builds;
 pub mod chats;
 pub mod context;
 pub mod flow;

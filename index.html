@@ -127,6 +127,12 @@
         <p id="setup-rules-state" class="findings-state"></p>
         <div id="setup-rules-list"></div>
       </section>
+      <section id="setup-builds" hidden>
+        <h3>Build folders</h3>
+        <p id="setup-builds-state" class="findings-state"></p>
+        <ul id="setup-builds-list"></ul>
+        <button id="setup-clean-builds" title="Delete the proof builds and the incremental cache; the main build (debug, release) and a folder in use stay" disabled>Clean build folders</button>
+      </section>
       <div id="setup-steps"></div>
       <p id="setup-message"></p>
       <div id="setup-buttons">
@@ -438,6 +444,7 @@
           <li><b>Measure before the plan.</b> The plan run may run your commands before it writes the plan.</li>
           <li><b>Task branches.</b> Each task works on its own git branch.</li>
           <li>After a change, click <b>Apply</b>.</li>
+          <li><b>Build folders.</b> The Setup window shows the cargo build folders of the project; Clean build folders deletes the proof builds and the incremental cache, never the main build.</li>
         </ul>
         <details class="help-more">
           <summary>Details</summary>
@@ -451,6 +458,7 @@
             <li><b>Task branches.</b> Your branch stays clean until you merge. Approve makes the branch <code>task/&lt;task&gt;</code> from the branch that the project was on at the plan run, and the worker commits there. An answer marks the task as working before it switches the project to the task branch, so Dispatch does not switch back while the worker starts.</li>
             <li>When the worker is done, Dispatch switches the project back to that branch. The task card then shows <b>Merge into &lt;branch&gt;</b>, until you merge the branch yourself with git.</li>
             <li>Write a gate command into the box under the switch, for example your test suite. Merge runs it on the merged code and makes the merge commit only when it passes; a failed gate lists the lines of its log that say FAIL. Night mode does not merge.</li>
+            <li><b>Build folders.</b> The section shows each <code>target</code> folder of a cargo project with the size of its folders. <code>debug</code> and <code>release</code> are the main build and stay. Each other folder is a proof build of a worker; workers build their test copies in the one shared folder <code>target\test-copy</code>. The <code>incremental</code> folder of the main build is a cache that cargo builds again. Clean build folders deletes the proof builds and the caches, and keeps a folder in use: a target folder with a running build, or a folder with an open file, such as a test copy that still runs. A project without cargo does not show the section.</li>
           </ul>
         </details>
 

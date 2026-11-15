@@ -1,4 +1,5 @@
 import { call, type HostId } from "./backend";
+import { type BuildFolders, cleanable, type CleanResult, cleanText, rowText } from "./builds";
 import { openViewer, statFile } from "./files";
 import { checkText, type Finding, findingElement, optionsText, type RulesCheck, removeAllButton, savedOptions, tick } from "./rulecheck";
 
@@ -82,6 +83,11 @@ const checkStateEl = document.querySelector<HTMLElement>("#setup-rules-state")!;
 const checkListEl = document.querySelector<HTMLElement>("#setup-rules-list")!;
 /** Counts the opens of the dialog: a check reply of an older open is dropped. */
 let checkRun = 0;
+/** The section Build folders: shown only for a project with a cargo target folder (ticket proof-target-cleanup). */
+const buildsEl = document.querySelector<HTMLElement>("#setup-builds")!;
+const buildsStateEl = document.querySelector<HTMLElement>("#setup-builds-state")!;
+const buildsListEl = document.querySelector<HTMLElement>("#setup-builds-list")!;
+const cleanBuildsEl = document.querySelector<HTMLButtonElement>("#setup-clean-builds")!;
 
 /** Takes a rule out of its file as a rule that is off; On in the Rules popup puts it back. */
 async function removeFinding(finding: Finding): Promise<void> {
@@ -140,6 +146,36 @@ function checkRules(host: HostId, target: string): void {
       stop();
       if (run === checkRun) checkStateEl.textContent = `The check of the rules failed: ${error}`;
     });
+}
+
+/**
+ * Reads the build folders of the folder and fills the section. `note` stands before the sizes, for
+ * example the text after a clean. A reply of an older open is dropped.
+ */
+async function showBuilds(host: HostId, target: string, note = ""): Promise<void> {
+  const run = checkRun;
+  cleanBuildsEl.disabled = true;
+  buildsStateEl.textContent = `${note} Measuring…`.trim();
+  try {
+    const folders = await call<BuildFolders>(host, "build_folders", { cwd: target });
+    if (run !== checkRun) return;
+    buildsEl.hidden = folders.targets.length === 0;
+    buildsListEl.replaceChildren(
+      ...folders.rows.map((row) => {
+        const item = document.createElement("li");
+        item.textContent = folders.targets.length > 1 ? `${row.target}\\${rowText(row)}` : rowText(row);
+        item.title = `${row.target}\\${row.name.split("/").join("\\")}`;
+        if (!cleanable(row)) item.className = "main";
+        return item;
+      }),
+    );
+    const extra = folders.rows.filter(cleanable);
+    cleanBuildsEl.disabled = extra.length === 0;
+    const state = extra.length ? "Clean build folders deletes the proof builds and the incremental cache." : "No proof build and no incremental cache.";
+    buildsStateEl.textContent = `${note} ${state}`.trim();
+  } catch (error) {
+    if (run === checkRun) buildsStateEl.textContent = `The build folders could not be read: ${error}`;
+  }
 }
 
 /** The checkboxes of the working rules of a step. A change keeps the choice in `rulesOff`. */
@@ -263,6 +299,19 @@ export function initPipeline(
       commitEl.disabled = false;
     }
   });
+  cleanBuildsEl.addEventListener("click", async () => {
+    if (!folder) return;
+    const [host, target] = [folderHost, folder];
+    cleanBuildsEl.disabled = true;
+    buildsStateEl.textContent = "Cleaning…";
+    try {
+      const result = await call<CleanResult>(host, "build_clean", { cwd: target });
+      await showBuilds(host, target, cleanText(result));
+    } catch (error) {
+      buildsStateEl.textContent = `The clean failed: ${error}`;
+      cleanBuildsEl.disabled = false;
+    }
+  });
   document.querySelector("#setup-close")!.addEventListener("click", () => dialog.close());
   dialog.addEventListener("close", () => {
     onClose();
@@ -293,10 +342,15 @@ function open(host: HostId, target: string | null): void {
   checkRun += 1;
   checkStateEl.textContent = "";
   checkListEl.replaceChildren();
+  buildsEl.hidden = true;
+  buildsStateEl.textContent = "";
+  buildsListEl.replaceChildren();
+  cleanBuildsEl.disabled = true;
   dialog.showModal();
   if (folder) {
     void run("pipeline_plan");
     checkRules(host, folder);
+    void showBuilds(host, folder);
   } else messageEl.textContent = "The focused terminal has no folder.";
 }
 

@@ -3576,6 +3576,35 @@ button.task-head:hover {
   display: none;
 }
 
+/* The build folders of a cargo project with the button Clean build folders (ticket proof-target-cleanup). */
+#setup-builds {
+  margin-top: 10px;
+  padding: 6px 12px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+
+#setup-builds[hidden] {
+  display: none;
+}
+
+#setup-builds h3 {
+  margin: 0;
+  color: var(--accent);
+  font-size: calc(13px * var(--text-scale));
+  font-weight: 600;
+}
+
+#setup-builds-list {
+  margin: 4px 0 8px;
+  padding-left: 18px;
+  font-size: calc(12px * var(--text-scale));
+}
+
+#setup-builds-list .main {
+  color: var(--muted);
+}
+
 #setup-buttons {
   display: flex;
   justify-content: flex-end;

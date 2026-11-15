@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use dispatch_lib::core::{actions, chats, context, flow, info, pipeline, pty, rules, rules_check, status, store, tickets, tokens, Core};
+use dispatch_lib::core::{actions, builds, chats, context, flow, info, pipeline, pty, rules, rules_check, status, store, tickets, tokens, Core};
 
 use crate::clients::{Clients, Spawn};
 
@@ -189,6 +189,8 @@ pub fn run(
         "usage_info" => json(status::usage_info(core)),
         "token_report" => json(tokens::token_report(a.req("cwd")?, a.req("since")?)?),
         "usage_history" => json(tokens::usage_history(core)),
+        "build_folders" => json(builds::build_folders(a.req("cwd")?)?),
+        "build_clean" => json(builds::build_clean(a.req("cwd")?)?),
         "dir_list" => json(info::dir_list(core, a.opt("path")?)?),
         // The Nightmode switch and the triage chats that all windows share (remote-shared-state).
         "shared_load" => json(store::shared_load(core)?),

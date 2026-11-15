@@ -96,6 +96,8 @@ pub fn run() {
             commands::usage_info,
             commands::token_report,
             commands::usage_history,
+            commands::build_folders,
+            commands::build_clean,
             commands::update_check,
             commands::update_install,
             commands::update_installer_open,

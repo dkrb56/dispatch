@@ -36,6 +36,7 @@ The work moves into a new headless program, the **host** (working name `dispatch
 | Status bar | `status_info`, `usage_info`, `token_report`, `usage_history` | The bar shows the Claude account and usage of the desktop. The window Token usage reads the tokens of a project and the history of the weekly allowance of the host (ticket token-usage). |
 | Shared window state | the triage chat of each project and the Nightmode switch (today the fields `triage` and `night` of `state.json`) | User decision 3: both windows continue the same triage chat. |
 | New | `dir_list` | Lists the folders of a desktop folder for the folder chooser (user decision 4). |
+| Build folders | `build_folders`, `build_clean` | The section Build folders of the Setup window: the host measures and cleans the cargo build folders on its own disk (ticket proof-target-cleanup). |
 
 ### What stays with the window (the laptop)
 

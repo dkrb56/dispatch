@@ -10,6 +10,7 @@ use tauri::{AppHandle, State};
 
 use crate::core::tickets::{self, Ticket};
 use crate::core::actions::{self, Action, ActionList, ActionRun};
+use crate::core::builds::{self, BuildFolders, CleanResult};
 use crate::core::chats::{self, Chat, ChatView, Worker};
 use crate::core::context::{self, ContextUsage};
 use crate::core::flow::{self, FlowFile};
@@ -354,6 +355,18 @@ pub fn token_report(cwd: String, since: u64) -> Result<TokenReport, String> {
 #[tauri::command(async)]
 pub fn usage_history(core: State<Core>) -> UsageHistory {
     tokens::usage_history(&core)
+}
+
+/// The cargo build folders of a project with their sizes (ticket proof-target-cleanup).
+#[tauri::command(async)]
+pub fn build_folders(cwd: String) -> Result<BuildFolders, String> {
+    builds::build_folders(cwd)
+}
+
+/// Deletes the proof builds and the incremental caches of a project (ticket proof-target-cleanup).
+#[tauri::command(async)]
+pub fn build_clean(cwd: String) -> Result<CleanResult, String> {
+    builds::build_clean(cwd)
 }
 
 #[tauri::command(async)]
