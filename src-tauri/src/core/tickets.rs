@@ -547,9 +547,13 @@ fn target(facts: &TaskFacts) -> Option<(&'static str, &'static str)> {
 /// follows a task that starts later.
 const USER_CANCELS: [&str; 2] = ["canceled", "asked triage"];
 
+/// The end word of a ticket that the user dropped on Done (ticket tickets-drag-resize): such a
+/// ticket stays in Done. The board uses the same word (`USER_DONE` in tickets.ts).
+const USER_DONE: &str = "done by hand";
+
 /// Moves each ticket after its task: In progress while the task runs, Done with `done` or `failed`
 /// after its report, Canceled with `stopped`. A ticket in New follows its task too, because Dispatch
-/// sends the New tickets (ticket auto-todo); a ticket canceled by the user stays. The title of the
+/// sends the New tickets (ticket auto-todo); a ticket canceled or done by the user stays. The title of the
 /// brief replaces the generated title, unless the user renamed the ticket. Writes one line per
 /// change and changes the tickets in place.
 pub(crate) fn follow(project: &Project, tickets: &mut [Ticket], facts: &[TaskFacts]) -> Result<(), String> {
@@ -557,6 +561,9 @@ pub(crate) fn follow(project: &Project, tickets: &mut [Ticket], facts: &[TaskFac
     let mut events = Vec::new();
     for ticket in tickets.iter_mut() {
         if ticket.status == CANCELED && USER_CANCELS.contains(&ticket.note.as_str()) {
+            continue;
+        }
+        if ticket.status == DONE && ticket.note == USER_DONE {
             continue;
         }
         let Some(task) = facts.iter().find(|facts| facts.name == ticket.task_name()) else { continue };
@@ -665,21 +672,24 @@ pub fn ticket_update(cwd: String, id: String, title: Option<String>, kind: Optio
     find(&read(&project), &id)
 }
 
-/// Moves a ticket into New or Canceled (the board; In progress and Done follow the task), with an
-/// end word for Canceled, and saves the order of the queue of New: `ids` names the New tickets in
+/// Moves a ticket into New, Done or Canceled (the board; In progress follows the task), with an
+/// end word for Done (`done by hand`) and Canceled, and saves the order of the queue of New: `ids` names the New tickets in
 /// their new order; a New ticket that it does not name keeps its place after them. Only a ticket
 /// whose column or place changed gets a line.
 pub fn ticket_move(cwd: String, id: String, status: String, ids: Vec<String>, note: Option<String>) -> Result<Vec<Ticket>, String> {
     let project = Project::find(&cwd)?;
     let column = match status.as_str() {
         NEW => NEW,
+        DONE => DONE,
         CANCELED => CANCELED,
-        _ => return Err(format!("a ticket moves only into New or Canceled, not {status}")),
+        _ => return Err(format!("a ticket moves only into New, Done or Canceled, not {status}")),
     };
     let tickets = read(&project);
     let moved = find(&tickets, &id)?;
+    let given = note.map(|note| note.trim().to_string()).filter(|note| !note.is_empty());
     let note = match column {
-        CANCELED => note.map(|note| note.trim().to_string()).filter(|note| !note.is_empty()).unwrap_or_else(|| "canceled".to_string()),
+        CANCELED => given.unwrap_or_else(|| "canceled".to_string()),
+        DONE => given.unwrap_or_else(|| USER_DONE.to_string()),
         _ => String::new(),
     };
     // The queue of New after the move, in its new order.
@@ -848,7 +858,11 @@ mod tests {
         let after = ticket_move(cwd(&project), a.id.clone(), NEW.into(), vec![b.id.clone(), a.id.clone()], None).unwrap();
         assert_eq!(order(&after), [b.id.clone(), a.id.clone()]);
         assert_eq!(after.iter().find(|t| t.id == a.id).map(|t| t.note.as_str()), Some(""));
-        assert!(ticket_move(cwd(&project), b.id.clone(), DONE.into(), vec![], None).is_err());
+        // Done by hand (ticket tickets-drag-resize): the end word `done by hand`, out of the queue.
+        let after = ticket_move(cwd(&project), b.id.clone(), DONE.into(), vec![a.id.clone()], None).unwrap();
+        assert_eq!(after.iter().find(|t| t.id == b.id).map(|t| (t.status.as_str(), t.note.as_str(), t.order)), Some((DONE, USER_DONE, None)));
+        assert_eq!(order(&after), [a.id.clone()]);
+        assert!(ticket_move(cwd(&project), b.id.clone(), IN_PROGRESS.into(), vec![], None).is_err());
         assert!(ticket_move(cwd(&project), b.id.clone(), "todo".into(), vec![], None).is_err(), "Todo went");
         // The file reads back the same after a new start.
         assert_eq!(read(&project), after);
@@ -906,6 +920,26 @@ mod tests {
         let before = fs::read_to_string(project.tickets_file()).unwrap();
         follow(&project, &mut list, &facts).unwrap();
         assert_eq!(fs::read_to_string(project.tickets_file()).unwrap(), before);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_ticket_done_by_hand_writes_one_close_line_and_stays_in_done() {
+        let (project, base) = scratch("done-by-hand");
+        let one = ticket_add(cwd(&project), "one".into()).unwrap();
+        let text = || fs::read_to_string(project.tickets_file()).unwrap();
+        let before = text().lines().count();
+        ticket_move(cwd(&project), one.id.clone(), DONE.into(), vec![], Some(USER_DONE.into())).unwrap();
+        let written = text();
+        let lines: Vec<&str> = written.lines().skip(before).collect();
+        assert_eq!(lines.len(), 1, "{written}");
+        let line: Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!((line["op"].as_str(), line["ref"].as_str(), line["resolution"].as_str(), line["note"].as_str()), (Some("close"), Some(one.id.as_str()), Some("done"), Some(USER_DONE)));
+        // A task of that name starts later: the ticket stays in Done, and follow writes nothing.
+        let mut list = read(&project);
+        follow(&project, &mut list, &[TaskFacts { name: "one", state: "planning", report: None, brief: "The brief of one" }]).unwrap();
+        assert_eq!(list.iter().find(|t| t.id == one.id).map(|t| (t.status.as_str(), t.note.as_str())), Some((DONE, USER_DONE)));
+        assert_eq!(text(), written);
         let _ = fs::remove_dir_all(base);
     }
 

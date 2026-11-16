@@ -7,22 +7,29 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   addedText,
+  canDrag,
   columnOf,
   COLUMNS,
   columnTickets,
   countText,
   DROP_COLUMNS,
+  dropChanges,
+  dropIds,
   endFailed,
   endWord,
+  fitBoardSize,
   goesStraight,
   movedIds,
   nextTicket,
   nextType,
+  parseBoardSize,
   queueOrder,
   splitImages,
   ticketMatches,
   ticketMessage,
+  TICKETS_SIZE_KEY,
   typeName,
+  USER_DONE,
   waitingText,
 } from "../src/tickets.ts";
 
@@ -92,7 +99,7 @@ test("the four columns, the columns that take a drop, and the order of each colu
     COLUMNS.map((column) => column.name),
     ["New", "In progress", "Done", "Canceled"],
   );
-  assert.deepEqual(DROP_COLUMNS, ["new", "canceled"]);
+  assert.deepEqual(DROP_COLUMNS, ["new", "done", "canceled"], "In progress follows the task");
   assert.equal(columnOf("todo"), "new", "an old Todo ticket shows in New");
   assert.equal(columnOf("canceled"), "canceled");
   assert.equal(columnOf("in_progress"), "new", "the backend gives the board values only");
@@ -109,6 +116,63 @@ test("a move takes a ticket up, down, to the top and to the end", () => {
   assert.deepEqual(movedIds(order, "d", 0), ["d", "a", "b", "c"], "to the top");
   assert.deepEqual(movedIds(order, "a", 99), ["b", "c", "d", "a"], "clamped at the end");
   assert.deepEqual(movedIds(order, "x", 1), ["a", "x", "b", "c", "d"], "a ticket from another column comes in");
+});
+
+// Drag a card (ticket tickets-drag-resize): which card drags, the queue after a drop, and whether a drop changes something.
+test("a card drags in New, Canceled and Done by hand; not in flight, In progress or Done of a task", () => {
+  assert.equal(canDrag({ status: "new", note: "" }, false), true);
+  assert.equal(canDrag({ status: "new", note: "" }, true), false, "sent to triage: the task moves it");
+  assert.equal(canDrag({ status: "in-progress", note: "" }, false), false);
+  assert.equal(canDrag({ status: "canceled", note: "canceled" }, false), true);
+  assert.equal(canDrag({ status: "canceled", note: "stopped" }, false), true);
+  assert.equal(canDrag({ status: "done", note: USER_DONE }, false), true);
+  assert.equal(canDrag({ status: "done", note: "done" }, false), false, "a report put it there");
+  assert.equal(canDrag({ status: "done", note: "failed" }, false), false);
+  assert.equal(USER_DONE, "done by hand");
+});
+
+test("the queue of New after a drop", () => {
+  const queue = ["a", "b", "c", "d"];
+  // The index is the shown card that the line stands above, the dragged card counted too.
+  assert.deepEqual(dropIds(queue, queue, "b", 3), ["a", "c", "b", "d"], "down: above d");
+  assert.deepEqual(dropIds(queue, queue, "b", 4), ["a", "c", "d", "b"], "down: below the last card");
+  assert.deepEqual(dropIds(queue, queue, "d", 0), ["d", "a", "b", "c"], "up: to the top");
+  assert.deepEqual(dropIds(queue, queue, "c", 2), queue, "on its own place: no change");
+  assert.deepEqual(dropIds(queue, queue, "c", 3), queue, "just below itself: no change");
+  // A ticket from Canceled or Done comes in at the drop place.
+  assert.deepEqual(dropIds(queue, queue, "x", 1), ["a", "x", "b", "c", "d"]);
+  assert.deepEqual(dropIds([], [], "x", 0), ["x"], "into an empty New");
+  // A search shows a and c only: the hidden tickets keep their order after the shown ones.
+  assert.deepEqual(dropIds(queue, ["a", "c"], "c", 0), ["c", "a", "b", "d"]);
+  assert.deepEqual(dropIds(queue, ["a", "c"], "x", 2), ["a", "c", "x", "b", "d"]);
+});
+
+test("a drop changes the status, or the order of New; the same place changes nothing", () => {
+  const before = ["a", "b", "c"];
+  assert.equal(dropChanges({ status: "new" }, "new", ["a", "b", "c"], before), false);
+  assert.equal(dropChanges({ status: "new" }, "new", ["b", "a", "c"], before), true);
+  assert.equal(dropChanges({ status: "new" }, "done", ["b", "c"], before), true, "New to Done");
+  assert.equal(dropChanges({ status: "new" }, "canceled", ["b", "c"], before), true, "New to Canceled");
+  assert.equal(dropChanges({ status: "canceled" }, "new", ["a", "b", "c", "x"], before), true, "Canceled to New");
+  assert.equal(dropChanges({ status: "done" }, "canceled", before, before), true, "Done by hand to Canceled");
+  assert.equal(dropChanges({ status: "done" }, "done", before, before), false, "Done to Done");
+  assert.equal(dropChanges({ status: "canceled" }, "canceled", ["b"], before), false, "inside Canceled the order does not change");
+});
+
+// The size of the tickets window: kept in localStorage, fitted to the app window.
+test("the kept size of the tickets window reads back and fits the app window", () => {
+  assert.equal(TICKETS_SIZE_KEY, "tickets-size");
+  const size = { width: 900, height: 600 };
+  assert.deepEqual(parseBoardSize(JSON.stringify(size)), size, "the saved size reads back");
+  for (const broken of [null, "", "not json", "null", "[]", '{"width":900}', '{"width":"900","height":600}', '{"width":0,"height":600}', '{"width":-5,"height":600}']) {
+    assert.equal(parseBoardSize(broken), null, String(broken));
+  }
+  const view = { width: 1600, height: 1000 };
+  assert.deepEqual(fitBoardSize(size, view), size, "a size that fits stays");
+  assert.deepEqual(fitBoardSize({ width: 100, height: 50 }, view), { width: 520, height: 320 }, "at least 520 × 320");
+  assert.deepEqual(fitBoardSize({ width: 5000, height: 5000 }, view), { width: 1560, height: 960 }, "at most the window less 40 px");
+  assert.deepEqual(fitBoardSize({ width: 900.6, height: 600.4 }, view), { width: 901, height: 600 }, "whole px");
+  assert.deepEqual(fitBoardSize(size, { width: 500, height: 300 }), { width: 460, height: 260 }, "a small window wins over the minimum");
 });
 
 test("the end words, the failure colour, the types and the search", () => {
@@ -170,9 +234,17 @@ test("the tickets meet the page: the commands, the board, the dispatcher, the bo
   }
   assert.match(CSS, /#tickets \{/);
   assert.match(CSS, /\.ticket-card \{/);
+  // The whole card drags, and the corner resizes the window (ticket tickets-drag-resize).
+  assert.match(HTML, /id="tickets-resize"/);
+  assert.match(CSS, /#tickets-resize \{/);
+  assert.match(CSS, /\.ticket-card\.draggable \{/);
+  assert.ok(MAIN.includes("TICKETS_SIZE_KEY"), "the size is kept");
+  assert.match(MAIN, /canDrag\(ticket, inFlight\)/);
+  assert.match(MAIN, /drop\.status === "done" \? USER_DONE/);
   // The Help names the board, its columns, the queue, the sign and Chat, and no longer Todo or Ask triage.
   const help = HTML.slice(HTML.indexOf("<h3>Tickets</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
   for (const name of ["New", "In progress", "Done", "Canceled", "four columns", "yellow !", "<b>Chat</b>", "tickets.jsonl", "Ticket &lt;id&gt;: &lt;title&gt;"]) assert.ok(help.includes(name), name);
+  for (const name of ["<b>Drag a card.</b>", "on New, Done or Canceled", "done by hand", "does not drag", "bottom-right corner", "keeps the size", "double-click"]) assert.ok(help.includes(name), name);
   for (const gone of ["<b>Todo</b>", "→ Todo", "Ask triage", "Questions go at once"]) assert.ok(!HTML.includes(gone), gone);
   assert.doesNotMatch(HTML, /<b>Planned/);
 });

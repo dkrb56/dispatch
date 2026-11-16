@@ -36,8 +36,65 @@ export const COLUMNS: readonly { status: TicketStatus; name: string }[] = [
   { status: "canceled", name: "Canceled" },
 ];
 
-/** The columns that take a ticket by a drag or a button: the others follow the task. */
-export const DROP_COLUMNS: readonly TicketStatus[] = ["new", "canceled"];
+/** The columns that take a ticket by a drag or a button: In progress follows the task. */
+export const DROP_COLUMNS: readonly TicketStatus[] = ["new", "done", "canceled"];
+
+/** The end word of a ticket that the user dropped on Done; the task read leaves it there (`USER_DONE` in tickets.rs). */
+export const USER_DONE = "done by hand";
+
+/**
+ * A card drags: a New ticket that did not go to triage, a Canceled one, and one that the user put on
+ * Done. A ticket of a running task, or a Done one of a task, does not: the task moves it.
+ */
+export function canDrag(ticket: Pick<Ticket, "status" | "note">, inFlight: boolean): boolean {
+  if (ticket.status === "new") return !inFlight;
+  if (ticket.status === "canceled") return true;
+  return ticket.status === "done" && ticket.note === USER_DONE;
+}
+
+/**
+ * The queue of New after a drop of the ticket `id` at `index` among the shown cards of New (`shownIds`,
+ * in their order; the index counts the card itself too): the shown cards in their new order, then
+ * the New tickets that a search hides.
+ */
+export function dropIds(queue: readonly string[], shownIds: readonly string[], id: string, index: number): string[] {
+  const rest = queue.filter((one) => one !== id);
+  const from = shownIds.indexOf(id);
+  const to = from >= 0 && index > from ? index - 1 : index;
+  const order = movedIds(shownIds, id, to);
+  return [...order, ...rest.filter((one) => !order.includes(one))];
+}
+
+/** A drop changes something: the column of the ticket, or the order of the queue of New (`before`). */
+export function dropChanges(ticket: Pick<Ticket, "status">, status: TicketStatus, ids: readonly string[], before: readonly string[]): boolean {
+  return status !== ticket.status || (status === "new" && ids.join("\n") !== before.join("\n"));
+}
+
+/** The localStorage key of the size of the tickets window. */
+export const TICKETS_SIZE_KEY = "tickets-size";
+
+/** The size of the tickets window from its localStorage text; a broken or missing one gives null. */
+export function parseBoardSize(text: string | null): { width: number; height: number } | null {
+  if (!text) return null;
+  try {
+    const size = JSON.parse(text) as { width?: unknown; height?: unknown } | null;
+    const { width, height } = size ?? {};
+    if (typeof width !== "number" || typeof height !== "number" || !Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+    return { width, height };
+  } catch {
+    return null;
+  }
+}
+
+/** The smallest size of the tickets window, and its room to the edges of the app window, in px. */
+const BOARD_MIN = { width: 520, height: 320 };
+const BOARD_MARGIN = 40;
+
+/** A size of the tickets window that fits: at least 520 × 320 px, at most the app window less 40 px. */
+export function fitBoardSize(size: { width: number; height: number }, view: { width: number; height: number }): { width: number; height: number } {
+  const fit = (value: number, min: number, room: number) => Math.round(Math.max(0, Math.min(room - BOARD_MARGIN, Math.max(min, value))));
+  return { width: fit(size.width, BOARD_MIN.width, view.width), height: fit(size.height, BOARD_MIN.height, view.height) };
+}
 
 /** The column of a status; an unknown one, and the old `todo`, is New. */
 export function columnOf(status: string): TicketStatus {

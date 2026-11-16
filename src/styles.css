@@ -1041,6 +1041,7 @@ button.task-head:hover {
   box-shadow: 0 24px 64px rgb(0 0 0 / 50%);
   color: var(--text);
   font-size: calc(13px * var(--text-scale));
+  position: relative;
 }
 
 #tickets[open] {
@@ -1748,6 +1749,33 @@ button.task-head:hover {
 
 .ticket-card.drag-after {
   box-shadow: 0 2px 0 var(--accent);
+}
+
+/* A card that drags by its whole body (ticket tickets-drag-resize); its buttons start no drag. */
+.ticket-card.draggable {
+  cursor: grab;
+  touch-action: none;
+}
+
+.ticket-card.draggable.dragging {
+  cursor: grabbing;
+}
+
+.ticket-card.draggable .ticket-tools {
+  cursor: default;
+}
+
+/* The corner that resizes the tickets window; main.ts keeps the size in localStorage. */
+#tickets-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  border-bottom-right-radius: 10px;
+  background: linear-gradient(135deg, transparent 50%, var(--faint) 50%, var(--faint) 60%, transparent 60%, transparent 70%, var(--faint) 70%, var(--faint) 80%, transparent 80%);
+  cursor: nwse-resize;
+  touch-action: none;
 }
 
 .ticket-top {

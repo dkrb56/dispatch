@@ -194,6 +194,7 @@
       <p id="tickets-error" hidden></p>
       <p id="tickets-paused" hidden><span id="tickets-paused-text"></span> <button id="tickets-resume" title="Resume this project: Dispatch sends the next ticket and starts the next approved plan">Resume</button></p>
       <div id="tickets-columns"></div>
+      <div id="tickets-resize" title="Drag to resize the window; double-click for the usual size"></div>
     </dialog>
     <dialog id="actions" aria-labelledby="actions-title">
       <header>
@@ -601,7 +602,9 @@
             <li><b>The queue.</b> When triage is idle and asks nothing, Dispatch sends the first New ticket: your images, the line <code>Ticket &lt;id&gt;: &lt;title&gt;</code>, then your words. Triage uses that id for the task. One ticket at a time per project; night mode sends them too. A paused project sends none until you resume it (see Project settings). A command that triage runs in the background after its answer does not hold the ticket.</li>
             <li>The line above the message box says how many tickets wait. The ticket in flight shows "Sent to triage", then "Triage reads", and its dashed card stands under In work until its task comes.</li>
             <li><b>Following the task.</b> When the plan run starts, the ticket goes to In progress and takes the title of the brief, unless you renamed it. A report that says done or failed moves it to Done ("failed" in red). A done report whose commands the transcripts do not show keeps it in In progress (see Tasks). A stopped task moves it to Canceled. When triage answers without a task, the ticket goes to Canceled with that note; <b>→ New</b> on its card puts it back at the end of the queue.</li>
-            <li>In New, ▲ and ▼ or the grip ⠿ change the order, and × cancels a ticket, so Dispatch does not send it. <b>New ticket</b> adds a ticket in your words at the end of the queue. The search box finds a ticket by its title, words, id or type.</li>
+            <li>In New, ▲ and ▼ change the order, and × cancels a ticket, so Dispatch does not send it. <b>New ticket</b> adds a ticket in your words at the end of the queue. The search box finds a ticket by its title, words, id or type.</li>
+            <li><b>Drag a card.</b> A card with the grip ⠿ drags by its whole body: drop it at another place in New to change the order, or on New, Done or Canceled to change its status. A plain click on the title or the type works as before. A ticket that is In progress or sent to triage does not drag, because its task moves it. A ticket that you put on Done shows "done by hand" and stays there.</li>
+            <li><b>Size.</b> Drag the bottom-right corner of the window to resize it. Dispatch keeps the size for the next start; a double-click on the corner gives the usual size.</li>
             <li><b>The yellow !</b> shows in the bar, in the head of a Focus column, on the Overview card and in the Map. It pulses like a waiting card; a click calms it to a still mark until other tickets wait. The switch Pulse in Options and the system setting for reduced motion keep it still. A ticket in flight hides it.</li>
             <li>The file is <code>.dispatch/tickets.jsonl</code> of the project: one line per change, in the form of the starminer-manager tickets file. Dispatch commits it with the task files, unless Task files local only is on. Triage and the workers do not edit it. When two computers add tickets, a pull keeps the lines of both (Setup writes <code>.dispatch/.gitattributes</code>).</li>
             <li>The planned messages of an older version became tickets in New at the first start, in their order, and the folder <code>.dispatch/backlog/</code> went. A ticket of the old Todo column shows in New, in its place.</li>

@@ -51,7 +51,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, columnTickets, COLUMNS, countText, DROP_COLUMNS, endFailed, endWord, goesStraight, movedIds, nextTicket, nextType, queueOrder, type Ticket, ticketCounts, ticketMatches, ticketMessage, type TicketStatus, typeName } from "./tickets";
+import { addedText, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextTicket, nextType, parseBoardSize, queueOrder, type Ticket, ticketCounts, ticketMatches, ticketMessage, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { type Typed, typedAfter, typingState } from "./typing";
@@ -3166,7 +3166,7 @@ function queueIdsWithout(project: string, id: string): string[] {
     .filter((one) => one !== id);
 }
 
-/** Moves a ticket into New or Canceled; `ids` is the queue of New after the move. */
+/** Moves a ticket into New, Done or Canceled; `ids` is the queue of New after the move. */
 function moveTicket(project: string, id: string, status: TicketStatus, ids: string[], note?: string): Promise<boolean> {
   return ticketAction(project, "ticket_move", { id, status, ids, note: note ?? null });
 }
@@ -5191,8 +5191,8 @@ function pendingElement(card: PendingCard): HTMLElement {
 }
 
 // ---- The tickets board (ticket tickets) ------------------------------------------------------------
-// One window for one project: four columns, the cards with their buttons, a drag between New and
-// Canceled and inside the queue of New, and a rename in place. It shows the tickets of the last task read;
+// One window for one project: four columns, the cards with their buttons, a drag between New, Done
+// and Canceled and inside the queue of New, and a rename in place. The corner resizes the window. It shows the tickets of the last task read;
 // each button runs a ticket command of the backend and reads the list again.
 
 const ticketsDialog = document.querySelector<HTMLDialogElement>("#tickets")!;
@@ -5223,6 +5223,7 @@ function openTickets(ref: ProjectRef): void {
   renamingTicket = null;
   newTicketOpen = false;
   ticketsSearchEl.value = "";
+  applyTicketsSize();
   if (!ticketsDialog.open) ticketsDialog.showModal();
   renderTickets();
   // A project that no view reads gets its list now; the task poll reads it while the board shows.
@@ -5236,8 +5237,71 @@ function openTickets(ref: ProjectRef): void {
   }
 }
 
+/** The app window, for `fitBoardSize`. */
+function viewSize(): { width: number; height: number } {
+  return { width: window.innerWidth, height: window.innerHeight };
+}
+
+/** Gives the board the size that the user saved with its corner, fitted to the app window; none: the size of the CSS. */
+function applyTicketsSize(): void {
+  let text: string | null = null;
+  try {
+    text = localStorage.getItem(TICKETS_SIZE_KEY);
+  } catch {
+    // No storage: the size of the CSS.
+  }
+  const saved = parseBoardSize(text);
+  const size = saved ? fitBoardSize(saved, viewSize()) : null;
+  ticketsDialog.style.width = size ? `${size.width}px` : "";
+  ticketsDialog.style.height = size ? `${size.height}px` : "";
+}
+
+/**
+ * A drag of the corner of the board changes its size, and the drop saves it. The window stays in
+ * the middle, so a move of the pointer by dx changes the width by 2 × dx: the corner stays under
+ * the pointer. A double-click gives the size of the CSS back.
+ */
+function dragTicketsSize(event: PointerEvent): void {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  const corner = event.currentTarget as HTMLElement;
+  corner.setPointerCapture(event.pointerId);
+  const start = { x: event.clientX, y: event.clientY, width: ticketsDialog.clientWidth, height: ticketsDialog.clientHeight };
+  let size: { width: number; height: number } | null = null;
+  const move = (moved: PointerEvent) => {
+    size = fitBoardSize({ width: start.width + 2 * (moved.clientX - start.x), height: start.height + 2 * (moved.clientY - start.y) }, viewSize());
+    ticketsDialog.style.width = `${size.width}px`;
+    ticketsDialog.style.height = `${size.height}px`;
+  };
+  const end = () => {
+    corner.removeEventListener("pointermove", move);
+    corner.removeEventListener("pointerup", end);
+    corner.removeEventListener("pointercancel", end);
+    if (!size) return;
+    try {
+      localStorage.setItem(TICKETS_SIZE_KEY, JSON.stringify(size));
+    } catch {
+      // No storage: the size holds until Dispatch closes.
+    }
+  };
+  corner.addEventListener("pointermove", move);
+  corner.addEventListener("pointerup", end);
+  corner.addEventListener("pointercancel", end);
+}
+
 /** Connects the buttons of the board. */
 function initTickets(): void {
+  const corner = document.querySelector<HTMLElement>("#tickets-resize")!;
+  corner.addEventListener("pointerdown", dragTicketsSize);
+  corner.addEventListener("dblclick", () => {
+    ticketsDialog.style.width = "";
+    ticketsDialog.style.height = "";
+    try {
+      localStorage.removeItem(TICKETS_SIZE_KEY);
+    } catch {
+      // No storage: nothing to forget.
+    }
+  });
   document.querySelector("#tickets-close")!.addEventListener("click", () => ticketsDialog.close());
   document.querySelector("#tickets-new")!.addEventListener("click", () => {
     newTicketOpen = true;
@@ -6308,20 +6372,26 @@ function ticketState(project: string, ticket: Ticket, queueIds: string[], record
 }
 
 /**
- * The card of a ticket: a grip to drag it (New and Canceled), the title (a click renames it), the
- * type tag (a click changes it), the date and the state line, and the buttons of its column.
+ * The card of a ticket: the grip ⠿ marks a card that drags by its whole body (`canDrag`), the title
+ * (a click renames it), the type tag (a click changes it), the date and the state line, and the
+ * buttons of its column.
  */
 function ticketCard(project: string, ticket: Ticket, queueIds: string[], record: ProjectTasks | undefined): HTMLElement {
   const inFlight = projectPending(project).some((card) => card.entry === ticket.id);
-  const card = mapElement("div", `ticket-card ${ticket.status}${inFlight ? " in-flight" : ""}`);
+  const draggable = canDrag(ticket, inFlight);
+  const card = mapElement("div", `ticket-card ${ticket.status}${inFlight ? " in-flight" : ""}${draggable ? " draggable" : ""}`);
   card.dataset.ticket = ticket.id;
   const top = mapElement("div", "ticket-top");
-  if (DROP_COLUMNS.includes(ticket.status) && !inFlight) {
+  if (draggable) {
     const grip = mapElement("span", "entry-grip", "⠿");
-    grip.title = "Drag to another column, or to another place in the queue of New";
+    grip.title = "Drag the card to New, Done or Canceled, or to another place in the queue of New";
     grip.setAttribute("aria-hidden", "true");
-    grip.addEventListener("pointerdown", (event) => startTicketDrag(event, card, project, ticket));
     top.append(grip);
+    // The buttons and the rename box keep their pointer: a drag starts on the rest of the card.
+    card.addEventListener("pointerdown", (event) => {
+      if ((event.target as Element).closest(".ticket-tools, input, textarea")) return;
+      startTicketDrag(event, card, project, ticket);
+    });
   }
   const rename = () => {
     renamingTicket = ticket.id;
@@ -6383,17 +6453,18 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
 
 /**
  * Drags a ticket card with the pointer, as the resize handles do: the HTML drag events do not reach
- * the page while the window of Tauri handles a drop of files. The column under the pointer takes
- * the ticket when it is New or Canceled; in New, the queue, the card under the pointer gets a line
- * at its top. The drop saves the move and the order.
+ * the page while the window of Tauri handles a drop of files. The drag starts after a move of 5 px,
+ * so a plain click on the title or the tag works as before. The column under the pointer takes
+ * the ticket when it is New, Done or Canceled; in New, the queue, the card under the pointer gets a
+ * line at its top. The drop saves the move and the order; a drop on Done has the end word `USER_DONE`.
  */
 function startTicketDrag(event: PointerEvent, card: HTMLElement, project: string, ticket: Ticket): void {
   if (event.button !== 0) return;
   event.preventDefault();
-  const grip = event.currentTarget as HTMLElement;
-  grip.setPointerCapture(event.pointerId);
+  // Set now, not after the 5 px: a render in between would replace the card under the pointer.
   ticketDragging = true;
-  card.classList.add("dragging");
+  const from = { x: event.clientX, y: event.clientY };
+  let started = false;
   let target = null as { status: TicketStatus; ids: string[] } | null;
   const clear = () => {
     for (const one of ticketsColumnsEl.querySelectorAll(".drag-over, .drag-after, .drop-target")) one.classList.remove("drag-over", "drag-after", "drop-target");
@@ -6420,33 +6491,50 @@ function startTicketDrag(event: PointerEvent, card: HTMLElement, project: string
       }
       if (index < cards.length) cards[index].classList.add("drag-over");
       else cards[cards.length - 1]?.classList.add("drag-after");
-      const shownIds = cards.map((one) => one.dataset.ticket ?? "");
-      const from = shownIds.indexOf(ticket.id);
-      const to = from >= 0 && index > from ? index - 1 : index;
-      const order = movedIds(shownIds, ticket.id, to);
-      ids = [...order, ...ids.filter((one) => !order.includes(one))];
+      ids = dropIds(all, cards.map((one) => one.dataset.ticket ?? ""), ticket.id, index);
     }
     target = { status, ids };
   };
-  const move = (moved: PointerEvent) => mark(moved.clientX, moved.clientY);
+  const move = (moved: PointerEvent) => {
+    if (!started) {
+      if (Math.hypot(moved.clientX - from.x, moved.clientY - from.y) < 5) return;
+      started = true;
+      card.setPointerCapture(moved.pointerId);
+      card.classList.add("dragging");
+    }
+    mark(moved.clientX, moved.clientY);
+  };
   const end = () => {
-    grip.removeEventListener("pointermove", move);
-    grip.removeEventListener("pointerup", end);
-    grip.removeEventListener("pointercancel", end);
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", end);
+    window.removeEventListener("pointercancel", end);
     ticketDragging = false;
+    if (!started) {
+      // A plain click: its click event comes next and must find the card, so the render waits.
+      setTimeout(renderTickets);
+      return;
+    }
+    // The click after a real drag renames nothing and changes no type: one capture listener eats it.
+    const swallow = (click: Event) => {
+      click.stopPropagation();
+      click.preventDefault();
+    };
+    window.addEventListener("click", swallow, { capture: true, once: true });
+    setTimeout(() => window.removeEventListener("click", swallow, { capture: true }));
     card.classList.remove("dragging");
     clear();
     const drop = target;
     const before = queueOrder(projectTickets(project)).map((one) => one.id);
-    if (drop && (drop.status !== ticket.status || (drop.status === "new" && drop.ids.join("\n") !== before.join("\n")))) {
-      void moveTicket(project, ticket.id, drop.status, drop.ids);
+    if (drop && dropChanges(ticket, drop.status, drop.ids, before)) {
+      void moveTicket(project, ticket.id, drop.status, drop.ids, drop.status === "done" ? USER_DONE : undefined);
     } else {
       renderTickets();
     }
   };
-  grip.addEventListener("pointermove", move);
-  grip.addEventListener("pointerup", end);
-  grip.addEventListener("pointercancel", end);
+  // On the window: before the capture at 5 px the pointer may leave the card; after it the events still reach the window.
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", end);
 }
 
 /**
