@@ -1,5 +1,6 @@
 //! The calls of a window: the command name and the arguments exactly as the page gives them to
-//! `invoke` (`commands.rs` of the app has the same list). The app gives the page the argument
+//! `invoke` (`commands.rs` of the app has the same list, without `pty_join` and `pty_leave`: only a
+//! host has terminals of other windows). The app gives the page the argument
 //! names in camelCase: `new_text` is `newText`; the other names are one word.
 
 use std::collections::HashMap;
@@ -60,13 +61,14 @@ pub fn run(
             if clients.spawn(window, &id)? == Spawn::Attached {
                 return json(());
             }
+            let (cols, rows): (u16, u16) = (a.req("cols")?, a.req("rows")?);
             let started = pty::pty_spawn(
                 core,
                 id.clone(),
                 a.req("shell")?,
                 a.opt("cwd")?,
-                a.req("cols")?,
-                a.req("rows")?,
+                cols,
+                rows,
                 a.opt("resume")?,
                 a.opt("attach")?,
                 a.opt("run")?,
@@ -75,20 +77,34 @@ pub fn run(
                 a.opt("model")?,
                 a.opt("effort")?,
             );
-            if started.is_err() {
-                clients.spawn_failed(&id);
+            match &started {
+                Ok(_) => clients.sized(&id, cols, rows),
+                Err(_) => clients.spawn_failed(&id),
             }
             json(started?)
         }
+        // A window shows the terminal of another window: the one triage chat of a project (ticket
+        // why-are-there-two-chats). The reply is the size of the terminal.
+        "pty_join" => {
+            let (cols, rows) = clients.join(window, &a.req::<String>("id")?)?;
+            json(serde_json::json!({ "cols": cols, "rows": rows }))
+        }
+        "pty_leave" => {
+            clients.leave(window, &a.req::<String>("id")?);
+            json(())
+        }
         "pty_write" => {
             let id: String = a.req("id")?;
-            clients.check_owner(window, &id)?;
+            clients.check_writer(window, &id)?;
             json(pty::pty_write(core, id, a.req("data")?)?)
         }
         "pty_resize" => {
             let id: String = a.req("id")?;
             clients.check_owner(window, &id)?;
-            json(pty::pty_resize(core, id, a.req("cols")?, a.req("rows")?)?)
+            let (cols, rows): (u16, u16) = (a.req("cols")?, a.req("rows")?);
+            let resized = pty::pty_resize(core, id.clone(), cols, rows)?;
+            clients.sized(&id, cols, rows);
+            json(resized)
         }
         "pty_kill" => {
             let id: String = a.req("id")?;
@@ -106,11 +122,14 @@ pub fn run(
         "image_save" => json(info::image_save(core, body.ok_or("the request has no image bytes")?)?),
         "chat_list" => {
             // The pane of a chat that runs in a terminal of another window is not the caller's.
+            // `foreignPane` names that terminal: the caller can join it (why-are-there-two-chats).
             let foreign = clients.foreign_terminals(window);
             let mut list = serde_json::to_value(chats::chat_list(core)).map_err(|e| e.to_string())?;
             for chat in list.as_array_mut().into_iter().flatten() {
-                if chat.get("pane").and_then(Value::as_str).is_some_and(|pane| foreign.contains(pane)) {
+                let pane = chat.get("pane").and_then(Value::as_str).filter(|pane| foreign.contains(*pane)).map(str::to_string);
+                if let Some(pane) = pane {
                     chat["pane"] = Value::Null;
+                    chat["foreignPane"] = Value::String(pane);
                 }
             }
             Ok(Reply::Json(list))
@@ -140,6 +159,7 @@ pub fn run(
             a.opt("note")?,
         )?),
         "ticket_move" => json(tickets::ticket_move(a.req("cwd")?, a.req("id")?, a.req("status")?, a.req("ids")?, a.opt("note")?)?),
+        "ticket_claim" => json(tickets::ticket_claim(core, a.req("cwd")?, a.req("id")?, a.opt("release")?.unwrap_or(false))?),
         "ticket_move_all" => json(tickets::ticket_move_all(a.req("cwd")?, a.req("ids")?, a.req("status")?)?),
         "task_approve" => json(pipeline::task_approve(a.req("cwd")?, a.req("id")?)?),
         "task_decide" => json(pipeline::task_decide(a.req("cwd")?, a.req("id")?, a.req("text")?)?),

@@ -1,7 +1,8 @@
 // The modes with hosts in the window (tickets remote-client-mode, remote-multi-host and
 // remote-mixed-mode): the bar below the top bar with one row for each host that is not reachable or
 // refused the window, and the window title with the hosts, and with "This PC" in the mode "This PC
-// and hosts". In the mode "This PC does the work" the bar stays hidden and the title is "Dispatch".
+// and hosts". In the mode "This PC does the work" the title is "Dispatch", and the bar shows only the
+// row of the host of this PC when that host runs (ticket why-are-there-two-chats, decision 4).
 import { backendName, backends, connectionOf, type HostId, hostInfo, LOCAL, localWorks, onConnection, retryHost, usesHosts } from "./backend";
 import { windowTitle } from "./hosts";
 
@@ -37,12 +38,12 @@ export function initHostMode(reattach: (host: HostId, alive: string[], restartAf
     retry.addEventListener("click", () => retryHost(host));
     made.append(text, retry);
     rows.set(host, made);
-    // The rows stand in the order of the host list.
-    bar.replaceChildren(...backends().flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])));
+    // The rows stand in the order of the host list, after the row of the host of this PC (`initOwnHostBar`).
+    bar.replaceChildren(...bar.querySelectorAll(".own-host"), ...backends().flatMap((id) => (rows.has(id) ? [rows.get(id)!] : [])));
     return made;
   };
   const showBar = () => {
-    bar.hidden = ![...rows.values()].some((made) => !made.hidden);
+    bar.hidden = !bar.querySelector(".own-host") && ![...rows.values()].some((made) => !made.hidden);
   };
   onConnection((host, connection) => {
     switch (connection.state) {
@@ -73,6 +74,42 @@ export function initHostMode(reattach: (host: HostId, alive: string[], restartAf
       }
     }
     showBar();
+  });
+}
+
+/** The text of the bar of decision 4 of ticket why-are-there-two-chats. */
+export const OWN_HOST_TEXT =
+  "The host of this PC runs, but this window does the work of this PC itself. Then two programs run the projects of this PC, and their windows cannot share one triage chat.";
+
+/**
+ * Decision 4 of ticket why-are-there-two-chats: a window that does the work of this PC itself (the
+ * modes "This PC does the work" and "This PC and hosts") while the host of this PC runs gets a row
+ * in the bar with a button that switches it to the host. Only through the host can two windows
+ * share one terminal. The check runs at the start.
+ */
+export function initOwnHostBar(running: () => Promise<boolean>, useHost: () => Promise<void>): void {
+  if (!localWorks()) return;
+  void running().then((on) => {
+    if (!on) return;
+    const bar = document.querySelector<HTMLElement>("#host-bar")!;
+    const made = document.createElement("div");
+    made.className = "host-bar-row own-host";
+    const text = document.createElement("span");
+    text.className = "host-bar-text";
+    text.textContent = OWN_HOST_TEXT;
+    const use = document.createElement("button");
+    use.textContent = "Use the host";
+    use.title = "Switch this window to Use hosts with the host of this PC; Dispatch starts again";
+    use.addEventListener("click", () => {
+      use.disabled = true;
+      void useHost().catch((error) => {
+        use.disabled = false;
+        text.textContent = `${OWN_HOST_TEXT} The switch failed: ${error}`;
+      });
+    });
+    made.append(text, use);
+    bar.prepend(made);
+    bar.hidden = false;
   });
 }
 

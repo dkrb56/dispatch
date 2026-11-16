@@ -154,19 +154,43 @@ async function saveAndRestart(onHostChange: () => unknown): Promise<void> {
   await windowCall("app_restart");
 }
 
+/**
+ * Adds or updates the row of the host of this PC and switches the window to "Use hosts"
+ * (remote-multi-host), also from "This PC and hosts": the host of this PC takes over its work
+ * (decision 5 of remote-mixed-mode). Dispatch starts again.
+ */
+async function useHostOfThisPc(run: HostRun, port: number, onHostChange: () => unknown): Promise<void> {
+  const saved = hostSettings();
+  const known = localHostEntry(port);
+  const entry: HostEntry = { id: known?.id ?? crypto.randomUUID(), name: known?.name || "This PC", address: THIS_PC, port: run.port ?? port, key: run.key ?? "" };
+  const hosts = known ? saved.hosts.map((other) => (other.id === known.id ? entry : other)) : [...saved.hosts, entry];
+  setHostSettings({ mode: "hosts", hosts });
+  await saveAndRestart(onHostChange);
+}
+
+/** Whether the host of this PC runs (`host_run_status`); false when the state is not known. */
+export async function ownHostRuns(): Promise<boolean> {
+  try {
+    return (await windowCall<HostRun>("host_run_status")).running;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The button of the bar of decision 4 of why-are-there-two-chats: this window uses the host of this
+ * PC that runs, as after Start, so its windows can share one triage chat per project.
+ */
+export async function useOwnHost(onHostChange: () => unknown): Promise<void> {
+  const run = await windowCall<HostRun>("host_run_status");
+  if (!run.running) throw new Error("the host of this PC does not run");
+  await useHostOfThisPc(run, run.port ?? chosenPort(), onHostChange);
+}
+
 function initHostRun(onHostChange: () => unknown): void {
   runStartEl.addEventListener("click", () => {
     const port = chosenPort();
-    void hostRunAction("host_run_start", { port }, async (run) => {
-      // Start adds or updates the row of this PC and switches the window to "Use hosts" (remote-multi-host),
-      // also from "This PC and hosts": the host of this PC takes over its work (decision 5 of remote-mixed-mode).
-      const saved = hostSettings();
-      const known = localHostEntry(port);
-      const entry: HostEntry = { id: known?.id ?? crypto.randomUUID(), name: known?.name || "This PC", address: THIS_PC, port: run.port ?? port, key: run.key ?? "" };
-      const hosts = known ? saved.hosts.map((other) => (other.id === known.id ? entry : other)) : [...saved.hosts, entry];
-      setHostSettings({ mode: "hosts", hosts });
-      await saveAndRestart(onHostChange);
-    });
+    void hostRunAction("host_run_start", { port }, (run) => useHostOfThisPc(run, port, onHostChange));
   });
   runStopEl.addEventListener("click", () => {
     const port = lastRun?.port ?? null;

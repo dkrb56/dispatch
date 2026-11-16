@@ -236,6 +236,11 @@ pub fn ticket_move(cwd: String, id: String, status: String, ids: Vec<String>, no
 }
 
 #[tauri::command(async)]
+pub fn ticket_claim(core: State<Core>, cwd: String, id: String, release: bool) -> Result<bool, String> {
+    tickets::ticket_claim(&core, cwd, id, release)
+}
+
+#[tauri::command(async)]
 pub fn ticket_move_all(cwd: String, ids: Vec<String>, status: String) -> Result<Vec<Ticket>, String> {
     tickets::ticket_move_all(cwd, ids, status)
 }

@@ -18,12 +18,13 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 
 use crate::core::pipeline::Project;
+use crate::core::Core;
 
 /// The longest generated title, in characters.
 const TITLE_MAX: usize = 70;
@@ -806,6 +807,52 @@ pub fn ticket_move_all(cwd: String, ids: Vec<String>, status: String) -> Result<
     Ok(read(&project))
 }
 
+/// The folder of the claims in the data folder of the program (ticket why-are-there-two-chats).
+const CLAIMS: &str = "ticket-claims";
+/// A claim older than this is free again, and the next claim removes it.
+const CLAIM_KEEP: Duration = Duration::from_secs(24 * 3600);
+
+/// FNV-1a: a short stable name for the folder of a project.
+fn path_mark(text: &str) -> u64 {
+    text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3))
+}
+
+/// A window claims the New ticket `id` before it sends it to triage (user decision 3): the claim
+/// is a file that only one call can create, in the data folder that the app and the host of a PC
+/// share, so two windows (also of two programs) send a ticket once. Gives whether this call made
+/// the claim. `release` gives a claim back after a failed send.
+pub fn ticket_claim(core: &Core, cwd: String, id: String, release: bool) -> Result<bool, String> {
+    let project = Project::find(&cwd)?;
+    claim_in(&core.data_dir()?.join(CLAIMS), &project.root, &id, release, SystemTime::now())
+}
+
+fn claim_in(dir: &Path, root: &Path, id: &str, release: bool, now: SystemTime) -> Result<bool, String> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+        return Err(format!("invalid ticket id: {id}"));
+    }
+    let path = dir.join(format!("{:016x}-{id}", path_mark(&root.to_string_lossy().to_lowercase())));
+    if release {
+        let _ = fs::remove_file(&path);
+        return Ok(true);
+    }
+    fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let old = entry.metadata().and_then(|meta| meta.modified()).is_ok_and(|time| now.duration_since(time).is_ok_and(|age| age >= CLAIM_KEEP));
+        if old {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+    match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(mut file) => {
+            let millis = now.duration_since(UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
+            let _ = writeln!(file, "{}", iso(millis));
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -823,6 +870,27 @@ mod tests {
 
     fn cwd(project: &Project) -> String {
         project.root.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn a_ticket_claim_succeeds_once_until_it_is_given_back_or_old() {
+        let (project, base) = scratch("claim");
+        let dir = base.join("data").join(CLAIMS);
+        let now = SystemTime::now();
+        assert_eq!(claim_in(&dir, &project.root, "t-1", false, now), Ok(true), "the first window claims");
+        assert_eq!(claim_in(&dir, &project.root, "t-1", false, now), Ok(false), "the second window does not send");
+        let upper = PathBuf::from(project.root.to_string_lossy().to_uppercase());
+        assert_eq!(claim_in(&dir, &upper, "t-1", false, now), Ok(false), "the same folder in other letters");
+        assert_eq!(claim_in(&dir, &project.root, "t-2", false, now), Ok(true), "another ticket");
+        let other = base.join("other");
+        assert_eq!(claim_in(&dir, &other, "t-1", false, now), Ok(true), "the same id in another project");
+        assert_eq!(claim_in(&dir, &project.root, "t-1", true, now), Ok(true), "a failed send gives it back");
+        assert_eq!(claim_in(&dir, &project.root, "t-1", false, now), Ok(true));
+        let later = now + CLAIM_KEEP + Duration::from_secs(60);
+        assert_eq!(claim_in(&dir, &project.root, "t-2", false, later), Ok(true), "an old claim is free again");
+        assert!(claim_in(&dir, &project.root, "../t", false, now).is_err());
+        assert!(claim_in(&dir, &project.root, "", false, now).is_err());
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]

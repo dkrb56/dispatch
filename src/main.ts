@@ -16,7 +16,7 @@ import {
   windowCall,
 } from "./backend";
 import { chooseFolder } from "./folderchooser";
-import { initHostMode, reachable, titleBase } from "./hostmode";
+import { initHostMode, initOwnHostBar, reachable, titleBase } from "./hostmode";
 import { keyHost, keyPath, mergeLists, nightSwitch, pathKey, projectKey, projectLabel, type ProjectRef } from "./hosts";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -70,6 +70,7 @@ import { PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { HOLD_NOTE, holdWait } from "./holdstep";
+import { isTerminalReport, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { type AskDecision, askAbout, askBlocked, askLine } from "./discuss";
 import { chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
@@ -86,7 +87,7 @@ import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersio
 import { lastRunVersion, newEntries } from "./changelog";
 import { alertActions, alertState, CHIME, newWaits, notificationText, type Wait } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
-import { alertOptions, compactOn, initOptions, pulseOn } from "./options";
+import { alertOptions, compactOn, initOptions, ownHostRuns, pulseOn, useOwnHost } from "./options";
 import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
 import { initRules, openRules } from "./rules";
@@ -116,6 +117,11 @@ interface SavedPane {
   runs?: string;
   /** The host of the terminal (remote-multi-host); missing for this PC and in files before that ticket. */
   host?: HostId;
+  /**
+   * The pane shows the terminal of another window of its host: the one triage chat of the project
+   * (why-are-there-two-chats). Its id is the id of that terminal; a close leaves it running.
+   */
+  joined?: boolean;
 }
 
 interface SavedSplit {
@@ -216,6 +222,10 @@ interface Pane extends SavedPane {
   chatTabsEl?: HTMLElement;
   /** The slot under the bar of a triage pane that holds a shown chat tab. */
   chatSlotEl?: HTMLElement;
+  /** The size of the terminal of a joined pane: the owner window sets it. */
+  ptySize?: { cols: number; rows: number };
+  /** A joined pane: the first poll that found no chat in the terminal, 0 while a chat runs. */
+  goneSince?: number;
 }
 
 /** The reply of the `pane_info` command. */
@@ -253,6 +263,8 @@ interface Chat {
   running: boolean;
   /** The terminal of this app in which the chat runs. */
   pane: string | null;
+  /** The terminal of another window of the host in which the chat runs; this window can join it. */
+  foreignPane?: string | null;
   /** The host that has the chat; the window adds it to the reply (remote-multi-host). */
   host: HostId;
 }
@@ -301,6 +313,10 @@ interface StartCommand {
   /** The model and the effort of the session. An empty text uses the settings of the user. */
   model?: string;
   effort?: string;
+  /** No shell starts: the pane joins the terminal of another window with its id (`pty_join`, why-are-there-two-chats). */
+  join?: boolean;
+  /** A plain shell starts and shows this note: the triage chat runs in a program outside the host. */
+  note?: string;
 }
 
 interface Tab {
@@ -391,6 +407,13 @@ const HIDDEN_ROWS = 40;
  * of 7 lines and a broken rule line `////tttt` in the Workers pane of Rockhoppers).
  */
 function fitPane(pane: Pane): void {
+  // A joined pane keeps the size of the terminal of the owner window: a size of its own would break
+  // the screen of both windows and the menu reader (why-are-there-two-chats).
+  if (pane.joined) {
+    const size = pane.ptySize;
+    if (size && size.cols > 0 && size.rows > 0 && (pane.term.cols !== size.cols || pane.term.rows !== size.rows)) pane.term.resize(size.cols, size.rows);
+    return;
+  }
   if (pane.termEl.clientWidth < MIN_FIT_PX || pane.termEl.clientHeight < MIN_FIT_PX) return;
   pane.fit.fit();
 }
@@ -1396,19 +1419,29 @@ interface WorkspaceStart {
   chat: Chat | undefined;
   /** The start command of a new triage pane. */
   triage: StartCommand;
+  /** What this window does: one triage chat per project, whatever the number of windows (why-are-there-two-chats). */
+  action: TriageStart;
 }
 
-async function workspaceStart(host: HostId, cwd: string): Promise<WorkspaceStart> {
+/** `own` says whether a terminal id is a pane of this window; a restore also counts its saved panes. */
+async function workspaceStart(host: HostId, cwd: string, own: (id: string) => boolean = (id) => panes.has(id)): Promise<WorkspaceStart> {
   const info = await call<ProjectRoot>(host, "project_root", { cwd });
   const choice = triageChoice(projectKey(host, info.root));
   const chat = await triageChat(host, info.root, info.triageStamp);
+  const action = triageStart(chat?.id, triagePlace(chat, own));
   const triage: StartCommand = {
-    ...(chat ? { resume: chat.id } : { run: "claude" as const }),
+    ...(action.kind === "join"
+      ? { join: true }
+      : action.kind === "note"
+        ? { note: OUTSIDE_NOTE }
+        : chat
+          ? { resume: chat.id }
+          : { run: "claude" as const }),
     triage: info.triagePrompt,
     named: info.triageName,
     ...choice,
   };
-  return { info, choice, flags: choiceFlags(choice), chat, triage };
+  return { info, choice, flags: choiceFlags(choice), chat, triage, action };
 }
 
 /** Whether a project has a workspace: an open one, or a triage chat that the app remembers. */
@@ -1431,8 +1464,21 @@ async function restoredStarts(layout: SavedNode): Promise<Map<string, StartComma
   const project = first?.project;
   if (!first || !project) return undefined;
   try {
-    const { triage } = await workspaceStart(knownBackend(first.host), project);
-    return new Map(roles.map((pane) => [pane.id, pane.role === "triage" ? triage : { run: "claude agents" as const }]));
+    const saved = new Set(roles.map((pane) => pane.id));
+    const host = knownBackend(first.host);
+    const { triage, action } = await workspaceStart(host, project, (id) => panes.has(id) || saved.has(id));
+    for (const pane of roles) {
+      if (pane.role !== "triage") continue;
+      if (action.kind === "join" && pane.id !== action.terminal) {
+        // The chat runs in a terminal of another window now: this pane shows that terminal. Its own
+        // idle shell on the host ends.
+        if (!pane.joined) void call(host, "pty_kill", { id: pane.id }).catch(() => {});
+        pane.id = action.terminal;
+        pane.joined = true;
+      }
+    }
+    // A joined pane joins again; when the chat stopped, it leaves and the project shows Start triage (decision 2).
+    return new Map(roles.map((pane) => [pane.id, pane.role === "triage" ? (pane.joined ? { join: true } : triage) : { run: "claude agents" as const }]));
   } catch (error) {
     // A project folder that is gone gives plain shells.
     console.error("workspace restore failed", error);
@@ -1455,16 +1501,31 @@ function triageCommand(info: ProjectRoot, flags: string, chat: Chat | undefined)
 /** Opens triage and the agent view of the project of a folder of a host, side by side. */
 async function openWorkspace(host: HostId, cwd: string | null | undefined): Promise<void> {
   if (!cwd) return;
-  const { info, flags, chat, triage: start } = await workspaceStart(host, cwd);
+  const { info, flags, chat, triage: start, action } = await workspaceStart(host, cwd);
   const { root: project } = info;
   const key = projectKey(host, project);
+  // The chat runs in a program outside the host: no second chat, the project shows the note.
+  if (action.kind === "note") triageNotes.add(key);
+  else triageNotes.delete(key);
 
   // The project has a workspace tab. Start the programs again in the panes that are idle.
   const known = [...panes.values()].find((pane) => pane.role && paneKey(pane) === key);
   if (known) {
     activate(known.tabId);
+    const tabTriage = tabPanes(known.tabId).find((pane) => pane.role === "triage");
+    if (!tabTriage && action.kind !== "note") {
+      // A joined pane left after its chat stopped (decision 2): the tab gets a triage pane again, at the left.
+      const agents = tabPanes(known.tabId).find((pane) => pane.role === "agents") ?? known;
+      await addTriagePane(agents, workspaceTriage(host, project, action), start, flags);
+    }
     for (const pane of tabPanes(known.tabId)) {
-      if (!pane.role || (await call<boolean>(pane.host, "pane_busy", { id: pane.id }))) continue;
+      if (!pane.role || pane.joined || (await call<boolean>(pane.host, "pane_busy", { id: pane.id }))) continue;
+      if (pane.role === "triage" && action.kind === "join") {
+        // The chat runs in a terminal of another window: this idle pane gives way to that terminal.
+        await replaceTriagePane(pane, workspaceTriage(host, project, action), start, flags);
+        continue;
+      }
+      if (pane.role === "triage" && action.kind === "note") continue;
       const triage = triageCommand(info, flags, chat);
       // The agent view shows only the background sessions of the project.
       const folder = pane.shell === "cmd" ? `"${project}"` : `'${project.replace(/'/g, "''")}'`;
@@ -1480,15 +1541,21 @@ async function openWorkspace(host: HostId, cwd: string | null | undefined): Prom
   }
 
   // The triage chat runs in a different terminal of this app. Show that terminal.
-  const open = panes.get(chat?.pane ?? "");
+  const open = panes.get(action.kind === "show" ? action.pane : "");
   if (open) {
     activate(open.tabId);
     open.term.focus();
     await saveState();
     return;
   }
+  if (action.kind === "note") {
+    renderFocus();
+    renderOverview();
+    renderMap();
+    return;
+  }
 
-  const triage: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: project, role: "triage", project, host };
+  const triage = workspaceTriage(host, project, action);
   const agents: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: project, role: "agents", project, host };
   const starts = new Map<string, StartCommand>([
     [triage.id, start],
@@ -1498,6 +1565,47 @@ async function openWorkspace(host: HostId, cwd: string | null | undefined): Prom
   await openTab({ id: crypto.randomUUID(), layout, focus: triage.id }, false, starts);
   const started = panes.get(triage.id);
   if (started) started.startedWith = flags;
+  await saveState();
+}
+
+/**
+ * The projects whose triage chat runs in a program outside the host, by project key: Start triage
+ * shows the note there and starts no second chat (why-are-there-two-chats).
+ */
+const triageNotes = new Set<string>();
+
+/** The saved form of a new triage pane: a joined pane takes the id of the terminal that it shows. */
+function workspaceTriage(host: HostId, project: string, action: TriageStart): SavedPane {
+  const joined = action.kind === "join";
+  return { id: joined ? action.terminal : crypto.randomUUID(), shell: "powershell", cwd: project, role: "triage", project, host, ...(joined ? { joined: true } : {}) };
+}
+
+/** Adds a triage pane at the left of a pane of a workspace tab, whose triage pane left (decision 2). */
+async function addTriagePane(source: Pane, saved: SavedPane, start: StartCommand, flags: string): Promise<void> {
+  const pane = await splitPane(source, "row", saved, start);
+  (focusMoved.get(source.id) ?? source.el).before(pane.el);
+  pane.startedWith = flags;
+  if (focusOn) renderFocus();
+  await saveState();
+}
+
+/** Puts a new triage pane in the place of an idle one, whose shell ends: the chat runs in a terminal of another window. */
+async function replaceTriagePane(old: Pane, saved: SavedPane, start: StartCommand, flags: string): Promise<void> {
+  moveBack(old);
+  const pane = createPane(old.tabId, saved);
+  pane.el.style.flexGrow = old.el.style.flexGrow;
+  old.el.replaceWith(pane.el);
+  panes.delete(old.id);
+  for (const waiter of old.promptWaiters.splice(0)) waiter();
+  old.term.dispose();
+  showGallery(old.thumbsEl, [], () => {});
+  const tab = tabs.get(old.tabId);
+  if (tab?.focus === old.id) tab.focus = pane.id;
+  await call(old.host, "pty_kill", { id: old.id }).catch((error) => console.warn("the idle triage shell did not end", error));
+  if (focusOn) renderFocus();
+  await startPane(pane, false, start);
+  pane.startedWith = flags;
+  fitTab(pane.tabId);
   await saveState();
 }
 
@@ -1511,6 +1619,17 @@ async function pollTriage(): Promise<void> {
         if (!pane.project) return;
         step("pane_info");
         const info = await call<PaneInfo>(pane.host, "pane_info", { id: pane.id, cwd: pane.cwd });
+        if (pane.joined) {
+          // The shared chat stopped: this window leaves the terminal and shows Start triage (user decision 2).
+          pane.goneSince = info.session ? 0 : pane.goneSince || Date.now();
+          if (leaveJoined(pane.goneSince, switchRuns(paneKey(pane)), Date.now())) {
+            await closePane(pane.id);
+            renderFocus();
+            renderOverview();
+            renderMap();
+            return;
+          }
+        }
         const remembered = rememberedTriage(pane.host, pane.project);
         if (info.session && remembered !== info.session.id) {
           // A new chat started. Record the role that it got.
@@ -1665,7 +1784,7 @@ async function checkCompact(pane: Pane, info: PaneInfo, step: (name: string) => 
   const context = triageContexts.get(key);
   const reason = compactHold({
     on: compactOn(),
-    driver: driverOf(pane.host),
+    driver: mayDriveChat(driverOf(pane.host)),
     marked: state.marked > 0,
     status,
     menu: parseMenu(menuLines(pane.term)) !== null,
@@ -1768,6 +1887,8 @@ function checkSwitch(pane: Pane, session: NonNullable<PaneInfo["session"]>, stat
     state.quietSince = 0;
   };
   if (!state.due) return hold("");
+  // Two windows can show one chat: only the window that drives the host closes it (why-are-there-two-chats).
+  if (!mayDriveChat(driverOf(pane.host))) return hold("Another Dispatch window drives this host; it starts the new chat.");
   if (state.failedTokens === tokens) return hold("The last try did not close the chat; the next try comes after the next turn of triage.");
   const reason = nightOf(pane.host)
     ? "Night mode is on; the new chat starts after it ends."
@@ -1818,6 +1939,7 @@ async function programEnded(pane: Pane, ms: number): Promise<boolean> {
  * the old chat stays the triage chat and the hand-off is taken back.
  */
 async function switchTriage(pane: Pane, state: TriageContext): Promise<void> {
+  if (!mayDriveChat(driverOf(pane.host))) return;
   const project = pane.project ?? "";
   const key = paneKey(pane);
   state.switching = true;
@@ -3227,10 +3349,10 @@ async function dispatchTickets(): Promise<void> {
       ticketsToSettle.splice(ticketsToSettle.indexOf(one), 1);
     }
     for (const [key, record] of projectTasks) {
-      // Only the window that drives the project's host sends its tickets (remote-shared-state).
-      if (!driverOf(record.host)) continue;
+      // Only the window that drives the project's host and shows its triage chat sends its tickets
+      // (remote-shared-state); the claim below keeps a ticket from a second window (why-are-there-two-chats).
       const pane = triagePane(key);
-      if (!pane?.chat) continue;
+      if (!pane?.chat || !maySendTicket({ driver: driverOf(record.host), triage: true, sent: false })) continue;
       if (pendingCards.some((card) => card.project === key)) {
         // A card in flight: its turn of triage, also when the chat does not show.
         const status = await triageStatus(pane).catch(() => null);
@@ -3245,6 +3367,17 @@ async function dispatchTickets(): Promise<void> {
       if (parseMenu(menuLines(pane.term)) !== null) continue;
       // A ticket goes through the same prompt as the keys of the user (typing-sent-by-line).
       if (userTypes(pane)) continue;
+      // User decision 3: a mark in the data folder of the host before the send; a ticket that another
+      // window marked does not go again. An older host without the call sends as before.
+      const { cwd } = projectCwd(key);
+      const claimed = await call<boolean>(record.host, "ticket_claim", { cwd, id: ticket.id, release: false }).catch((error) => {
+        console.warn("the claim of the ticket failed", error);
+        return null;
+      });
+      if (claimed === false) {
+        sentTickets.add(`${key}\n${ticket.id}`);
+        continue;
+      }
       const known = projectTaskList(record).map((task) => task.name);
       const card = pendingCard(key, ticket.title, known, Date.now(), ticket.id);
       sentTickets.add(`${key}\n${ticket.id}`);
@@ -3255,6 +3388,7 @@ async function dispatchTickets(): Promise<void> {
         await pane.chat.deliver(ticketMessage(ticket));
       } catch (error) {
         console.warn("ticket not sent", error);
+        if (claimed) void call(record.host, "ticket_claim", { cwd, id: ticket.id, release: true }).catch(() => {});
         sentTickets.delete(`${key}\n${ticket.id}`);
         pendingCards = pendingCards.filter((one) => one !== card);
         savePending();
@@ -7649,9 +7783,9 @@ function saveNode(node: Element): SavedNode {
       ...size,
     };
   }
-  const { id, shell, cwd, role, project, runs, host } = panes.get(el.dataset.pane!)!;
+  const { id, shell, cwd, role, project, runs, host, joined } = panes.get(el.dataset.pane!)!;
   // A pane of this PC keeps the format of before remote-multi-host: no host field.
-  return { id, shell, cwd, ...(role ? { role, project } : {}), ...(runs ? { runs } : {}), ...(host !== LOCAL ? { host } : {}), ...size };
+  return { id, shell, cwd, ...(role ? { role, project } : {}), ...(runs ? { runs } : {}), ...(host !== LOCAL ? { host } : {}), ...(joined ? { joined } : {}), ...size };
 }
 
 /** Saves the tab list, the layout and the folders of each tab, and the active tab. */
@@ -7723,7 +7857,7 @@ async function splitFocused(dir: Direction): Promise<void> {
 }
 
 /** Starts a new terminal next to a pane, in its tab: to the right (`row`) or below (`column`). */
-async function splitPane(source: Pane, dir: Direction, saved: SavedPane): Promise<Pane> {
+async function splitPane(source: Pane, dir: Direction, saved: SavedPane, start?: StartCommand): Promise<Pane> {
   const pane = createPane(source.tabId, saved);
   // A pane in a column of focus mode has its place in the tab at its placeholder.
   const place = focusMoved.get(source.id) ?? source.el;
@@ -7742,7 +7876,7 @@ async function splitPane(source: Pane, dir: Direction, saved: SavedPane): Promis
   // In focus mode a Commands terminal moves into its column first: a shell that starts at the
   // size of the hidden tab and shrinks later draws its typed line twice.
   if (focusOn && saved.runs) renderFocus();
-  await startPane(pane, false);
+  await startPane(pane, false, start);
   fitTab(source.tabId);
   await saveState();
   return pane;
@@ -7853,7 +7987,8 @@ async function closePane(id: string): Promise<void> {
   }
   fitTab(tab.id);
   if (activeId === tab.id) panes.get(tab.focus ?? "")?.term.focus();
-  await call(pane.host, "pty_kill", { id });
+  // A joined pane leaves the terminal of the other window: the shared chat keeps running there.
+  await call(pane.host, pane.joined ? "pty_leave" : "pty_kill", { id });
   await saveState();
 }
 
@@ -7876,7 +8011,7 @@ async function closeTab(id: string): Promise<void> {
   }
   tab.view.remove();
   for (const pane of closed) {
-    await call(pane.host, "pty_kill", { id: pane.id });
+    await call(pane.host, pane.joined ? "pty_leave" : "pty_kill", { id: pane.id });
   }
 
   // The × of the last workspace keeps the window (ticket topbar-one-row, user decision 3): a plain
@@ -7964,6 +8099,7 @@ function createPane(tabId: string, saved: SavedPane): Pane {
     role: saved.role,
     project: saved.project,
     runs: saved.runs,
+    joined: saved.joined,
     prompted,
     promptSeen,
     promptWaiters: [],
@@ -8074,7 +8210,8 @@ function buildNode(tabId: string, node: SavedNode, created: Pane[]): HTMLDivElem
 async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Promise<void> {
   const { id, shell, term } = pane;
   // The agent view draws itself again at its start: its old screen would only be old frames.
-  const screen = restore && pane.role !== "agents" ? await windowCall<string | null>("screen_load", { id }) : null;
+  // A joined pane gets the last output of its terminal from the host instead.
+  const screen = restore && pane.role !== "agents" && !pane.joined ? await windowCall<string | null>("screen_load", { id }) : null;
   if (!panes.has(id)) return;
 
   term.open(pane.termEl);
@@ -8175,6 +8312,8 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
   });
 
   term.onData((data) => {
+    // The owner window answers the queries of the program; a joined pane sends only keys and pastes.
+    if (pane.joined && isTerminalReport(data)) return;
     // The keys of the user in a triage terminal hold the lines of Dispatch (typing-sent-by-line).
     // A report of the terminal (focus, mouse, cursor) starts with ESC and is no typing; a paste is.
     if (pane.role === "triage" && !pane.pasting && (!data.startsWith("\x1b") || data.startsWith("\x1b[200~"))) {
@@ -8189,9 +8328,19 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
       term.clear();
       term.write("\x1b[H\x1b[2J");
     }
+    // The size of a joined terminal stays with its owner window.
+    if (pane.joined) return;
     void call(pane.host, "pty_resize", { id, cols, rows });
   });
 
+  if (pane.joined || start?.join) {
+    // The terminal of another window: no shell starts (why-are-there-two-chats).
+    pane.joined = true;
+    pane.spawnArgs = { id, join: true };
+    await joinTerminal(pane);
+    return;
+  }
+  if (start?.note) term.write(`\x1b[0;2m${start.note}\x1b[0m\r\n`);
   pane.spawnArgs = { id, shell, cwd: pane.cwd, ...start };
   try {
     await call(pane.host, "pty_spawn", { id, shell, cwd: pane.cwd, cols: term.cols, rows: term.rows, ...start });
@@ -8211,6 +8360,11 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
 function reattach(host: HostId, alive: string[], restartAfterMs: number): void {
   const spawn = async (pane: Pane) => {
     if (!pane.spawnArgs || panes.get(pane.id) !== pane) return;
+    // A joined pane joins again; a terminal that is gone closes the pane (why-are-there-two-chats).
+    if (pane.joined) {
+      await joinTerminal(pane);
+      return;
+    }
     try {
       await call(pane.host, "pty_spawn", { ...pane.spawnArgs, cwd: pane.cwd, cols: pane.term.cols, rows: pane.term.rows });
     } catch (error) {
@@ -8224,6 +8378,27 @@ function reattach(host: HostId, alive: string[], restartAfterMs: number): void {
     else later.push(pane);
   }
   if (later.length > 0) setTimeout(() => later.forEach((pane) => void spawn(pane)), restartAfterMs);
+}
+
+/**
+ * Shows the terminal of another window in a joined pane (`pty_join`): the host sends its size and
+ * its last output, then each output. A terminal that does not run closes the pane, so the project
+ * shows Start triage (user decision 2).
+ */
+async function joinTerminal(pane: Pane): Promise<void> {
+  try {
+    const size = await call<{ cols: number; rows: number }>(pane.host, "pty_join", { id: pane.id });
+    pane.ptySize = size;
+    pane.goneSince = 0;
+    fitPane(pane);
+  } catch (error) {
+    console.warn("the triage terminal of the other window is gone", error);
+    if (panes.get(pane.id) !== pane) return;
+    await closePane(pane.id);
+    renderFocus();
+    renderOverview();
+    renderMap();
+  }
 }
 
 /** A new tab with one terminal on `host` (remote-multi-host: the first backend at a start without tabs). */
@@ -8921,6 +9096,8 @@ function renderFocus(): void {
       start.title = "Open the workspace of this project: triage and the agent view";
       start.addEventListener("click", () => void ensureWorkspace(column).then(renderFocus));
       column.triageEl.replaceChildren(start);
+      // The chat runs in a program outside the host: a click checks again and starts no second chat.
+      if (triageNotes.has(key)) column.triageEl.append(mapElement("p", "map-muted", OUTSIDE_NOTE));
     }
     const commands = commandPanes(column.host, column.root);
     for (const child of [...column.commandsEl.children]) {
@@ -9627,7 +9804,8 @@ function mapSection(ref: ProjectRef): HTMLElement {
   const choice = triageChoice(key);
   const triageCard = mapElement("button", "map-node triage");
   triageCard.title = "Go to the triage chat of this project in focus mode";
-  triageCard.append(mapElement("b", "", "Triage"), mapElement("span", "map-line", triage ? [choice.model || "default model", choice.effort || "default effort"].join(" · ") : "not running · click to start"));
+  const idle = triageNotes.has(key) ? "runs in another program" : "not running · click to start";
+  triageCard.append(mapElement("b", "", "Triage"), mapElement("span", "map-line", triage ? [choice.model || "default model", choice.effort || "default effort"].join(" · ") : idle));
   triageCard.style.gridRow = `1 / span ${rows}`;
   triageCard.style.gridColumn = "2";
   if (atTop) triageCard.classList.add("top");
@@ -10033,7 +10211,14 @@ function renderOverview(): void {
     cards.map((card) => ({ key: projectKey(card.host, card.root), slot: card.chatEl })),
     chats,
   );
-  for (const card of cards) card.startEl.hidden = !without.includes(projectKey(card.host, card.root));
+  for (const card of cards) {
+    const key = projectKey(card.host, card.root);
+    card.startEl.hidden = !without.includes(key);
+    // The chat runs in a program outside the host: a click checks again and starts no second chat.
+    const elsewhere = triageNotes.has(key);
+    card.startEl.textContent = elsewhere ? "Triage runs in another program · check again" : "Start triage";
+    card.startEl.title = elsewhere ? OUTSIDE_NOTE : "Open the workspace of this project: triage and the agent view";
+  }
   placeCards(cards);
 }
 
@@ -10168,6 +10353,13 @@ async function start(): Promise<void> {
   await onEvent<string>("pty-exit", (host, payload) => {
     if (panes.get(payload)?.host === host) void closePane(payload);
   });
+  // The owner window of a joined terminal changed its size (why-are-there-two-chats).
+  await onEvent<{ id: string; cols: number; rows: number }>("pty-size", (host, payload) => {
+    const pane = panes.get(payload.id);
+    if (!pane || pane.host !== host || !pane.joined) return;
+    pane.ptySize = { cols: payload.cols, rows: payload.rows };
+    fitPane(pane);
+  });
 
   await getCurrentWindow().onCloseRequested(async () => {
     try {
@@ -10273,6 +10465,7 @@ async function start(): Promise<void> {
     () => saveState().catch((error) => console.error("host settings save failed", error)),
   );
   initHostMode(reattach);
+  initOwnHostBar(ownHostRuns, () => useOwnHost(() => saveState()));
   // After a lost connection the host may have a newer switch and newer triage chats (remote-shared-state).
   // A host that goes or comes changes the look of the switch (remote-multi-host).
   onConnection((host, connection) => {
