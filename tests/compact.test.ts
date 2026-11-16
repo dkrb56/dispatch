@@ -6,7 +6,8 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CHECK_STUCK_MS, COMPACT_KEY, COMPACT_LIMIT_MS, COMPACT_QUIET_MS, COMPACT_TEXT, type CompactFacts, compactEnded, compactHold, compactLateLine, errorText, newTrace, parseCompact, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "../src/compact.ts";
+import { blankFaint, CHECK_STUCK_MS, COMPACT_KEY, COMPACT_LIMIT_MS, COMPACT_QUIET_MS, COMPACT_TEXT, type CompactFacts, compactEnded, compactHold, compactLateLine, errorText, newTrace, parseCompact, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "../src/compact.ts";
+import { joinRows } from "../src/menurecord.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const MAIN = read("../src/main.ts");
@@ -132,6 +133,39 @@ test("the prompt line of a screen as Claude Code draws it", () => {
   assert.equal(promptEmpty([]), false);
 });
 
+test("the empty input row under the full border of the box of Claude Code counts as empty (compact-prompt-hold)", () => {
+  // The screen rows of the Terminal view in the proof of 2026-11-16 10:20:59 UTC, 98 columns: the
+  // border of the input box reaches the last column, so the terminal marks the input row as wrapped.
+  const rows = [
+    { text: "❯ Worker t1 [work] is done.", wrapped: false },
+    { text: "", wrapped: false },
+    { text: "✢ Reticulating… (1s · thinking with high effort)", wrapped: false },
+    { text: "─".repeat(89) + " Triage ─", wrapped: false },
+    { text: "❯ ", wrapped: true },
+    { text: "─".repeat(98), wrapped: false },
+    { text: "  ⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt · ← 2 agents", wrapped: true },
+  ];
+  const joined = joinRows(rows, 98);
+  assert.ok(joined.includes("─".repeat(89) + " Triage ─❯ "), "the join glues the input row to the border");
+  assert.equal(promptEmpty(joined), false, "the old rule: an older message of the chat counts");
+  assert.equal(promptEmpty(rows.map((row) => row.text)), true, "the new rule reads the rows unjoined");
+  assert.equal(promptEmpty([...rows.slice(0, 4).map((row) => row.text), "❯ push it", rows[5].text]), false, "typed text still holds");
+});
+
+test("faint text after the prompt mark counts as empty, normal text holds (compact-prompt-hold)", () => {
+  const cells = (text: string) => [...text];
+  const typed = cells("❯ push it");
+  assert.equal(promptEmpty([typed.join("")]), false, "the old rule: grey text holds");
+  assert.equal(promptEmpty([blankFaint(typed, typed.map((_, index) => index > 1))]), true, "grey text after the mark is empty");
+  assert.equal(promptEmpty([blankFaint(typed, typed.map(() => false))]), false, "typed text holds");
+  assert.equal(promptEmpty([blankFaint(typed, typed.map((_, index) => index === 0 || index > 5))]), false, "a typed word before grey text holds");
+  // The measured cells of the empty input row: the mark and the space after it can be dim.
+  assert.equal(blankFaint(cells("❯ "), [true, true]), "❯ ", "a faint mark stays a mark");
+  assert.equal(promptEmpty([blankFaint(cells("❯ "), [true, true])]), true);
+  assert.equal(blankFaint(cells("  ❯ hint"), [true, true, true, false, true, true, true, true]), "  ❯     ", "the blank start before the mark stays");
+  assert.equal(blankFaint([], []), "");
+});
+
 test("a compaction ends with a grown count of summaries or after the time limit", () => {
   assert.equal(COMPACT_LIMIT_MS, 3 * 60_000);
   const send = { at: T, count: 2 };
@@ -158,7 +192,11 @@ test("main.ts marks task ends, checks the hold and sends /compact", () => {
   assert.match(MAIN, /pane\.chat\.say\(COMPACT_TEXT\)/);
   assert.match(MAIN, /taskEnds\(/);
   assert.match(MAIN, /compactEnded\(/);
-  assert.match(MAIN, /promptEmpty\(terminalLines\(pane\.term\)\)/);
+  assert.match(MAIN, /promptEmpty\(promptRows\(pane\.term\)\)/);
+  const rows = MAIN.slice(MAIN.indexOf("function promptRows("), MAIN.indexOf("\n}", MAIN.indexOf("function promptRows(")));
+  assert.match(rows, /blankFaint\(/, "the prompt rows blank faint text");
+  assert.match(rows, /isDim\(\)/);
+  assert.doesNotMatch(rows, /joinRows\(/, "the prompt rows stay unjoined");
   const store = MAIN.slice(MAIN.indexOf("function storeProjectTasks("), MAIN.indexOf("\n}\n", MAIN.indexOf("function storeProjectTasks(")));
   assert.match(store, /markCompact\(/);
   const announce = MAIN.slice(MAIN.indexOf("function announceWorkerChanges("), MAIN.indexOf("\n}\n", MAIN.indexOf("function announceWorkerChanges(")));
@@ -183,6 +221,7 @@ test("options.ts wires the switch and index.html shows it in Options and the Hel
   assert.match(section, /Compact triage after each task/);
   assert.match(section, /says when that compaction was sent/);
   assert.match(section, /last task end that Dispatch noted, the last check of the triage chat/);
+  assert.match(section, /Grey text of Claude Code on the prompt line, such as a suggestion, counts as empty/);
 });
 
 // The trace of the checks of the triage chat (ticket triage-compact-trace-2).

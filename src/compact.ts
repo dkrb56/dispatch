@@ -101,6 +101,10 @@ export function compactHold(facts: CompactFacts): string {
 /**
  * The prompt line of Claude Code on a screen is empty: the last line that starts with the prompt mark
  * (`❯` or `>`) has nothing after the mark. A screen without such a line counts as not empty.
+ * The compaction check gives it the screen rows unjoined, with faint text blanked (`blankFaint`):
+ * Claude Code draws the border of its input box to the last column, so the terminal marks the input
+ * row as wrapped and a join would glue it to the border (ticket compact-prompt-hold). Faint (grey)
+ * text after the mark, such as a suggestion of Claude Code, counts as empty.
  */
 export function promptEmpty(lines: readonly string[]): boolean {
   for (let row = lines.length - 1; row >= 0; row--) {
@@ -108,6 +112,16 @@ export function promptEmpty(lines: readonly string[]): boolean {
     if (match) return match[1].trim() === "";
   }
   return false;
+}
+
+/**
+ * The text of one screen row with each faint character after its first character that is no space
+ * as a space: `chars` holds the characters of the cells of the row, `faint` marks the faint ones.
+ * The first character stays, so a prompt mark that Claude Code draws faint still counts as a mark.
+ */
+export function blankFaint(chars: readonly string[], faint: readonly boolean[]): string {
+  const first = chars.findIndex((char) => char.trim() !== "");
+  return chars.map((char, index) => (first >= 0 && index > first && faint[index] ? " " : char)).join("");
 }
 
 /** A compaction that Dispatch sent: its time and the count of summaries of the session at the send. */

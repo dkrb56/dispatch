@@ -85,7 +85,7 @@ import { lastRunVersion, newEntries } from "./changelog";
 import { alertActions, alertState, CHIME, newWaits, notificationText, type Wait } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
 import { alertOptions, compactOn, initOptions, pulseOn } from "./options";
-import { type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
+import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
 import { initRules, openRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
@@ -1673,7 +1673,7 @@ async function checkCompact(pane: Pane, info: PaneInfo, step: (name: string) => 
     view: pane.chat?.visible() ? "chat" : "terminal",
     boxQuiet: pane.chat?.quiet() ?? false,
     typing: userTypes(pane),
-    promptEmpty: promptEmpty(terminalLines(pane.term)),
+    promptEmpty: promptEmpty(promptRows(pane.term)),
     idleSince: state.idleSince,
     lastInput,
     now,
@@ -3342,6 +3342,29 @@ function bufferRows(term: Terminal, from: number, to: number): ScreenRow[] {
  */
 function terminalLines(term: Terminal): string[] {
   return joinRows(terminalRows(term).rows, term.cols);
+}
+
+/**
+ * The rows of the screen of a terminal for the prompt check of the compaction, unjoined, with each
+ * faint character after the prompt mark as a space (`blankFaint`, ticket compact-prompt-hold).
+ */
+function promptRows(term: Terminal): string[] {
+  const buffer = term.buffer.active;
+  const cell = buffer.getNullCell();
+  const rows: string[] = [];
+  for (let row = buffer.baseY; row < buffer.baseY + term.rows; row++) {
+    const line = buffer.getLine(row);
+    const chars: string[] = [];
+    const faint: boolean[] = [];
+    for (let column = 0; line && column < line.length; column++) {
+      // The second cell of a wide character has width 0 and no text of its own.
+      if (!line.getCell(column, cell) || cell.getWidth() === 0) continue;
+      chars.push(cell.getChars() || " ");
+      faint.push(cell.isDim() !== 0);
+    }
+    rows.push(blankFaint(chars, faint));
+  }
+  return rows;
 }
 
 /** The rows of the screen of a terminal with the wrap mark of each, unjoined, and its width: the record of the menu reads keeps them. */
