@@ -2,6 +2,14 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.64 (2026-11-16)
+- The tickets board gets the column Backlog, left of New. Dispatch never sends a ticket of Backlog to triage: drag it to New, or click → New on its card, when it should go. All → Backlog in the head of New and All → New in the head of Backlog move the shown cards at once.
+- A ticket card drags by its whole body: drop it at another place in New to change the order, or on Backlog, New, Done or Canceled to change its status. A ticket that you put on Done shows "done by hand". A ticket that is In progress or sent to triage does not drag. Drag the bottom-right corner of the tickets window to resize it; Dispatch keeps the size, and a double-click on the corner gives the usual size.
+- The tickets board reads the ticket lines of other tools better: a closed ticket is Canceled only when it was closed as wontfix, duplicate, superseded or canceled, else Done. Types such as bug read as Fix, docs as Content, and cleanup or test as Refactor. A ticket of the old Todo column and an open ticket without a status show in Backlog.
+- While a project is paused, Dispatch writes no ticket lines by itself; the first task read after Resume writes the changes. Your own moves, renames and new tickets still write.
+- The compaction of the triage chat after a task now really runs. Before, Dispatch read the empty input line as text, in the Terminal view and with a chat tab open, and waited forever. Grey text of Claude Code on the input line, such as a suggestion, counts as empty.
+- After you answer a question of a task or click Continue in Dispatch, the Report row of the task card shows Answered instead of Needs-Decision, until the worker writes its new report.
+
 ## 0.1.63 (2026-11-15)
 - The Setup window gets the section Build folders: it lists the build folders of a Rust project with the size of each. The button Clean build folders deletes the proof builds and the incremental cache; the main build (debug and release) and a folder in use stay.
 - A run whose session Dispatch ended after the run finished shows the grey chip Ended on the task card, not the red Stopped. Stopped stays red for a task that you stopped and for a session that ended before its result.
