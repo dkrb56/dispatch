@@ -2,6 +2,9 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.65 (2026-11-16)
+- When a decision that waits for you names a step, such as a file or folder that must leave the working tree before the start, Dispatch now says that it does not do that step. The task card, the task row and the Decisions window show your choice and what to do: do the step yourself, or commit or stash the change. The Decisions window also shows this note under each option that waits for you.
+
 ## 0.1.64 (2026-11-16)
 - The tickets board gets the column Backlog, left of New. Dispatch never sends a ticket of Backlog to triage: drag it to New, or click → New on its card, when it should go. All → Backlog in the head of New and All → New in the head of Backlog move the shown cards at once.
 - A ticket card drags by its whole body: drop it at another place in New to change the order, or on Backlog, New, Done or Canceled to change its status. A ticket that you put on Done shows "done by hand". A ticket that is In progress or sent to triage does not drag. Drag the bottom-right corner of the tickets window to resize it; Dispatch keeps the size, and a double-click on the corner gives the usual size.
