@@ -69,6 +69,7 @@ import { type ChatTab, headState, isChatTab } from "./chattabs";
 import { PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
+import { HOLD_NOTE, holdWait } from "./holdstep";
 import { chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
@@ -2232,6 +2233,12 @@ const autoApproved = new Map<string, number>();
  * `queued-approvals`. A changed plan file drops its approval.
  */
 const queuedApprovals = new Map<string, number>();
+/**
+ * The answers of the HOLD decisions of a queued approval by `queueKey` (ticket hold-step-action), with
+ * the time of the plan file that `approveOrQueue` wrote. Memory only: after a restart the card names
+ * the decision title.
+ */
+const holdPicks = new Map<string, { written: number; picks: Map<number, string> }>();
 const QUEUED_KEY = "queued-approvals";
 
 function queueKey(task: Task): string {
@@ -4141,7 +4148,8 @@ function planCard(task: Task): HTMLElement {
   if (wait) {
     const reason = document.createElement("div");
     reason.className = "card-reason";
-    reason.textContent = queued ? wait : `${wait.replace(/^Its work run starts/, "Approve now: its work run starts")}`;
+    const full = holdWaitOf(task)?.full ?? wait;
+    reason.textContent = queued ? full : `${full.replace(/^Its work run starts/, "Approve now: its work run starts")}`;
     card.append(reason);
   }
   approve.addEventListener("click", () => {
@@ -4282,6 +4290,7 @@ async function approveOrQueue(task: Task, choices: DecisionAnswer[], how: string
   if (written === null) return false;
   queuedApprovals.delete(queueKey(task));
   queuedApprovals.set(queueKey(task), written);
+  holdPicks.set(queueKey(task), { written, picks: new Map(choices.filter(({ decision }) => decision.hold).map(({ decision, answer }) => [decision.number, answer])) });
   saveQueued();
   autoApproved.set(task.name, written);
   tellTriage(projectFor(taskHost(task), taskCwd(task)), `Plan ${task.name} approved in Dispatch${how ? ` ${how}` : ""}.${checks} ${wait.replace(/:\n[\s\S]*$/, ".")} Dispatch starts its work run then; do not start it yourself.`);
@@ -4311,6 +4320,17 @@ let decisionsTask: Task | null = null;
  */
 function approveWait(task: Task): string {
   return waitReason(waitFacts(task))?.full ?? "";
+}
+
+/**
+ * The wait reason of a task that names the step of a HOLD decision (ticket hold-step-action), for the
+ * card, the task row and the Decisions footer. Without `picks` it takes those of the queued approval
+ * when its plan time is that of the plan now.
+ */
+function holdWaitOf(task: Task, picks?: ReadonlyMap<number, string>) {
+  const stored = holdPicks.get(queueKey(task));
+  const known = picks ?? (stored && stored.written === task.info?.plan?.modified ? stored.picks : undefined);
+  return holdWait(waitFacts(task), task.info?.decisions ?? [], known);
 }
 
 /**
@@ -4382,7 +4402,9 @@ function openDecisions(task: Task): void {
         [...options.children].forEach((button, at) => button.classList.toggle("selected", at === index));
         // A decision that the plan wrote without options has only the Other box.
         const option = decision.options[index];
-        reason.textContent = option ? option.reason : decision.options.length === 0 ? "The plan lists no options for this decision. Write your answer below." : "Your own answer goes into the plan word for word.";
+        const text = option ? option.reason : decision.options.length === 0 ? "The plan lists no options for this decision. Write your answer below." : "Your own answer goes into the plan word for word.";
+        // A HOLD choice may name a step: Dispatch does not do it (ticket hold-step-action).
+        reason.textContent = decision.hold ? `${text} ${HOLD_NOTE}` : text;
       };
       decision.options.forEach((option, index) => {
         const button = document.createElement("button");
@@ -4429,7 +4451,8 @@ function decisionAnswers(task: Task): DecisionAnswer[] {
 function updateDecisionsFooter(): void {
   if (!decisionsTask || !decisionsDialog.open) return;
   const busy = busyTasks.has(decisionsTask.name);
-  const wait = approveWait(decisionsTask).replace(/^Its work run starts/, "Approve now: the work run starts");
+  const picks = new Map(decisionAnswers(decisionsTask).filter(({ decision }) => decision.hold).map(({ decision, answer }) => [decision.number, answer]));
+  const wait = (holdWaitOf(decisionsTask, picks)?.full ?? "").replace(/^Its work run starts/, "Approve now: the work run starts");
   const error = actionErrors.get(decisionsTask.name) ?? "";
   document.querySelector("#decisions-reason")!.textContent = [busy ? "A click of this task is still running." : wait, error].filter(Boolean).join("\n");
   document.querySelector<HTMLButtonElement>("#decisions-approve")!.disabled = busy;
@@ -6675,7 +6698,7 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   state.textContent = status.text;
   head.append(top, state);
   // An approval that waits for the project: what it waits for, short, with an eye; the full reason in the tooltip.
-  const reason = approvalQueued(task) ? waitReason(waitFacts(task)) : null;
+  const reason = approvalQueued(task) ? holdWaitOf(task) : null;
   if (reason) {
     const wait = document.createElement("span");
     wait.className = "task-wait";
