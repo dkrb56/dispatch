@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, PAUSED_WORD, pausedCountText, pauseLine } from "../src/pause.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = read("../src/main.ts");
 const CSS = read("../src/styles.css");
 const PIPELINE = read("../src/pipeline.ts");

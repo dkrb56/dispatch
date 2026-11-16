@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { completeHosts, keyHost, keyPath, LOCAL, mergeLists, nightSwitch, parseHostSettings, pathKey, projectKey, projectLabel, windowTitle, workBackends } from "../src/hosts.ts";
 
-const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 /** Ids in order, so a test can name them. */
 function ids(): () => string {

@@ -8,7 +8,7 @@ import { test } from "node:test";
 import { answeredLine, replyText } from "../src/answers.ts";
 import { type AnsweredReport, answeredRecord, parseAnswered, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered } from "../src/repeat.ts";
 
-const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 // The case of the Starminer project on 2026-11-14 (task t-20261113T210602543Z-6c3bd16c).
 const TASK = "t-20261113T210602543Z-6c3bd16c";

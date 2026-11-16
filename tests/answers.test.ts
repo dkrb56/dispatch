@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { answeredLine, chosenCount, questionWaitToOpen, replyText, windowChoices, windowTitle } from "../src/answers.ts";
 
-const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 const TWO = [
   { number: 1, text: "Which store?", options: ["Keep the map", "Use a file"] },

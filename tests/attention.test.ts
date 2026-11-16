@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { type AttentionWait, attentionLook, markSeen, parsePulse, projectOf, projectSignals, signalKeys } from "../src/attention.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 const plan: AttentionWait = { key: "d:\\a|t-1", kind: "plan", stamp: "100" };
 const question: AttentionWait = { key: "d:\\b|t-2", kind: "question", stamp: "200" };

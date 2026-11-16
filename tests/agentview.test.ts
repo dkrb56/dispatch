@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { agentListShown, asksAgain, backKey, BACK_TITLE, LIST_TITLE } from "../src/agentview.ts";
 import { joinRows, type ScreenRow } from "../src/menurecord.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = read("../src/main.ts");
 const HTML = read("../index.html");
 const CSS = read("../src/styles.css");

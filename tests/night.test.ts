@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { NIGHT_OFF_LINE, NIGHT_ON_LINE, nightAtStart, nightLines, nightSyncLines } from "../src/night.ts";
 
-const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 test("the switch after a start: state.json first, the old browser value once, else off", () => {
   assert.equal(nightAtStart(true, null), true, "saved on");

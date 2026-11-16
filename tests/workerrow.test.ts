@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { agentsText, fileRowTitle, reportChip, rowParts, runChip, runCostText, runModelText, runTokensText, runTokensTitle, tokenText } from "../src/workerrow.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const HTML = read("../index.html");
 const MAIN = read("../src/main.ts");
 const CSS = read("../src/styles.css");

@@ -52,13 +52,13 @@ test("after Approve the choice of the plan starts checked and the row names it",
 });
 
 test("the page has the Setup box, the card code and the Help items", () => {
-  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   assert.match(html, /<textarea id="setup-checks"/);
   assert.match(html, /<td>Checks<\/td><td><code>\.dispatch\/checks\.txt<\/code><\/td>/);
   assert.match(html, /<li><b>Checks\.<\/b>/);
-  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   assert.match(main, /"task_checks"/);
   assert.match(main, /card-checks/);
-  const setup = readFileSync(new URL("../src/pipeline.ts", import.meta.url), "utf8");
+  const setup = readFileSync(new URL("../src/pipeline.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   assert.match(setup, /"set_checks"/);
 });

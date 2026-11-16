@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { REMOVE_VALUE, removeAnswer, removeTexts } from "../src/removeproject.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 test("a click on × only asks: before an answer nothing is removed", () => {
   // The window is open with a pending project and no value yet.

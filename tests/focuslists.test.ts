@@ -84,7 +84,7 @@ test("folds: the reader drops each value that is not a boolean of a known part",
 });
 
 test("the Help of Focus mode names the Older groups", () => {
-  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   const focus = html.slice(html.indexOf("<h3>Focus mode</h3>"), html.indexOf("<h3>The Map</h3>"));
   assert.match(focus, /Older tasks/);
   assert.match(focus, /Older chats/);

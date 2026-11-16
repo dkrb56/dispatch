@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-const WORKFLOW = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8");
+const WORKFLOW = readFileSync(new URL("../.github/workflows/release.yml", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 /** The lines of a top-level block such as `on:` or `jobs:`, up to the next top-level key. */
 function block(name: string): string {

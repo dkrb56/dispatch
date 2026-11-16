@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { isDirList, joinPath } from "../src/folderchooser.ts";
 
-const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 test("a folder name joins a Windows path with a backslash, and a drive root without a second one", () => {
   assert.equal(joinPath("C:\\", "Projects"), "C:\\Projects");

@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { FAIL_CUT, failLines, gateRefusal, logName, refusalHeadline } from "../src/mergefail.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const FIXTURE = read("./fixtures/merge-gate-fail.txt").replace(/\n$/, "").split("\n");
 const MAIN = read("../src/main.ts");
 const GATE = "node scripts/merge-check.mjs . --gate auto --merged";

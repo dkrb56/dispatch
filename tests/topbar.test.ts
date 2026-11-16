@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { barItems, currentProject, detailsProjects, groupCount, pillCount } from "../src/topbar.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 test("a closed pill: waits, the number of working workers, or nothing", () => {
   assert.deepEqual(pillCount({ waits: 2, working: 1 }), { text: "waits", kind: "waits" });

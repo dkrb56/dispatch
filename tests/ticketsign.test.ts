@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { SIGN_GRACE_MS, signLook, signReason, signStamp, signTitle } from "../src/ticketsign.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const facts = (over: Partial<Parameters<typeof signReason>[0]> = {}) => ({ waiting: 2, inFlight: false, paused: false, triageRuns: true, waitedMs: 0, ...over });
 
 test("the sign shows for waiting tickets that do not go: paused, no triage, or triage that has not taken one", () => {

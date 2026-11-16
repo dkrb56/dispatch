@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { chooseStart, StartLeases, type StartCandidate, type StartFacts } from "../src/workstart.ts";
 
-const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8");
+const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 const PROJECT = "local\nD:/dev/project";
 const QUEUED = ["ignore-tasks", "question-card-text", "typing-sent-by-line"];

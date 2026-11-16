@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { KEY_DOWN, KEY_ENTER, KEY_ESC, RC_COMMAND, RC_OFF_TITLE, RC_WAIT_MS, rcBlocked, rcCommand, rcMenuFocus, rcSettled, rcView } from "../src/remotecontrol.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = read("../src/main.ts");
 const CSS = read("../src/styles.css");
 const HTML = read("../index.html");

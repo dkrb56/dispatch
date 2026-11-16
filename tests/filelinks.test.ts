@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { findingOpen, linkBase, linkPath, reportFiles } from "../src/filelinks.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 test("the files line of a report: three paths, the note in parentheses goes", () => {
   const report = "state: done\nneeds: nothing\nfiles: src/a.ts, notes/b.md (new), CLAUDE.md\nplan: .dispatch/plans/t.md\n\nWhat it did.\nfiles: other.md\n";

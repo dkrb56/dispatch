@@ -111,7 +111,7 @@ test("one project has no mark, and no project breaks nothing", () => {
 
 // ---- The style rules ---------------------------------------------------------------------------
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const CSS = read("../src/styles.css");
 const HTML = read("../index.html");
 const MAIN = read("../src/main.ts");

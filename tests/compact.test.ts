@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { blankFaint, CHECK_STUCK_MS, COMPACT_KEY, COMPACT_LIMIT_MS, COMPACT_QUIET_MS, COMPACT_TEXT, type CompactFacts, compactEnded, compactHold, compactLateLine, errorText, newTrace, parseCompact, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "../src/compact.ts";
 import { joinRows } from "../src/menurecord.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = read("../src/main.ts");
 const OPTIONS = read("../src/options.ts");
 const HTML = read("../index.html");

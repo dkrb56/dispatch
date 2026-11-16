@@ -19,8 +19,8 @@ import {
   waitsForUser,
 } from "../src/alerts.ts";
 
-const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-const CSS = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const CSS = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 function wait(name: string, kind: WaitKind, stamp: string, scope = "tasks|d:/p"): Wait {
   return { key: `d:/p|${name}`, kind, stamp, scope, name, project: "p", text: "plan ready · waits for you" };

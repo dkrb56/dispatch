@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { SETUP_CHECK_MS, setupDue, setupLook, setupStamp, setupTitle } from "../src/setupmark.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 test("the stamp: the titles of the steps To do in their order", () => {
   const steps = [

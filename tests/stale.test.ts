@@ -25,7 +25,7 @@ import {
   type StaleTask,
 } from "../src/stale.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const DAY = 86_400_000;
 const NOW = Date.parse("2026-11-12T20:00:00Z");
 

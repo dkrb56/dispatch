@@ -259,7 +259,7 @@ test("the short menus of the other tests read the same through menuScreen, also 
 // its own. The join of today glued the rule, the tab bar, a blank row and both question rows into one line,
 // and option 2 to the description of option 1.
 
-const CARD_CASE: { cols: number; rows: ScreenRow[] } = JSON.parse(readFileSync(new URL("./fixtures/question-card-text.rows.json", import.meta.url), "utf8"));
+const CARD_CASE: { cols: number; rows: ScreenRow[] } = JSON.parse(readFileSync(new URL("./fixtures/question-card-text.rows.json", import.meta.url), "utf8").replace(/\r\n/g, "\n"));
 const CARD_QUESTION =
   "Do you want a Dispatch task for this: a question that stands unchanged in the report after your answer is not shown again as new, and the section rule tells the worker to remove or replace an answered question?";
 

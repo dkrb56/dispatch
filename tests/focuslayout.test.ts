@@ -91,7 +91,7 @@ test("a stored value other than min or max counts as normal", () => {
 
 // ---- The page ---------------------------------------------------------------------------------
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 test("the page: a strip hides the body, main.ts uses the rule, the Help names both controls", () => {
   const css = read("../src/styles.css").replace(/\/\*[\s\S]*?\*\//g, "");

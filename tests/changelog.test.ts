@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { compareVersions, lastRunVersion, newEntries, parseChangelog, VERSION_BEFORE_FIELD } from "../src/changelog.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 const SAMPLE = [
   "# Changelog",

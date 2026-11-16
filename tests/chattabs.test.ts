@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { headState, isChatTab } from "../src/chattabs.ts";
 
-const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
+const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 test("a tab with a workspace pane is no chat tab; a plain tab is", () => {
   assert.equal(isChatTab([{ role: "triage", project: "D:/p" }, { role: "agents", project: "D:/p" }]), false);
