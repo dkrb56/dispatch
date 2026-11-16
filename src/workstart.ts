@@ -59,10 +59,11 @@ export class StartLeases {
   }
 }
 
-/** What holds every start of a project back. */
+/**
+ * What holds every start of a project back. An uncommitted change holds only the task whose files it
+ * touches (`StartCandidate.blocked`, ticket leftover-files-block-tasks), not the project.
+ */
 export interface BusyFacts {
-  /** The count of uncommitted lines of the project. */
-  dirty: number;
   /** The task whose branch Dispatch merges now, or null. */
   merging: string | null;
   /** The task whose work run runs, or null. */
@@ -75,7 +76,7 @@ export interface BusyFacts {
 
 /** Whether a work run of the project can start now. A paused project starts nothing (ticket pause-tasks). */
 export function projectBusy(facts: BusyFacts): boolean {
-  return !!facts.paused || facts.dirty > 0 || facts.merging !== null || facts.running !== null || facts.leased !== null;
+  return !!facts.paused || facts.merging !== null || facts.running !== null || facts.leased !== null;
 }
 
 /** A task of the project as the choice of a start sees it. */
@@ -93,6 +94,8 @@ export interface StartCandidate {
   tried: number | undefined;
   /** A running action approves this plan by itself (ticket project-actions). */
   auto?: boolean;
+  /** An uncommitted change touches a file of the task (ticket leftover-files-block-tasks): it does not start. */
+  blocked?: boolean;
 }
 
 /** The facts of one project at one poll. */
@@ -114,11 +117,12 @@ export type StartKind = "queued" | "night" | "auto";
  * The one task to start at this poll, or null. Nothing starts while the project is busy. An
  * approval of the user that waited comes first; then the first ready plan without HOLD, not busy,
  * and not tried before with the same plan file, with the setting or night mode on, or of a task
- * that a running action approves by itself (ticket project-actions).
+ * that a running action approves by itself (ticket project-actions). A blocked task is skipped, and
+ * the next one can start (ticket leftover-files-block-tasks).
  */
 export function chooseStart(facts: StartFacts): { task: string; kind: StartKind } | null {
   if (projectBusy(facts)) return null;
   if (facts.queued) return { task: facts.queued, kind: "queued" };
-  const task = facts.tasks.find((task) => task.ready && !task.hold && !task.busy && task.planTime !== null && task.tried !== task.planTime && (facts.auto || facts.night || !!task.auto));
+  const task = facts.tasks.find((task) => task.ready && !task.hold && !task.busy && !task.blocked && task.planTime !== null && task.tried !== task.planTime && (facts.auto || facts.night || !!task.auto));
   return task ? { task: task.name, kind: facts.night ? "night" : "auto" } : null;
 }

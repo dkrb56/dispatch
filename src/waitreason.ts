@@ -1,5 +1,6 @@
 // Why the work run of an approved task cannot start yet (ticket task-wait-reason): another work run
-// edits the project, or the project has uncommitted changes. One short line for the closed task row
+// edits the project, or a file of the task has uncommitted changes (ticket leftover-files-block-tasks:
+// the other changes of the project hold nothing). One short line for the closed task row
 // and the full text for its tooltip, the open card, the Decisions footer and the line for triage.
 // No imports and no access to the page, so a test can load this file with Node
 // (tests/waitreason.test.ts). main.ts gives the facts, because only it knows the workers.
@@ -8,7 +9,10 @@
 export interface WaitFacts {
   /** The task whose work run edits the project now, or null. */
   editing: string | null;
-  /** The lines of `git status --porcelain` of the project. */
+  /**
+   * The lines of `git status --porcelain` that touch a file of this task (ticket
+   * leftover-files-block-tasks). The other changes of the project do not hold it.
+   */
   dirty: readonly string[];
   /** The task whose branch Dispatch merges now (ticket task-branches), or null. */
   merging?: string | null;
@@ -51,8 +55,8 @@ export function waitReason(facts: WaitFacts): WaitReason | null {
   const dirty = facts.dirty;
   if (dirty.length > 0) {
     return {
-      short: `Waits for a commit or stash of ${dirty.length} changed ${dirty.length === 1 ? "file" : "files"}.`,
-      full: `Its work run starts once the changes of the project are committed or stashed:\n${dirty.slice(0, 5).join("\n")}${dirty.length > 5 ? "\n…" : ""}`,
+      short: `Waits for ${dirty.length} changed ${dirty.length === 1 ? "file" : "files"} of this task.`,
+      full: `Its work run starts once these changes in files of this task are committed, stashed or undone:\n${dirty.slice(0, 5).join("\n")}${dirty.length > 5 ? "\n…" : ""}`,
     };
   }
   return null;

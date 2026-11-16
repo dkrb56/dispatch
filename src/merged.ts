@@ -31,6 +31,7 @@ export function mergedWords(merge: string): string {
 /** The texts of the merge verb of the worker script: a refusal of the Merge button. */
 const MERGE_REFUSALS = [
   /the checkout has uncommitted changes; commit or stash them first/,
+  /the checkout has uncommitted changes in files that the branch changes; commit, stash or undo them first/,
   /the gate command failed with exit code -?\d+, so nothing was merged/,
   /does not apply; nothing was merged/,
   /git could not merge /,
@@ -41,20 +42,25 @@ const MERGE_REFUSALS = [
   /does not exist; the task had no work run/,
 ];
 
-/** The refusal of uncommitted changes, which a commit or a stash ends. */
+/** The refusal of uncommitted changes of an older host, which a commit or a stash ends. */
 const UNCOMMITTED = /the checkout has uncommitted changes; commit or stash them first/;
+
+/** The refusal of uncommitted changes in files that the branch changes (ticket leftover-files-block-tasks). */
+const UNCOMMITTED_TASK = /the checkout has uncommitted changes in files that the branch changes; commit, stash or undo them first/;
 
 /**
  * Whether an old refusal of the Merge button goes from the card (user decision 3 of the plan): every
  * merge refusal when the branch is merged (in Dispatch or outside), and the refusal of uncommitted
- * changes also when the checkout is clean again. A gate or conflict refusal stays until the next
- * click. `dirty` holds the lines of `git status --porcelain` outside the task files; an untracked
- * file (`??`) does not count, because the merge verb looks at tracked files only. Any other error
- * of a card stays.
+ * changes also when the changes are gone. A gate or conflict refusal stays until the next click.
+ * `dirty` holds the lines of `git status --porcelain` that touch the files of the task (ticket
+ * leftover-files-block-tasks), or the whole project from an older host. For the old refusal an
+ * untracked file (`??`) does not count, because that merge verb looks at tracked files only; the
+ * new one counts every line. Any other error of a card stays.
  */
 export function refusalGoes(error: string, facts: { merged: boolean; dirty: readonly string[] }): boolean {
   if (!MERGE_REFUSALS.some((text) => text.test(error))) return false;
   if (facts.merged) return true;
+  if (UNCOMMITTED_TASK.test(error)) return facts.dirty.every((line) => line.trim() === "");
   return UNCOMMITTED.test(error) && facts.dirty.every((line) => line.startsWith("??") || line.trim() === "");
 }
 

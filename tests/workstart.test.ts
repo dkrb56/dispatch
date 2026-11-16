@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { chooseStart, StartLeases, type StartCandidate, type StartFacts } from "../src/workstart.ts";
+import { chooseStart, projectBusy, StartLeases, type StartCandidate, type StartFacts } from "../src/workstart.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -22,7 +22,6 @@ const candidate = (name: string, tried?: number): StartCandidate => ({ name, rea
 function poll(world: { leases: StartLeases; queue: string[]; tried: Map<string, number>; running: string | null; reads: { tasks: number; workers: number } }): string | null {
   const leased = world.leases.holder(PROJECT, world.reads);
   const facts: StartFacts = {
-    dirty: 0,
     merging: null,
     running: world.running,
     leased,
@@ -109,12 +108,12 @@ test("a settle or a release of another task does not touch the lease", () => {
 });
 
 test("the choice: a waiting approval first, night mode only after the queue, nothing while busy", () => {
-  const base: StartFacts = { dirty: 0, merging: null, running: null, leased: null, queued: null, auto: false, night: false, tasks: [candidate(NIGHT_PLAN)] };
+  const base: StartFacts = { merging: null, running: null, leased: null, queued: null, auto: false, night: false, tasks: [candidate(NIGHT_PLAN)] };
   assert.equal(chooseStart(base), null, "no setting, no night mode, no queue");
   assert.deepEqual(chooseStart({ ...base, night: true, queued: "ignore-tasks" }), { task: "ignore-tasks", kind: "queued" });
   assert.deepEqual(chooseStart({ ...base, night: true }), { task: NIGHT_PLAN, kind: "night" });
   assert.deepEqual(chooseStart({ ...base, auto: true }), { task: NIGHT_PLAN, kind: "auto" });
-  for (const busy of [{ dirty: 1 }, { merging: "x" }, { running: "x" }, { leased: "x" }]) {
+  for (const busy of [{ merging: "x" }, { running: "x" }, { leased: "x" }]) {
     assert.equal(chooseStart({ ...base, night: true, queued: "ignore-tasks", ...busy }), null, JSON.stringify(busy));
   }
   const skipped = [
@@ -144,7 +143,7 @@ test("main.ts: approvePlans chooses with chooseStart and every start claims the 
 
 // Pause tasks (ticket pause-tasks): a paused project starts nothing; at Resume one start comes.
 test("paused: no approve, also not with the setting, night mode or a queued approval", () => {
-  const facts: StartFacts = { dirty: 0, merging: null, running: null, leased: null, paused: true, queued: "ignore-tasks", auto: true, night: true, tasks: [candidate(NIGHT_PLAN)] };
+  const facts: StartFacts = { merging: null, running: null, leased: null, paused: true, queued: "ignore-tasks", auto: true, night: true, tasks: [candidate(NIGHT_PLAN)] };
   assert.equal(chooseStart(facts), null);
   assert.equal(chooseStart({ ...facts, queued: null }), null, "the setting and night mode start nothing");
   assert.equal(chooseStart({ ...facts, paused: false }) !== null, true, "the same facts without the pause start one");
@@ -157,7 +156,7 @@ test("paused: no work run start in many polls; resumed: one start, and the lease
   const starts: string[] = [];
   const tick = () => {
     const leased = leases.holder(PROJECT, { tasks: 0, workers: 0 });
-    const choice = chooseStart({ dirty: 0, merging: null, running: null, leased, paused, queued: queue[0] ?? null, auto: true, night: true, tasks: [candidate(NIGHT_PLAN)] });
+    const choice = chooseStart({ merging: null, running: null, leased, paused, queued: queue[0] ?? null, auto: true, night: true, tasks: [candidate(NIGHT_PLAN)] });
     if (!choice) return;
     if (choice.kind === "queued") queue.shift();
     assert.equal(leases.claim(PROJECT, choice.task, { tasks: 0, workers: 0 }), true);
@@ -180,10 +179,30 @@ test("main.ts: approvePlans passes the pause, and night mode answers nothing on 
 });
 
 test("a candidate of an action approves itself; HOLD stops it (ticket project-actions)", () => {
-  const facts = (task: StartCandidate): StartFacts => ({ dirty: 0, merging: null, running: null, leased: null, queued: null, auto: false, night: false, tasks: [task] });
+  const facts = (task: StartCandidate): StartFacts => ({ merging: null, running: null, leased: null, queued: null, auto: false, night: false, tasks: [task] });
   assert.deepEqual(chooseStart(facts({ ...candidate("release-0.1.62"), auto: true })), { task: "release-0.1.62", kind: "auto" });
   assert.equal(chooseStart(facts({ ...candidate("release-0.1.62"), auto: true, hold: true })), null, "a HOLD decision waits for the user's click");
   assert.equal(chooseStart(facts(candidate("release-0.1.62"))), null, "without the switch of the action, nothing starts by itself");
   assert.equal(chooseStart({ ...facts({ ...candidate("release-0.1.62"), auto: true }), paused: true }), null, "Pause holds it");
   assert.equal(chooseStart({ ...facts({ ...candidate("release-0.1.62"), auto: true }), night: true })?.kind, "night");
+});
+
+// Leftovers (ticket leftover-files-block-tasks): an uncommitted change holds only the task whose
+// files it touches; the project stays free and the next task starts.
+test("a leftover does not make the project busy; a blocked task is skipped and the next one starts", () => {
+  assert.equal(projectBusy({ merging: null, running: null, leased: null }), false);
+  const facts: StartFacts = { merging: null, running: null, leased: null, queued: null, auto: true, night: false, tasks: [{ ...candidate("a"), blocked: true }, candidate("b")] };
+  assert.deepEqual(chooseStart(facts), { task: "b", kind: "auto" });
+  assert.equal(chooseStart({ ...facts, tasks: [{ ...candidate("a"), blocked: true }] }), null, "a blocked task alone starts nothing");
+  assert.deepEqual(chooseStart({ ...facts, tasks: [candidate("a")] }), { task: "a", kind: "auto" }, "without leftovers it starts as before");
+});
+
+test("main.ts: approvePlans marks a task with leftovers as blocked, and the queue skips it", () => {
+  const body = MAIN.slice(MAIN.indexOf("function approvePlans("), MAIN.indexOf("function nextQueued("));
+  assert.match(body, /blocked: taskLeftovers\(project, task\.info\)\.length > 0/);
+  assert.doesNotMatch(body, /dirty: project\.dirty/);
+  const queue = MAIN.slice(MAIN.indexOf("function nextQueued("));
+  assert.match(queue.slice(0, queue.indexOf("\n}\n")), /taskLeftovers\(project, task\.info\)\.length === 0/);
+  const facts = MAIN.slice(MAIN.indexOf("function waitFacts("));
+  assert.match(facts.slice(0, facts.indexOf("\n}\n")), /task\.info\?\.leftovers \?\?/);
 });

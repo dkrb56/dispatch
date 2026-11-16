@@ -173,7 +173,7 @@ fn checks_rule(reports: &str) -> String {
 /// The line of the "Background workers" section for a project with "Task branches" on.
 fn branches_rule(reports: &str, script: &str) -> String {
     format!(
-        "- Task branches is on in this project. The plan verb of the script writes the base branch (the current branch) into `{reports}/<ticket-id>.branch`. Approve makes the branch `{BRANCH_PREFIX}<ticket-id>` from that base and checks it out in the main checkout; the work run commits on that branch, switches no branch, and never merges or pushes. When the report is written, Dispatch switches the checkout back to the base and commits the task files there. The user merges the branch with the Merge button in the task card of Dispatch: the script merges it with `--no-ff` into the base, after the gate command of `{reports}/merge-gate.txt` passed on the merged code. Triage never runs `{script} merge`; the local settings deny it that verb.
+        "- Task branches is on in this project. The plan verb of the script writes the base branch (the current branch) into `{reports}/<ticket-id>.branch`. Approve makes the branch `{BRANCH_PREFIX}<ticket-id>` from that base and checks it out in the main checkout; the work run commits on that branch, switches no branch, and never merges or pushes. A work run that stops with a question or fails first commits its own files by name on the branch as `<ticket-id> WIP`; the next run adds its own commit. When the report is written, Dispatch switches the checkout back to the base and commits the task files there. Uncommitted changes outside the files of the task go along with the switch to the branch and back; a change in a file of the task holds the switch. The user merges the branch with the Merge button in the task card of Dispatch: the script merges it with `--no-ff` into the base, after the gate command of `{reports}/merge-gate.txt` passed on the merged code. Triage never runs `{script} merge`; the local settings deny it that verb.
 "
     )
 }
@@ -739,8 +739,8 @@ impl Project {
 - A message that Dispatch sends from its tickets board starts with the line `Ticket <id>: <title>`. Triage uses that id as the ticket id of the task. Dispatch keeps the tickets file `{reports}/tickets.jsonl`; triage and the workers do not edit it.
 - `{script} plan <ticket-id>` starts the plan run on the options in `{reports}/plan-flags.txt`: without the Edit tool, without the Agent tool and without a prompt; its Write tool may write only into `{reports}/plans/`. The plan run writes the plan to `{reports}/plans/<ticket-id>.md`, changes nothing else, and ends its turn.
 {measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Notes for the work run (the facts from the code that the other sections do not hold, because the work run starts without the context of the plan run: how the touched code works, why an anchor was chosen, traps it saw, and the command that showed a fact; one fact per line, 15 lines maximum); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; the word HOLD stands in no other line of this section); Do not touch; Size (files). No code in a plan.
-{checks}- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which starts the work run as a new session on the options in `{reports}/work-flags.txt`, with the brief, the plan and the user's decisions as its input, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when the working tree has uncommitted changes outside `{reports}/` (after Setup pipeline, the user commits the setup files first; {tasks_git}), when the worker still runs, or when the task was stopped.
-- The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It never pushes or merges. The user decides the push.
+{checks}- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which starts the work run as a new session on the options in `{reports}/work-flags.txt`, with the brief, the plan and the user's decisions as its input, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when an uncommitted change outside `{reports}/` touches a file of the task (a path of the section Files to change of its plan, or a file that its task branch changed), when the worker still runs, or when the task was stopped; other uncommitted changes stay where they are and hold no task ({tasks_git}).
+- The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It commits only the files that it changed, each by name, never with `git add -A`, `git add .` or `git commit -a`, and leaves every other change as it is. It never pushes or merges. The user decides the push.
 {branches}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification lists each command the worker ran as a line that starts with a code span with the exact text of the Bash call, for example `` `cargo test --lib` ``, followed by what it showed. Only a line without indent is a claim: the results of a command stand as indented lines under it, and Dispatch does not compare them. Dispatch compares these spans with the Bash commands of the transcripts of the task, without a leading `cd <folder> && ` on both sides: a done report with a claim that no command matches, or without the section, counts as working, and its ticket stays open.
 - A worker starts no session and sends no message to a chat. It has no question tool. A question for the user goes into the report under the heading `## Questions`: numbered items, each with its options as list items, the recommended option first. Each option is one short line, because Dispatch shows it as a button and sends it back word for word; the details stand above the questions. The worker then writes `state: needs-decision` and `needs: decision` and ends its turn, also when the question is about a permission. `needs: permission` means: a refused tool call stopped the work, the report names the refused call and the rule it needs, and the work goes on with a follow-up `Continue` once the user changed the rule. The user answers in the task card of Dispatch, and the answer arrives as a follow-up `Answer to question N: <option>`. An answered question never comes back unchanged: after the answer the worker takes the question out of its report or writes what it decided and did, and ends with `state: done` or a new question. A follow-up `Continue` after an answer means: take the answers as given and go on.
 - A follow-up goes through `{script} reply <ticket-id> \"<message>\"` and quotes the user's words exactly. The script takes the options of the run from `{reports}/<ticket-id>.state`.
@@ -1281,6 +1281,62 @@ function Tree-Status {
   @(& git -C $Project status --porcelain --untracked-files=all -- . ':(exclude).dispatch')
 }
 
+# The paths of the section "Files to change" of the plan of the task (ticket leftover-files-block-tasks):
+# each path in backticks, and the first word of a list item when it is no backtick span. A path has a
+# / or a dot and no space; a trailing ,:;.) goes. The Rust rule plan_files is the same.
+function Plan-Files {
+  $file = Join-Path $Reports "plans\$Id.md"
+  if (-not (Test-Path -LiteralPath $file)) { return @() }
+  $files = New-Object System.Collections.Generic.List[string]
+  $inside = $false
+  foreach ($raw in Get-Content -LiteralPath $file -Encoding UTF8) {
+    $line = $raw.Trim()
+    if ($line.StartsWith('#')) { $inside = $line.TrimStart('#').Trim() -eq 'Files to change'; continue }
+    if (-not $inside) { continue }
+    $tokens = @()
+    if ($line -match '^[-*] +(\S+)' -and -not $Matches[1].StartsWith('`')) { $tokens += $Matches[1] }
+    $spans = $line.Split('`')
+    for ($at = 1; $at -lt $spans.Count - 1; $at += 2) { $tokens += $spans[$at] }
+    foreach ($token in $tokens) {
+      $path = $token.Trim().TrimEnd(',', ':', ';', '.', ')')
+      if (-not $path -or $path -match '\s' -or -not ($path.Contains('/') -or $path.Contains('.'))) { continue }
+      $path = $path.Replace('\', '/')
+      if ($path.StartsWith('./')) { $path = $path.Substring(2) }
+      if ($path -and -not $files.Contains($path)) { $files.Add($path) }
+    }
+  }
+  $files.ToArray()
+}
+
+# The lines of git status outside .dispatch that touch a file of the task (ticket
+# leftover-files-block-tasks): the path, or one of the two paths of a rename, is a task file, lies in a
+# task folder, or is an untracked folder that holds a task file. Without case. The task files are the
+# files that the task branch changed while it exists and is not merged, and with -Plan also the paths
+# of Plan-Files. The Rust rule task_leftovers is the same.
+function Task-Leftovers([switch]$Plan) {
+  $dirty = @(& git -C $Project status --porcelain -- . ':(exclude).dispatch' | Where-Object { $_ })
+  if ($dirty.Count -eq 0) { return @() }
+  $files = @()
+  if ($Plan) { $files += @(Plan-Files) }
+  $info = Read-BranchFile $Id
+  if ($info -and $info.branch -and $info.base -and -not $info.merge -and (Invoke-Git @('rev-parse', '--verify', '--quiet', "refs/heads/$($info.branch)")).Code -eq 0) {
+    $diff = Invoke-Git @('diff', '--name-only', "$($info.base)...$($info.branch)")
+    if ($diff.Code -eq 0) { $files += @($diff.Lines | Where-Object { $_ }) }
+  }
+  $files = @($files | ForEach-Object { $_.Replace('\', '/').ToLowerInvariant() })
+  if ($files.Count -eq 0) { return @() }
+  foreach ($line in $dirty) {
+    $paths = @($line.Substring([Math]::Min(3, $line.Length)) -split ' -> ' | ForEach-Object { $_.Trim().Trim('"').Replace('\', '/').ToLowerInvariant() } | Where-Object { $_ })
+    $hit = $false
+    foreach ($path in $paths) {
+      foreach ($file in $files) {
+        if ($path -eq $file -or ($file.EndsWith('/') -and $path.StartsWith($file)) -or ($path.EndsWith('/') -and $file.StartsWith($path))) { $hit = $true }
+      }
+    }
+    if ($hit) { $line }
+  }
+}
+
 # Runs one measuring command with cmd.exe in the project folder, its output into the log. The
 # command goes into a batch file next to the log, so a redirect of its own stays its own. A command
 # that runs longer than the limit is ended with its process tree; the result is then 124.
@@ -1330,10 +1386,11 @@ switch ($Verb) {
     $plan = Join-Path $Reports "plans\$Id.md"
     if (-not (Test-Path -LiteralPath $plan)) { Refuse "no plan at $plan" }
     if (Test-Path -LiteralPath (Join-Path $Project '.git')) {
-      # The task files in .dispatch do not count: Dispatch commits them itself, and triage can
-      # write a brief at any time.
-      $dirty = @(& git -C $Project status --porcelain -- . ':(exclude).dispatch')
-      if ($dirty.Count -gt 0) { Refuse "the working tree of $Project has uncommitted changes; commit or stash them first (after Setup pipeline, these are the setup files: Commit to git in the Setup pipeline window):`n$($dirty -join "`n")" }
+      # Only a change in a file of this task holds it (ticket leftover-files-block-tasks); the other
+      # changes stay where they are. The task files in .dispatch do not count: Dispatch commits them
+      # itself, and triage can write a brief at any time.
+      $held = @(Task-Leftovers -Plan)
+      if ($held.Count -gt 0) { Refuse "these changes in files of this task are not committed; commit, stash or undo them first:`n$($held -join "`n")" }
     }
     Approve-Check
     $flags = Read-Flags 'work-flags.txt'
@@ -1341,7 +1398,7 @@ switch ($Verb) {
     # brief, the plan and the report file, and the files are its whole input.
     $brief = Join-Path $Reports "briefs\$Id.md"
     $report = Join-Path $Reports "$Id.md"
-    $prompt = "Plan approved: $plan. This is the work run of ticket $Id. Read the brief $brief and the plan first: they are the whole context of this run, and the sections User decisions and Checks chosen of the plan hold the choices of the user. Execute the plan. A deviation goes into the report, not into the code. Write the report to $report."
+    $prompt = "Plan approved: $plan. This is the work run of ticket $Id. Read the brief $brief and the plan first: they are the whole context of this run, and the sections User decisions and Checks chosen of the plan hold the choices of the user. Execute the plan. A deviation goes into the report, not into the code. Commit only the files that this run changed, each by name in git add and git commit; never run git add -A, git add . or git commit -a, and leave every other change in the checkout as it is. Write the report to $report."
     # The checks that the user chose at Approve (ticket task-checks): one line per check, the name, a
     # tab and the command. A quote of a name becomes an apostrophe, as in a reply.
     $chosen = Join-Path $Reports "$Id.checks"
@@ -1355,7 +1412,7 @@ switch ($Verb) {
     $back = ''
     if (Branches-On) {
       $back = Enter-TaskBranch
-      $prompt += " Task branches is on: the checkout is on the branch $((Read-BranchFile $Id).branch) of this task. Commit there; switch no branch, merge nothing, push nothing."
+      $prompt += " Task branches is on: the checkout is on the branch $((Read-BranchFile $Id).branch) of this task. Commit there; switch no branch, merge nothing, push nothing. When this run stops with a question or fails, first commit its own changed files by name on this branch with the message $Id WIP."
     }
     Set-State 'approved'
     # A new session, no resume: the work run gets the brief, the plan and the decisions of the user,
@@ -1382,6 +1439,12 @@ switch ($Verb) {
     # The state file is newer than the report before the checkout: Dispatch keeps the checkout on the
     # task branch until the worker writes its report again, also while Claude Code starts.
     if ($tracked) { Set-State (Get-State) }
+    # A switch onto the task branch waits for the changes in files of the task (ticket
+    # leftover-files-block-tasks); on its branch already, the run's own edits do not hold it.
+    if ($tracked -and (Current-Branch) -ne $branch.branch) {
+      $held = @(Task-Leftovers -Plan)
+      if ($held.Count -gt 0) { Refuse "these changes in files of this task are not committed; commit, stash or undo them first:`n$($held -join "`n")" }
+    }
     $back = if ($tracked) { Enter-TaskBranch } else { '' }
     $printed = Run-Claude (@($text, '--resume', $worker.sessionId, '--bg', '--name', (Run-Name $run)) + $flags) '' $back
     Save-Session $run $printed
@@ -1441,8 +1504,10 @@ switch ($Verb) {
     $current = Current-Branch
     if ($current -ne $info.base) { Refuse "the checkout is on $current, not on the base $($info.base); Dispatch switches back when the work run has ended" }
     if ((Invoke-Git @('rev-parse', '-q', '--verify', 'MERGE_HEAD')).Code -eq 0) { Refuse 'the checkout has an unfinished merge; finish it or run git merge --abort first' }
-    $dirty = @((Invoke-Git @('status', '--porcelain', '--untracked-files=no', '--', '.', ':(exclude).dispatch')).Lines | Where-Object { $_ })
-    if ($dirty.Count -gt 0) { Refuse "the checkout has uncommitted changes; commit or stash them first:`n$($dirty -join "`n")" }
+    # Only a change in a file that the branch changes holds the merge (ticket leftover-files-block-tasks);
+    # the gate then runs with the other changes in the folder.
+    $held = @(Task-Leftovers)
+    if ($held.Count -gt 0) { Refuse "the checkout has uncommitted changes in files that the branch changes; commit, stash or undo them first:`n$($held -join "`n")" }
     # The changed task files (the tickets file among them) go into one commit first, so git merge
     # never meets a changed file of .dispatch.
     $tasks = @((Invoke-Git @('status', '--porcelain', '--untracked-files=all', '--', '.dispatch')).Lines | Where-Object { $_ })
@@ -3117,6 +3182,11 @@ pub struct TaskInfo {
     /// `git status --porcelain` lines (`measure/<ticket>/changed.txt`). Empty without a change.
     #[serde(rename = "measureChanged")]
     measure_changed: Vec<String>,
+    /// The lines of `git status --porcelain` of the project that touch a file of this task (ticket
+    /// leftover-files-block-tasks): they hold its approval, its start and its switch back. The whole
+    /// list of the project when the script of the project is not the one of this version: that
+    /// script refuses on any change.
+    leftovers: Vec<String>,
     /// The branch of the task with "Task branches" on (`<ticket>.branch`), else none.
     branch: Option<BranchInfo>,
     /// The tokens of the sessions of `<ticket>.session` per model, each reply once (ticket
@@ -3235,9 +3305,83 @@ fn modified(path: &Path) -> Option<std::time::SystemTime> {
     fs::metadata(path).and_then(|meta| meta.modified()).ok()
 }
 
+/// The paths of the section "Files to change" of a plan (ticket leftover-files-block-tasks): each
+/// path in backticks, and the first word of a list item when it is no backtick span. A path has a
+/// `/` or a dot and no space; a trailing `,:;.)` goes. A folder keeps its trailing `/`. The worker
+/// script reads the same rule (`Plan-Files`).
+pub(crate) fn plan_files(text: &str) -> Vec<String> {
+    let mut files: Vec<String> = Vec::new();
+    let mut inside = false;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            inside = trimmed.trim_start_matches('#').trim().eq_ignore_ascii_case("Files to change");
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        let mut tokens: Vec<&str> = Vec::new();
+        if let Some(item) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+            if let Some(first) = item.split_whitespace().next().filter(|first| !first.starts_with('`')) {
+                tokens.push(first);
+            }
+        }
+        let spans: Vec<&str> = trimmed.split('`').collect();
+        tokens.extend(spans.iter().enumerate().filter(|(at, _)| at % 2 == 1 && at + 1 < spans.len()).map(|(_, span)| *span));
+        for token in tokens {
+            let token = token.trim().trim_end_matches([',', ':', ';', '.', ')']);
+            if token.is_empty() || token.chars().any(char::is_whitespace) || !(token.contains('/') || token.contains('.')) {
+                continue;
+            }
+            let path = token.replace('\\', "/");
+            let path = path.strip_prefix("./").unwrap_or(&path).to_string();
+            if !path.is_empty() && !files.contains(&path) {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+/// The lines of `git status --porcelain` that touch a file of a task (ticket
+/// leftover-files-block-tasks): the path, or one of the two paths of a rename, is a task file, lies
+/// in a task folder (a file that ends with `/`), or is an untracked folder that holds a task file.
+/// Without case. The worker script reads the same rule (`Task-Leftovers`).
+pub(crate) fn task_leftovers(lines: &[String], files: &[String]) -> Vec<String> {
+    let files: Vec<String> = files.iter().map(|file| file.replace('\\', "/").to_lowercase()).collect();
+    let touches = |path: &str| files.iter().any(|file| path == file || (file.ends_with('/') && path.starts_with(file.as_str())) || (path.ends_with('/') && file.starts_with(path)));
+    lines
+        .iter()
+        .filter(|line| {
+            line.get(3..).unwrap_or_default().split(" -> ").map(|path| path.trim().trim_matches('"').replace('\\', "/").to_lowercase()).any(|path| !path.is_empty() && touches(&path))
+        })
+        .cloned()
+        .collect()
+}
+
+/// The files of a task (ticket leftover-files-block-tasks): the paths of "Files to change" of its
+/// plan, and the files that its task branch changed since the base while the branch exists and is
+/// not merged.
+fn task_files(project: &Project, ticket: &str, branch: Option<&BranchInfo>) -> Vec<String> {
+    let mut files = plan_files(&fs::read_to_string(project.plans().join(format!("{ticket}.md"))).unwrap_or_default());
+    if let Some(info) = branch.filter(|info| info.merge.is_empty() && !info.name.is_empty() && !info.base.is_empty()) {
+        if git(&project.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", info.name)]).is_some() {
+            let range = format!("{}...{}", info.base, info.name);
+            for file in git(&project.root, &["diff", "--name-only", &range]).unwrap_or_default().lines().map(str::trim).filter(|file| !file.is_empty()) {
+                if !files.iter().any(|known| known == file) {
+                    files.push(file.to_string());
+                }
+            }
+        }
+    }
+    files
+}
+
 /// Switches the main checkout back to the base of a task whose work run has ended (decision 3 of
 /// task-branches): the report is newer than the state file (a reply makes the state newer), or the
-/// task was stopped. Only with a clean tree outside `.dispatch`. Then the newer report of the task
+/// task was stopped. Only while no uncommitted change touches a file of the task (ticket
+/// leftover-files-block-tasks); other changes go along with the checkout. Then the newer report of the task
 /// comes from the branch (`report_from_branch`, ticket stale-report-loop), and every task file that
 /// the task branch changed in `.dispatch` comes onto the base, all in one commit, so the files of all
 /// tasks stay readable and end on the base; the merge brings the rest. A task file that git cannot
@@ -3253,14 +3397,20 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
     if !ended {
         return Ok((false, String::new()));
     }
-    let dirty = run_git(&project.root, &["status", "--porcelain", "--", ".", NOT_TASKS])?;
-    if !dirty.trim().is_empty() {
+    let dirty: Vec<String> = run_git(&project.root, &["status", "--porcelain", "--", ".", NOT_TASKS])?.lines().map(str::to_string).collect();
+    let leftovers = if dirty.is_empty() { Vec::new() } else { task_leftovers(&dirty, &task_files(project, ticket, Some(info))) };
+    if !leftovers.is_empty() {
         return Err(format!(
-            "The checkout stays on {}: the work run left uncommitted changes outside .dispatch. Commit or stash them; Dispatch then switches back to {}.",
-            info.name, info.base
+            "The checkout stays on {}: these changes in files of this task are not committed: {}. Commit, stash or undo them; Dispatch then switches back to {}.",
+            info.name,
+            leftovers.iter().map(|line| line.get(3..).unwrap_or(line).trim()).collect::<Vec<_>>().join(", "),
+            info.base
         ));
     }
-    run_git(&project.root, &["checkout", "-q", &info.base])?;
+    // Git carries the other changes along, or refuses when a file differs on the base.
+    if let Err(error) = run_git(&project.root, &["checkout", "-q", &info.base]) {
+        return Err(format!("The checkout stays on {}: {error}", info.name));
+    }
     let mut paths = Vec::new();
     let mut failed = Vec::new();
     // The newer report first: after a merge by hand the diff below no longer lists it.
@@ -3434,8 +3584,8 @@ fn current_branch(project: &Project) -> Option<String> {
 #[serde(rename_all = "camelCase")]
 pub struct TaskList {
     tasks: Vec<TaskInfo>,
-    /// The lines of `git status --porcelain` of the project. The script refuses an approval while
-    /// the list is not empty, so the Approve button shows them as its reason.
+    /// The lines of `git status --porcelain` of the whole project outside the task files. An
+    /// approval looks at `TaskInfo.leftovers`, the lines that touch the files of its task.
     dirty: Vec<String>,
     /// The setting of the project: Dispatch approves a plan without a `HOLD` decision itself.
     auto_approve: bool,
@@ -3541,6 +3691,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             goal: Vec::new(),
             tldr: Vec::new(),
             measure_changed: Vec::new(),
+            leftovers: Vec::new(),
             branch: None,
             tokens: Vec::new(),
             run_tokens: Vec::new(),
@@ -3726,12 +3877,19 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             }
         }
     }
-    // The script refuses an approval for these lines; the task files do not count.
-    let dirty = if project.in_git {
+    // The changes of the project outside the task files; each task gets those that touch its files.
+    let dirty: Vec<String> = if project.in_git {
         git(&project.root, &["status", "--porcelain", "--", ".", NOT_TASKS]).unwrap_or_default().lines().map(str::to_string).collect()
     } else {
         Vec::new()
     };
+    if !dirty.is_empty() {
+        // A script of an older version refuses an approval on any change, until Apply.
+        let current = fs::read_to_string(project.script()).is_ok_and(|text| text.replace("\r\n", "\n") == WORKER_SCRIPT);
+        for task in tasks.iter_mut() {
+            task.leftovers = if current { task_leftovers(&dirty, &task_files(project, &task.name, task.branch.as_ref())) } else { dirty.clone() };
+        }
+    }
     let setup = setup_time(&project);
     let options = project.options();
     Ok((TaskList { tasks, dirty, auto_approve: options.auto_approve, paused: options.paused, setup, tickets, merging, gate: project.merge_gate(), actions }, moved))
@@ -4313,7 +4471,7 @@ pub(crate) mod tests {
         for path in ["/briefs/<ticket-id>.md", "/plans/<ticket-id>.md", "/<ticket-id>.md", "/<ticket-id>.state", "/worker.ps1 approve <ticket-id>"] {
             assert!(claude_md.contains(&format!("{tasks}{path}")), "{path} missing: {claude_md}");
         }
-        assert!(claude_md.contains(&format!("uncommitted changes outside `{tasks}/`")), "{claude_md}");
+        assert!(claude_md.contains(&format!("an uncommitted change outside `{tasks}/` touches a file of the task")), "{claude_md}");
         let rule_path = project.rule_path();
         assert_eq!(rule_path, ".dispatch");
         let named: Vec<&&str> = allow.iter().filter(|rule| rule.contains(" .dispatch/") || rule.contains("(.dispatch/")).collect();
@@ -5307,6 +5465,7 @@ evidence: no
             goal: Vec::new(),
             tldr: Vec::new(),
             measure_changed: Vec::new(),
+            leftovers: Vec::new(),
             branch: None,
             tokens: Vec::new(),
             run_tokens: Vec::new(),
@@ -6085,28 +6244,30 @@ if (args[0] === 'agents') {
         git(&["commit", "-q", "-m", "setup"]);
         // Triage writes a brief: a task file that is not committed.
         write_file(&project.briefs().join("t-2.md"), "brief two\n").unwrap();
-        // A file of the user refuses the approval, and the reason names only that file.
+        // A file of the user that the plan names refuses the approval, and the reason names only
+        // that file (ticket leftover-files-block-tasks).
         write_file(&root.join("user.txt"), "mine\n").unwrap();
+        let plan = project.plans().join("t-1.md");
+        write_file(&plan, "# t-1: plan\n\n## Files to change\n- `user.txt`: the change.\n").unwrap();
         let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
         assert_eq!(code, 2, "{out}");
-        assert!(out.contains("uncommitted changes") && out.contains("user.txt") && !out.contains(".dispatch"), "{out}");
+        assert!(out.contains("files of this task") && out.contains("user.txt") && !out.contains(".dispatch"), "{out}");
         assert_eq!(read(&project.reports.join("t-1.state")), "planning\n");
-        fs::remove_file(root.join("user.txt")).unwrap();
-        // "Task files local only" on (ticket ignore-tasks): until Commit to git, the new line of the
-        // root `.gitignore` refuses the approval; then it goes on.
+        // A plan that does not name it: the file holds nothing. "Task files local only" on (ticket
+        // ignore-tasks): the new line of the root `.gitignore` is no file of the task either (user
+        // decision 4), so the approval goes on before Commit to git.
+        write_file(&plan, "# t-1: plan\n\n## Files to change\n- `src/other.rs`: the change.\n").unwrap();
         set_ignore(&project, true);
         apply(&project, &[]).unwrap();
-        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
-        assert_eq!(code, 2, "{out}");
-        assert!(out.contains("uncommitted changes") && out.contains(".gitignore") && !out.contains(".dispatch/"), "{out}");
-        commit_setup(&project).unwrap();
-        assert_eq!(git(&["status", "--porcelain"]), "");
-        // Only task files are uncommitted: the approval goes on, and the prompt names the report.
+        // Only task files and leftovers of the user are uncommitted: the approval goes on, and the prompt names the report.
         let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
         assert_eq!(code, 0, "{out}");
         assert_eq!(read(&project.reports.join("t-1.state")), "working\n");
         let resume = last_call(&fake);
         assert!(resume[0].contains("Write the report to ") && resume[0].ends_with("t-1.md."), "{resume:?}");
+        assert!(resume[0].contains("Commit only the files that this run changed") && resume[0].contains("never run git add -A"), "{resume:?}");
+        let status = git(&["status", "--porcelain"]);
+        assert!(status.contains("?? user.txt") && status.contains(".gitignore"), "the leftovers stay: {status}");
         // claude runs in the project folder: the parent of `.dispatch`.
         assert_eq!(Path::new(read(&fake.join("cwd.txt")).trim()), project.root.as_path());
         clean(&project);
@@ -6637,11 +6798,11 @@ if (args[0] === 'agents') {
         assert_eq!(code, 2, "{out}");
         assert!(out.contains("only the Merge button of Dispatch merges a task branch"), "{out}");
 
-        // A changed file of the user.
-        write_file(&project.root.join("README.md"), "changed by the user\n").unwrap();
+        // A file of the user that the branch changes (user decision 3 of leftover-files-block-tasks).
+        write_file(&project.root.join("work-t-1.txt"), "a file of the user\n").unwrap();
         let refused = task_merge(cwd.clone(), "t-1".to_string()).unwrap_err();
-        assert!(refused.contains("uncommitted changes") && refused.contains("README.md"), "{refused}");
-        git_out(&project, &["checkout", "--", "README.md"]);
+        assert!(refused.contains("uncommitted changes in files that the branch changes") && refused.contains("work-t-1.txt"), "{refused}");
+        fs::remove_file(project.root.join("work-t-1.txt")).unwrap();
 
         // The base got its own version of the file of the task: the merge does not apply.
         write_file(&project.root.join("work-t-1.txt"), "another text on the base\n").unwrap();
@@ -6655,6 +6816,97 @@ if (args[0] === 'agents') {
         assert_no_merge_left(&project);
         let branch = listed_branch(&project, "t-1");
         assert!(branch.exists && branch.merge.is_empty(), "{branch:?}");
+        clean(&project);
+    }
+
+    #[test]
+    fn leftover_plan_files_are_the_paths_of_files_to_change() {
+        let plan = "# t-1: plan\n\n## Goal\n- `src/goal.ts` is no task file.\n\n## Files to change\n- `src/main.ts`, `waitReason`: the change.\n- src/tickets.ts, the bare form.\n- `src-tauri/src/core/`: a folder.\n- `WORKER_SCRIPT` verb `approve`, anchor `$dirty = @(& git`: no path.\n- .\\docs\\a.md: backslashes.\n- `src/main.ts` again.\n\n## Files read\n- `src/read.ts`: one fact.\n";
+        assert_eq!(plan_files(plan), vec!["src/main.ts", "src/tickets.ts", "src-tauri/src/core/", "docs/a.md"]);
+        assert!(plan_files("plan\n").is_empty());
+    }
+
+    #[test]
+    fn leftover_lines_touch_task_files_folders_and_renames() {
+        let lines: Vec<String> = [" M src/main.ts", "?? logs/2026-11-16_hudwidget.md", "R  old.ts -> src-tauri/src/core/new.rs", "?? newdir/", " M \"with space.md\"", " M SRC/Other.ts", " M .claude/memory/triage.md"]
+            .iter()
+            .map(|line| line.to_string())
+            .collect();
+        let files: Vec<String> = ["src/main.ts", "src-tauri/src/core/", "newdir/inner.txt", "with space.md", "src/other.ts"].iter().map(|file| file.to_string()).collect();
+        let held = task_leftovers(&lines, &files);
+        assert_eq!(held, vec![" M src/main.ts", "R  old.ts -> src-tauri/src/core/new.rs", "?? newdir/", " M \"with space.md\"", " M SRC/Other.ts"]);
+        assert!(task_leftovers(&lines, &[]).is_empty());
+        assert!(task_leftovers(&[], &files).is_empty());
+    }
+
+    #[test]
+    fn a_leftover_outside_the_task_files_holds_no_approval_and_no_switch_back() {
+        let (project, fake, base) = branch_project("leftover-outside");
+        let cwd = project.root.to_string_lossy().into_owned();
+        // Changes of other sessions: a tracked file and an untracked log.
+        write_file(&project.root.join("README.md"), "changed by another session\n").unwrap();
+        write_file(&project.root.join("user.txt"), "a log of another session\n").unwrap();
+        plan_and_approve(&project, &fake, "t-1");
+        assert_eq!(current_branch(&project).unwrap(), "task/t-1");
+        write_report(&project, "t-1");
+        let branch = listed_branch(&project, "t-1");
+        assert!(!branch.checked_out && branch.note.is_empty(), "{branch:?}");
+        assert_eq!(current_branch(&project).unwrap(), base);
+        // The commit of the work run holds only its own file; the leftovers stay uncommitted.
+        let range = format!("{base}..task/t-1");
+        assert_eq!(git_out(&project, &["log", "--name-only", "--format=", &range, "--", ".", NOT_TASKS]), "work-t-1.txt");
+        let status = git_out(&project, &["status", "--porcelain", "--", ".", NOT_TASKS]);
+        assert!(status.contains("M README.md") && status.contains("?? user.txt"), "{status}");
+        let list = task_list(cwd.clone()).unwrap();
+        let task = list.tasks.iter().find(|task| task.name == "t-1").unwrap();
+        assert!(task.leftovers.is_empty() && list.dirty.len() == 2, "{:?} {:?}", task.leftovers, list.dirty);
+        // A script of an older version refuses on any change: the task gets the whole list.
+        let script = read(&project.script());
+        write_file(&project.script(), &format!("{script}# an older version\n")).unwrap();
+        let list = task_list(cwd.clone()).unwrap();
+        let task = list.tasks.iter().find(|task| task.name == "t-1").unwrap();
+        assert_eq!(task.leftovers, list.dirty);
+        write_file(&project.script(), &script).unwrap();
+        // The merge goes on too, and the leftovers stay.
+        let merged = task_merge(cwd, "t-1".to_string());
+        assert!(merged.is_ok(), "{merged:?}");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:user.txt")]).is_none());
+        assert_eq!(read(&project.root.join("README.md")), "changed by another session\n");
+        clean(&project);
+    }
+
+    #[test]
+    fn a_leftover_in_a_task_file_holds_the_approval_and_the_switch_back() {
+        let (project, fake, base) = branch_project("leftover-task");
+        let cwd = project.root.to_string_lossy().into_owned();
+        write_file(&project.briefs().join("t-1.md"), "# t-1: a scratch task\n").unwrap();
+        write_file(&project.reports.join("fake-name.txt"), "t-1").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["plan", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        write_file(&project.plans().join("t-1.md"), "# t-1: plan\n\n## Files to change\n- `README.md`: the change.\n").unwrap();
+        // A change in a file of the task holds the approval, with the new text.
+        write_file(&project.root.join("README.md"), "changed by another session\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("these changes in files of this task are not committed") && out.contains("README.md"), "{out}");
+        assert_eq!(read(&project.reports.join("t-1.state")), "planning\n");
+        let list = task_list(cwd.clone()).unwrap();
+        let task = list.tasks.iter().find(|task| task.name == "t-1").unwrap();
+        assert_eq!(task.leftovers, vec![" M README.md".to_string()]);
+        git_out(&project, &["checkout", "--", "README.md"]);
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(current_branch(&project).unwrap(), "task/t-1");
+        // A change in a file of the task holds the switch back, and the note names the file.
+        write_file(&project.root.join("README.md"), "changed by another session\n").unwrap();
+        write_report(&project, "t-1");
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.checked_out && branch.note.contains("files of this task") && branch.note.contains("README.md"), "{branch:?}");
+        assert_eq!(current_branch(&project).unwrap(), "task/t-1");
+        git_out(&project, &["checkout", "--", "README.md"]);
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).unwrap(), base);
         clean(&project);
     }
 
@@ -6680,8 +6932,9 @@ if (args[0] === 'agents') {
         let (code, out) = run_script(&project, &fake, "done", &["plan", "t-1"]);
         assert_eq!(code, 0, "{out}");
 
-        // Approve: a changed tracked tickets file does not count, a changed file of the user does.
+        // Approve: a changed tracked tickets file does not count, a changed file of the task does.
         add_ticket(&project, "b");
+        write_file(&project.plans().join("t-1.md"), "# t-1: plan\n\n## Files to change\n- `README.md`: the change.\n").unwrap();
         write_file(&project.root.join("README.md"), "changed by the user\n").unwrap();
         let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
         assert_eq!(code, 2, "{out}");
@@ -6693,13 +6946,13 @@ if (args[0] === 'agents') {
         assert!(!listed_branch(&project, "t-1").checked_out);
         assert_eq!(current_branch(&project).unwrap(), base);
 
-        // Merge: the same rule.
+        // Merge: the same rule, with a file that the branch changes.
         add_ticket(&project, "c");
-        write_file(&project.root.join("README.md"), "changed by the user\n").unwrap();
+        write_file(&project.root.join("work-t-1.txt"), "a file of the user\n").unwrap();
         let (code, out) = run_script(&project, &fake, "done", &["merge", "t-1"]);
         assert_eq!(code, 2, "{out}");
-        assert!(out.contains("README.md") && !out.contains("tickets.jsonl"), "{out}");
-        git_out(&project, &["checkout", "--", "README.md"]);
+        assert!(out.contains("work-t-1.txt") && !out.contains("tickets.jsonl"), "{out}");
+        fs::remove_file(project.root.join("work-t-1.txt")).unwrap();
         let (code, out) = run_script(&project, &fake, "done", &["merge", "t-1"]);
         assert_eq!(code, 0, "{out}");
         let log = git_out(&project, &["log", "--format=%s", "-3", &base]);

@@ -64,9 +64,24 @@ test("main.ts: the branch row, the task lists and the refusal rule use the modul
   const row = MAIN.slice(MAIN.indexOf("function branchRow("), MAIN.indexOf("function stopRow("));
   assert.match(row, /mergedWords\(branch\.merge\)/);
   const store = MAIN.slice(MAIN.indexOf("function storeProjectTasks("), MAIN.indexOf("/** The last reply of the `task_list` command"));
-  assert.match(store, /refusalGoes\(error, \{ merged: Boolean\(branch\.merge\), dirty: record\.dirty \}\)/);
+  assert.match(store, /refusalGoes\(error, \{ merged: Boolean\(branch\.merge\), dirty: info\.leftovers \?\? record\.dirty \}\)/);
   assert.match(store, /outsideLine\(info\.name, branch\)/);
   // Every place that keeps a task list goes through the check.
   assert.equal(MAIN.match(/projectTasks\.set\(/g)?.length, 1);
   assert.equal(MAIN.match(/storeProjectTasks\(/g)?.length, 4);
+});
+
+// Ticket leftover-files-block-tasks (user decision 3): the merge waits only for changes in files
+// that the branch changes; the refusal goes when those are gone, an untracked one counts too.
+const TASK_DIRTY = "refused: the checkout has uncommitted changes in files that the branch changes; commit, stash or undo them first:\n M src/a.ts";
+
+test("the new refusal of changes in files of the branch goes when they are gone", () => {
+  assert.equal(refusalGoes(TASK_DIRTY, { merged: false, dirty: [] }), true);
+  assert.equal(refusalGoes(TASK_DIRTY, { merged: false, dirty: [" M src/a.ts"] }), false);
+  assert.equal(refusalGoes(TASK_DIRTY, { merged: false, dirty: ["?? src/a.ts"] }), false);
+  assert.equal(refusalGoes(TASK_DIRTY, { merged: true, dirty: [" M src/a.ts"] }), true);
+});
+
+test("main.ts: the card takes the leftovers of the task for an old refusal", () => {
+  assert.match(MAIN, /refusalGoes\(error, \{ merged: Boolean\(branch\.merge\), dirty: info\.leftovers \?\? record\.dirty \}\)/);
 });

@@ -2142,6 +2142,11 @@ interface TaskInfo {
   tldr: string[];
   /** The files outside `.dispatch` that a measuring command of the plan run changed. Absent from an older host. */
   measureChanged?: string[];
+  /**
+   * The uncommitted lines of the project that touch a file of this task (ticket
+   * leftover-files-block-tasks): only they hold its approval and its start. Absent from an older host.
+   */
+  leftovers?: string[];
   /** The branch of the task with "Task branches" on (ticket task-branches); null or absent without one. */
   branch?: BranchInfo | null;
   /**
@@ -2244,7 +2249,7 @@ interface Decision {
 /** The reply of the `task_list` command. */
 interface TaskListReply {
   tasks: TaskInfo[];
-  /** The uncommitted changes of the project. The script refuses an approval while there are any. */
+  /** The uncommitted changes of the project. An approval waits only for those of its task (`TaskInfo.leftovers`). */
   dirty: string[];
   /** The setting of the project: Dispatch approves a plan without a HOLD decision itself. */
   autoApprove: boolean;
@@ -2321,7 +2326,7 @@ function storeProjectTasks(key: string, record: ProjectTasks): void {
     const branch = info.branch;
     if (!branch) continue;
     const error = actionErrors.get(info.name);
-    if (error && refusalGoes(error, { merged: Boolean(branch.merge), dirty: record.dirty })) actionErrors.delete(info.name);
+    if (error && refusalGoes(error, { merged: Boolean(branch.merge), dirty: info.leftovers ?? record.dirty })) actionErrors.delete(info.name);
     const old = before?.infos.find((one) => one.name === info.name);
     const line = old && !old.branch?.merge ? outsideLine(info.name, branch) : null;
     if (line) tellTriage(projectFor(record.host, record.cwd), line);
@@ -2570,7 +2575,8 @@ function approvePlans(): void {
     if (night && !project.paused) nightDefaults(project, tasks);
     // A merge holds the main checkout and runs its gate there (ticket task-branches). A start in
     // flight holds the project like a running work run. A pause holds every start (ticket pause-tasks).
-    const busy = { dirty: project.dirty.length, merging: project.merging, running: workRun(tasks)?.name ?? null, leased: startHolder(project.host, project.cwd), paused: project.paused };
+    // An uncommitted change holds only the task whose files it touches (ticket leftover-files-block-tasks).
+    const busy = { merging: project.merging, running: workRun(tasks)?.name ?? null, leased: startHolder(project.host, project.cwd), paused: project.paused };
     // A plan that the user approved while the project was not free starts first.
     const queued = projectBusy(busy) ? undefined : nextQueued(project, tasks);
     const choice = chooseStart({
@@ -2586,6 +2592,7 @@ function approvePlans(): void {
         planTime: task.info?.plan?.modified ?? null,
         tried: autoApproved.get(task.name),
         auto: !!task.info?.auto,
+        blocked: taskLeftovers(project, task.info).length > 0,
       })),
     });
     const task = choice ? tasks.find((task) => task.name === choice.task) : undefined;
@@ -2674,9 +2681,18 @@ function nextQueued(project: ProjectTasks, tasks: Task[]): Task | undefined {
       continue;
     }
     // An older time: the list was read before the decisions were written.
-    if (planTime === modified && (planReady(task) || awayPlan(task)) && !busyTasks.has(task.name)) return task;
+    // A change in a file of the task keeps it queued; the next one can start (ticket leftover-files-block-tasks).
+    if (planTime === modified && (planReady(task) || awayPlan(task)) && !busyTasks.has(task.name) && taskLeftovers(project, task.info).length === 0) return task;
   }
   return undefined;
+}
+
+/**
+ * The uncommitted lines that hold a task (ticket leftover-files-block-tasks): those that touch its
+ * files, or every line of the project from an older host.
+ */
+function taskLeftovers(project: ProjectTasks, info: TaskInfo | null | undefined): readonly string[] {
+  return info?.leftovers ?? project.dirty;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -4284,7 +4300,7 @@ function planCard(task: Task): HTMLElement {
   actions.append(ask);
   actions.append(reject);
   card.append(actions);
-  // The script refuses an approval while the project has uncommitted changes, and one work run
+  // The script refuses an approval while a file of the task has uncommitted changes, and one work run
   // edits at a time, counted from the start of its call (the start lease). An Approve then waits;
   // the card says for what.
   if (wait) {
@@ -4470,7 +4486,7 @@ let askTask: string | null = null;
 
 /**
  * Why the work run of a task cannot start now, or an empty text: another work run that edits the
- * project, or uncommitted changes. An Approve then waits for it (`approveOrQueue`). The running
+ * project, or uncommitted changes in files of the task. An Approve then waits for it (`approveOrQueue`). The running
  * work run comes first: the changes during it are its own, and it commits them.
  */
 function approveWait(task: Task): string {
@@ -4490,14 +4506,15 @@ function holdWaitOf(task: Task, picks?: ReadonlyMap<number, string>) {
 
 /**
  * What holds the work run of a task back: another work run of its project, also one whose start is
- * in flight (the start lease, ticket one-work-run-race), and its uncommitted lines.
+ * in flight (the start lease, ticket one-work-run-race), and the uncommitted lines in its files.
  */
 function waitFacts(task: Task): WaitFacts {
   const editing = workRun(task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos))?.name ?? startHolder(taskHost(task), taskCwd(task));
   const merging = task.project ? task.project.merging : mergingTask;
   // A paused project queues an Approve click (ticket pause-tasks, user decision 3).
   const paused = task.project?.paused ?? projectTasks.get(tasksFolder)?.paused ?? false;
-  return { editing: editing && editing !== task.name ? editing : null, dirty: task.project?.dirty ?? dirtyLines, merging, paused };
+  // Only the changes in files of the task hold it (ticket leftover-files-block-tasks); an older host gives the whole project.
+  return { editing: editing && editing !== task.name ? editing : null, dirty: task.info?.leftovers ?? task.project?.dirty ?? dirtyLines, merging, paused };
 }
 
 /**

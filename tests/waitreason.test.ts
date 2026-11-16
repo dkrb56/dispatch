@@ -24,22 +24,22 @@ test("another work run: the short line names it, the full text is the text of th
 
 test("one changed file: the short line counts it in the singular", () => {
   const reason = waitReason({ editing: null, dirty: [" M src/main.ts"] });
-  assert.equal(reason?.short, "Waits for a commit or stash of 1 changed file.");
-  assert.equal(reason?.full, "Its work run starts once the changes of the project are committed or stashed:\n M src/main.ts");
+  assert.equal(reason?.short, "Waits for 1 changed file of this task.");
+  assert.equal(reason?.full, "Its work run starts once these changes in files of this task are committed, stashed or undone:\n M src/main.ts");
 });
 
 test("three changed files: the plural, and the full text lists them", () => {
   const dirty = [" M a.ts", " M b.ts", "?? c.ts"];
   const reason = waitReason({ editing: null, dirty });
-  assert.equal(reason?.short, "Waits for a commit or stash of 3 changed files.");
-  assert.equal(reason?.full, `Its work run starts once the changes of the project are committed or stashed:\n${dirty.join("\n")}`);
+  assert.equal(reason?.short, "Waits for 3 changed files of this task.");
+  assert.equal(reason?.full, `Its work run starts once these changes in files of this task are committed, stashed or undone:\n${dirty.join("\n")}`);
 });
 
 test("more than five changed files: the full text shows five and then …", () => {
   const dirty = ["1", "2", "3", "4", "5", "6", "7"].map((n) => ` M f${n}.ts`);
   const reason = waitReason({ editing: null, dirty });
-  assert.equal(reason?.short, "Waits for a commit or stash of 7 changed files.");
-  assert.equal(reason?.full, `Its work run starts once the changes of the project are committed or stashed:\n${dirty.slice(0, 5).join("\n")}\n…`);
+  assert.equal(reason?.short, "Waits for 7 changed files of this task.");
+  assert.equal(reason?.full, `Its work run starts once these changes in files of this task are committed, stashed or undone:\n${dirty.slice(0, 5).join("\n")}\n…`);
 });
 
 test("a work run and changes: the work run comes first", () => {
@@ -89,4 +89,12 @@ test("paused: the reason comes before the merge, the work run and the changed fi
   assert.equal(waitReason({ editing: null, dirty: [], paused: false }), null, "off changes nothing");
   assert.equal(waitReason({ editing: "x", dirty: [], paused: false })?.short, "Waits for the work run of x.");
   assert.ok(words(paused.short) <= 12);
+});
+
+test("leftovers outside the files of the task: no reason; the card names only the files of the task (ticket leftover-files-block-tasks)", () => {
+  // main.ts gives the leftovers of the task, so an empty list is a free task in a project with other changes.
+  assert.equal(waitReason({ editing: null, dirty: [] }), null);
+  const reason = waitReason({ editing: null, dirty: [" M src/main.ts"] });
+  assert.doesNotMatch(reason?.full ?? "", /changes of the project/);
+  assert.match(reason?.full ?? "", /files of this task are committed, stashed or undone/);
 });
