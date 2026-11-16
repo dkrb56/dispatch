@@ -51,7 +51,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextTicket, nextType, parseBoardSize, queueOrder, type Ticket, ticketCounts, ticketMatches, ticketMessage, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE } from "./tickets";
+import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextTicket, nextType, parseBoardSize, queueOrder, type Ticket, ticketCounts, ticketMatches, ticketMessage, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { type Typed, typedAfter, typingState } from "./typing";
@@ -3166,9 +3166,17 @@ function queueIdsWithout(project: string, id: string): string[] {
     .filter((one) => one !== id);
 }
 
-/** Moves a ticket into New, Done or Canceled; `ids` is the queue of New after the move. */
+/** Moves a ticket into Backlog, New, Done or Canceled; `ids` is the queue of New after the move. */
 function moveTicket(project: string, id: string, status: TicketStatus, ids: string[], note?: string): Promise<boolean> {
   return ticketAction(project, "ticket_move", { id, status, ids, note: note ?? null });
+}
+
+/**
+ * Moves many tickets at once (ticket tickets-backlog): New tickets to Backlog, or Backlog tickets to
+ * the end of the queue of New in their order. One write and one task read.
+ */
+function moveAllTickets(project: string, ids: string[], status: "backlog" | "new"): Promise<boolean> {
+  return ticketAction(project, "ticket_move_all", { ids, status });
 }
 
 /** Changes the title (a rename of the user), the type, the task or the end word of a ticket. */
@@ -5191,7 +5199,7 @@ function pendingElement(card: PendingCard): HTMLElement {
 }
 
 // ---- The tickets board (ticket tickets) ------------------------------------------------------------
-// One window for one project: four columns, the cards with their buttons, a drag between New, Done
+// One window for one project: five columns, the cards with their buttons, a drag between Backlog, New, Done
 // and Canceled and inside the queue of New, and a rename in place. The corner resizes the window. It shows the tickets of the last task read;
 // each button runs a ticket command of the backend and reads the list again.
 
@@ -6275,18 +6283,31 @@ function renderTickets(): void {
   ticketsPausedTextEl.textContent = PAUSE_BANNER;
   const shown = tickets.filter((ticket) => ticketMatches(ticket, ticketsSearchEl.value));
   const queueIds = queueOrder(tickets).map((ticket) => ticket.id);
+  const inFlight = projectPending(key).flatMap((card) => (card.entry ? [card.entry] : []));
   const columns = COLUMNS.map(({ status, name }) => {
     const items = columnTickets(shown, status);
     const column = mapElement("section", "tickets-column");
     column.dataset.status = status;
     const head = mapElement("div", "tickets-column-head");
     head.append(mapElement("b", "", name), mapElement("span", "tickets-column-count", String(items.length)));
+    // The bulk move of the shown cards (ticket tickets-backlog, user decision 3): the search narrows the set.
+    if (status === "new" || status === "backlog") {
+      const ids = bulkIds(shown, status, inFlight);
+      const to = status === "new" ? "backlog" : "new";
+      const count = `${ids.length} ${ids.length === 1 ? "ticket" : "tickets"}`;
+      const title =
+        to === "backlog"
+          ? `Move the ${count} shown in New to Backlog: Dispatch does not send them`
+          : `Move the ${count} shown in Backlog to the end of the queue of New: Dispatch sends them in their turn`;
+      head.append(ticketButton(to === "backlog" ? "All → Backlog" : "All → New", title, () => void moveAllTickets(key, ids, to), ids.length === 0));
+    }
     const list = mapElement("div", "tickets-list");
     if (status === "new" && newTicketOpen) list.append(newTicketForm(key));
     list.append(...items.map((ticket) => ticketCard(key, ticket, queueIds, record)));
     if (items.length === 0 && !(status === "new" && newTicketOpen)) {
       const none = paused ? PAUSED_NEW_EMPTY : "No tickets. A message to triage lands here, and Dispatch sends it when triage is free.";
-      list.append(mapElement("p", "tickets-none", status === "new" ? none : "No tickets"));
+      const backlog = "No tickets. Dispatch never sends a Backlog ticket: drag it to New when it should go.";
+      list.append(mapElement("p", "tickets-none", status === "new" ? none : status === "backlog" ? backlog : "No tickets"));
     }
     column.append(head, list);
     return column;
@@ -6354,6 +6375,7 @@ function ticketButton(text: string, title: string, click: () => void, disabled =
 
 /** The state line of a card: its place in the queue, the state of its task, or its end word. */
 function ticketState(project: string, ticket: Ticket, queueIds: string[], record: ProjectTasks | undefined): string {
+  if (ticket.status === "backlog") return "Backlog: not sent";
   if (ticket.status === "new") {
     const card = projectPending(project).find((one) => one.entry === ticket.id);
     return card ? pendingState(card) : `#${queueIds.indexOf(ticket.id) + 1} in the queue`;
@@ -6384,7 +6406,7 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   const top = mapElement("div", "ticket-top");
   if (draggable) {
     const grip = mapElement("span", "entry-grip", "⠿");
-    grip.title = "Drag the card to New, Done or Canceled, or to another place in the queue of New";
+    grip.title = "Drag the card to Backlog, New, Done or Canceled, or to another place in the queue of New";
     grip.setAttribute("aria-hidden", "true");
     top.append(grip);
     // The buttons and the rename box keep their pointer: a drag starts on the rest of the card.
@@ -6443,7 +6465,7 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
       ticketButton("▼", "Move down: triage gets it later", () => void moveTicket(project, ticket.id, "new", movedIds(queueIds, ticket.id, at + 1)), at === queueIds.length - 1),
       ticketButton("×", "Cancel this ticket: it goes to Canceled, and Dispatch does not send it", () => void moveTicket(project, ticket.id, "canceled", queueIdsWithout(project, ticket.id))),
     );
-  } else if (ticket.status === "canceled") {
+  } else if (ticket.status === "canceled" || ticket.status === "backlog") {
     tools.append(ticketButton("→ New", "Back to New, at the end of the queue: Dispatch sends it to triage in its turn", () => void moveTicket(project, ticket.id, "new", [...queueIds, ticket.id])));
   }
   tools.append(ticketButton("✎", "Rename the ticket", rename));
@@ -6455,7 +6477,7 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
  * Drags a ticket card with the pointer, as the resize handles do: the HTML drag events do not reach
  * the page while the window of Tauri handles a drop of files. The drag starts after a move of 5 px,
  * so a plain click on the title or the tag works as before. The column under the pointer takes
- * the ticket when it is New, Done or Canceled; in New, the queue, the card under the pointer gets a
+ * the ticket when it is Backlog, New, Done or Canceled; in New, the queue, the card under the pointer gets a
  * line at its top. The drop saves the move and the order; a drop on Done has the end word `USER_DONE`.
  */
 function startTicketDrag(event: PointerEvent, card: HTMLElement, project: string, ticket: Ticket): void {

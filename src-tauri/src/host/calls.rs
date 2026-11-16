@@ -140,6 +140,7 @@ pub fn run(
             a.opt("note")?,
         )?),
         "ticket_move" => json(tickets::ticket_move(a.req("cwd")?, a.req("id")?, a.req("status")?, a.req("ids")?, a.opt("note")?)?),
+        "ticket_move_all" => json(tickets::ticket_move_all(a.req("cwd")?, a.req("ids")?, a.req("status")?)?),
         "task_approve" => json(pipeline::task_approve(a.req("cwd")?, a.req("id")?)?),
         "task_decide" => json(pipeline::task_decide(a.req("cwd")?, a.req("id")?, a.req("text")?)?),
         "task_checks" => json(pipeline::task_checks(a.req("cwd")?, a.req("id")?, a.req("names")?)?),

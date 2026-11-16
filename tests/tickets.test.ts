@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   addedText,
+  bulkIds,
   canDrag,
   columnOf,
   COLUMNS,
@@ -39,7 +40,7 @@ const CHAT = read("../src/chatview.ts");
 const CSS = read("../src/styles.css");
 const HTML = read("../index.html");
 
-type Status = "new" | "in-progress" | "done" | "canceled";
+type Status = "backlog" | "new" | "in-progress" | "done" | "canceled";
 const ticket = (id: string, status: Status, order: number | null = null, created = 0, updated = created) => ({ id, status, order, created, updated });
 const ids = (list: { id: string }[]) => list.map((one) => one.id);
 
@@ -94,12 +95,14 @@ test("triage gets the images, the line with the id and the title, then the words
   assert.equal(ticketMessage({ id: "x", title: "X", summary: "x" }), "Ticket x: X\n\nx");
 });
 
-test("the four columns, the columns that take a drop, and the order of each column", () => {
+test("the five columns, the columns that take a drop, and the order of each column", () => {
   assert.deepEqual(
     COLUMNS.map((column) => column.name),
-    ["New", "In progress", "Done", "Canceled"],
+    ["Backlog", "New", "In progress", "Done", "Canceled"],
+    "Backlog first, left of New (ticket tickets-backlog)",
   );
-  assert.deepEqual(DROP_COLUMNS, ["new", "done", "canceled"], "In progress follows the task");
+  assert.deepEqual(DROP_COLUMNS, ["backlog", "new", "done", "canceled"], "In progress follows the task");
+  assert.equal(columnOf("backlog"), "backlog");
   assert.equal(columnOf("todo"), "new", "an old Todo ticket shows in New");
   assert.equal(columnOf("canceled"), "canceled");
   assert.equal(columnOf("in_progress"), "new", "the backend gives the board values only");
@@ -107,6 +110,24 @@ test("the four columns, the columns that take a drop, and the order of each colu
   assert.deepEqual(ids(columnTickets(list, "new")), ["t1", "t2"], "New in the queue order");
   assert.deepEqual(ids(columnTickets(list, "done")), ["young", "old"], "newest change first");
   assert.deepEqual(ids(columnTickets(list, "canceled")), []);
+  const later = [ticket("b-old", "backlog", null, 1, 1), ticket("b-young", "backlog", null, 2, 9), ticket("n", "new", 1)];
+  assert.deepEqual(ids(columnTickets(later, "backlog")), ["b-young", "b-old"], "Backlog newest change first");
+});
+
+test("Dispatch never sends a Backlog ticket, and the head buttons move the shown cards (ticket tickets-backlog)", () => {
+  const list = [ticket("later", "backlog", null, 1), ticket("later-2", "backlog", null, 2, 5), ticket("now", "new", 1), ticket("next", "new", 2)];
+  assert.equal(nextTicket([ticket("later", "backlog", null, 1)], []), null, "Backlog waits for the user");
+  assert.equal(nextTicket(list, [])?.id, "now");
+  assert.deepEqual(bulkIds(list, "new", []), ["now", "next"], "New in the queue order");
+  assert.deepEqual(bulkIds(list, "new", ["now"]), ["next"], "a ticket in flight stays");
+  assert.deepEqual(bulkIds(list, "backlog", []), ["later-2", "later"], "Backlog in its shown order");
+  assert.deepEqual(bulkIds([], "backlog", []), []);
+  assert.equal(dropChanges({ status: "new" }, "backlog", ["next"], ["now", "next"]), true, "a drop from New on Backlog moves it");
+  assert.equal(dropChanges({ status: "backlog" }, "new", ["now", "next", "later"], ["now", "next"]), true);
+  assert.match(MAIN, /ticket_move_all/);
+  assert.match(MAIN, /All → Backlog/);
+  assert.match(MAIN, /All → New/);
+  assert.match(CSS, /repeat\(5, minmax\(180px, 1fr\)\)/);
 });
 
 test("a move takes a ticket up, down, to the top and to the end", () => {
@@ -122,6 +143,7 @@ test("a move takes a ticket up, down, to the top and to the end", () => {
 test("a card drags in New, Canceled and Done by hand; not in flight, In progress or Done of a task", () => {
   assert.equal(canDrag({ status: "new", note: "" }, false), true);
   assert.equal(canDrag({ status: "new", note: "" }, true), false, "sent to triage: the task moves it");
+  assert.equal(canDrag({ status: "backlog", note: "" }, false), true, "a Backlog ticket drags to New");
   assert.equal(canDrag({ status: "in-progress", note: "" }, false), false);
   assert.equal(canDrag({ status: "canceled", note: "canceled" }, false), true);
   assert.equal(canDrag({ status: "canceled", note: "stopped" }, false), true);
@@ -243,8 +265,8 @@ test("the tickets meet the page: the commands, the board, the dispatcher, the bo
   assert.match(MAIN, /drop\.status === "done" \? USER_DONE/);
   // The Help names the board, its columns, the queue, the sign and Chat, and no longer Todo or Ask triage.
   const help = HTML.slice(HTML.indexOf("<h3>Tickets</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
-  for (const name of ["New", "In progress", "Done", "Canceled", "four columns", "yellow !", "<b>Chat</b>", "tickets.jsonl", "Ticket &lt;id&gt;: &lt;title&gt;"]) assert.ok(help.includes(name), name);
-  for (const name of ["<b>Drag a card.</b>", "on New, Done or Canceled", "done by hand", "does not drag", "bottom-right corner", "keeps the size", "double-click"]) assert.ok(help.includes(name), name);
+  for (const name of ["Backlog", "New", "In progress", "Done", "Canceled", "five columns", "All → Backlog", "All → New", "yellow !", "<b>Chat</b>", "tickets.jsonl", "Ticket &lt;id&gt;: &lt;title&gt;"]) assert.ok(help.includes(name), name);
+  for (const name of ["<b>Drag a card.</b>", "on Backlog, New, Done or Canceled", "done by hand", "does not drag", "bottom-right corner", "keeps the size", "double-click"]) assert.ok(help.includes(name), name);
   for (const gone of ["<b>Todo</b>", "→ Todo", "Ask triage", "Questions go at once"]) assert.ok(!HTML.includes(gone), gone);
   assert.doesNotMatch(HTML, /<b>Planned/);
 });

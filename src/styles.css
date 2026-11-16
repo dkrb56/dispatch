@@ -1654,7 +1654,7 @@ button.task-head:hover {
 #tickets-columns {
   display: grid;
   flex: 1;
-  grid-template-columns: repeat(4, minmax(180px, 1fr));
+  grid-template-columns: repeat(5, minmax(180px, 1fr));
   gap: 10px;
   min-height: 0;
   padding: 12px;
@@ -1685,6 +1685,31 @@ button.task-head:hover {
   font-size: calc(11px * var(--text-scale));
   font-weight: 600;
   text-transform: uppercase;
+}
+
+/* The bulk move of a column (ticket tickets-backlog): "All → Backlog" and "All → New". */
+.tickets-column-head button {
+  height: 20px;
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-weight: 400;
+  text-transform: none;
+  cursor: pointer;
+}
+
+.tickets-column-head button:hover:not(:disabled) {
+  background: var(--card);
+  color: var(--text);
+}
+
+.tickets-column-head button:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .tickets-column-count {

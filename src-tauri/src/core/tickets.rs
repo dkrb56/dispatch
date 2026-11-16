@@ -1,13 +1,16 @@
 // The tickets of a project (ticket tickets): one file `.dispatch/tickets.jsonl`, one JSON event per
 // line, in the form of the tickets file of starminer-manager, so its board can read it:
 //   {"op":"open","id":…,"ts":…,"title":…,"type":…,"summary":…,"tags":[],"status":…,"order":…}
-//   {"op":"status","ref":…,"ts":…,"status":"triage"|"todo"|"in_progress","order":…}
+//   {"op":"status","ref":…,"ts":…,"status":"triage"|"backlog"|"in_progress","order":…}
 //   {"op":"close","ref":…,"ts":…,"resolution":"done"|"wontfix","note":…}
 //   {"op":"update","ref":…,"ts":…,"title":…,"type":…,"order":…,"task":…,"renamed":…}
 // A ticket is the fold of its lines. A line that is no JSON, an unknown op or an unknown field is
 // skipped, so a file edited by hand still reads. Dispatch is the only writer: a message of the user
 // opens a ticket in New, which is the queue (ticket auto-todo), the board orders, cancels and renames
-// it, and the task read moves it after its task (`follow`). An old `todo` line reads as New. The task
+// it, and the task read moves it after its task (`follow`). Backlog holds the tickets that Dispatch
+// never sends (ticket tickets-backlog): `backlog`, an old `todo` and an open line without a status
+// read as Backlog. A close is Canceled only with a cancel word (`CANCEL_WORDS`); any other close,
+// a text or none, is Done. The types of other tools map to the four types (`file_kind`). The task
 // read commits the file with the other task files of `.dispatch`.
 
 use std::collections::HashSet;
@@ -34,9 +37,30 @@ pub(crate) const NEW: &str = "new";
 pub(crate) const IN_PROGRESS: &str = "in-progress";
 pub(crate) const DONE: &str = "done";
 pub(crate) const CANCELED: &str = "canceled";
+/// The tickets that Dispatch never sends to triage (ticket tickets-backlog); the file writes the same word.
+pub(crate) const BACKLOG: &str = "backlog";
+
+/// The resolutions of a close that mean Canceled, lower case; every other close is Done.
+const CANCEL_WORDS: [&str; 5] = ["wontfix", "duplicate", "superseded", "canceled", "cancelled"];
 
 /// The types of a ticket, as the file writes them.
 const KINDS: [&str; 4] = ["fix", "feature", "refactor", "content"];
+
+/// The type of a `type` value of the file: the four types, and the types of other tools mapped to
+/// them (ticket tickets-backlog); none for an unknown type.
+fn file_kind(text: &str) -> Option<&'static str> {
+    let text = text.trim().to_ascii_lowercase();
+    if let Some(kind) = KINDS.iter().find(|kind| **kind == text) {
+        return Some(kind);
+    }
+    match text.as_str() {
+        "bug" | "flake" => Some("fix"),
+        "docs" => Some("content"),
+        "cleanup" | "tooling" | "rule" | "test" => Some("refactor"),
+        "decision" | "question" | "task" | "other" => Some("feature"),
+        _ => None,
+    }
+}
 
 /// One appended line at a time, in this process (the app or the host).
 static WRITE: Mutex<()> = Mutex::new(());
@@ -51,7 +75,7 @@ pub struct Ticket {
     pub(crate) kind: String,
     /// The words of the user, as the box sent them: the paths of pasted images first.
     pub(crate) summary: String,
-    /// `new`, `in-progress`, `done` or `canceled`.
+    /// `backlog`, `new`, `in-progress`, `done` or `canceled`.
     pub(crate) status: String,
     /// The place in the queue of New, 1 first; none outside New or for a ticket without a place.
     pub(crate) order: Option<u32>,
@@ -123,10 +147,11 @@ fn parse_ts(value: Option<&Value>) -> Option<u64> {
 }
 
 /// The column of a `status` value of the file: the starminer values and the values of the board. The
-/// Todo column of an older version is the queue of New now (ticket auto-todo).
+/// Todo column of an older version is Backlog now (ticket tickets-backlog), as is `backlog`.
 fn column_of(status: &str) -> Option<&'static str> {
     match status {
-        "triage" | "backlog" | "todo" | NEW => Some(NEW),
+        "triage" | NEW => Some(NEW),
+        BACKLOG | "todo" => Some(BACKLOG),
         "in_progress" | IN_PROGRESS => Some(IN_PROGRESS),
         DONE => Some(DONE),
         CANCELED => Some(CANCELED),
@@ -138,6 +163,7 @@ fn column_of(status: &str) -> Option<&'static str> {
 fn file_status(column: &str) -> &'static str {
     match column {
         IN_PROGRESS => "in_progress",
+        BACKLOG => BACKLOG,
         _ => "triage",
     }
 }
@@ -157,13 +183,14 @@ pub(crate) fn fold(text: &str) -> Vec<Ticket> {
                 continue;
             }
             let created = ts.unwrap_or(0);
-            let kind = text_of("type").map(|kind| kind.to_ascii_lowercase()).filter(|kind| KINDS.contains(&kind.as_str()));
+            let kind = text_of("type").as_deref().and_then(file_kind);
             tickets.push(Ticket {
                 title: text_of("title").filter(|title| !title.is_empty()).unwrap_or_else(|| id.clone()),
                 id,
-                kind: kind.unwrap_or_else(|| "feature".to_string()),
+                kind: kind.unwrap_or("feature").to_string(),
                 summary: text_of("summary").unwrap_or_default(),
-                status: text_of("status").as_deref().and_then(column_of).unwrap_or(NEW).to_string(),
+                // An open line without a known status (old lines of other tools) waits in Backlog.
+                status: text_of("status").as_deref().and_then(column_of).unwrap_or(BACKLOG).to_string(),
                 order: event.get("order").and_then(Value::as_u64).and_then(|order| u32::try_from(order).ok()),
                 task: text_of("task").unwrap_or_default(),
                 note: text_of("note").unwrap_or_default(),
@@ -183,15 +210,16 @@ pub(crate) fn fold(text: &str) -> Vec<Ticket> {
             }
             "close" => {
                 let resolution = text_of("resolution").unwrap_or_default();
-                ticket.status = if resolution == "done" { DONE } else { CANCELED }.to_string();
+                let canceled = CANCEL_WORDS.contains(&resolution.to_ascii_lowercase().as_str());
+                ticket.status = if canceled { CANCELED } else { DONE }.to_string();
                 ticket.note = text_of("note").filter(|note| !note.is_empty()).unwrap_or(resolution);
             }
             "update" => {
                 if let Some(title) = text_of("title").filter(|title| !title.is_empty()) {
                     ticket.title = title;
                 }
-                if let Some(kind) = text_of("type").map(|kind| kind.to_ascii_lowercase()).filter(|kind| KINDS.contains(&kind.as_str())) {
-                    ticket.kind = kind;
+                if let Some(kind) = text_of("type").as_deref().and_then(file_kind) {
+                    ticket.kind = kind.to_string();
                 }
                 if let Some(task) = text_of("task") {
                     ticket.task = task;
@@ -555,7 +583,8 @@ const USER_DONE: &str = "done by hand";
 /// after its report, Canceled with `stopped`. A ticket in New follows its task too, because Dispatch
 /// sends the New tickets (ticket auto-todo); a ticket canceled or done by the user stays. The title of the
 /// brief replaces the generated title, unless the user renamed the ticket. Writes one line per
-/// change and changes the tickets in place.
+/// change and changes the tickets in place. While the project is paused it changes them only in
+/// place and writes nothing (ticket tickets-backlog): the first read after Resume writes the lines.
 pub(crate) fn follow(project: &Project, tickets: &mut [Ticket], facts: &[TaskFacts]) -> Result<(), String> {
     let at = now();
     let mut events = Vec::new();
@@ -585,6 +614,9 @@ pub(crate) fn follow(project: &Project, tickets: &mut [Ticket], facts: &[TaskFac
         for ticket in tickets.iter_mut().filter(|ticket| events.iter().any(|event| event["ref"] == ticket.id.as_str())) {
             ticket.updated = at;
         }
+    }
+    if project.options().paused {
+        return Ok(());
     }
     append(project, &events)
 }
@@ -672,17 +704,18 @@ pub fn ticket_update(cwd: String, id: String, title: Option<String>, kind: Optio
     find(&read(&project), &id)
 }
 
-/// Moves a ticket into New, Done or Canceled (the board; In progress follows the task), with an
+/// Moves a ticket into Backlog, New, Done or Canceled (the board; In progress follows the task), with an
 /// end word for Done (`done by hand`) and Canceled, and saves the order of the queue of New: `ids` names the New tickets in
 /// their new order; a New ticket that it does not name keeps its place after them. Only a ticket
 /// whose column or place changed gets a line.
 pub fn ticket_move(cwd: String, id: String, status: String, ids: Vec<String>, note: Option<String>) -> Result<Vec<Ticket>, String> {
     let project = Project::find(&cwd)?;
     let column = match status.as_str() {
+        BACKLOG => BACKLOG,
         NEW => NEW,
         DONE => DONE,
         CANCELED => CANCELED,
-        _ => return Err(format!("a ticket moves only into New, Done or Canceled, not {status}")),
+        _ => return Err(format!("a ticket moves only into Backlog, New, Done or Canceled, not {status}")),
     };
     let tickets = read(&project);
     let moved = find(&tickets, &id)?;
@@ -710,13 +743,59 @@ pub fn ticket_move(cwd: String, id: String, status: String, ids: Vec<String>, no
     queue.retain(|ticket| column == NEW || ticket.id != id);
     let at = now();
     let mut events = Vec::new();
-    if moved.status != column || (column != NEW && moved.note != note) {
+    if moved.status != column || (matches!(column, DONE | CANCELED) && moved.note != note) {
         let order = queue.iter().position(|ticket| ticket.id == id).map(|at| at as u32 + 1);
         events.push(move_event(&id, at, column, &note, order));
     }
     for (place, ticket) in queue.iter().enumerate() {
         let order = place as u32 + 1;
         if ticket.order == Some(order) || (ticket.id == id && moved.status != column) {
+            continue;
+        }
+        let mut fields = Map::new();
+        fields.insert("order".into(), json!(order));
+        events.push(event("update", &ticket.id, at, fields));
+    }
+    append(&project, &events)?;
+    Ok(read(&project))
+}
+
+/// Moves many tickets at once (ticket tickets-backlog, the head buttons of the board): `backlog`
+/// moves each named New ticket to Backlog, `new` moves each named Backlog ticket to the end of the
+/// queue of New, in the order of `ids`. Skips a ticket of another column. The queue of New keeps its
+/// order without gaps. Writes all lines at once and gives the tickets.
+pub fn ticket_move_all(cwd: String, ids: Vec<String>, status: String) -> Result<Vec<Ticket>, String> {
+    let project = Project::find(&cwd)?;
+    let (from, column) = match status.as_str() {
+        BACKLOG => (NEW, BACKLOG),
+        NEW => (BACKLOG, NEW),
+        _ => return Err(format!("many tickets move only into Backlog or New, not {status}")),
+    };
+    let tickets = read(&project);
+    let mut moved: Vec<&Ticket> = Vec::new();
+    for id in &ids {
+        if let Some(ticket) = tickets.iter().find(|ticket| &ticket.id == id && ticket.status == from) {
+            if !moved.iter().any(|one| one.id == ticket.id) {
+                moved.push(ticket);
+            }
+        }
+    }
+    // The queue of New after the move: the New tickets that stay, in their order, then the tickets
+    // that come from Backlog.
+    let mut queue: Vec<&Ticket> = tickets.iter().filter(|ticket| ticket.status == NEW && !moved.iter().any(|one| one.id == ticket.id)).collect();
+    queue.sort_by_key(|ticket| (ticket.order.is_none(), ticket.order, ticket.created));
+    if column == NEW {
+        queue.extend(moved.iter().copied());
+    }
+    let at = now();
+    let mut events = Vec::new();
+    for ticket in &moved {
+        let order = queue.iter().position(|one| one.id == ticket.id).map(|place| place as u32 + 1);
+        events.push(move_event(&ticket.id, at, column, "", order));
+    }
+    for (place, ticket) in queue.iter().enumerate() {
+        let order = place as u32 + 1;
+        if ticket.order == Some(order) || moved.iter().any(|one| one.id == ticket.id) {
             continue;
         }
         let mut fields = Map::new();
@@ -779,12 +858,238 @@ mod tests {
         assert_eq!(a.updated, parse_ts(Some(&json!("2026-11-13T11:00:00.000Z"))).unwrap());
         let b = &tickets[1];
         assert_eq!((b.status.as_str(), b.note.as_str(), b.kind.as_str(), b.created), (CANCELED, "wontfix", "feature", 2000));
-        // A Todo line of an older version reads as New, with its place in the queue (ticket auto-todo).
+        // A Todo line of an older version reads as Backlog (ticket tickets-backlog, user decision 2).
         let old = fold("{\"op\":\"open\",\"id\":\"d\",\"status\":\"todo\",\"order\":2}\n");
-        assert_eq!((old[0].status.as_str(), old[0].order), (NEW, Some(2)));
+        assert_eq!(old[0].status.as_str(), BACKLOG);
         // A close with done goes to Done with its note.
         let done = fold("{\"op\":\"open\",\"id\":\"c\"}\n{\"op\":\"close\",\"ref\":\"c\",\"resolution\":\"done\",\"note\":\"failed\"}\n");
         assert_eq!((done[0].status.as_str(), done[0].note.as_str(), done[0].title.as_str()), (DONE, "failed", "c"));
+    }
+
+    /// One open line of an id, with optional status and type, and its other lines.
+    fn sample(id: &str, status: Option<&str>, kind: Option<&str>, more: &[Value]) -> String {
+        let mut open = json!({"op": "open", "id": id, "ts": "2026-11-16T10:00:00.000Z", "title": id});
+        if let Some(status) = status {
+            open["status"] = json!(status);
+        }
+        if let Some(kind) = kind {
+            open["type"] = json!(kind);
+        }
+        std::iter::once(open).chain(more.iter().cloned()).map(|line| format!("{line}\n")).collect()
+    }
+
+    #[test]
+    fn the_status_of_an_open_line_and_of_a_status_line_gives_the_column() {
+        let column = |status: Option<&str>| fold(&sample("a", status, None, &[]))[0].status.clone();
+        assert_eq!(column(Some("backlog")), BACKLOG);
+        assert_eq!(column(Some("todo")), BACKLOG, "user decision 2");
+        assert_eq!(column(None), BACKLOG, "an open line without a status, user decision 1");
+        assert_eq!(column(Some("open")), BACKLOG, "an unknown status");
+        assert_eq!(column(Some("triage")), NEW, "Dispatch writes triage for its own New tickets");
+        assert_eq!(column(Some("new")), NEW);
+        assert_eq!(column(Some("in_progress")), IN_PROGRESS);
+        let after = |status: &str| fold(&sample("a", Some("triage"), None, &[json!({"op": "status", "ref": "a", "status": status})]))[0].status.clone();
+        assert_eq!(after("backlog"), BACKLOG);
+        assert_eq!(after("todo"), BACKLOG);
+        assert_eq!(after("waiting"), NEW, "an unknown status line changes nothing");
+        assert_eq!(file_status(BACKLOG), "backlog");
+        assert_eq!(file_status(NEW), "triage");
+    }
+
+    #[test]
+    fn a_close_is_canceled_only_with_a_cancel_word() {
+        let close = |resolution: Option<&str>| {
+            let mut line = json!({"op": "close", "ref": "a"});
+            if let Some(resolution) = resolution {
+                line["resolution"] = json!(resolution);
+            }
+            let ticket = fold(&sample("a", None, None, &[line])).remove(0);
+            (ticket.status, ticket.note)
+        };
+        assert_eq!(close(Some("done")), (DONE.to_string(), "done".to_string()));
+        let merged = "merged into main at afb4388 after the review";
+        assert_eq!(close(Some(merged)), (DONE.to_string(), merged.to_string()), "merged work is Done");
+        assert_eq!(close(None).0, DONE, "a close without a resolution is Done");
+        assert_eq!(close(Some("")).0, DONE);
+        for word in ["wontfix", "duplicate", "superseded", "canceled", "cancelled", "WontFix", " duplicate "] {
+            assert_eq!(close(Some(word)).0, CANCELED, "{word}");
+        }
+        // Dispatch's own cancel writes wontfix with its end word.
+        let line = json!({"op": "close", "ref": "a", "resolution": "wontfix", "note": "triage answered without a task"});
+        let ticket = fold(&sample("a", Some("triage"), None, &[line])).remove(0);
+        assert_eq!((ticket.status.as_str(), ticket.note.as_str()), (CANCELED, "triage answered without a task"));
+    }
+
+    #[test]
+    fn the_types_of_other_tools_map_to_the_four_types() {
+        let kind = |kind: Option<&str>| fold(&sample("a", None, kind, &[]))[0].kind.clone();
+        for (text, want) in [
+            ("bug", "fix"),
+            ("Flake", "fix"),
+            ("fix", "fix"),
+            ("docs", "content"),
+            ("content", "content"),
+            ("cleanup", "refactor"),
+            ("tooling", "refactor"),
+            ("rule", "refactor"),
+            ("test", "refactor"),
+            ("refactor", "refactor"),
+            ("decision", "feature"),
+            ("question", "feature"),
+            ("task", "feature"),
+            ("other", "feature"),
+            ("something else", "feature"),
+        ] {
+            assert_eq!(kind(Some(text)), want, "{text}");
+        }
+        assert_eq!(kind(None), "feature");
+        // An update line maps the same way; an unknown type changes nothing.
+        let update = |text: &str| fold(&sample("a", None, Some("docs"), &[json!({"op": "update", "ref": "a", "type": text})]))[0].kind.clone();
+        assert_eq!(update("bug"), "fix");
+        assert_eq!(update("weird"), "content");
+    }
+
+    #[test]
+    fn a_ticket_moves_into_backlog_and_back_to_the_end_of_the_queue() {
+        let (project, base) = scratch("backlog");
+        let a = ticket_add(cwd(&project), "one".into()).unwrap();
+        let b = ticket_add(cwd(&project), "two".into()).unwrap();
+        ticket_move(cwd(&project), a.id.clone(), NEW.into(), vec![a.id.clone(), b.id.clone()], None).unwrap();
+        let text = || fs::read_to_string(project.tickets_file()).unwrap();
+        let before = text().lines().count();
+        let after = ticket_move(cwd(&project), a.id.clone(), BACKLOG.into(), vec![b.id.clone()], None).unwrap();
+        let get = |list: &[Ticket], id: &str| list.iter().find(|t| t.id == id).map(|t| (t.status.clone(), t.order, t.note.clone())).unwrap();
+        assert_eq!(get(&after, &a.id), (BACKLOG.to_string(), None, String::new()));
+        assert_eq!(get(&after, &b.id).1, Some(1), "the queue closes the gap");
+        let written = text();
+        let line: Value = serde_json::from_str(written.lines().nth(before).unwrap()).unwrap();
+        assert_eq!((line["op"].as_str(), line["status"].as_str(), &line["order"]), (Some("status"), Some("backlog"), &Value::Null));
+        // The same move again writes nothing.
+        ticket_move(cwd(&project), a.id.clone(), BACKLOG.into(), vec![b.id.clone()], None).unwrap();
+        assert_eq!(text(), written);
+        // Back to New: the end of the queue.
+        let after = ticket_move(cwd(&project), a.id.clone(), NEW.into(), vec![b.id.clone(), a.id.clone()], None).unwrap();
+        assert_eq!(get(&after, &a.id), (NEW.to_string(), Some(2), String::new()));
+        assert_eq!(read(&project), after);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn many_tickets_move_at_once_in_one_write() {
+        let (project, base) = scratch("move-all");
+        let ids: Vec<String> = ["one", "two", "three", "four"].iter().map(|text| ticket_add(cwd(&project), (*text).into()).unwrap().id).collect();
+        ticket_move(cwd(&project), ids[0].clone(), NEW.into(), ids.clone(), None).unwrap();
+        ticket_move(cwd(&project), ids[3].clone(), CANCELED.into(), vec![], None).unwrap();
+        let text = || fs::read_to_string(project.tickets_file()).unwrap();
+        let count = |list: &[Ticket], status: &str| list.iter().filter(|t| t.status == status).count();
+        // To Backlog: the New tickets; the Canceled one and an unknown id are skipped.
+        let before = text().lines().count();
+        let mut named = ids.clone();
+        named.push("nope".into());
+        let after = ticket_move_all(cwd(&project), named, BACKLOG.into()).unwrap();
+        assert_eq!((count(&after, NEW), count(&after, BACKLOG), count(&after, CANCELED)), (0, 3, 1));
+        assert_eq!(text().lines().count(), before + 3, "one line per moved ticket");
+        assert!(after.iter().filter(|t| t.status == BACKLOG).all(|t| t.order.is_none()));
+        // Back to New behind a ticket that waits there, in the given order.
+        ticket_move(cwd(&project), ids[1].clone(), NEW.into(), vec![ids[1].clone()], None).unwrap();
+        let after = ticket_move_all(cwd(&project), vec![ids[2].clone(), ids[0].clone(), ids[1].clone()], NEW.into()).unwrap();
+        let mut queue: Vec<(&str, Option<u32>)> = after.iter().filter(|t| t.status == NEW).map(|t| (t.id.as_str(), t.order)).collect();
+        queue.sort_by_key(|one| one.1);
+        assert_eq!(queue, [(ids[1].as_str(), Some(1)), (ids[2].as_str(), Some(2)), (ids[0].as_str(), Some(3))]);
+        assert!(ticket_move_all(cwd(&project), ids.clone(), DONE.into()).is_err());
+        assert_eq!(read(&project), after);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn follow_writes_nothing_while_the_project_is_paused() {
+        let (project, base) = scratch("paused");
+        let one = ticket_add(cwd(&project), "one".into()).unwrap();
+        crate::core::pipeline::set_paused(cwd(&project), true).unwrap();
+        let before = fs::read_to_string(project.tickets_file()).unwrap();
+        let facts = [TaskFacts { name: &one.id, state: "working", report: Some("done"), brief: "The brief of one" }];
+        let mut list = read(&project);
+        follow(&project, &mut list, &facts).unwrap();
+        assert_eq!((list[0].status.as_str(), list[0].title.as_str()), (DONE, "The brief of one"), "the board shows the task");
+        assert_eq!(fs::read_to_string(project.tickets_file()).unwrap(), before, "no line while paused");
+        // Resume: the next read writes the lines.
+        crate::core::pipeline::set_paused(cwd(&project), false).unwrap();
+        let mut list = read(&project);
+        follow(&project, &mut list, &facts).unwrap();
+        assert_eq!(read(&project), list);
+        assert_eq!(list[0].status, DONE);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    /// The proof of ticket tickets-backlog on a copy of the tickets file of Starminer: the path in the
+    /// env `STARMINER_TICKETS`. Prints the counts; never writes the given file.
+    #[test]
+    #[ignore]
+    fn starminer_copy() {
+        use std::collections::{BTreeMap, HashMap};
+        let Ok(path) = std::env::var("STARMINER_TICKETS") else { return };
+        let text = fs::read_to_string(&path).unwrap();
+        let tickets = fold(&text);
+        // The raw facts of each id: the type of its open line, its last known status and its last resolution.
+        let mut raw_type: HashMap<String, String> = HashMap::new();
+        let mut last_status: HashMap<String, String> = HashMap::new();
+        let mut last_close: HashMap<String, String> = HashMap::new();
+        for line in text.lines() {
+            let Ok(Value::Object(event)) = serde_json::from_str::<Value>(line.trim()) else { continue };
+            let get = |key: &str| event.get(key).and_then(Value::as_str).map(|text| text.trim().to_string());
+            let op = get("op");
+            // As the fold: an open line names its ticket by `id`, the other lines by `ref`.
+            let id = if op.as_deref() == Some("open") { get("id") } else { get("ref").or_else(|| get("id")) };
+            let Some(id) = id else { continue };
+            match op.as_deref() {
+                Some("open") => {
+                    raw_type.entry(id.clone()).or_insert_with(|| get("type").unwrap_or_else(|| "(none)".into()));
+                    last_status.entry(id).or_insert_with(|| get("status").unwrap_or_else(|| "(none)".into()));
+                }
+                Some("status") => {
+                    if let Some(status) = get("status").filter(|status| column_of(status).is_some()) {
+                        last_status.insert(id, status);
+                    }
+                }
+                Some("close") => {
+                    last_close.insert(id, get("resolution").unwrap_or_else(|| "(none)".into()));
+                }
+                _ => {}
+            }
+        }
+        let counts = |label: &str, values: Vec<String>| {
+            let mut map: BTreeMap<String, usize> = BTreeMap::new();
+            for value in values {
+                *map.entry(value).or_default() += 1;
+            }
+            println!("{label}: {map:?}");
+            map
+        };
+        let short = |text: &str| if text.chars().count() > 30 { "(long text)".to_string() } else { text.to_string() };
+        let close_of = |id: &str| last_close.get(id).cloned().unwrap_or_else(|| "(no close)".into());
+        println!("tickets: {}", tickets.len());
+        counts("per column", tickets.iter().map(|t| t.status.clone()).collect());
+        counts("per type", tickets.iter().map(|t| t.kind.clone()).collect());
+        counts("file type -> type", tickets.iter().map(|t| format!("{} -> {}", raw_type[&t.id], t.kind)).collect());
+        let new_status = counts("last status of the New tickets", tickets.iter().filter(|t| t.status == NEW).map(|t| last_status[&t.id].clone()).collect());
+        counts("last status of the Backlog tickets", tickets.iter().filter(|t| t.status == BACKLOG).map(|t| last_status[&t.id].clone()).collect());
+        let canceled = counts("resolution of the Canceled tickets", tickets.iter().filter(|t| t.status == CANCELED).map(|t| short(&close_of(&t.id))).collect());
+        counts("resolution of the Done tickets", tickets.iter().filter(|t| t.status == DONE).map(|t| short(&close_of(&t.id))).collect());
+        let merged_canceled = tickets.iter().filter(|t| t.status == CANCELED && close_of(&t.id).to_ascii_lowercase().contains("merged")).count();
+        println!("merged tickets in Canceled: {merged_canceled}");
+        assert!(canceled.keys().all(|word| CANCEL_WORDS.contains(&word.trim().to_ascii_lowercase().as_str())), "{canceled:?}");
+        assert!(new_status.keys().all(|status| status == "triage" || status == "new"), "{new_status:?}");
+        assert!(tickets.iter().filter(|t| matches!(raw_type[&t.id].to_ascii_lowercase().as_str(), "bug" | "flake")).all(|t| t.kind == "fix"));
+        // The bulk move on a scratch copy: New holds 0 after it.
+        let (project, base) = scratch("starminer");
+        fs::write(project.tickets_file(), &text).unwrap();
+        let ids: Vec<String> = tickets.iter().filter(|t| t.status == NEW).map(|t| t.id.clone()).collect();
+        let after = ticket_move_all(cwd(&project), ids.clone(), BACKLOG.into()).unwrap();
+        let left = after.iter().filter(|t| t.status == NEW).count();
+        println!("bulk move of {} New tickets to Backlog on a scratch copy: {left} left in New", ids.len());
+        counts("per column after the bulk move", after.iter().map(|t| t.status.clone()).collect());
+        assert_eq!(left, 0);
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]

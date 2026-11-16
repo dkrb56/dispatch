@@ -236,6 +236,11 @@ pub fn ticket_move(cwd: String, id: String, status: String, ids: Vec<String>, no
 }
 
 #[tauri::command(async)]
+pub fn ticket_move_all(cwd: String, ids: Vec<String>, status: String) -> Result<Vec<Ticket>, String> {
+    tickets::ticket_move_all(cwd, ids, status)
+}
+
+#[tauri::command(async)]
 pub fn task_approve(cwd: String, id: String) -> Result<String, String> {
     pipeline::task_approve(cwd, id)
 }

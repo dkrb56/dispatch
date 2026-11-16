@@ -1,17 +1,18 @@
 // The tickets of a project (ticket tickets): `task_list` gives them from `.dispatch/tickets.jsonl`.
 // Each message of the user becomes a ticket in New, unless it is a command of Claude Code. New is the
 // queue (ticket auto-todo): Dispatch sends the first New ticket of a project to triage when triage
-// is free, one at a time, unless the project is paused. No imports and no access to the page, so a
+// is free, one at a time, unless the project is paused. Backlog holds the tickets that Dispatch never
+// sends (ticket tickets-backlog): the user moves them to New. No imports and no access to the page, so a
 // test can load this file with Node (tests/tickets.test.ts).
 
 /** The columns of the board, as the field `status` of a ticket. */
-export type TicketStatus = "new" | "in-progress" | "done" | "canceled";
+export type TicketStatus = "backlog" | "new" | "in-progress" | "done" | "canceled";
 
 /** One ticket, as `task_list` gives it (`tickets::Ticket` in Rust). */
 export interface Ticket {
   id: string;
   title: string;
-  /** `fix`, `feature`, `refactor` or `content`. */
+  /** `fix`, `feature`, `refactor` or `content`; the backend maps the types of other tools to them. */
   type: string;
   /** The words of the user, as the box sent them: the paths of pasted images first. */
   summary: string;
@@ -28,8 +29,9 @@ export interface Ticket {
   renamed: boolean;
 }
 
-/** The four columns of the board, in their order (user decision 1 of auto-todo: Todo went). */
+/** The five columns of the board, in their order: Backlog first, left of New (ticket tickets-backlog, user decision 6). */
 export const COLUMNS: readonly { status: TicketStatus; name: string }[] = [
+  { status: "backlog", name: "Backlog" },
   { status: "new", name: "New" },
   { status: "in-progress", name: "In progress" },
   { status: "done", name: "Done" },
@@ -37,17 +39,18 @@ export const COLUMNS: readonly { status: TicketStatus; name: string }[] = [
 ];
 
 /** The columns that take a ticket by a drag or a button: In progress follows the task. */
-export const DROP_COLUMNS: readonly TicketStatus[] = ["new", "done", "canceled"];
+export const DROP_COLUMNS: readonly TicketStatus[] = ["backlog", "new", "done", "canceled"];
 
 /** The end word of a ticket that the user dropped on Done; the task read leaves it there (`USER_DONE` in tickets.rs). */
 export const USER_DONE = "done by hand";
 
 /**
- * A card drags: a New ticket that did not go to triage, a Canceled one, and one that the user put on
- * Done. A ticket of a running task, or a Done one of a task, does not: the task moves it.
+ * A card drags: a New ticket that did not go to triage, a Backlog one, a Canceled one, and one that
+ * the user put on Done. A ticket of a running task, or a Done one of a task, does not: the task moves it.
  */
 export function canDrag(ticket: Pick<Ticket, "status" | "note">, inFlight: boolean): boolean {
   if (ticket.status === "new") return !inFlight;
+  if (ticket.status === "backlog") return true;
   if (ticket.status === "canceled") return true;
   return ticket.status === "done" && ticket.note === USER_DONE;
 }
@@ -68,6 +71,20 @@ export function dropIds(queue: readonly string[], shownIds: readonly string[], i
 /** A drop changes something: the column of the ticket, or the order of the queue of New (`before`). */
 export function dropChanges(ticket: Pick<Ticket, "status">, status: TicketStatus, ids: readonly string[], before: readonly string[]): boolean {
   return status !== ticket.status || (status === "new" && ids.join("\n") !== before.join("\n"));
+}
+
+/**
+ * The ids that a head button of a column moves at once (ticket tickets-backlog): the shown cards of
+ * the column (`shown`, after the search) in their order, without the tickets in flight.
+ */
+export function bulkIds<T extends Pick<Ticket, "id" | "status" | "order" | "created" | "updated">>(
+  shown: readonly T[],
+  status: TicketStatus,
+  inFlight: readonly string[],
+): string[] {
+  return columnTickets(shown, status)
+    .map((ticket) => ticket.id)
+    .filter((id) => !inFlight.includes(id));
 }
 
 /** The localStorage key of the size of the tickets window. */
