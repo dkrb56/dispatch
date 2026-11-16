@@ -4660,6 +4660,64 @@ button.task-head:hover {
   cursor: default;
 }
 
+/* The Ask box of the Decisions window (ticket i-need-an-option-to-discuss-tasks): the question goes
+   to the triage chat. Each footer button stands over its hint line. */
+#decisions-ask-box {
+  flex: 1 1 100%;
+}
+
+#decisions-ask-about {
+  margin-bottom: 4px;
+  color: var(--muted);
+}
+
+#decisions-ask-text {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+#decisions-ask-text:focus {
+  border-color: var(--accent-line);
+  outline: none;
+}
+
+.decisions-action {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 160px;
+}
+
+.decisions-hint {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  line-height: 1.35;
+}
+
+.decision-title .decision-ask {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--muted);
+  font: inherit;
+  font-size: calc(11px * var(--text-scale));
+  cursor: pointer;
+}
+
+.decision-title .decision-ask:hover {
+  color: var(--text);
+}
+
 /* The Context section of the side panel: the table of /context of the session, as a bar and rows. */
 .context-head {
   display: flex;

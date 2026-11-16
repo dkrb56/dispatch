@@ -147,7 +147,7 @@ test("the button Approve with these decisions is green", () => {
 test("the two rules meet the elements of the window", () => {
   const footer = /<footer id="decisions-footer">([\s\S]*?)<\/footer>/.exec(HTML)?.[1];
   assert.ok(footer, "index.html has the footer decisions-footer");
-  assert.match(footer, /<button id="decisions-approve" class="primary"[^>]*>Approve with these decisions<\/button>/);
+  assert.match(footer, /<button id="decisions-approve" class="primary"[^>]*>Approve and start the work<\/button>/);
   assert.match(MAIN, /options\.className = "decision-options";/);
   assert.match(MAIN, /button\.classList\.toggle\("selected", at === index\)/);
 });

@@ -70,6 +70,7 @@ import { PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { HOLD_NOTE, holdWait } from "./holdstep";
+import { type AskDecision, askAbout, askBlocked, askLine } from "./discuss";
 import { chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
@@ -4140,6 +4141,13 @@ function planCard(task: Task): HTMLElement {
     decide.addEventListener("click", () => openDecisions(task));
     actions.append(decide);
   }
+  // A question about the plan before Approve or Reject (ticket i-need-an-option-to-discuss-tasks):
+  // the Decisions window opens with its Ask box, also for a plan without decisions.
+  const ask = document.createElement("button");
+  ask.textContent = "Ask";
+  ask.title = "Ask triage about this plan. The window opens with a box for your question; nothing changes";
+  ask.addEventListener("click", () => openDecisions(task, true));
+  actions.append(ask);
   actions.append(reject);
   card.append(actions);
   // The script refuses an approval while the project has uncommitted changes, and one work run
@@ -4313,6 +4321,19 @@ const decisionsDialog = document.querySelector<HTMLDialogElement>("#decisions")!
 /** The task whose decisions the window shows. */
 let decisionsTask: Task | null = null;
 
+/** A pick of the Decisions window: the index of the selected option, or the text under Other. */
+type DecisionPick = { index: number } | { own: string };
+/**
+ * The picks of the Decisions window by `queueKey`, with the time of the plan file they belong to
+ * (ticket i-need-an-option-to-discuss-tasks, user decision 4): a close keeps them, so the user can ask
+ * and come back. A new plan time drops them. Memory only.
+ */
+const decisionPicks = new Map<string, { modified: number; picks: Map<number, DecisionPick> }>();
+/** The decision that the Ask box is about, or undefined for the whole plan. */
+let askDecision: AskDecision | undefined;
+/** The task whose question stands in the Ask box: another task starts with an empty box. */
+let askTask: string | null = null;
+
 /**
  * Why the work run of a task cannot start now, or an empty text: another work run that edits the
  * project, or uncommitted changes. An Approve then waits for it (`approveOrQueue`). The running
@@ -4345,9 +4366,17 @@ function waitFacts(task: Task): WaitFacts {
   return { editing: editing && editing !== task.name ? editing : null, dirty: task.project?.dirty ?? dirtyLines, merging, paused };
 }
 
-/** Opens the Decisions window of a task: each decision with its options as buttons and an Other box. */
-function openDecisions(task: Task): void {
+/**
+ * Opens the Decisions window of a task: each decision with its options as buttons and an Other box.
+ * With `ask` the cursor goes into the Ask box.
+ */
+function openDecisions(task: Task, ask = false): void {
   decisionsTask = task;
+  const stored = decisionPicks.get(queueKey(task));
+  const picks = stored && stored.modified === task.info?.plan?.modified ? stored.picks : undefined;
+  if (askTask !== task.name) decisionsAskText().value = "";
+  askTask = task.name;
+  askDecision = undefined;
   const decisions = [...(task.info?.decisions ?? [])].sort((a, b) => Number(b.hold) - Number(a.hold) || a.number - b.number);
   const waiting = decisions.filter((decision) => decision.hold).length;
   document.querySelector("#decisions-title")!.textContent =
@@ -4391,6 +4420,13 @@ function openDecisions(task: Task): void {
         title.append(badge);
       }
       title.append(`${decision.number}. ${decision.title}`);
+      // The question names this decision (user decision 3).
+      const askThis = document.createElement("button");
+      askThis.className = "decision-ask";
+      askThis.textContent = "Ask about this";
+      askThis.title = "Ask triage about this decision: type your question in the box at the bottom";
+      askThis.addEventListener("click", () => setAskDecision({ number: decision.number, name: decisionName(decision) }));
+      title.append(askThis);
       const options = document.createElement("div");
       options.className = "decision-options";
       const reason = document.createElement("div");
@@ -4423,7 +4459,11 @@ function openDecisions(task: Task): void {
         options.append(button);
       });
       other.addEventListener("input", () => select(other.value.trim() ? -1 : 0));
-      select(0);
+      const pick = picks?.get(decision.number);
+      if (pick && "own" in pick) {
+        other.value = pick.own;
+        select(-1);
+      } else select(pick && pick.index < decision.options.length ? pick.index : 0);
       block.append(title, options, reason, other);
       return block;
     }),
@@ -4432,6 +4472,49 @@ function openDecisions(task: Task): void {
   // After showModal: the footer is filled only for an open window.
   updateDecisionsFooter();
   body.scrollTop = 0;
+  if (ask) decisionsAskText().focus();
+}
+
+function decisionsAskText(): HTMLTextAreaElement {
+  return document.querySelector<HTMLTextAreaElement>("#decisions-ask-text")!;
+}
+
+/** Points the Ask box at one decision, or at the whole plan, and puts the cursor into it. */
+function setAskDecision(decision: AskDecision | undefined): void {
+  askDecision = decision;
+  document.querySelector("#decisions-ask-about")!.textContent = askAbout(decision);
+  decisionsAskText().focus();
+}
+
+/** Keeps the picks of the window for its plan time (user decision 4). */
+function saveDecisionPicks(task: Task): void {
+  const picks = new Map<number, DecisionPick>();
+  for (const decision of task.info?.decisions ?? []) {
+    const block = decisionsDialog.querySelector<HTMLElement>(`.decision[data-number="${decision.number}"]`);
+    if (!block) continue;
+    const own = block.querySelector<HTMLInputElement>(".decision-other")?.value.trim() ?? "";
+    const index = [...block.querySelectorAll(".decision-options button")].findIndex((button) => button.classList.contains("selected"));
+    if (own) picks.set(decision.number, { own });
+    else if (index >= 0) picks.set(decision.number, { index });
+  }
+  decisionPicks.set(queueKey(task), { modified: task.info?.plan?.modified ?? 0, picks });
+}
+
+/**
+ * Sends the question of the Ask box to the triage chat of the project as a line (user decision 1),
+ * closes the window and shows that chat, where the answer comes. It approves nothing.
+ */
+function sendPlanQuestion(task: Task): void {
+  const project = projectFor(taskHost(task), taskCwd(task));
+  const pane = triagePane(project);
+  if (!pane) return updateDecisionsFooter();
+  tellTriage(project, askLine(task.name, decisionsAskText().value, askDecision));
+  decisionsAskText().value = "";
+  askDecision = undefined;
+  decisionsDialog.close();
+  showTriageView(pane, "chat");
+  if (!focusOn && !mapOn && !overviewOn) activate(pane.tabId);
+  pane.chat?.focus();
 }
 
 /** The answers of the window: the selected option of each decision, or the text under Other. */
@@ -4456,11 +4539,30 @@ function updateDecisionsFooter(): void {
   const error = actionErrors.get(decisionsTask.name) ?? "";
   document.querySelector("#decisions-reason")!.textContent = [busy ? "A click of this task is still running." : wait, error].filter(Boolean).join("\n");
   document.querySelector<HTMLButtonElement>("#decisions-approve")!.disabled = busy;
-  document.querySelector<HTMLButtonElement>("#decisions-revise")!.disabled = busy;
+  // A plan without decisions goes back through Reject on its card, with a reason.
+  const none = (decisionsTask.info?.decisions ?? []).length === 0;
+  footerButton("#decisions-revise", busy || none, none ? "This plan has no decisions. Use Reject on the plan card to send it back with your reason" : "");
+  const blocked = askBlocked(triagePane(projectFor(taskHost(decisionsTask), taskCwd(decisionsTask))) !== null);
+  footerButton("#decisions-ask", blocked !== "", blocked);
+  document.querySelector("#decisions-ask-about")!.textContent = askAbout(askDecision);
+}
+
+/** Greys a footer button; a reason replaces its tooltip, and without one the tooltip of index.html comes back. */
+function footerButton(selector: string, disabled: boolean, reason: string): void {
+  const button = document.querySelector<HTMLButtonElement>(selector)!;
+  button.dataset.title ??= button.title;
+  button.disabled = disabled;
+  button.title = reason || button.dataset.title;
 }
 
 function initDecisions(): void {
   document.querySelector("#decisions-close")!.addEventListener("click", () => decisionsDialog.close());
+  decisionsDialog.addEventListener("close", () => {
+    if (decisionsTask) saveDecisionPicks(decisionsTask);
+  });
+  document.querySelector("#decisions-ask")!.addEventListener("click", () => {
+    if (decisionsTask) sendPlanQuestion(decisionsTask);
+  });
   decisionsDialog.addEventListener("click", (event) => {
     if (event.target === decisionsDialog) decisionsDialog.close();
   });

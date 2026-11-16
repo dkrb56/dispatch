@@ -161,12 +161,27 @@
         Each decision shows its options; the recommended one is selected. Decisions marked <b>Waits for you</b> are HOLD:
         only you take them. Click another option, or type your own answer under Other.
         Dispatch only writes your choice into the plan. If it names a step, like a line in a file, you do that step yourself.
+        Not sure? Click <b>Ask about this</b> at a decision, or type your question at the bottom: triage answers in its chat.
       </p>
       <div id="decisions-body"></div>
       <footer id="decisions-footer">
+        <div id="decisions-ask-box">
+          <div id="decisions-ask-about">Your question about this plan</div>
+          <textarea id="decisions-ask-text" rows="2" placeholder="Type your question. Leave it empty and triage explains in plain words."></textarea>
+        </div>
         <div id="decisions-reason"></div>
-        <button id="decisions-approve" class="primary" title="Write these decisions into the plan and start the work run, at once or when the project is free">Approve with these decisions</button>
-        <button id="decisions-revise" title="Send these decisions to the planner, which revises the plan; the card comes back">Send back to the planner</button>
+        <div class="decisions-action">
+          <button id="decisions-ask" title="Send your question to the triage chat. It approves nothing and changes nothing">Ask triage about this plan</button>
+          <div class="decisions-hint">Not sure? Ask first. Triage answers in its chat. Nothing changes.</div>
+        </div>
+        <div class="decisions-action">
+          <button id="decisions-revise" title="Send these choices to the planner, which writes the plan again; the card comes back for a new look">Revise the plan with my choices</button>
+          <div class="decisions-hint">The planner writes the plan again with your choices. The card comes back.</div>
+        </div>
+        <div class="decisions-action">
+          <button id="decisions-approve" class="primary" title="Write these choices into the plan and start the work run, at once or when the project is free">Approve and start the work</button>
+          <div class="decisions-hint">Your choices go into the plan. The work starts.</div>
+        </div>
       </footer>
     </dialog>
     <dialog id="questions">
@@ -694,7 +709,8 @@
             <li>A message that you send to triage is a ticket first (see Tickets). When Dispatch sends a New ticket, it shows as a <b>temporary card</b> with a dashed edge: the title of the ticket, the time, and "Sent to triage", then "Triage reads" while triage works on it.</li>
             <li>The temporary card stands where the new task will stand. When triage starts the plan run, the real task card takes its place. When triage answers without a task, the card goes a few seconds after the answer, or at the latest after 10 minutes. The card stays when you close and open Dispatch. It has no buttons and starts no worker.</li>
             <li><b>Approve all</b> also takes the HOLD decisions, writes the options into the plan under "User decisions", and starts the work run. A plan without decisions shows <b>Approve</b>. A task that waits for you is first in the list.</li>
-            <li>The Decisions window starts with your words from the brief, the Goal and the <b>TL;DR</b> of the plan. Click an option, or type your own answer under Other. Then click <b>Approve with these decisions</b>, or <b>Send back to the planner</b> to revise the plan with them.</li>
+            <li>The Decisions window starts with your words from the brief, the Goal and the <b>TL;DR</b> of the plan. Click an option, or type your own answer under Other. Then click <b>Approve and start the work</b>, or <b>Revise the plan with my choices</b>: the planner writes the plan again with them, and the card comes back. A line under each button says what happens.</li>
+            <li>Not sure about a decision? Click <b>Ask about this</b> at the decision, or <b>Ask</b> on the plan card, and type your question in the box at the bottom of the window. <b>Ask triage about this plan</b> sends it to the triage chat, and the answer shows there. An Ask approves nothing and changes nothing. Your picks in the window stay until the plan changes or Dispatch restarts.</li>
             <li>Approve is grey while the project has uncommitted changes or another work run of the project runs; the reason shows below it.</li>
             <li>Your answer goes to the worker word for word, with the number of the question in front. With several questions each click is a choice: the chosen option is marked, and another click changes it. When every question has a choice, the answers go to the worker together in one reply.</li>
             <li>When a worker leaves an answered question in its report, the card shows no buttons for it again. It says what you answered and offers <b>Continue</b>, <b>Send the answer again</b> or <b>Stop</b>. Triage hears about your answer once. A changed question or a new question shows its buttons as before.</li>

@@ -267,7 +267,7 @@ test("the tickets meet the page: the commands, the board, the dispatcher, the bo
   const help = HTML.slice(HTML.indexOf("<h3>Tickets</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
   for (const name of ["Backlog", "New", "In progress", "Done", "Canceled", "five columns", "All → Backlog", "All → New", "yellow !", "<b>Chat</b>", "tickets.jsonl", "Ticket &lt;id&gt;: &lt;title&gt;"]) assert.ok(help.includes(name), name);
   for (const name of ["<b>Drag a card.</b>", "on Backlog, New, Done or Canceled", "done by hand", "does not drag", "bottom-right corner", "keeps the size", "double-click"]) assert.ok(help.includes(name), name);
-  for (const gone of ["<b>Todo</b>", "→ Todo", "Ask triage", "Questions go at once"]) assert.ok(!HTML.includes(gone), gone);
+  for (const gone of ["<b>Todo</b>", "→ Todo", "<b>Ask triage</b>", "Questions go at once"]) assert.ok(!HTML.includes(gone), gone);
   assert.doesNotMatch(HTML, /<b>Planned/);
 });
 
