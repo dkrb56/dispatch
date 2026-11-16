@@ -2,6 +2,12 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.66 (2026-11-16)
+- The Decisions window gets an Ask box. Click Ask about this at a decision, or Ask on the plan card, and type your question; Ask triage about this plan sends it to the triage chat, and the answer shows there. An Ask approves nothing and changes nothing. The buttons now read Ask triage about this plan, Revise the plan with my choices and Approve and start the work, each with a line that says what happens. Your picks in the window stay until the plan changes.
+- A project has one triage chat, however many windows of the same host show it. A second window shows the chat of the first, and you can type in either. When the chat ends, one click on Start triage continues the same chat. A New ticket goes to triage only once, also with two windows open. When the host of this PC runs but a window does the work of this PC itself, a bar offers Use the host.
+- An uncommitted change now holds only the task whose files it touches. Changes in other files no longer stop a work run from starting, a switch back to your branch or a merge. The card names only the files of the task: commit, stash or undo them to go on. A worker commits only its own files, and on a task branch it commits them as WIP when it stops with a question or fails.
+- Plans and worker questions now ask in everyday words: what changes for you, without names from the code, with short questions and short buttons. A project gets this rule after Setup pipeline → Apply.
+
 ## 0.1.65 (2026-11-16)
 - When a decision that waits for you names a step, such as a file or folder that must leave the working tree before the start, Dispatch now says that it does not do that step. The task card, the task row and the Decisions window show your choice and what to do: do the step yourself, or commit or stash the change. The Decisions window also shows this note under each option that waits for you.
 
