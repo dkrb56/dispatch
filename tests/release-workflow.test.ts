@@ -40,7 +40,7 @@ test("the Windows job makes the NSIS installer and the macOS job the universal d
 test("the release gets the two files that the update check looks for", () => {
   assert.match(WORKFLOW, /path: src-tauri\/target\/release\/bundle\/nsis\/\*-setup\.exe$/m);
   assert.match(WORKFLOW, /path: src-tauri\/target\/universal-apple-darwin\/release\/bundle\/dmg\/\*\.dmg$/m);
-  assert.match(WORKFLOW, /gh release upload "\$tag" files\/\*-setup\.exe files\/\*\.dmg /);
+  assert.match(WORKFLOW, /gh release upload "\$tag" files\/\* --repo /);
   assert.match(WORKFLOW, /needs: \[windows, macos\]/);
 });
 
