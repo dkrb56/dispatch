@@ -116,3 +116,23 @@ export function fileRowTitle(label: string, path: string, state: string | null):
   if (!state) return open;
   return `${open}\nThe ${label.toLowerCase()} file. The task script says: ${state}`;
 }
+
+/**
+ * The state chip of the report row (ticket report-answered-chip). A report that waits for the user
+ * (needs a decision or a permission) and that the user answered in Dispatch shows "answered" with
+ * the neutral look, until the worker writes its new report: a new report has a new time, so the
+ * answer no longer matches it and the row shows its state again. `live` says that a worker of the
+ * task runs; without it the tooltip says that the worker ended without a new report. Without a
+ * state the row has no chip.
+ */
+export function reportChip(state: string | null, needs: string | null, answered: boolean, live: boolean): RunChip | null {
+  const waits = needs === "decision" || needs === "permission" || state === "needs-decision";
+  if (answered && waits) {
+    const title = live
+      ? "You answered this report in Dispatch. The answer went to the worker; this row shows the new report when the worker writes it."
+      : "You answered this report in Dispatch. The worker ended without a new report; the run row shows how the run ended.";
+    return { text: "answered", cls: "answered", title };
+  }
+  if (!state) return null;
+  return { text: state, cls: state, title: "" };
+}

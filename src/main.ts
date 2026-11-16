@@ -61,7 +61,7 @@ import { agentListShown, asksAgain, backKey, BACK_TITLE, LIST_TITLE } from "./ag
 import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, type FileInfo, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
-import { agentsText, fileRowTitle, rowParts, runChip, type RunChip, runCostText, runTokensTitle, tokenText } from "./workerrow";
+import { agentsText, fileRowTitle, reportChip, rowParts, runChip, type RunChip, runCostText, runTokensTitle, tokenText } from "./workerrow";
 import { announcements, parseEnded, serializeEnded } from "./announce";
 import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, type FailedEnds, oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
 import { barItems, currentProject, detailsProjects, groupCount, pillCount } from "./topbar";
@@ -2352,7 +2352,7 @@ function eyeIcon(): SVGSVGElement {
  * A row for the plan or the report of a task. `chip` is the state that the file carries (the
  * report's state); `state` is the state of the task script, which only the tooltip shows.
  */
-function fileRow(label: string, file: FileEntry, chip: string | null, state: string | null): HTMLElement {
+function fileRow(label: string, file: FileEntry, chip: string | null, state: string | null, chipTitle = ""): HTMLElement {
   const row = document.createElement("button");
   row.className = "chat report";
   row.title = fileRowTitle(label, file.path, state);
@@ -2365,6 +2365,7 @@ function fileRow(label: string, file: FileEntry, chip: string | null, state: str
     const made = document.createElement("span");
     made.className = `chip ${chip}`;
     made.textContent = chip;
+    if (chipTitle) made.title = chipTitle;
     when.append(made);
   }
   when.append(document.createTextNode(chatTime(file.modified)));
@@ -6706,10 +6707,13 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     const info = task.info;
     // The plan row is a file, so it has no chip: a chip there read as a second run (task-plan-row-chip).
     // The state of the script stands in the header of the card and in the tooltip of the plan row.
-    // The report row carries the report's state.
+    // The report row carries the report's state, or "answered" after an answer in Dispatch until the new report (ticket report-answered-chip).
     if (info?.plan) body.append(fileRow("Plan", info.plan, null, info.state || null));
     if (info?.report) {
-      const report = fileRow("Report", info.report, info.header?.state ?? null, null);
+      const answered = answeredReports.get(task.name)?.modified === info.report.modified;
+      const live = task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
+      const chip = reportChip(info.header?.state ?? null, info.header?.needs ?? null, answered, live);
+      const report = fileRow("Report", info.report, chip?.text ?? null, null, chip?.title ?? "");
       // A done report without evidence for its claims gets a second chip with their count (ticket report-check).
       if (reportUnverified(task)) {
         const claims = info.unverified ?? [];

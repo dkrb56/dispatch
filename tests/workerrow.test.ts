@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { agentsText, fileRowTitle, rowParts, runChip, runCostText, runModelText, runTokensText, runTokensTitle, tokenText } from "../src/workerrow.ts";
+import { agentsText, fileRowTitle, reportChip, rowParts, runChip, runCostText, runModelText, runTokensText, runTokensTitle, tokenText } from "../src/workerrow.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 const HTML = read("../index.html");
@@ -72,7 +72,7 @@ test("the plan row of a task card has no chip; its tooltip has the state; the re
   // The row of the screenshot of the ticket: "Plan · Working" next to "Work run · Working".
   assert.doesNotMatch(MAIN, /fileRow\("Plan", info\.plan, info\.report \? null : info\.state/);
   assert.match(MAIN, /fileRow\("Plan", info\.plan, null, info\.state \|\| null\)/);
-  assert.match(MAIN, /fileRow\("Report", info\.report, info\.header\?\.state \?\? null, null\)/);
+  assert.match(MAIN, /fileRow\("Report", info\.report, chip\?\.text \?\? null, null, chip\?\.title \?\? ""\)/);
   assert.match(MAIN, /row\.title = fileRowTitle\(label, file\.path, state\)/);
 });
 
@@ -258,4 +258,46 @@ test("the ended chip meets the page: the run row takes its chip from runChip; th
   assert.doesNotMatch(CSS, /\.chip\.ended/);
   assert.match(HTML, /shows <b>Ended<\/b> in grey: the run ended normally\. <b>Stopped<\/b> stays red for a task that you stopped/);
   assert.match(HTML, /The card of the task then shows the run as <b>Ended<\/b>\./);
+});
+
+// Ticket report-answered-chip: after an answer or Continue in Dispatch, the report row says
+// "answered" until the worker writes its new report, not the "needs-decision" of the old report.
+test("report chip: an answered report with a running worker shows answered", () => {
+  const chip = reportChip("needs-decision", "decision", true, true);
+  assert.equal(chip?.text, "answered");
+  assert.equal(chip?.cls, "answered");
+  assert.match(chip?.title ?? "", /went to the worker/);
+  assert.match(chip?.title ?? "", /new report/);
+});
+
+test("report chip: a new report has another time, so the row shows its state again", () => {
+  // The answer matched the old report time; the new report does not match it, so answered is false.
+  assert.deepEqual(reportChip("done", "nothing", false, false), { text: "done", cls: "done", title: "" });
+  assert.deepEqual(reportChip("needs-decision", "decision", false, true), { text: "needs-decision", cls: "needs-decision", title: "" });
+});
+
+test("report chip: a waiting report without an answer shows needs-decision, as before", () => {
+  assert.deepEqual(reportChip("needs-decision", "decision", false, false), { text: "needs-decision", cls: "needs-decision", title: "" });
+});
+
+test("report chip: an answered report whose worker ended without a new report stays answered", () => {
+  // User decision 3: still Answered; the tooltip says that no new report came.
+  const chip = reportChip("needs-decision", "decision", true, false);
+  assert.equal(chip?.text, "answered");
+  assert.match(chip?.title ?? "", /ended without a new report/);
+});
+
+test("report chip: a permission report with Continue sent shows answered", () => {
+  assert.equal(reportChip("failed", "permission", true, true)?.text, "answered");
+  assert.equal(reportChip("needs-decision", "permission", true, true)?.text, "answered");
+});
+
+test("report chip: a done report ignores the answer flag; no state gives no chip", () => {
+  assert.deepEqual(reportChip("done", "nothing", true, false), { text: "done", cls: "done", title: "" });
+  assert.equal(reportChip(null, null, false, false), null);
+});
+
+test("report chip: main.ts uses the rule for the report row, and the Help names Answered", () => {
+  assert.match(MAIN, /reportChip\(info\.header\?\.state/);
+  assert.match(HTML, /the report row shows Answered until the worker writes its new report/);
 });
