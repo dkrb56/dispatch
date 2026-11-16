@@ -1,6 +1,6 @@
 //! The WebSocket service: one listener per address, one task per connection. A connection must
 //! start with a hello that has this protocol and the key; then each call runs on the blocking pool
-//! of tokio and its reply goes back through the writer of the connection, which also carries the
+//! of tokio (the keys and the size of a terminal in their order, see `in_order`) and its reply goes back through the writer of the connection, which also carries the
 //! events of the window's terminals in their order.
 
 use std::collections::HashMap;
@@ -12,7 +12,7 @@ use futures_util::stream::SplitStream;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Map, Value};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::unbounded_channel;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Message;
@@ -132,6 +132,7 @@ async fn connection(stream: TcpStream, peer: SocketAddr, host: Arc<Host>) {
 async fn calls_loop(mut read: SplitStream<Socket>, host: &Arc<Host>, window: &str, tx: &Sender) {
     // `image_save` calls that wait for their binary frame.
     let mut waiting: HashMap<u32, Map<String, Value>> = HashMap::new();
+    let lanes = Lanes::new();
     while let Some(Ok(message)) = read.next().await {
         match message {
             Message::Text(text) => match protocol::parse(&text) {
@@ -140,7 +141,7 @@ async fn calls_loop(mut read: SplitStream<Socket>, host: &Arc<Host>, window: &st
                     if command == "image_save" {
                         waiting.insert(id, args);
                     } else {
-                        start_call(host, window, tx, id, command, args, None);
+                        start_call(host, &lanes, window, tx, id, command, args, None);
                     }
                 }
                 Ok(Incoming::Hello { .. }) => {
@@ -152,7 +153,7 @@ async fn calls_loop(mut read: SplitStream<Socket>, host: &Arc<Host>, window: &st
             },
             Message::Binary(frame) => match protocol::split_binary(&frame) {
                 Ok((id, body)) => match waiting.remove(&id) {
-                    Some(args) => start_call(host, window, tx, id, "image_save".into(), args, Some(body.to_vec())),
+                    Some(args) => start_call(host, &lanes, window, tx, id, "image_save".into(), args, Some(body.to_vec())),
                     None => {
                         let _ = tx.send(Out::Text(protocol::reply_error(id, "no call waits for these bytes")));
                     }
@@ -169,6 +170,7 @@ async fn calls_loop(mut read: SplitStream<Socket>, host: &Arc<Host>, window: &st
 
 fn start_call(
     host: &Arc<Host>,
+    lanes: &Lanes,
     window: &str,
     tx: &Sender,
     id: u32,
@@ -178,18 +180,88 @@ fn start_call(
 ) {
     let host = host.clone();
     let window = window.to_string();
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        let result = tokio::task::spawn_blocking(move || {
-            calls::run(&host.core, &host.clients, &window, &command, &args, body.as_deref())
-        })
-        .await;
-        let out = match result {
-            Ok(Ok(Reply::Json(value))) => Out::Text(protocol::reply_value(id, value)),
-            Ok(Ok(Reply::Bytes(bytes))) => Out::Binary(protocol::binary(id, &bytes)),
-            Ok(Err(error)) => Out::Text(protocol::reply_error(id, &error)),
-            Err(e) => Out::Text(protocol::reply_error(id, &format!("the call failed: {e}"))),
-        };
-        let _ = tx.send(out);
-    });
+    let lane = command.clone();
+    lanes.run(&lane, id, tx, Box::new(move || {
+        match calls::run(&host.core, &host.clients, &window, &command, &args, body.as_deref()) {
+            Ok(Reply::Json(value)) => Out::Text(protocol::reply_value(id, value)),
+            Ok(Reply::Bytes(bytes)) => Out::Binary(protocol::binary(id, &bytes)),
+            Err(error) => Out::Text(protocol::reply_error(id, &error)),
+        }
+    }));
+}
+
+/// A call of a window on the blocking pool; it gives the frame of its reply.
+type Job = Box<dyn FnOnce() -> Out + Send + 'static>;
+
+/// The calls that type into a terminal or change its size. They run one after the other, in the
+/// order of their frames, as the commands of the app do on its main thread (ticket
+/// terminal-first-letter-stuck: one task per call let a Backspace overtake its letter).
+fn in_order(command: &str) -> bool {
+    matches!(command, "pty_write" | "pty_resize")
+}
+
+/// Starts the calls of one connection on the blocking pool of tokio and sends each reply: the
+/// calls of `in_order` one after the other through one queue, the other calls at once.
+struct Lanes {
+    ordered: UnboundedSender<(u32, Sender, Job)>,
+}
+
+impl Lanes {
+    fn new() -> Self {
+        let (ordered, mut queue) = unbounded_channel::<(u32, Sender, Job)>();
+        // The queue ends when the connection drops its lanes, after the calls that still wait.
+        tokio::spawn(async move {
+            while let Some((id, tx, job)) = queue.recv().await {
+                let _ = tx.send(finish(id, tokio::task::spawn_blocking(job).await));
+            }
+        });
+        Lanes { ordered }
+    }
+
+    fn run(&self, command: &str, id: u32, tx: &Sender, job: Job) {
+        if in_order(command) {
+            let _ = self.ordered.send((id, tx.clone(), job));
+            return;
+        }
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let _ = tx.send(finish(id, tokio::task::spawn_blocking(job).await));
+        });
+    }
+}
+
+/// The reply of a job, or the error of a job that panicked.
+fn finish(id: u32, result: Result<Out, tokio::task::JoinError>) -> Out {
+    result.unwrap_or_else(|e| Out::Text(protocol::reply_error(id, &format!("the call failed: {e}"))))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Ticket terminal-first-letter-stuck: keys that a window sends together (a letter, then
+    /// Backspace) reach the terminal in the order of their frames. One task per call let a
+    /// Backspace overtake its letter, and the letter stayed on the line.
+    #[test]
+    fn the_keys_of_a_window_run_in_their_order() {
+        let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        runtime.block_on(async {
+            let (tx, mut rx) = unbounded_channel::<Out>();
+            let lanes = Lanes::new();
+            for n in 0..200u32 {
+                let seen = seen.clone();
+                let command = if n % 10 == 9 { "pty_resize" } else { "pty_write" };
+                lanes.run(command, n, &tx, Box::new(move || {
+                    seen.lock().unwrap().push(n);
+                    Out::Text(String::new())
+                }));
+            }
+            for _ in 0..200 {
+                rx.recv().await.unwrap();
+            }
+        });
+        assert_eq!(*seen.lock().unwrap(), (0..200).collect::<Vec<u32>>());
+    }
 }
