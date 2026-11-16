@@ -3380,9 +3380,11 @@ fn task_files(project: &Project, ticket: &str, branch: Option<&BranchInfo>) -> V
 
 /// Switches the main checkout back to the base of a task whose work run has ended (decision 3 of
 /// task-branches): the report is newer than the state file (a reply makes the state newer), or the
-/// task was stopped. Only while no uncommitted change touches a file of the task (ticket
+/// task was stopped; a report time that the last checkout of the task branch wrote does not count,
+/// and a work run that still runs holds the checkout on the branch (ticket branch-switch-on-reply;
+/// a worker list that Dispatch cannot read holds nothing). Only while no uncommitted change touches a file of the task (ticket
 /// leftover-files-block-tasks); other changes go along with the checkout. Then the newer report of the task
-/// comes from the branch (`report_from_branch`, ticket stale-report-loop), and every task file that
+/// comes from the branch (`report_from_branch`, ticket stale-report-loop), and every other task file that
 /// the task branch changed in `.dispatch` comes onto the base, all in one commit, so the files of all
 /// tasks stay readable and end on the base; the merge brings the rest. A task file that git cannot
 /// take does not stop the others; the note names it. Gives whether it switched and that note, or the
@@ -3391,9 +3393,10 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
     let report = project.reports.join(format!("{ticket}.md"));
     let state_path = project.reports.join(format!("{ticket}.state"));
     let state = fs::read_to_string(&state_path).unwrap_or_default();
-    let ended = state.trim() == "stopped"
-        || matches!((modified(&report), modified(&state_path)), (Some(report), Some(state)) if report >= state)
-        || (report.is_file() && !state_path.is_file());
+    let reported = (matches!((modified(&report), modified(&state_path)), (Some(report), Some(state)) if report >= state)
+        || (report.is_file() && !state_path.is_file()))
+        && !checkout_wrote_report(project, info, ticket, &report);
+    let ended = (state.trim() == "stopped" || reported) && work_run_runs(project, ticket) != Some(true);
     if !ended {
         return Ok((false, String::new()));
     }
@@ -3416,17 +3419,19 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
     // The newer report first: after a merge by hand the diff below no longer lists it.
     let report_path = format!("{TASKS_DIR}/{ticket}.md");
     match report_from_branch(project, ticket, info) {
-        Ok(true) => paths.push(report_path),
+        Ok(true) => paths.push(report_path.clone()),
         Ok(false) => {}
         Err(error) => failed.push(format!("{report_path} ({error})")),
     }
-    // The task files that the branch changed since it left the base.
+    // The task files that the branch changed since it left the base. Only `report_from_branch`
+    // decides the report: an older copy of the branch never comes over a newer report of the base
+    // (ticket branch-switch-on-reply).
     let range = format!("{}...{}", info.base, info.name);
     let changed = run_git(&project.root, &["diff", "--name-status", "--no-renames", &range, "--", TASKS_DIR])?;
     for line in changed.lines() {
         let Some((status, path)) = line.split_once('\t') else { continue };
         let path = path.trim().trim_matches('"').to_string();
-        if paths.contains(&path) {
+        if paths.contains(&path) || path == report_path {
             continue;
         }
         if status.starts_with('D') {
@@ -3480,6 +3485,77 @@ fn report_from_branch(project: &Project, ticket: &str, info: &BranchInfo) -> Res
     }
     run_git(&project.root, &["checkout", &info.name, "--", &path])?;
     Ok(true)
+}
+
+/// Whether the last checkout of the task branch wrote the report file (ticket
+/// branch-switch-on-reply): the newest reflog entry `checkout: moving from <x> to <branch>` changed
+/// the report blob, and the report file is not later, in whole seconds, than that entry. Git writes
+/// the files of a checkout before it moves HEAD, so such a file time comes from the checkout and
+/// not from the worker. No such entry, or a git error: false.
+fn checkout_wrote_report(project: &Project, info: &BranchInfo, ticket: &str, report: &Path) -> bool {
+    let Some(log) = git(&project.root, &["log", "-g", "--date=unix", "--format=%gd%x09%H%x09%gs", "-n", "50", "HEAD"]) else { return false };
+    let entries: Vec<Vec<&str>> = log.lines().map(|line| line.splitn(3, '\t').collect()).filter(|parts: &Vec<&str>| parts.len() == 3).collect();
+    let target = format!(" to {}", info.name);
+    let Some(at) = entries.iter().position(|parts| parts[2].starts_with("checkout: moving from ") && parts[2].trim_end().ends_with(&target)) else { return false };
+    let Some(before) = entries.get(at + 1) else { return false };
+    let Some(second) = entries[at][0].rsplit('{').next().and_then(|time| time.trim_end_matches('}').parse::<u64>().ok()) else { return false };
+    let path = format!("{TASKS_DIR}/{ticket}.md");
+    let blob = |commit: &str| git(&project.root, &["rev-parse", "-q", "--verify", &format!("{commit}:{path}")]).map(|blob| blob.trim().to_string());
+    if blob(entries[at][1]) == blob(before[1]) {
+        return false;
+    }
+    let Some(time) = modified(report).and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()) else { return false };
+    time.as_secs() <= second
+}
+
+/// Whether the work run of a ticket runs (ticket branch-switch-on-reply), from the list of
+/// `claude agents --json --all`. None when Dispatch cannot read the list.
+#[cfg(not(test))]
+fn work_run_runs(project: &Project, ticket: &str) -> Option<bool> {
+    let output = crate::core::info::claude_command().args(["agents", "--json", "--all"]).stdin(Stdio::null()).no_window().output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    worker_runs_in(&String::from_utf8_lossy(&output.stdout), &project.root, ticket)
+}
+
+/// The tests never run the real `claude`: they set the answer per project root. No answer: None.
+#[cfg(test)]
+fn work_run_runs(project: &Project, _ticket: &str) -> Option<bool> {
+    work_run_override().lock().ok()?.get(&project.root).copied()
+}
+
+/// The answers of `work_run_runs` in the tests, by project root.
+#[cfg(test)]
+fn work_run_override() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, bool>> {
+    static RUNS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, bool>>> = std::sync::OnceLock::new();
+    RUNS.get_or_init(Default::default)
+}
+
+/// Whether the work run of a ticket runs, from the JSON of `claude agents --json --all`: the newest
+/// worker named `<ticket> [work]` or `<ticket>` (an older script) whose folder is the project root
+/// (a worker without a folder counts) runs when its state is `working`, or `blocked` with the
+/// status `waiting`. No such worker: false. Bad JSON: None.
+fn worker_runs_in(json: &str, root: &Path, ticket: &str) -> Option<bool> {
+    let sessions: Vec<Value> = serde_json::from_str(json).ok()?;
+    let folder = |path: &str| {
+        let path = path.replace('\\', "/").to_lowercase();
+        let path = path.strip_prefix("//?/").unwrap_or(&path);
+        path.trim_end_matches('/').to_string()
+    };
+    let root = folder(&root.to_string_lossy());
+    let names = [format!("{ticket} [work]"), ticket.to_string()];
+    let text = |session: &Value, key: &str| session.get(key).and_then(Value::as_str).map(str::to_string);
+    let newest = sessions
+        .iter()
+        .filter(|session| text(session, "name").is_some_and(|name| names.contains(&name)))
+        .filter(|session| text(session, "cwd").is_none_or(|cwd| folder(&cwd) == root))
+        .max_by_key(|session| session.get("startedAt").and_then(Value::as_u64).unwrap_or(0));
+    Some(newest.is_some_and(|session| match text(session, "state").as_deref() {
+        Some("working") => true,
+        Some("blocked") => text(session, "status").as_deref() == Some("waiting"),
+        _ => false,
+    }))
 }
 
 /// The branch of a task for the task list, after the return to the base when its work run has ended.
@@ -7172,8 +7248,13 @@ if (args[0] === 'agents') {
         let (project, fake, _) = branch_project("stale-return");
         let base = stale_base_after_a_merge_by_hand(&project, &fake, GATERECORDS);
         let name = format!("task/{GATERECORDS}");
-        // A reply puts the checkout on the branch again; the worker ends its turn with its report.
+        // A reply puts the checkout on the branch again; the worker ends its turn with its report,
+        // later than the checkout (a file time from the checkout counts as no report).
         git_out(&project, &["checkout", "-q", &name]);
+        let report = project.reports.join(format!("{GATERECORDS}.md"));
+        write_file(&report, STOPPED_HERE).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+        fs::File::options().write(true).open(&report).unwrap().set_modified(later).unwrap();
         let first = listed_task(&project, GATERECORDS);
         assert_eq!(first.header.map(|header| header.state).as_deref(), Some("done"));
         assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()), "the read did not switch back");
@@ -7208,6 +7289,127 @@ if (args[0] === 'agents') {
         let branch = listed_branch(&project, "t-1");
         assert!(branch.checked_out, "{branch:?}");
         clean(&project);
+    }
+
+    /// A newer report on the base than on the task branch (ticket branch-switch-on-reply): the worker
+    /// asked, the switch back put the question onto the base, and a newer report came onto the base
+    /// after it. Gives the base, the newer report text and its blob.
+    fn newer_report_on_the_base(project: &Project, fake: &Path) -> (String, String) {
+        plan_and_approve(project, fake, "t-1");
+        let report = project.reports.join("t-1.md");
+        write_file(&report, GATE_QUESTION).unwrap();
+        set_time(&report, 17, 10);
+        set_time(&project.reports.join("t-1.state"), 16, 33);
+        let branch = listed_branch(project, "t-1");
+        assert!(!branch.checked_out && branch.note.is_empty(), "{branch:?}");
+        let base = branch.base;
+        assert_eq!(current_branch(project).as_deref(), Some(base.as_str()));
+        // `report_from_branch` compares commit seconds.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        write_file(&report, &format!("{GATE_QUESTION}\nA newer copy, written on the base.\n")).unwrap();
+        let path = format!("{TASKS_DIR}/t-1.md");
+        git_out(project, &["add", "--", &path]);
+        git_out(project, &["commit", "-q", "-m", "a newer report on the base"]);
+        let newer = report_blob(project, &base, "t-1");
+        assert_ne!(newer, report_blob(project, "task/t-1", "t-1"));
+        (base, newer)
+    }
+
+    /// The count of the commits "Dispatch: task files of t-1" on a branch.
+    fn task_file_commits(project: &Project, rev: &str) -> usize {
+        git_out(project, &["log", "--format=%s", rev]).lines().filter(|line| *line == "Dispatch: task files of t-1").count()
+    }
+
+    #[test]
+    fn a_reply_checkout_that_rewrites_the_report_does_not_switch_back() {
+        let (project, fake, _) = branch_project("reply-checkout");
+        let (base, newer) = newer_report_on_the_base(&project, &fake);
+        let commits = task_file_commits(&project, &base);
+        // The reply writes the state, then checks out the task branch: git writes its older report.
+        let (code, out) = run_script(&project, &fake, "done", &["reply", "t-1", "Answer to question 1: Stop here; the branch stays as committed"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.checked_out, "the read switched back after the checkout of the reply: {branch:?}");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        assert_eq!(report_blob(&project, &base, "t-1"), newer, "the base lost its newer report");
+        assert_eq!(task_file_commits(&project, &base), commits, "the read committed task files onto the base");
+        // The worker then ends with its report: the read switches back and gives it.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let report = project.reports.join("t-1.md");
+        write_file(&report, STOPPED_HERE).unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+        fs::File::options().write(true).open(&report).unwrap().set_modified(later).unwrap();
+        let task = listed_task(&project, "t-1");
+        assert_eq!(task.header.map(|header| header.state).as_deref(), Some("done"));
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()), "the read did not switch back after the report");
+        assert_eq!(report_blob(&project, &base, "t-1"), report_blob(&project, "task/t-1", "t-1"));
+        clean(&project);
+    }
+
+    #[test]
+    fn a_return_keeps_the_newer_report_of_the_base() {
+        let (project, fake, _) = branch_project("return-keeps");
+        let (base, newer) = newer_report_on_the_base(&project, &fake);
+        git_out(&project, &["checkout", "-q", "task/t-1"]);
+        write_file(&project.reports.join("t-1.state"), "stopped\n").unwrap();
+        let branch = listed_branch(&project, "t-1");
+        assert!(!branch.checked_out, "{branch:?}");
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        assert_eq!(report_blob(&project, &base, "t-1"), newer, "the switch back put the older report of the branch onto the base");
+        clean(&project);
+    }
+
+    /// Sets what the worker check of a scratch project gives (ticket branch-switch-on-reply).
+    fn set_work_run_runs(project: &Project, runs: bool) {
+        work_run_override().lock().unwrap().insert(project.root.clone(), runs);
+    }
+
+    #[test]
+    fn no_switch_back_while_the_worker_runs() {
+        let (project, fake, base) = branch_project("worker-runs");
+        plan_and_approve(&project, &fake, "t-1");
+        // The worker writes its report early and still works.
+        write_report(&project, "t-1");
+        set_work_run_runs(&project, true);
+        assert!(listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"), "the read switched back while the worker ran");
+        // The work run ends: the next read switches back.
+        set_work_run_runs(&project, false);
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        clean(&project);
+    }
+
+    #[test]
+    fn the_worker_list_tells_whether_the_work_run_runs() {
+        let root = Path::new(r"D:\Projects\Starminer");
+        let list = |workers: Value| worker_runs_in(&workers.to_string(), root, "t-1");
+        let one = |name: &str, state: &str, status: Option<&str>, cwd: Option<&str>| {
+            let mut worker = json!({ "id": "bg-1", "name": name, "state": state, "startedAt": 5 });
+            if let Some(status) = status {
+                worker["status"] = json!(status);
+            }
+            if let Some(cwd) = cwd {
+                worker["cwd"] = json!(cwd);
+            }
+            worker
+        };
+        let here = Some("d:/projects/starminer/");
+        assert_eq!(list(json!([one("t-1 [work]", "working", None, here)])), Some(true));
+        assert_eq!(list(json!([one("t-1 [work]", "blocked", Some("waiting"), Some(r"D:\Projects\Starminer"))])), Some(true));
+        assert_eq!(list(json!([one("t-1 [work]", "blocked", Some("idle"), here)])), Some(false));
+        assert_eq!(list(json!([one("t-1 [work]", "done", None, here)])), Some(false));
+        assert_eq!(list(json!([one("t-1", "working", None, None)])), Some(true), "a worker of an older script without a folder");
+        assert_eq!(list(json!([one("t-1 [work]", "working", None, Some(r"D:\Projects\Other"))])), Some(false), "another project");
+        assert_eq!(list(json!([one("t-1 [plan]", "working", None, here)])), Some(false), "the plan run only");
+        assert_eq!(list(json!([one("t-12 [work]", "working", None, here)])), Some(false), "another ticket");
+        // The newest work run counts.
+        let mut old = one("t-1 [work]", "working", None, here);
+        old["startedAt"] = json!(1);
+        assert_eq!(list(json!([one("t-1 [work]", "done", None, here), old])), Some(false));
+        assert_eq!(list(json!([])), Some(false));
+        assert_eq!(worker_runs_in("not json", root, "t-1"), None);
     }
 
     /// Builds the scratch projects of the proof script of ticket task-branches when the variable
