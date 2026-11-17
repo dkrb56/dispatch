@@ -184,3 +184,18 @@ test("the rest stays as it was", () => {
     ["#8fb3d9", "#1f2b38", "#34495f", "#8cc0a0", "#1d2a23", "#3d5a48"],
   );
 });
+
+test("the Decisions and Questions windows lock and show a spinner while they send", () => {
+  assert.match(MAIN, /function setDialogSending\(/);
+  assert.match(MAIN, /"Approving…"/);
+  assert.match(MAIN, /setDialogSending\(decisionsDialog, button, text\)/);
+  assert.match(MAIN, /setDialogSending\(questionsDialog, sendButton, "Sending…"\)/);
+  assert.match(MAIN, /decisionsDialog\.addEventListener\("cancel", \(event\) => \{\n\s*if \(decisionsSending\) event\.preventDefault\(\);/);
+  assert.match(MAIN, /questionsDialog\.addEventListener\("cancel", \(event\) => \{\n\s*if \(questionsSending\) event\.preventDefault\(\);/);
+  assert.match(MAIN, /event\.target === decisionsDialog && !decisionsSending/);
+  assert.match(MAIN, /event\.target === questionsDialog && !questionsSending/);
+  assert.match(CSS, /#decisions\.busy/);
+  assert.match(CSS, /#questions\.busy/);
+  assert.ok(HTML.includes("While Dispatch approves or sends the plan back, the button shows a spinner and the window is locked."));
+  assert.ok(HTML.includes("While Dispatch sends the answers, the button shows a spinner and the window is locked."));
+});

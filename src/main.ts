@@ -4949,6 +4949,8 @@ function cancelQueued(task: Task): void {
 const decisionsDialog = document.querySelector<HTMLDialogElement>("#decisions")!;
 /** The task whose decisions the window shows. */
 let decisionsTask: Task | null = null;
+/** True from a click on Approve or Revise until its send ends: the window is locked. */
+let decisionsSending = false;
 
 /** A pick of the Decisions window: the index of the selected option, or the text under Other. */
 type DecisionPick = { index: number } | { own: string };
@@ -5195,7 +5197,7 @@ function decisionAnswers(task: Task): DecisionAnswer[] {
 /** Shows why Approve waits, and greys it. It runs at the start and after each refresh of the tasks. */
 function updateDecisionsFooter(): void {
   if (!decisionsTask || !decisionsDialog.open) return;
-  const busy = busyTasks.has(decisionsTask.name);
+  const busy = busyTasks.has(decisionsTask.name) || decisionsSending;
   const picks = new Map(decisionAnswers(decisionsTask).filter(({ decision }) => decision.hold).map(({ decision, answer }) => [decision.number, answer]));
   const wait = (holdWaitOf(decisionsTask, picks)?.full ?? "").replace(/^Its work run starts/, "Approve now: the work run starts");
   const error = actionErrors.get(decisionsTask.name) ?? "";
@@ -5210,11 +5212,32 @@ function updateDecisionsFooter(): void {
   footerButton("#decisions-ask", blocked !== "", blocked);
   // "No triage": the button names the Chat (user decision 4).
   const askButton = document.querySelector<HTMLButtonElement>("#decisions-ask")!;
+  // A send of the window runs: Ask waits too.
+  if (decisionsSending) askButton.disabled = true;
   askButton.textContent = chatAsk ? CHAT_ASK_LABEL : FOOTER_LABELS.ask;
   if (chatAsk) askButton.title = "Open a new Chat with your question. It approves nothing and changes nothing";
   const askHint = askButton.nextElementSibling;
   if (askHint) askHint.textContent = chatAsk ? CHAT_ASK_HINT : FOOTER_HINTS.ask;
   document.querySelector("#decisions-ask-about")!.textContent = askAbout(askDecision);
+}
+
+/**
+ * Locks a window and shows a spinner and a text in the clicked button while it sends, or undoes it
+ * with null: the old label comes back and every control is enabled; the update function of the
+ * window then greys what must stay grey.
+ */
+function setDialogSending(dialog: HTMLDialogElement, button: HTMLButtonElement, text: string | null): void {
+  dialog.classList.toggle("busy", text !== null);
+  const controls = dialog.querySelectorAll<HTMLButtonElement | HTMLInputElement | HTMLTextAreaElement>("button, input, textarea");
+  if (text !== null) {
+    button.dataset.label ??= button.textContent ?? "";
+    for (const control of controls) control.disabled = true;
+    button.replaceChildren(mapElement("span", "ticket-add-spinner"), document.createTextNode(text));
+    return;
+  }
+  if (button.dataset.label !== undefined) button.textContent = button.dataset.label;
+  delete button.dataset.label;
+  for (const control of controls) control.disabled = false;
 }
 
 /** Greys a footer button; a reason replaces its tooltip, and without one the tooltip of index.html comes back. */
@@ -5234,25 +5257,38 @@ function initDecisions(): void {
     if (decisionsTask) sendPlanQuestion(decisionsTask);
   });
   decisionsDialog.addEventListener("click", (event) => {
-    if (event.target === decisionsDialog) decisionsDialog.close();
+    if (event.target === decisionsDialog && !decisionsSending) decisionsDialog.close();
   });
-  document.querySelector("#decisions-approve")!.addEventListener("click", () => {
-    const task = decisionsTask;
-    if (!task || busyTasks.has(task.name)) return updateDecisionsFooter();
-    void approveOrQueue(task, decisionAnswers(task), "with the decisions of the user").then((done) => {
+  // Esc waits while a send runs (user decision 2).
+  decisionsDialog.addEventListener("cancel", (event) => {
+    if (decisionsSending) event.preventDefault();
+  });
+  /** Locks the window while a send runs; it closes on success and unlocks with the choices kept on failure. */
+  const send = (button: HTMLButtonElement, text: string, run: () => Promise<boolean>): void => {
+    decisionsSending = true;
+    setDialogSending(decisionsDialog, button, text);
+    const end = (done: boolean): void => {
+      decisionsSending = false;
+      setDialogSending(decisionsDialog, button, null);
       if (done) decisionsDialog.close();
       else updateDecisionsFooter();
-    });
-  });
-  document.querySelector("#decisions-revise")!.addEventListener("click", () => {
+    };
+    run().then(end, () => end(false));
+  };
+  const approveButton = document.querySelector<HTMLButtonElement>("#decisions-approve")!;
+  approveButton.addEventListener("click", () => {
     const task = decisionsTask;
-    if (!task) return;
+    if (decisionsSending) return;
+    if (!task || busyTasks.has(task.name)) return updateDecisionsFooter();
+    send(approveButton, "Approving…", () => approveOrQueue(task, decisionAnswers(task), "with the decisions of the user"));
+  });
+  const reviseButton = document.querySelector<HTMLButtonElement>("#decisions-revise")!;
+  reviseButton.addEventListener("click", () => {
+    const task = decisionsTask;
+    if (!task || decisionsSending) return;
     const reason = `Decisions of the user: ${decisionLines(decisionAnswers(task)).join("; ")}. Write them into the plan as decided; no HOLD is left.`;
     const line = `Plan ${task.name} sent back in Dispatch with the decisions of the user.`;
-    void taskAction(task, "task_reject", { id: task.name, reason }, line).then((sent) => {
-      if (sent) decisionsDialog.close();
-      else updateDecisionsFooter();
-    });
+    send(reviseButton, "Sending…", () => taskAction(task, "task_reject", { id: task.name, reason }, line));
   });
 }
 
@@ -5338,6 +5374,8 @@ async function sendAnswers(task: Task, questions: Question[], choices: ReadonlyM
 const questionsDialog = document.querySelector<HTMLDialogElement>("#questions")!;
 /** The task whose questions the window shows, and the time of its report then. */
 let questionsTask: Task | null = null;
+/** True from a click on Send the answers until the send ends: the window is locked. */
+let questionsSending = false;
 let questionsModified = 0;
 
 /** The current state of a task of the window: from the last task list of its project, else as it was. */
@@ -5459,7 +5497,7 @@ function updateQuestionsWindow(): void {
     questionsDialog.close();
     return;
   }
-  const busy = busyTasks.has(task.name);
+  const busy = busyTasks.has(task.name) || questionsSending;
   const error = actionErrors.get(task.name) ?? "";
   document.querySelector("#questions-reason")!.textContent = [busy ? "A click of this task is still running." : "", error].filter(Boolean).join("\n");
   document.querySelector<HTMLButtonElement>("#questions-send")!.disabled = busy;
@@ -5468,10 +5506,15 @@ function updateQuestionsWindow(): void {
 function initQuestions(): void {
   document.querySelector("#questions-close")!.addEventListener("click", () => questionsDialog.close());
   questionsDialog.addEventListener("click", (event) => {
-    if (event.target === questionsDialog) questionsDialog.close();
+    if (event.target === questionsDialog && !questionsSending) questionsDialog.close();
   });
-  document.querySelector("#questions-send")!.addEventListener("click", () => {
-    if (!questionsTask) return;
+  // Esc waits while a send runs (user decision 2).
+  questionsDialog.addEventListener("cancel", (event) => {
+    if (questionsSending) event.preventDefault();
+  });
+  const sendButton = document.querySelector<HTMLButtonElement>("#questions-send")!;
+  sendButton.addEventListener("click", () => {
+    if (!questionsTask || questionsSending) return;
     const task = currentTask(questionsTask);
     if (busyTasks.has(task.name)) return updateQuestionsWindow();
     const questions = openQuestions(task);
@@ -5480,10 +5523,16 @@ function initQuestions(): void {
       document.querySelector("#questions-reason")!.textContent = "A question has no selected option. Answer it in the report's chat.";
       return;
     }
-    void sendAnswers(task, questions, answers, questionsModified).then((sent) => {
+    questionsSending = true;
+    setDialogSending(questionsDialog, sendButton, "Sending…");
+    const end = (sent: boolean): void => {
+      // The unlock runs also when a render closed the window during the send.
+      questionsSending = false;
+      setDialogSending(questionsDialog, sendButton, null);
       if (sent) questionsDialog.close();
       else updateQuestionsWindow();
-    });
+    };
+    sendAnswers(task, questions, answers, questionsModified).then(end, () => end(false));
   });
 }
 

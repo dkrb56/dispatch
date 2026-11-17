@@ -5388,6 +5388,18 @@ button.ticket-level {
   cursor: default;
 }
 
+/* A send of the Decisions or Questions window runs: the window is locked, the clicked button shows a spinner. */
+#decisions.busy,
+#questions.busy {
+  cursor: progress;
+}
+#decisions.busy #decisions-approve:disabled,
+#decisions.busy #decisions-revise:disabled,
+#questions.busy #questions-send:disabled {
+  opacity: 0.75;
+  cursor: progress;
+}
+
 /* The Ask box of the Decisions window (ticket i-need-an-option-to-discuss-tasks): the question goes
    to the triage chat. Each footer button stands over its hint line. */
 #decisions-ask-box {
