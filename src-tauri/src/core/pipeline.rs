@@ -827,10 +827,10 @@ impl Project {
         };
         format!(
             "- A task is two runs of one worker. The plan run reads the code and writes a plan. The work run is a new session that reads the brief and the approved plan and executes the plan. Triage starts and resumes a worker only with the script `{reports}/{SCRIPT_NAME}`, never with `claude --bg` or `claude --resume` directly. A worker works in the main checkout (`worktree.bgIsolation` is `none`).
-- Triage writes each brief to `{reports}/briefs/<ticket-id>.md`: the user's words, the constraints, and the command that proves the work. The brief says nothing about the approach; the plan run decides that.
+- Triage writes each brief to `{reports}/briefs/<ticket-id>.md`: the user's words, the constraints, and the command that proves the work. The brief says nothing about the approach; the plan run decides that. A ticket message with the block `Part N of M of ticket <id>` is a part of that ticket: triage copies the block into the brief as the section `## Parent and earlier parts`, after the user's words.
 - A message that Dispatch sends from its tickets board starts with the line `Ticket <id>: <title>`. Triage uses that id as the ticket id of the task. Dispatch keeps the tickets file `{reports}/tickets.jsonl`; triage and the workers do not edit it.
 {tickets}{no_triage}- `{script} plan <ticket-id>` starts the plan run on the options in `{reports}/plan-flags.txt`, with the model and the effort of `{reports}/<ticket-id>.models` when it has them (the level of the ticket): without the Edit tool, without the Agent tool and without a prompt; its Write tool may write only into `{reports}/plans/`. The plan run writes the plan to `{reports}/plans/<ticket-id>.md`, changes nothing else, and ends its turn.
-{measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Notes for the work run (the facts from the code that the other sections do not hold, because the work run starts without the context of the plan run: how the touched code works, why an anchor was chosen, traps it saw, and the command that showed a fact; one fact per line, 15 lines maximum); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; each question, option and reason in everyday words for the user, who does not read the code: what changes for the user and what the user sees or does, not how the code does it; no file, function or command names and no terms of the code, or a short explanation of a term that must stay; the technical detail goes into Files to change, Notes for the work run or Steps; a question 20 words maximum and an option 15 words maximum, its reason not counted; for example, not `No: they follow the same rule; Setup pipeline still offers Commit to git` but `No, these files stop no task; you can still commit them in Setup pipeline`; the word HOLD stands in no other line of this section); Do not touch; Size (files); Work run (the advice of the plan run for the work run of this task: the line `model: <model>` (fable, opus, sonnet or haiku), the line `effort: <effort>` (low, medium, high, xhigh or max), then one line with the reason in plain words; the task card of Dispatch shows the advice at Approve, the user can change it, and the work run uses the result). No code in a plan.
+{measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Notes for the work run (the facts from the code that the other sections do not hold, because the work run starts without the context of the plan run: how the touched code works, why an anchor was chosen, traps it saw, and the command that showed a fact; one fact per line, 15 lines maximum); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; each question, option and reason in everyday words for the user, who does not read the code: what changes for the user and what the user sees or does, not how the code does it; no file, function or command names and no terms of the code, or a short explanation of a term that must stay; the technical detail goes into Files to change, Notes for the work run or Steps; a question 20 words maximum and an option 15 words maximum, its reason not counted; for example, not `No: they follow the same rule; Setup pipeline still offers Commit to git` but `No, these files stop no task; you can still commit them in Setup pipeline`; the word HOLD stands in no other line of this section); Do not touch; Size (files); Work run (the advice of the plan run for the work run of this task: the line `model: <model>` (fable, opus, sonnet or haiku), the line `effort: <effort>` (low, medium, high, xhigh or max), then one line with the reason in plain words; the task card of Dispatch shows the advice at Approve, the user can change it, and the work run uses the result); Parts (optional: only when the work is too large for one work run, and never in the plan of a part: the Steps of the plan are the first piece, and the parts follow in their order after its work run; each part a numbered item `N. <title>` with the list lines `Level:` (simple, medium or hard), `Type:` (fix, feature, refactor or content), `Goal:` and the optional lines `Why:`, `Done when:`, `Do not change:`, `Context:`, `What I see:` and `What I expect:`; the task card of Dispatch shows the parts before Approve, and Approve opens one Backlog ticket per part, linked to the ticket of the plan; when a part is done, Dispatch moves the next one to New). No code in a plan.
 {checks}{gate_checks}- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which starts the work run as a new session on the options in `{reports}/work-flags.txt`, with the model and the effort of `{reports}/<ticket-id>.models` when it has them, with the brief, the plan and the user's decisions as its input, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when an uncommitted change outside `{reports}/` touches a file of the task (a path of the section Files to change of its plan, or a file that its task branch changed), when the worker still runs, or when the task was stopped; other uncommitted changes stay where they are and hold no task ({tasks_git}).
 {plain}- The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It commits only the files that it changed, each by name, never with `git add -A`, `git add .` or `git commit -a`, and leaves every other change as it is. It never pushes or merges. The user decides the push.
 {branches}{push}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification lists each command the worker ran as a line that starts with a code span with the exact text of the Bash call, for example `` `cargo test --lib` ``, followed by what it showed. Only a line without indent is a claim: the results of a command stand as indented lines under it, and Dispatch does not compare them. Dispatch compares these spans with the Bash commands of the transcripts of the task, without a leading `cd <folder> && ` on both sides: a done report with a claim that no command matches, or without the section, counts as working, and its ticket stays open.
@@ -3554,6 +3554,86 @@ pub fn task_work(cwd: String, id: String, model: String, effort: String) -> Resu
     write_run_choice(&project, &id, "work", Some(&choice))
 }
 
+/// One part of the section `Parts` of a plan (ticket subtickets): a piece of the work that follows the
+/// work run of the plan, as its own ticket.
+#[derive(Serialize, Clone, Default, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanPart {
+    pub(crate) title: String,
+    /// `simple`, `medium` or `hard` as the plan wrote it; empty: Medium.
+    pub(crate) level: String,
+    /// The type as the plan wrote it; empty: the guess from the Goal.
+    #[serde(rename = "type")]
+    pub(crate) kind: String,
+    pub(crate) goal: String,
+    pub(crate) fields: crate::core::tickets::TicketFields,
+}
+
+/// The parts of a plan (ticket subtickets): the numbered items `N. <title>` of the section `Parts`
+/// with their list lines `Level:`, `Type:`, `Goal:` and the fields of the ticket form (`Why:`, `Done
+/// when:`, `Do not change:`, `Context:`, `What I see:`, `What I expect:`), keys in any case and
+/// backticks stripped; a wrapped line joins the line above. A plan without the section gives none.
+pub(crate) fn plan_parts(text: &str) -> Vec<PlanPart> {
+    let mut parts: Vec<PlanPart> = Vec::new();
+    let mut in_section = false;
+    // The key of the line above, for a wrapped line; empty: the title.
+    let mut last = String::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(heading) = trimmed.strip_prefix("## ") {
+            in_section = heading.trim().eq_ignore_ascii_case("parts");
+            continue;
+        }
+        if !in_section || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let clean = trimmed.replace('`', "");
+        if let Some((number, rest)) = clean.split_once(". ") {
+            if number.parse::<u32>().is_ok() {
+                parts.push(PlanPart { title: rest.trim().trim_matches('*').trim().to_string(), ..PlanPart::default() });
+                last.clear();
+                continue;
+            }
+        }
+        let Some(part) = parts.last_mut() else { continue };
+        let item = clean.strip_prefix("- ").or_else(|| clean.strip_prefix("* "));
+        // A line without a key is a wrapped line: it joins the line above.
+        let (key, value, wrapped) = match item.and_then(|item| item.split_once(':')) {
+            Some((key, value)) => (key.trim().trim_matches('*').trim().to_ascii_lowercase(), value.trim().to_string(), false),
+            None => (last.clone(), item.unwrap_or(&clean).trim().to_string(), true),
+        };
+        let fields = &mut part.fields;
+        let slot = match key.as_str() {
+            "" => &mut part.title,
+            "level" => &mut part.level,
+            "type" => &mut part.kind,
+            "goal" => &mut part.goal,
+            "why" => &mut fields.why,
+            "done when" => &mut fields.done,
+            "do not change" => &mut fields.keep,
+            "context" => &mut fields.context,
+            "what i see" => &mut fields.see,
+            "what i expect" => &mut fields.expect,
+            _ => continue,
+        };
+        if wrapped {
+            if !slot.is_empty() {
+                slot.push(' ');
+            }
+            slot.push_str(&value);
+        } else {
+            *slot = value;
+        }
+        last = key;
+    }
+    for part in &mut parts {
+        part.level = part.level.trim_end_matches(['.', ',', ';']).trim().to_ascii_lowercase();
+        part.kind = part.kind.trim_end_matches(['.', ',', ';']).trim().to_ascii_lowercase();
+    }
+    parts.retain(|part| !part.title.is_empty() || !part.goal.is_empty());
+    parts
+}
+
 /// The advice of a plan for its work run (ticket ticket-form-optional-fields-on-a-new): the lines
 /// `model: <value>` and `effort: <value>` of the section `Work run`, with a leading `- ` and
 /// backticks stripped and the keys in any case. None when a value is missing or invalid.
@@ -3689,6 +3769,13 @@ pub struct TaskInfo {
     /// run` (ticket ticket-form-optional-fields-on-a-new). None without the section or a valid value.
     #[serde(rename = "workChoice")]
     work_choice: Option<Choice>,
+    /// The parts of the plan that follow its work run (ticket subtickets), for the task card before
+    /// Approve. Empty without the section, and for the task of a part: a part makes no parts.
+    parts: Vec<PlanPart>,
+    /// The task is a part of a chain whose parent did not tick the night box (ticket subtickets, user
+    /// decision 1): night mode does not start its work run.
+    #[serde(rename = "nightHold")]
+    night_hold: bool,
 }
 
 /// The decision of the user to take a task as done (ticket take-as-done): the time of the click
@@ -4364,6 +4451,8 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             plain: false,
             elsewhere: false,
             work_choice: None,
+            parts: Vec::new(),
+            night_hold: false,
         });
         tasks.len() - 1
     }
@@ -4386,6 +4475,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         tasks[at].tldr = section_lines(&text, "TL;DR");
         tasks[at].checks = plan_checks(&text, &check_list);
         tasks[at].work_choice = plan_work_choice(&text);
+        tasks[at].parts = plan_parts(&text);
         tasks[at].plan = Some(entry);
     }
     for (name, path, entry) in files_with(&project.reports, "md") {
@@ -4471,6 +4561,9 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
                     .map(|entry| entry.modified)
                     .max()
                     .unwrap_or(0);
+                // The end of the task for the chain of its parts (ticket subtickets).
+                let report_time = task.report.as_ref().map_or(0, |entry| entry.modified);
+                let merge = if merged { file_entry(&project.branch_file(&task.name)).map_or(0, |entry| entry.modified) } else { 0 };
                 crate::core::tickets::TaskFacts {
                     name: &task.name,
                     state: &task.state,
@@ -4479,6 +4572,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
                     merged,
                     waits_merge: branch.is_some() && !merged && branches_on,
                     started,
+                    ended: report_time.max(merge),
                 }
             })
             .collect();
@@ -4489,6 +4583,11 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     for task in tasks.iter_mut() {
         if let Some(ticket) = tickets.iter().find(|ticket| ticket.task_name() == task.name) {
             task.about = ticket.title.clone();
+            // A part makes no parts, and its parent's night box decides its start at night (ticket subtickets).
+            if !ticket.parent.is_empty() {
+                task.parts.clear();
+                task.night_hold = !tickets.iter().any(|parent| parent.id == ticket.parent && parent.night);
+            }
         }
     }
     // The actions and their runs (ticket project-actions): a command step whose process ended with
@@ -4767,8 +4866,29 @@ pub(crate) fn run_script(project: &Project, args: &[&str]) -> Result<String, Str
 /// Starts the work run of a task: the Approve button of the task card. The script refuses a dirty
 /// tree, a running worker and a stopped task.
 pub fn task_approve(cwd: String, id: String) -> Result<String, String> {
-    check_ticket(&id)?;
-    run_script(&Project::find(&cwd)?, &["approve", &id])
+    task_approve_with(&Project::find(&cwd)?, &id, &|project, args| run_script(project, args))
+}
+
+/// `task_approve` with the start of the script as an argument; a test gives a fake. After the script
+/// started the work run, the parts of the plan become Backlog tickets of the ticket of the task (ticket
+/// subtickets). A failed approve opens nothing; a task without a ticket opens nothing and logs it.
+fn task_approve_with(project: &Project, id: &str, start: &dyn Fn(&Project, &[&str]) -> Result<String, String>) -> Result<String, String> {
+    check_ticket(id)?;
+    let output = start(project, &["approve", id])?;
+    let plan = fs::read_to_string(project.plans().join(format!("{id}.md"))).unwrap_or_default();
+    let parts = plan_parts(&plan);
+    if !parts.is_empty() {
+        let tickets = crate::core::tickets::list(project);
+        match tickets.iter().find(|ticket| ticket.task_name() == id) {
+            Some(ticket) => {
+                if let Err(error) = crate::core::tickets::open_parts(project, &ticket.id, &parts) {
+                    eprintln!("the parts of {id} got no tickets: {error}");
+                }
+            }
+            None => eprintln!("the plan of {id} lists parts, but no ticket holds the task: no part ticket opened"),
+        }
+    }
+    Ok(output)
 }
 
 /// The brief that Dispatch writes from a ticket of the tickets board (ticket simpler-process-tickets):
@@ -4779,7 +4899,76 @@ pub fn task_approve(cwd: String, id: String) -> Result<String, String> {
 /// the constraints and Done when into the proof; a ticket with only the Goal gives the brief of before.
 /// `no_triage` names the switch that started it: "No triage" (ticket
 /// no-triage-a-project-switch-no-triage-in) or "Tickets start their plan".
-fn ticket_brief(ticket: &crate::core::tickets::Ticket, at: u64, no_triage: bool) -> String {
+/// The section `## Parent and earlier parts` of the brief of a part (ticket subtickets): `chain` are
+/// the lines of `chain_lines`, its first line `Part N of M of ticket <id>: <title>`. Empty for none.
+fn chain_section(chain: &[String]) -> String {
+    let Some((head, lines)) = chain.split_first() else { return String::new() };
+    let head = head.strip_prefix("Part ").unwrap_or(head);
+    let mut text = format!("## Parent and earlier parts\nThis ticket is part {head}. Its plan lists no parts.\n");
+    for line in lines {
+        text.push_str(line);
+        text.push('\n');
+    }
+    text.push('\n');
+    text
+}
+
+/// The commits of the current branch whose subject names a ticket id as a whole word, as `<hash> <subject>`.
+fn ticket_commits(project: &Project, id: &str) -> Vec<String> {
+    let log = git(&project.root, &["log", "--format=%h %s", "-F", &format!("--grep={id}")]).unwrap_or_default();
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    log.lines()
+        .map(str::trim)
+        .filter(|line| {
+            let subject = line.split_once(' ').map_or("", |(_, subject)| subject);
+            subject.match_indices(id).any(|(at, _)| {
+                let before = subject[..at].chars().next_back();
+                let after = subject[at + id.len()..].chars().next();
+                !before.is_some_and(word) && !after.is_some_and(word)
+            })
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// The chain of a part (ticket subtickets): first `Part N of M of ticket <parent id>: <parent title>`
+/// (N and M without the parts that the user canceled), then the plan of the parent, then one line for
+/// the parent and each earlier part with its id, its title, its end word and its commits. Empty for a
+/// ticket without a parent.
+pub(crate) fn chain_lines(project: &Project, tickets: &[crate::core::tickets::Ticket], ticket: &crate::core::tickets::Ticket) -> Vec<String> {
+    use crate::core::tickets::{part_end, parts_of, PartEnd};
+    if ticket.parent.is_empty() {
+        return Vec::new();
+    }
+    let Some(parent) = tickets.iter().find(|one| one.id == ticket.parent) else { return Vec::new() };
+    let parts: Vec<&crate::core::tickets::Ticket> = parts_of(tickets, &parent.id).into_iter().filter(|part| part_end(part) != PartEnd::Skipped || part.id == ticket.id).collect();
+    let place = parts.iter().position(|part| part.id == ticket.id).map_or(0, |at| at + 1);
+    let mut lines = vec![format!("Part {place} of {} of ticket {}: {}", parts.len(), parent.id, parent.title)];
+    lines.push(format!("The plan of the parent: `{}/plans/{}.md`", project.reports_text(), parent.task_name()));
+    // The end word of a closed ticket, else its column.
+    let state = |one: &crate::core::tickets::Ticket| {
+        let closed = one.status == crate::core::tickets::DONE || one.status == crate::core::tickets::CANCELED;
+        if closed && !one.note.is_empty() { one.note.clone() } else { one.status.clone() }
+    };
+    for one in std::iter::once(parent).chain(parts.iter().copied().take(place.saturating_sub(1))) {
+        let commits = ticket_commits(project, one.task_name());
+        let commits = if commits.is_empty() { "no commit".to_string() } else { commits.join("; ") };
+        let kind = if one.id == parent.id { "parent" } else { "part" };
+        lines.push(format!("- {kind} {}: {} ({}); commits: {commits}", one.id, one.title, state(one)));
+    }
+    lines
+}
+
+/// The lines of the chain of a part for the message to triage (ticket subtickets): the page adds them
+/// as the block `Part N of M of ticket <id>`. Empty for a ticket without a parent.
+pub fn ticket_chain(cwd: String, id: String) -> Result<Vec<String>, String> {
+    let project = Project::find(&cwd)?;
+    let tickets = crate::core::tickets::list(&project);
+    let ticket = crate::core::tickets::find(&tickets, &id)?;
+    Ok(chain_lines(&project, &tickets, &ticket))
+}
+
+fn ticket_brief(ticket: &crate::core::tickets::Ticket, at: u64, no_triage: bool, chain: &[String]) -> String {
     let (paths, words) = crate::core::tickets::split_images(&ticket.summary);
     let mut said = words.trim().to_string();
     for path in &paths {
@@ -4808,9 +4997,10 @@ fn ticket_brief(ticket: &crate::core::tickets::Ticket, at: u64, no_triage: bool)
         format!("Done when: {}\nThe plan run names the commands that show it under Acceptance.", fields.done.trim())
     };
     format!(
-        "# {id}: {title}\n\nDispatch wrote this brief from ticket {id} of the tickets board on {date} {switch}.\n\n## The user's words\n{said}\n\n{extra}## Constraints\n{constraints}\n\n## The command that proves the work\n{proof}\n",
+        "# {id}: {title}\n\nDispatch wrote this brief from ticket {id} of the tickets board on {date} {switch}.\n\n## The user's words\n{said}\n\n{chain}{extra}## Constraints\n{constraints}\n\n## The command that proves the work\n{proof}\n",
         id = ticket.id,
         title = ticket.title,
+        chain = chain_section(chain),
     )
 }
 
@@ -4846,7 +5036,8 @@ fn ticket_plan_with(project: &Project, id: &str, start: &dyn Fn(&Project, &[&str
         return Err(format!("a task {id} exists already"));
     }
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
-    write_file(&brief, &ticket_brief(&ticket, now, options.no_triage))?;
+    let chain = chain_lines(project, &tickets, &ticket);
+    write_file(&brief, &ticket_brief(&ticket, now, options.no_triage, &chain))?;
     // The level of the ticket gives the model and the effort of the plan run (ticket
     // ticket-form-optional-fields-on-a-new). The file is not in the pre-check: a ticket that went to
     // triage before can have it.
@@ -6412,6 +6603,8 @@ evidence: no
             plain: false,
             elsewhere: false,
             work_choice: None,
+            parts: Vec::new(),
+            night_hold: false,
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };
@@ -7975,20 +8168,20 @@ if (args[0] === 'agents') {
 
     #[test]
     fn a_ticket_with_only_the_goal_gives_the_brief_of_before() {
-        let brief = ticket_brief(&ticket_of(json!({})), 0, true);
+        let brief = ticket_brief(&ticket_of(json!({})), 0, true, &[]);
         assert_eq!(
             brief,
             "# t-a: Make it fast\n\nDispatch wrote this brief from ticket t-a of the tickets board on 1970-01-01 00:00 UTC (No triage).\n\n## The user's words\nMake it fast\n\n## Constraints\nNone given in the ticket; CLAUDE.md and the project rules hold.\n\n## The command that proves the work\nNot given; the plan run names it under Acceptance.\n"
         );
         // Empty fields write nothing either.
         let empty = ticket_of(json!({"fields": {"why": " ", "done": "", "keep": "", "context": "", "see": "", "expect": ""}}));
-        assert_eq!(ticket_brief(&empty, 0, true), brief);
+        assert_eq!(ticket_brief(&empty, 0, true, &[]), brief);
     }
 
     #[test]
     fn each_filled_field_goes_into_its_place_of_the_brief() {
         let fields = json!({"why": "It stalls.", "done": "50 tickets scroll", "keep": "The tickets file", "context": "Since 0.1.60", "see": "A white board", "expect": "The list"});
-        let brief = ticket_brief(&ticket_of(json!({ "type": "fix", "fields": fields })), 0, false);
+        let brief = ticket_brief(&ticket_of(json!({ "type": "fix", "fields": fields })), 0, false, &[]);
         assert!(
             brief.contains("## The user's words\nMake it fast\n\n## Why\nIt stalls.\n\n## Context\nSince 0.1.60\n\n## What I see\nA white board\n\n## What I expect\nThe list\n\n## Constraints\n"),
             "{brief}"
@@ -7998,7 +8191,7 @@ if (args[0] === 'agents') {
         // The task read takes only the Goal as the user's words.
         assert_eq!(section_lines(&brief, "The user's words"), ["Make it fast"]);
         // One field alone: only its own section, the others as before.
-        let why = ticket_brief(&ticket_of(json!({"fields": {"why": "It stalls."}})), 0, false);
+        let why = ticket_brief(&ticket_of(json!({"fields": {"why": "It stalls."}})), 0, false, &[]);
         assert!(why.contains("Make it fast\n\n## Why\nIt stalls.\n\n## Constraints\nNone given in the ticket;"), "{why}");
         for heading in ["## Context", "## What I see", "## What I expect", "Do not change:", "Done when:"] {
             assert!(!why.contains(heading), "{heading} in {why}");
@@ -9533,5 +9726,151 @@ if (args[0] === 'agents') {
         git_out(&project, &["merge", "--abort"]);
         assert!(!unfinished_git(&project));
         clean(&project);
+    }
+
+    // Ticket subtickets: the section Parts of a plan, the tickets of the parts at Approve, the brief
+    // of a part and the night box.
+
+    /// A plan with two parts, in the form that the section text asks for.
+    const PLAN_WITH_PARTS: &str = "# t-big: Big\n\n## Summary\n- one\n\n## Steps\n1. Do the first piece.\n\n## Parts\n1. Piece one\n   - Level: `hard`\n   - Type: fix\n   - Goal: Make the list fast\n     with 500 tickets.\n   - What I see: It stalls.\n   - Done when: 500 tickets scroll\n2. **Piece two**\n   - level: Simple.\n   - goal: Write the help\n   - Do not change: The README\n   - Why: The users ask.\n   - Context: Since 0.1.70\n   - Unknown: skipped\n\n## Work run\n- model: opus\n- effort: high\n";
+
+    #[test]
+    fn the_parts_section_of_a_plan_gives_each_part_with_its_level_and_fields() {
+        let parts = plan_parts(PLAN_WITH_PARTS);
+        assert_eq!(parts.len(), 2);
+        assert_eq!((parts[0].title.as_str(), parts[0].level.as_str(), parts[0].kind.as_str()), ("Piece one", "hard", "fix"));
+        assert_eq!(parts[0].goal, "Make the list fast with 500 tickets.", "a wrapped line joins the line above");
+        assert_eq!(parts[0].fields, crate::core::tickets::TicketFields { see: "It stalls.".into(), done: "500 tickets scroll".into(), ..Default::default() });
+        assert_eq!((parts[1].title.as_str(), parts[1].level.as_str(), parts[1].kind.as_str(), parts[1].goal.as_str()), ("Piece two", "simple", "", "Write the help"));
+        assert_eq!(
+            parts[1].fields,
+            crate::core::tickets::TicketFields { keep: "The README".into(), why: "The users ask.".into(), context: "Since 0.1.70".into(), ..Default::default() }
+        );
+        // The steps of the plan are no parts; a plan without the section, or with None, gives none.
+        assert!(plan_parts("# t: x\n\n## Steps\n1. One\n2. Two\n").is_empty());
+        assert!(plan_parts("# t: x\n\n## Parts\nNone.\n").is_empty());
+    }
+
+    #[test]
+    fn approve_opens_one_backlog_ticket_per_part_in_order() {
+        let project = scratch("parts-approve");
+        apply(&project, &[0]).unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        write_file(&project.tickets_file(), "{\"op\":\"open\",\"id\":\"t-big\",\"ts\":1,\"title\":\"Big\",\"summary\":\"Big\",\"status\":\"in_progress\"}\n{\"op\":\"open\",\"id\":\"t-small\",\"ts\":2,\"title\":\"Small\",\"summary\":\"Small\",\"status\":\"in_progress\"}\n").unwrap();
+        write_file(&project.plans().join("t-big.md"), PLAN_WITH_PARTS).unwrap();
+        write_file(&project.plans().join("t-small.md"), "# t-small: Small\n\n## Steps\n1. One\n").unwrap();
+        let ok = |_: &Project, _: &[&str]| -> Result<String, String> { Ok("started".to_string()) };
+        let refused = |_: &Project, _: &[&str]| -> Result<String, String> { Err("the worker still runs".to_string()) };
+        let parts = |project: &Project| crate::core::tickets::list(project).into_iter().filter(|ticket| !ticket.parent.is_empty()).collect::<Vec<_>>();
+        // The task card shows the parts before Approve.
+        let list = serde_json::to_value(task_list(cwd.clone()).unwrap()).unwrap();
+        let card = |list: &Value, name: &str| list["tasks"].as_array().unwrap().iter().find(|task| task["name"] == name).unwrap().clone();
+        assert_eq!(card(&list, "t-big")["parts"][1]["title"], "Piece two");
+        assert_eq!(card(&list, "t-big")["parts"][0]["level"], "hard");
+        assert_eq!(card(&list, "t-small")["parts"], json!([]));
+        // A failed approve opens nothing.
+        assert!(task_approve_with(&project, "t-big", &refused).is_err());
+        assert!(parts(&project).is_empty());
+        // A plan without parts gives no subticket.
+        assert_eq!(task_approve_with(&project, "t-small", &ok).unwrap(), "started");
+        assert!(parts(&project).is_empty());
+        // Approve: one Backlog ticket per part, in order, linked to the parent.
+        task_approve_with(&project, "t-big", &ok).unwrap();
+        let made = parts(&project);
+        let shown: Vec<(&str, &str, &str, &str, u32, &str)> =
+            made.iter().map(|t| (t.title.as_str(), t.status.as_str(), t.level.as_str(), t.kind.as_str(), t.part, t.parent.as_str())).collect();
+        assert_eq!(shown, [("Piece one", "backlog", "hard", "fix", 1, "t-big"), ("Piece two", "backlog", "simple", "content", 2, "t-big")]);
+        assert_eq!(made[0].summary, "Make the list fast with 500 tickets.");
+        assert_eq!(made[1].fields.keep, "The README");
+        // A second approve opens no second set.
+        task_approve_with(&project, "t-big", &ok).unwrap();
+        assert_eq!(parts(&project).len(), 2);
+        // The plan of a part lists no parts: its card shows none, and its approve opens none.
+        let part = made[0].id.clone();
+        write_file(&project.plans().join(format!("{part}.md")), &PLAN_WITH_PARTS.replace("t-big", &part)).unwrap();
+        let list = serde_json::to_value(task_list(cwd).unwrap()).unwrap();
+        assert_eq!(card(&list, &part)["parts"], json!([]));
+        task_approve_with(&project, &part, &ok).unwrap();
+        assert_eq!(parts(&project).len(), 2);
+        // A task without a ticket opens nothing.
+        write_file(&project.plans().join("t-loose.md"), PLAN_WITH_PARTS).unwrap();
+        task_approve_with(&project, "t-loose", &ok).unwrap();
+        assert_eq!(parts(&project).len(), 2);
+        clean(&project);
+    }
+
+    #[test]
+    fn the_brief_of_a_part_names_the_parent_and_the_earlier_parts_with_their_commits() {
+        let project = git_scratch("parts-brief");
+        let root = project.root.clone();
+        for message in ["t-1: the work of the parent", "t-10: another ticket", "t-1-a: the first part", "t-1-ab: not the first part", "Fix for t-1-a after it"] {
+            run_git(&root, &["commit", "--allow-empty", "-q", "-m", message]).unwrap();
+        }
+        let lines = [
+            "{\"op\":\"open\",\"id\":\"t-1\",\"ts\":1,\"title\":\"Parent\",\"summary\":\"Parent\",\"status\":\"in_progress\"}",
+            "{\"op\":\"open\",\"id\":\"t-1-a\",\"ts\":2,\"title\":\"First part\",\"summary\":\"First\",\"status\":\"backlog\",\"parent\":\"t-1\",\"part\":1}",
+            "{\"op\":\"open\",\"id\":\"t-1-x\",\"ts\":2,\"title\":\"Dropped part\",\"summary\":\"Dropped\",\"status\":\"backlog\",\"parent\":\"t-1\",\"part\":2}",
+            "{\"op\":\"open\",\"id\":\"t-1-b\",\"ts\":2,\"title\":\"Second part\",\"summary\":\"Second\",\"status\":\"backlog\",\"parent\":\"t-1\",\"part\":3}",
+            "{\"op\":\"close\",\"ref\":\"t-1-a\",\"ts\":3,\"resolution\":\"done\",\"note\":\"done\"}",
+            "{\"op\":\"close\",\"ref\":\"t-1-x\",\"ts\":3,\"resolution\":\"wontfix\",\"note\":\"canceled\"}",
+        ];
+        write_file(&project.tickets_file(), &format!("{}\n", lines.join("\n"))).unwrap();
+        let tickets = crate::core::tickets::list(&project);
+        let second = crate::core::tickets::find(&tickets, "t-1-b").unwrap();
+        let chain = chain_lines(&project, &tickets, &second);
+        let hash = |subject: &str| run_git(&root, &["log", "--format=%h", "-F", &format!("--grep={subject}")]).unwrap().trim().to_string();
+        assert_eq!(
+            chain,
+            [
+                "Part 2 of 2 of ticket t-1: Parent".to_string(),
+                "The plan of the parent: `.dispatch/plans/t-1.md`".to_string(),
+                format!("- parent t-1: Parent (in-progress); commits: {} t-1: the work of the parent", hash("the work of the parent")),
+                format!("- part t-1-a: First part (done); commits: {} Fix for t-1-a after it; {} t-1-a: the first part", hash("Fix for"), hash("t-1-a: the first part")),
+            ]
+        );
+        let brief = ticket_brief(&second, 0, true, &chain);
+        assert!(
+            brief.contains(&format!("## The user's words\nSecond\n\n## Parent and earlier parts\nThis ticket is part 2 of 2 of ticket t-1: Parent. Its plan lists no parts.\n{}\n\n## Constraints\n", chain[1..].join("\n"))),
+            "{brief}"
+        );
+        // The page gets the same lines for the message to triage.
+        assert_eq!(ticket_chain(root.to_string_lossy().into_owned(), "t-1-b".into()).unwrap(), chain);
+        // The first part names only the parent; a ticket without a parent gives the brief of before.
+        let first = crate::core::tickets::find(&tickets, "t-1-a").unwrap();
+        assert_eq!(chain_lines(&project, &tickets, &first).len(), 3);
+        let parent = crate::core::tickets::find(&tickets, "t-1").unwrap();
+        assert!(chain_lines(&project, &tickets, &parent).is_empty());
+        assert!(!ticket_brief(&parent, 0, true, &[]).contains("Parent and earlier parts"));
+        clean(&project);
+    }
+
+    #[test]
+    fn a_part_without_the_night_box_waits_at_night() {
+        let project = scratch("parts-night");
+        apply(&project, &[0]).unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        write_file(&project.tickets_file(), "{\"op\":\"open\",\"id\":\"t-big\",\"ts\":1,\"title\":\"Big\",\"summary\":\"Big\",\"status\":\"in_progress\"}\n{\"op\":\"open\",\"id\":\"t-big-1\",\"ts\":2,\"title\":\"Piece\",\"summary\":\"Piece\",\"status\":\"in_progress\",\"parent\":\"t-big\",\"part\":1}\n").unwrap();
+        for name in ["t-big", "t-big-1"] {
+            write_file(&project.reports.join(format!("{name}.state")), "planning\n").unwrap();
+            write_file(&project.plans().join(format!("{name}.md")), &format!("# {name}: x\n\n## Steps\n1. One\n")).unwrap();
+        }
+        let hold = |name: &str| {
+            let list = serde_json::to_value(task_list(cwd.clone()).unwrap()).unwrap();
+            list["tasks"].as_array().unwrap().iter().find(|task| task["name"] == name).unwrap()["nightHold"].clone()
+        };
+        // The box starts unticked (user decision 1): the part waits at night; the parent does not.
+        assert_eq!(hold("t-big-1"), json!(true));
+        assert_eq!(hold("t-big"), json!(false));
+        crate::core::tickets::ticket_night(cwd.clone(), "t-big".into(), true).unwrap();
+        assert_eq!(hold("t-big-1"), json!(false));
+        clean(&project);
+    }
+
+    #[test]
+    fn the_section_names_the_parts_of_a_plan() {
+        let body = scratch("parts-section").section_body();
+        assert!(body.contains("; Parts (optional: only when the work is too large for one work run, and never in the plan of a part:"), "{body}");
+        assert!(body.contains("each part a numbered item `N. <title>` with the list lines `Level:`"), "{body}");
+        assert!(body.contains("A ticket message with the block `Part N of M of ticket <id>` is a part of that ticket: triage copies the block into the brief as the section `## Parent and earlier parts`"), "{body}");
     }
 }

@@ -98,6 +98,8 @@ export interface StartCandidate {
   blocked?: boolean;
   /** The plan has no decisions (ticket simpler-process): it starts with the setting "Start plans without decisions". */
   plain?: boolean;
+  /** A part of a chain whose parent did not tick the night box (ticket subtickets): night mode does not start it. */
+  nightHold?: boolean;
 }
 
 /** The facts of one project at one poll. */
@@ -133,9 +135,11 @@ export function chooseStart(facts: StartFacts): { task: string; kind: StartKind 
   if (projectBusy(facts)) return null;
   if (facts.queued) return { task: facts.queued, kind: "queued" };
   const plain = (task: StartCandidate) => !!facts.plain && !!task.plain;
-  const task = facts.tasks.find((task) => task.ready && !task.hold && !task.busy && !task.blocked && task.planTime !== null && task.tried !== task.planTime && (facts.auto || facts.night || !!task.auto || plain(task)));
+  // A part without the night box does not start by night mode; the other ways start it as by day (ticket subtickets).
+  const night = (task: StartCandidate) => facts.night && !task.nightHold;
+  const task = facts.tasks.find((task) => task.ready && !task.hold && !task.busy && !task.blocked && task.planTime !== null && task.tried !== task.planTime && (facts.auto || night(task) || !!task.auto || plain(task)));
   if (!task) return null;
-  return { task: task.name, kind: plain(task) ? "plain" : facts.night ? "night" : "auto" };
+  return { task: task.name, kind: plain(task) ? "plain" : night(task) ? "night" : "auto" };
 }
 
 /** A task of the project as the night merge sees it (ticket task-branches-blocked-work). */

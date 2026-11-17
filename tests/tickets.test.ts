@@ -32,6 +32,10 @@ import {
   nextType,
   orphanTasks,
   parseBoardSize,
+  partPlace,
+  partProgress,
+  partsOf,
+  partText,
   queueOrder,
   repairLine,
   splitImages,
@@ -253,7 +257,7 @@ test("the tickets meet the page: the commands, the board, the dispatcher, the bo
   assert.match(MAIN, /waiting: \(\) => waitingTickets\(/);
   // The dispatcher sends the message of the ticket and keeps the ticket id on the card.
   const dispatcher = MAIN.slice(MAIN.indexOf("async function dispatchTickets("), MAIN.indexOf("async function settleTicket("));
-  assert.match(dispatcher, /deliver\(ticketMessage\(ticket\)\)/);
+  assert.match(dispatcher, /deliver\(ticketMessage\(ticket, chain\)\)/);
   assert.match(dispatcher, /pendingCard\(key, ticket\.title, known, Date\.now\(\), ticket\.id\)/);
   assert.match(CHAT, /onMessage\?: \(message: string\) => Promise<string \| null>/);
   assert.match(CHAT, /from "\.\/tickets"/);
@@ -577,4 +581,76 @@ test("the form keeps its draft outside, sends the level, the type and the fields
   assert.ok(HTML.includes("<b>Level.</b> Each ticket has a level for its plan: Simple (Opus, effort medium), Medium (Opus, effort high) or Hard (Fable, effort high)."));
   assert.ok(HTML.includes("<b>Work run.</b> The Plan ready card shows the model and the effort that the plan advises for the work run"));
   assert.ok(read("../README.md").includes("Each ticket has a level for its plan run: Simple (Opus, effort medium)"));
+});
+
+// Ticket subtickets: the parts of a plan as a chain of tickets.
+
+const part = (id: string, parent: string, at: number, status: Status = "backlog", note = "", updated = 0) => ({ ...ticket(id, status, null, at, updated), parent, part: at, note });
+
+test("subtickets: the parts of one parent stand together in Backlog in their order, at the place of the newest", () => {
+  const list = [
+    ticket("loose-old", "backlog", null, 1, 1),
+    part("p-2", "big", 2, "backlog", "", 5),
+    ticket("loose-new", "backlog", null, 1, 9),
+    part("p-1", "big", 1, "backlog", "", 3),
+    part("p-3", "big", 3, "backlog", "", 7),
+    part("p-new", "big", 4, "new", "", 20),
+  ];
+  assert.deepEqual(ids(columnTickets(list, "backlog")), ["loose-new", "p-1", "p-2", "p-3", "loose-old"]);
+  // A board without parts keeps the order of before: newest first.
+  assert.deepEqual(ids(columnTickets([ticket("a", "backlog", null, 1, 1), ticket("b", "backlog", null, 1, 2)], "backlog")), ["b", "a"]);
+  assert.deepEqual(ids(partsOf("big", list)), ["p-1", "p-2", "p-3", "p-new"]);
+  assert.deepEqual(partsOf("", list), []);
+});
+
+test("subtickets: the parent counts its parts and shows where the chain stopped", () => {
+  const parent = { id: "big" };
+  const list = [part("p-1", "big", 1, "done", "done"), part("p-2", "big", 2, "canceled", "canceled"), part("p-3", "big", 3, "in-progress"), part("p-4", "big", 4)];
+  assert.deepEqual(partProgress(parent, list), { done: 1, total: 3, stopped: 0 }, "a part that the user removed leaves the count");
+  assert.equal(partText(parent, list), "1 of 3 parts done");
+  const handDone = [part("p-1", "big", 1, "done", "done by hand"), part("p-2", "big", 2, "done", "done")];
+  assert.equal(partText(parent, handDone), "2 of 2 parts done");
+  for (const [status, note] of [["done", "failed"], ["canceled", "stopped"], ["canceled", "triage answered without a task"]] as const) {
+    const stopped = [part("p-1", "big", 1, "done", "done"), part("p-2", "big", 2, status, note), part("p-3", "big", 3)];
+    assert.equal(partText(parent, stopped), "stopped at part 2", note);
+  }
+  assert.equal(partText({ id: "small" }, list), "", "a ticket without parts shows nothing");
+  assert.equal(partText(parent, [part("p-1", "big", 1)]), "0 of 1 part done");
+  // A part names its place among the counted parts.
+  assert.deepEqual(partPlace({ id: "p-3", parent: "big" }, list), { at: 2, of: 3 });
+  assert.deepEqual(partPlace({ id: "p-2", parent: "big" }, list), { at: 2, of: 4 }, "a removed part still finds its place");
+  assert.equal(partPlace({ id: "big", parent: "" }, list), null);
+});
+
+test("subtickets: a part's message to triage carries the block of its chain; without a chain the message of before", () => {
+  const goal = { id: "p-2", title: "Piece two", summary: "write the help" };
+  assert.equal(ticketMessage(goal, []), ticketMessage(goal));
+  assert.equal(ticketMessage(goal), "Ticket p-2: Piece two\n\nwrite the help");
+  const chain = ["Part 2 of 3 of ticket big: Big", "The plan of the parent: `.dispatch/plans/big.md`", "- parent big: Big (in-progress); commits: abc1234 big: the work"];
+  assert.equal(ticketMessage(goal, chain), `Ticket p-2: Piece two\n\nwrite the help\n\n${chain.join("\n")}`);
+});
+
+test("subtickets: the plan card lists the parts before Approve, with the night box, and the board edits the waiting parts", () => {
+  const card = MAIN.slice(MAIN.indexOf("function planCard("), MAIN.indexOf("/** The answer of the user to a decision"));
+  assert.ok(card.indexOf("partsElement(task, parts, busy)") > 0 && card.indexOf("partsElement(task, parts, busy)") < card.indexOf("const approve = "), "the parts show above Approve");
+  const parts = MAIN.slice(MAIN.indexOf("function partsElement("), MAIN.indexOf("/** The row of the checks that the user chose"));
+  assert.match(parts, /`Parts that follow \(\$\{parts\.length\}\)`/);
+  assert.match(parts, /`\$\{part\.title\} · \$\{level\} · \$\{partTypeName\(part\.type\)\}`/);
+  assert.match(parts, /"ticket_night", \{ id: ticket\.id, on: check\.checked \}/);
+  assert.match(parts, /check\.checked = !!ticket\.night;/);
+  const board = MAIN.slice(MAIN.indexOf("function ticketCard("), MAIN.indexOf("function startTicketDrag("));
+  assert.match(board, /"ticket_parts", \{ parent: ticket\.parent, ids: movedIds\(ids, ticket\.id, spot - 1\) \}/);
+  assert.match(board, /openPartForm\("edit", ticket\)/);
+  assert.match(board, /openPartForm\("part", ticket\)/);
+  assert.match(board, /moveTicket\(project, ticket\.id, "canceled", queueIds\)/);
+  assert.match(board, /`Part \$\{place\.at\} of \$\{place\.of\} · /);
+  const form = MAIN.slice(MAIN.indexOf("function newTicketForm("), MAIN.indexOf("/** A small button of a ticket card. */"));
+  assert.match(form, /"ticket_edit", \{ id: part\.id, title: title \|\| null, summary: text,/);
+  assert.match(form, /"ticket_add_part", \{ parent: part\.id, text, title: title \|\| null,/);
+  assert.match(MAIN, /if \(status === "backlog" && partForm\) list\.append\(newTicketForm\(key, partForm\)\);/);
+  assert.match(MAIN, /"ticket_chain", \{ cwd, id: ticket\.id \}/);
+  for (const rule of [".task-card .card-parts", ".ticket-part,", ".ticket-progress.failed", ".ticket-new .ticket-part-title"]) assert.ok(CSS.includes(rule), rule);
+  assert.ok(HTML.includes("<li><b>Parts.</b> A plan for a large task can list parts that follow it."));
+  assert.ok(HTML.includes("<b>Parts at night.</b> A plan card with parts has the box"));
+  assert.ok(read("../README.md").includes("A plan can list parts that follow it: Approve puts one linked ticket per part in Backlog"));
 });

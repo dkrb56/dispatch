@@ -253,6 +253,52 @@ pub fn ticket_move_all(cwd: String, ids: Vec<String>, status: String) -> Result<
     tickets::ticket_move_all(cwd, ids, status)
 }
 
+/// A part at the end of the chain of a parent, in Backlog (ticket subtickets).
+#[tauri::command(async)]
+pub fn ticket_add_part(
+    cwd: String,
+    parent: String,
+    text: String,
+    title: Option<String>,
+    kind: Option<String>,
+    level: Option<String>,
+    fields: Option<TicketFields>,
+) -> Result<Ticket, String> {
+    tickets::ticket_add_part(cwd, parent, text, title, kind, level, fields)
+}
+
+/// Changes a part that waits in Backlog (ticket subtickets).
+#[tauri::command(async)]
+pub fn ticket_edit(
+    cwd: String,
+    id: String,
+    title: Option<String>,
+    summary: Option<String>,
+    kind: Option<String>,
+    level: Option<String>,
+    fields: Option<TicketFields>,
+) -> Result<Ticket, String> {
+    tickets::ticket_edit(cwd, id, title, summary, kind, level, fields)
+}
+
+/// The new order of the parts of a parent in Backlog (ticket subtickets).
+#[tauri::command(async)]
+pub fn ticket_parts(cwd: String, parent: String, ids: Vec<String>) -> Result<Vec<Ticket>, String> {
+    tickets::ticket_parts(cwd, parent, ids)
+}
+
+/// The night box of a parent (ticket subtickets, user decision 1).
+#[tauri::command(async)]
+pub fn ticket_night(cwd: String, id: String, on: bool) -> Result<Ticket, String> {
+    tickets::ticket_night(cwd, id, on)
+}
+
+/// The chain of a part for the message to triage (ticket subtickets).
+#[tauri::command(async)]
+pub fn ticket_chain(cwd: String, id: String) -> Result<Vec<String>, String> {
+    pipeline::ticket_chain(cwd, id)
+}
+
 #[tauri::command(async)]
 pub fn task_approve(cwd: String, id: String) -> Result<String, String> {
     pipeline::task_approve(cwd, id)

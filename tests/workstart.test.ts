@@ -296,3 +296,18 @@ test("main.ts: approvePlans passes the plain facts and starts a plain plan with 
   assert.match(plain, /`Plan \$\{task\.name\} has no decisions: Dispatch started the work run by itself\.\$\{checks\}`/);
   assert.match(MAIN, /startPlain: reply\.startPlainPlans \?\? false,/);
 });
+
+test("subtickets: night mode does not start a part without the night box; by day the setting still starts it", () => {
+  const held = { ...candidate("t-part"), nightHold: true };
+  const facts = (night: boolean, auto: boolean, tasks: StartCandidate[]): StartFacts => ({ merging: null, running: null, leased: null, queued: null, auto, night, tasks });
+  assert.equal(chooseStart(facts(true, false, [held])), null, "the box is unticked: the part waits for the click");
+  assert.deepEqual(chooseStart(facts(true, false, [held, candidate("t-next")])), { task: "t-next", kind: "night" }, "the next ready plan starts");
+  assert.deepEqual(chooseStart(facts(false, true, [held])), { task: "t-part", kind: "auto" }, "Approve plans automatically starts it");
+  assert.deepEqual(chooseStart(facts(true, true, [held])), { task: "t-part", kind: "auto" }, "the setting starts it at night too");
+  assert.deepEqual(chooseStart(facts(true, false, [{ ...held, auto: true }])), { task: "t-part", kind: "auto" }, "an action starts it");
+  assert.deepEqual(chooseStart({ ...facts(true, false, [{ ...held, plain: true }]), plain: true }), { task: "t-part", kind: "plain" }, "a plain plan starts it");
+  assert.deepEqual(chooseStart(facts(true, false, [{ ...held, nightHold: false }])), { task: "t-part", kind: "night" }, "the box is ticked");
+  const body = MAIN.slice(MAIN.indexOf("function approvePlans("), MAIN.indexOf("function nextQueued("));
+  assert.match(body, /nightHold: !!task\.info\?\.nightHold,/);
+  assert.match(MAIN, /const holds = info\.hold \|\| \(!!info\.nightHold && nightOf\(project\.host\)\);/);
+});

@@ -143,6 +143,16 @@ pub struct Ticket {
     pub(crate) level: String,
     /// The optional fields of the new ticket form; empty for an old ticket.
     pub(crate) fields: TicketFields,
+    /// The id of the ticket whose plan listed this ticket as a part (ticket subtickets); empty: no parent.
+    pub(crate) parent: String,
+    /// The place of a part in the chain of its parent, 1 first; 0 for a ticket that is no part.
+    pub(crate) part: u32,
+    /// On a parent: the user ticked the box that lets its parts start their work by night mode.
+    pub(crate) night: bool,
+    /// When the ticket moved into its column last: the time of its open line and of its last status
+    /// or close line. The chain of the parts moves a part only after this time (`follow`).
+    #[serde(skip)]
+    pub(crate) moved: u64,
 }
 
 impl Ticket {
@@ -254,6 +264,10 @@ pub(crate) fn fold(text: &str) -> Vec<Ticket> {
                 renamed: event.get("renamed").and_then(Value::as_bool).unwrap_or(false),
                 level: text_of("level").as_deref().and_then(known_level).unwrap_or(MEDIUM).to_string(),
                 fields: TicketFields::of(event.get("fields")),
+                parent: text_of("parent").unwrap_or_default(),
+                part: event.get("part").and_then(Value::as_u64).and_then(|part| u32::try_from(part).ok()).unwrap_or(0),
+                night: event.get("night").and_then(Value::as_bool).unwrap_or(false),
+                moved: created,
             });
             continue;
         }
@@ -264,12 +278,18 @@ pub(crate) fn fold(text: &str) -> Vec<Ticket> {
                 let Some(column) = text_of("status").as_deref().and_then(column_of) else { continue };
                 ticket.status = column.to_string();
                 ticket.note = text_of("note").unwrap_or_default();
+                if let Some(ts) = ts {
+                    ticket.moved = ticket.moved.max(ts);
+                }
             }
             "close" => {
                 let resolution = text_of("resolution").unwrap_or_default();
                 let canceled = CANCEL_WORDS.contains(&resolution.to_ascii_lowercase().as_str());
                 ticket.status = if canceled { CANCELED } else { DONE }.to_string();
                 ticket.note = text_of("note").filter(|note| !note.is_empty()).unwrap_or(resolution);
+                if let Some(ts) = ts {
+                    ticket.moved = ticket.moved.max(ts);
+                }
             }
             "update" => {
                 if let Some(title) = text_of("title").filter(|title| !title.is_empty()) {
@@ -289,6 +309,19 @@ pub(crate) fn fold(text: &str) -> Vec<Ticket> {
                 }
                 if let Some(level) = text_of("level").as_deref().and_then(known_level) {
                     ticket.level = level.to_string();
+                }
+                // The edit of a part in Backlog and the order and the night box of a chain (ticket subtickets).
+                if let Some(summary) = text_of("summary").filter(|summary| !summary.is_empty()) {
+                    ticket.summary = summary;
+                }
+                if event.get("fields").is_some() {
+                    ticket.fields = TicketFields::of(event.get("fields"));
+                }
+                if let Some(part) = event.get("part").and_then(Value::as_u64).and_then(|part| u32::try_from(part).ok()) {
+                    ticket.part = part;
+                }
+                if let Some(night) = event.get("night").and_then(Value::as_bool) {
+                    ticket.night = night;
                 }
             }
             _ => continue,
@@ -587,6 +620,10 @@ fn open_ticket(project: &Project, tickets: &[Ticket], text: &str, at: u64, statu
         renamed: false,
         level: MEDIUM.to_string(),
         fields: TicketFields::default(),
+        parent: String::new(),
+        part: 0,
+        night: false,
+        moved: at,
     }
 }
 
@@ -608,6 +645,11 @@ fn open_event(ticket: &Ticket) -> Value {
     if !filled.is_empty() {
         line["fields"] = Value::Object(filled);
     }
+    // A part of a plan (ticket subtickets); a ticket without a parent writes the line of before.
+    if !ticket.parent.is_empty() {
+        line["parent"] = json!(ticket.parent);
+        line["part"] = json!(ticket.part);
+    }
     line
 }
 
@@ -621,6 +663,7 @@ pub(crate) fn list(project: &Project) -> Vec<Ticket> {
 }
 
 /// What the task read knows of a task, for `follow`.
+#[derive(Clone, Copy)]
 pub(crate) struct TaskFacts<'a> {
     pub(crate) name: &'a str,
     /// The state file of the script: `planning`, `approved`, `working`, `stopped` or empty.
@@ -640,6 +683,10 @@ pub(crate) struct TaskFacts<'a> {
     /// files in milliseconds since the Unix epoch, 0 without them. A closed ticket moves back to In
     /// progress only for a run that started after the close (ticket board-in-progress).
     pub(crate) started: u64,
+    /// When the task ended: the change time of its report, or of its branch file after the merge,
+    /// in milliseconds since the Unix epoch; 0 without them. The next part of a chain starts only
+    /// after it (ticket subtickets).
+    pub(crate) ended: u64,
 }
 
 /// The column and the end word that a task gives its ticket, or none (the task did not start).
@@ -681,6 +728,8 @@ const USER_DONE: &str = "done by hand";
 pub(crate) fn follow(project: &Project, tickets: &mut [Ticket], facts: &[TaskFacts]) -> Result<(), String> {
     let at = now();
     let mut events = Vec::new();
+    // The parents of a chain (ticket subtickets).
+    let parents: HashSet<String> = tickets.iter().filter(|ticket| !ticket.parent.is_empty()).map(|ticket| ticket.parent.clone()).collect();
     for ticket in tickets.iter_mut() {
         if ticket.status == CANCELED && USER_CANCELS.contains(&ticket.note.as_str()) {
             continue;
@@ -689,8 +738,16 @@ pub(crate) fn follow(project: &Project, tickets: &mut [Ticket], facts: &[TaskFac
             continue;
         }
         let Some(task) = facts.iter().find(|facts| facts.name == ticket.task_name()) else { continue };
-        let Some((column, note)) = target(task) else { continue };
+        let Some((mut column, mut note)) = target(task) else { continue };
         let closed = ticket.status == DONE || ticket.status == CANCELED;
+        // A parent whose own task is done waits In progress for its parts; the chain pass below
+        // closes it (ticket subtickets).
+        if parents.contains(&ticket.id) && column == DONE && note == "done" {
+            if closed {
+                continue;
+            }
+            (column, note) = (IN_PROGRESS, "");
+        }
         if closed && column == IN_PROGRESS && (task.merged || task.started <= ticket.updated) {
             continue;
         }
@@ -705,8 +762,10 @@ pub(crate) fn follow(project: &Project, tickets: &mut [Ticket], facts: &[TaskFac
             ticket.status = column.to_string();
             ticket.note = note.to_string();
             ticket.order = None;
+            ticket.moved = at;
         }
     }
+    chain_pass(tickets, facts, &parents, at, &mut events);
     if !events.is_empty() {
         for ticket in tickets.iter_mut().filter(|ticket| events.iter().any(|event| event["ref"] == ticket.id.as_str())) {
             ticket.updated = at;
@@ -716,6 +775,100 @@ pub(crate) fn follow(project: &Project, tickets: &mut [Ticket], facts: &[TaskFac
         return Ok(());
     }
     append(project, &events)
+}
+
+/// How a part of a chain stands (ticket subtickets).
+#[derive(PartialEq, Clone, Copy, Debug)]
+pub(crate) enum PartEnd {
+    /// The part waits or runs.
+    Open,
+    /// Done with `done` or `done by hand`.
+    Done,
+    /// The user canceled it: the chain skips it, and the count leaves it out.
+    Skipped,
+    /// Failed, stopped or canceled by Dispatch: the chain stops at it.
+    Stopped,
+}
+
+/// How a part stands, from its column and its end word.
+pub(crate) fn part_end(ticket: &Ticket) -> PartEnd {
+    match ticket.status.as_str() {
+        DONE if ticket.note == "done" || ticket.note == USER_DONE => PartEnd::Done,
+        CANCELED if USER_CANCELS.contains(&ticket.note.as_str()) => PartEnd::Skipped,
+        DONE | CANCELED => PartEnd::Stopped,
+        _ => PartEnd::Open,
+    }
+}
+
+/// The parts of a parent in the order of the chain.
+pub(crate) fn parts_of<'a>(tickets: &'a [Ticket], parent: &str) -> Vec<&'a Ticket> {
+    let mut parts: Vec<&Ticket> = tickets.iter().filter(|ticket| ticket.parent == parent).collect();
+    parts.sort_by_key(|ticket| (ticket.part, ticket.created));
+    parts
+}
+
+/// The chain of each parent (ticket subtickets): when the parent's own task is done and every earlier
+/// part ended done, the first part in Backlog moves to the end of the queue of New, but only when it
+/// moved into Backlog before the end of the part before it (a part that the user moved back stays).
+/// The parent goes to Done with `done` after its last part, to Done with `failed` when every part is
+/// closed and one failed or stopped, else it stays In progress. A parent that the user closed stays.
+fn chain_pass(tickets: &mut [Ticket], facts: &[TaskFacts], parents: &HashSet<String>, at: u64, events: &mut Vec<Value>) {
+    let mut queue_end = tickets.iter().filter(|ticket| ticket.status == NEW).filter_map(|ticket| ticket.order).max().unwrap_or(0);
+    let mut parent_ids: Vec<&String> = parents.iter().collect();
+    parent_ids.sort();
+    for parent_id in parent_ids {
+        let Some(parent_at) = tickets.iter().position(|ticket| &ticket.id == parent_id && ticket.parent.is_empty()) else { continue };
+        let parent = &tickets[parent_at];
+        if (parent.status == CANCELED && USER_CANCELS.contains(&parent.note.as_str())) || (parent.status == DONE && parent.note == USER_DONE) {
+            continue;
+        }
+        let Some(task) = facts.iter().find(|facts| facts.name == parent.task_name()) else { continue };
+        if target(task) != Some((DONE, "done")) {
+            continue;
+        }
+        // (a) The next part: the first in Backlog, after earlier parts that all ended done.
+        let parts: Vec<(usize, PartEnd, u64)> = parts_of(tickets, parent_id)
+            .iter()
+            .map(|part| (tickets.iter().position(|ticket| ticket.id == part.id).unwrap_or(0), part_end(part), part.moved))
+            .collect();
+        let mut last_end = task.ended;
+        for (at_part, end, moved) in &parts {
+            match end {
+                PartEnd::Skipped => continue,
+                PartEnd::Done => last_end = last_end.max(*moved),
+                PartEnd::Open if tickets[*at_part].status == BACKLOG => {
+                    if last_end > *moved {
+                        queue_end += 1;
+                        let part = &mut tickets[*at_part];
+                        events.push(move_event(&part.id, at, NEW, "", Some(queue_end)));
+                        part.status = NEW.to_string();
+                        part.note = String::new();
+                        part.order = Some(queue_end);
+                        part.moved = at;
+                    }
+                    break;
+                }
+                _ => break,
+            }
+        }
+        // (b) The column of the parent.
+        let ends: Vec<PartEnd> = parts_of(tickets, parent_id).into_iter().map(part_end).collect();
+        let (column, note) = if ends.iter().all(|end| matches!(end, PartEnd::Done | PartEnd::Skipped)) {
+            (DONE, "done")
+        } else if ends.iter().all(|end| *end != PartEnd::Open) {
+            (DONE, "failed")
+        } else {
+            (IN_PROGRESS, "")
+        };
+        let parent = &mut tickets[parent_at];
+        if parent.status != column || parent.note != note {
+            events.push(move_event(&parent.id, at, column, note, None));
+            parent.status = column.to_string();
+            parent.note = note.to_string();
+            parent.order = None;
+            parent.moved = at;
+        }
+    }
 }
 
 /// A ticket of the file by its id.
@@ -786,6 +939,10 @@ pub(crate) fn open_in_progress(project: &Project, id: &str, title: &str, text: &
         renamed: false,
         level: MEDIUM.to_string(),
         fields: TicketFields::default(),
+        parent: String::new(),
+        part: 0,
+        night: false,
+        moved: at,
     };
     append(project, &[open_event(&ticket)])?;
     Ok(ticket)
@@ -827,6 +984,10 @@ pub fn ticket_adopt(cwd: String, id: String) -> Result<Ticket, String> {
         renamed: false,
         level: MEDIUM.to_string(),
         fields: TicketFields::default(),
+        parent: String::new(),
+        part: 0,
+        night: false,
+        moved: at,
     };
     append(&project, &[open_event(&ticket)])?;
     Ok(ticket)
@@ -983,6 +1144,228 @@ pub fn ticket_move_all(cwd: String, ids: Vec<String>, status: String) -> Result<
     }
     append(&project, &events)?;
     Ok(read(&project))
+}
+
+/// The fields of a part: trimmed, and What I see and What I expect only on a fix (as `ticket_add`).
+fn part_fields(fields: &TicketFields, kind: &str) -> TicketFields {
+    let fix = kind == "fix";
+    let keep = |text: &str, on: bool| if on { text.trim().to_string() } else { String::new() };
+    TicketFields {
+        why: keep(&fields.why, true),
+        done: keep(&fields.done, true),
+        keep: keep(&fields.keep, true),
+        context: keep(&fields.context, true),
+        see: keep(&fields.see, fix),
+        expect: keep(&fields.expect, fix),
+    }
+}
+
+/// A title of the user or of a plan: one space between the words, at most 200 characters.
+fn given_title(title: &str) -> Result<String, String> {
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.chars().count() > RENAME_MAX {
+        return Err(format!("the title is longer than {RENAME_MAX} characters"));
+    }
+    Ok(title)
+}
+
+/// A known type of the user, lower case; none for an empty one.
+fn given_kind(kind: Option<String>) -> Result<Option<&'static str>, String> {
+    match kind.map(|kind| kind.trim().to_ascii_lowercase()).filter(|kind| !kind.is_empty()) {
+        Some(kind) => Ok(Some(KINDS.iter().find(|known| **known == kind).copied().ok_or_else(|| format!("unknown type: {kind}"))?)),
+        None => Ok(None),
+    }
+}
+
+/// A new part of a parent in Backlog at the place `part` of its chain.
+fn new_part(project: &Project, tickets: &[Ticket], parent: &str, part: u32, title: &str, goal: &str, kind: &str, level: &str, fields: &TicketFields, at: u64) -> Ticket {
+    let goal = goal.trim();
+    let title = if title.trim().is_empty() { title_of(goal) } else { title.trim().to_string() };
+    let summary = if goal.is_empty() { title.clone() } else { goal.to_string() };
+    let kind = file_kind(kind).unwrap_or_else(|| kind_of(&summary));
+    let mut ticket = open_ticket(project, tickets, &summary, at, BACKLOG, None);
+    ticket.id = new_id(project, tickets, &title);
+    ticket.title = title;
+    ticket.kind = kind.to_string();
+    ticket.level = known_level(level).unwrap_or(MEDIUM).to_string();
+    ticket.fields = part_fields(fields, kind);
+    ticket.parent = parent.to_string();
+    ticket.part = part;
+    ticket
+}
+
+/// Opens one ticket per part of an approved plan in Backlog (ticket subtickets), in their order and
+/// linked to the parent ticket, with the title, the type, the level, the Goal and the fields that the
+/// planner gave. Opens nothing for a parent that is a part itself (a part makes no parts) or that has
+/// parts already (a second Approve). Gives the new tickets.
+pub(crate) fn open_parts(project: &Project, parent_id: &str, parts: &[crate::core::pipeline::PlanPart]) -> Result<Vec<Ticket>, String> {
+    let mut tickets = list(project);
+    let parent = find(&tickets, parent_id)?;
+    if parts.is_empty() || !parent.parent.is_empty() || tickets.iter().any(|ticket| ticket.parent == parent.id) {
+        return Ok(Vec::new());
+    }
+    let at = now();
+    let mut made = Vec::new();
+    for (place, part) in parts.iter().enumerate() {
+        let title = given_title(&part.title)?;
+        let ticket = new_part(project, &tickets, &parent.id, place as u32 + 1, &title, &part.goal, &part.kind, &part.level, &part.fields, at);
+        tickets.push(ticket.clone());
+        made.push(ticket);
+    }
+    append(project, &made.iter().map(open_event).collect::<Vec<_>>())?;
+    Ok(made)
+}
+
+/// Adds a part at the end of the chain of a parent, in Backlog (ticket subtickets, the button + Part).
+/// The text is the Goal; an empty title takes the title of the Goal. Refused for a parent that is a
+/// part itself and for a parent in Done or Canceled.
+pub fn ticket_add_part(
+    cwd: String,
+    parent: String,
+    text: String,
+    title: Option<String>,
+    kind: Option<String>,
+    level: Option<String>,
+    fields: Option<TicketFields>,
+) -> Result<Ticket, String> {
+    let project = Project::find(&cwd)?;
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("the goal is empty".to_string());
+    }
+    let kind = given_kind(kind)?;
+    let level = match level.filter(|level| !level.trim().is_empty()) {
+        Some(level) => known_level(&level).ok_or_else(|| format!("unknown level: {level}"))?,
+        None => MEDIUM,
+    };
+    let title = given_title(title.as_deref().unwrap_or_default())?;
+    let tickets = list(&project);
+    let owner = find(&tickets, &parent)?;
+    if !owner.parent.is_empty() {
+        return Err(format!("the ticket {parent} is a part: a part makes no parts"));
+    }
+    if owner.status == DONE || owner.status == CANCELED {
+        return Err(format!("the ticket {parent} is closed"));
+    }
+    let part = tickets.iter().filter(|ticket| ticket.parent == owner.id).map(|ticket| ticket.part).max().unwrap_or(0) + 1;
+    let kind = kind.unwrap_or_else(|| kind_of(text));
+    let ticket = new_part(&project, &tickets, &owner.id, part, &title, text, kind, level, &fields.unwrap_or_default(), now());
+    append(&project, &[open_event(&ticket)])?;
+    Ok(ticket)
+}
+
+/// Changes a part that waits in Backlog (ticket subtickets, the button ✎): its title, its Goal, its
+/// type, its level and its fields; a key that is none stays. Refused for a ticket without a parent and
+/// for a part outside Backlog. What I see and What I expect stay only on a fix.
+pub fn ticket_edit(
+    cwd: String,
+    id: String,
+    title: Option<String>,
+    summary: Option<String>,
+    kind: Option<String>,
+    level: Option<String>,
+    fields: Option<TicketFields>,
+) -> Result<Ticket, String> {
+    let project = Project::find(&cwd)?;
+    let ticket = find(&read(&project), &id)?;
+    if ticket.parent.is_empty() {
+        return Err(format!("the ticket {id} is no part"));
+    }
+    if ticket.status != BACKLOG {
+        return Err(format!("the part {id} is not in Backlog"));
+    }
+    let mut line = Map::new();
+    if let Some(title) = title {
+        let title = given_title(&title)?;
+        if title.is_empty() {
+            return Err("the title is empty".to_string());
+        }
+        if title != ticket.title {
+            line.insert("title".into(), json!(title));
+            line.insert("renamed".into(), json!(true));
+        }
+    }
+    if let Some(summary) = summary.map(|summary| summary.trim().to_string()) {
+        if summary.is_empty() {
+            return Err("the goal is empty".to_string());
+        }
+        if summary != ticket.summary {
+            line.insert("summary".into(), json!(summary));
+        }
+    }
+    let kind = given_kind(kind)?.unwrap_or(file_kind(&ticket.kind).unwrap_or("feature"));
+    if kind != ticket.kind {
+        line.insert("type".into(), json!(kind));
+    }
+    if let Some(level) = level {
+        let known = known_level(&level).ok_or_else(|| format!("unknown level: {level}"))?;
+        if known != ticket.level {
+            line.insert("level".into(), json!(known));
+        }
+    }
+    let new_fields = part_fields(fields.as_ref().unwrap_or(&ticket.fields), kind);
+    if new_fields != ticket.fields {
+        line.insert("fields".into(), Value::Object(new_fields.filled()));
+    }
+    if line.is_empty() {
+        return Ok(ticket);
+    }
+    append(&project, &[event("update", &id, now(), line)])?;
+    find(&read(&project), &id)
+}
+
+/// The new order of the parts of a parent that wait in Backlog (ticket subtickets, the buttons ▲ ▼):
+/// the named parts take the places of the Backlog parts in the given order, a Backlog part that `ids`
+/// does not name follows them, and a part outside Backlog keeps its place. Only a part whose place
+/// changed gets a line. Gives the tickets.
+pub fn ticket_parts(cwd: String, parent: String, ids: Vec<String>) -> Result<Vec<Ticket>, String> {
+    let project = Project::find(&cwd)?;
+    let tickets = read(&project);
+    find(&tickets, &parent)?;
+    let waiting: Vec<&Ticket> = parts_of(&tickets, &parent).into_iter().filter(|ticket| ticket.status == BACKLOG).collect();
+    let places: Vec<u32> = waiting.iter().map(|ticket| ticket.part).collect();
+    let mut order: Vec<&Ticket> = Vec::new();
+    for id in &ids {
+        if let Some(ticket) = waiting.iter().find(|ticket| &ticket.id == id) {
+            if !order.iter().any(|one| one.id == ticket.id) {
+                order.push(ticket);
+            }
+        }
+    }
+    for ticket in &waiting {
+        if !order.iter().any(|one| one.id == ticket.id) {
+            order.push(ticket);
+        }
+    }
+    let at = now();
+    let mut events = Vec::new();
+    for (ticket, place) in order.iter().zip(places) {
+        if ticket.part != place {
+            let mut line = Map::new();
+            line.insert("part".into(), json!(place));
+            events.push(event("update", &ticket.id, at, line));
+        }
+    }
+    append(&project, &events)?;
+    Ok(read(&project))
+}
+
+/// The box of night mode on the plan card of a parent (ticket subtickets, user decision 1): ticked,
+/// the parts of its chain start their work by night mode like any plan; unticked, they wait for the
+/// click of the user at night. Refused for a part.
+pub fn ticket_night(cwd: String, id: String, on: bool) -> Result<Ticket, String> {
+    let project = Project::find(&cwd)?;
+    let ticket = find(&read(&project), &id)?;
+    if !ticket.parent.is_empty() {
+        return Err(format!("the ticket {id} is a part: its parent holds the box"));
+    }
+    if ticket.night == on {
+        return Ok(ticket);
+    }
+    let mut line = Map::new();
+    line.insert("night".into(), json!(on));
+    append(&project, &[event("update", &id, now(), line)])?;
+    find(&read(&project), &id)
 }
 
 /// The folder of the claims in the data folder of the program (ticket why-are-there-two-chats).
@@ -1253,7 +1636,7 @@ mod tests {
         let one = ticket_add(cwd(&project), "one".into(), None, None, None).unwrap();
         crate::core::pipeline::set_paused(cwd(&project), true).unwrap();
         let before = fs::read_to_string(project.tickets_file()).unwrap();
-        let facts = [TaskFacts { name: &one.id, state: "working", report: Some("done"), brief: "The brief of one", merged: false, waits_merge: false, started: 0 }];
+        let facts = [TaskFacts { name: &one.id, state: "working", report: Some("done"), brief: "The brief of one", merged: false, waits_merge: false, started: 0, ended: 0 }];
         let mut list = read(&project);
         follow(&project, &mut list, &facts).unwrap();
         assert_eq!((list[0].status.as_str(), list[0].title.as_str()), (DONE, "The brief of one"), "the board shows the task");
@@ -1439,7 +1822,7 @@ mod tests {
         let mut list = read(&project);
         // The task of six started after its cancel (ticket board-in-progress).
         let later = now() + 1000;
-        let fact = |name, state, report, brief, started| TaskFacts { name, state, report, brief, merged: false, waits_merge: false, started };
+        let fact = |name, state, report, brief, started| TaskFacts { name, state, report, brief, merged: false, waits_merge: false, started, ended: 0 };
         let facts = [
             fact("one", "planning", None, "The brief of one", 0),
             fact("two", "working", Some("done"), "", 0),
@@ -1491,7 +1874,7 @@ mod tests {
         assert_eq!((line["op"].as_str(), line["ref"].as_str(), line["resolution"].as_str(), line["note"].as_str()), (Some("close"), Some(one.id.as_str()), Some("done"), Some(USER_DONE)));
         // A task of that name starts later: the ticket stays in Done, and follow writes nothing.
         let mut list = read(&project);
-        follow(&project, &mut list, &[TaskFacts { name: "one", state: "planning", report: None, brief: "The brief of one", merged: false, waits_merge: false, started: 0 }]).unwrap();
+        follow(&project, &mut list, &[TaskFacts { name: "one", state: "planning", report: None, brief: "The brief of one", merged: false, waits_merge: false, started: 0, ended: 0 }]).unwrap();
         assert_eq!(list.iter().find(|t| t.id == one.id).map(|t| (t.status.as_str(), t.note.as_str())), Some((DONE, USER_DONE)));
         assert_eq!(text(), written);
         let _ = fs::remove_dir_all(base);
@@ -1499,7 +1882,7 @@ mod tests {
 
     /// The facts of a running task without a report, for the tests of ticket board-in-progress.
     fn running(name: &str, started: u64) -> TaskFacts<'_> {
-        TaskFacts { name, state: "working", report: None, brief: "", merged: false, waits_merge: false, started }
+        TaskFacts { name, state: "working", report: None, brief: "", merged: false, waits_merge: false, started, ended: 0 }
     }
 
     #[test]
@@ -1684,6 +2067,279 @@ mod tests {
         assert_eq!(line["level"], "hard");
         assert!(ticket_update(cwd(&project), ticket.id.clone(), None, None, None, None, Some("extreme".into())).is_err());
         assert_eq!(read(&project)[0].level, "hard");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    // Ticket subtickets: the parts of a plan as a chain of Backlog tickets.
+
+    fn plan_part(title: &str, level: &str, kind: &str, goal: &str) -> crate::core::pipeline::PlanPart {
+        crate::core::pipeline::PlanPart { title: title.into(), level: level.into(), kind: kind.into(), goal: goal.into(), ..Default::default() }
+    }
+
+    /// A parent ticket with `n` parts in Backlog.
+    fn chain(project: &Project, n: usize) -> (Ticket, Vec<Ticket>) {
+        let parent = ticket_add(cwd(project), "Build the big thing".into(), None, None, None).unwrap();
+        let parts: Vec<_> = (1..=n).map(|at| plan_part(&format!("Piece {at}"), "", "", &format!("Do piece {at}"))).collect();
+        let made = open_parts(project, &parent.id, &parts).unwrap();
+        (find(&read(project), &parent.id).unwrap(), made)
+    }
+
+    /// The facts of a task whose report says done, ended at `ended`.
+    fn done_task(name: &str, ended: u64) -> TaskFacts<'_> {
+        TaskFacts { name, state: "working", report: Some("done"), brief: "", merged: false, waits_merge: false, started: 0, ended }
+    }
+
+    fn column(list: &[Ticket], id: &str) -> (String, String) {
+        list.iter().find(|ticket| ticket.id == id).map(|ticket| (ticket.status.clone(), ticket.note.clone())).unwrap()
+    }
+
+    fn at(status: &str, note: &str) -> (String, String) {
+        (status.to_string(), note.to_string())
+    }
+
+    #[test]
+    fn an_old_ticket_line_has_no_parent_and_no_part() {
+        let old = fold(&sample("a", Some("triage"), Some("fix"), &[]));
+        assert_eq!((old[0].parent.as_str(), old[0].part, old[0].night), ("", 0, false));
+        assert_eq!(old[0].moved, old[0].created);
+        // A new ticket without a parent writes the open line of before: no parent and no part key.
+        let (project, base) = scratch("no-parent");
+        ticket_add(cwd(&project), "One".into(), None, None, None).unwrap();
+        let line = fs::read_to_string(project.tickets_file()).unwrap();
+        assert!(!line.contains("\"parent\"") && !line.contains("\"part\"") && !line.contains("\"night\""), "{line}");
+        // Follow without parts moves the ticket as before.
+        let mut list = read(&project);
+        follow(&project, &mut list, &[done_task("one", 5)]).unwrap();
+        assert_eq!(column(&list, "one"), at(DONE, "done"));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn open_parts_gives_one_backlog_ticket_per_part_in_order() {
+        let (project, base) = scratch("open-parts");
+        let parent = ticket_add(cwd(&project), "Build the big thing".into(), None, None, None).unwrap();
+        let mut second = plan_part("Second piece", "Hard", "bug", "");
+        second.fields = TicketFields { why: " So it works ".into(), see: "A white screen".into(), ..Default::default() };
+        let mut third = plan_part("Third piece", "extreme", "", "add a new button");
+        third.fields.see = "dropped on a feature".into();
+        let made = open_parts(&project, &parent.id, &[plan_part("First piece", "simple", "content", "Write the help"), second, third]).unwrap();
+        let shown: Vec<(&str, &str, &str, &str, u32, &str)> =
+            made.iter().map(|t| (t.title.as_str(), t.kind.as_str(), t.level.as_str(), t.status.as_str(), t.part, t.parent.as_str())).collect();
+        assert_eq!(
+            shown,
+            [
+                ("First piece", "content", "simple", BACKLOG, 1, parent.id.as_str()),
+                ("Second piece", "fix", "hard", BACKLOG, 2, parent.id.as_str()),
+                ("Third piece", "feature", "medium", BACKLOG, 3, parent.id.as_str()),
+            ]
+        );
+        assert_eq!(made[0].summary, "Write the help");
+        assert_eq!(made[1].summary, "Second piece", "an empty Goal takes the title");
+        assert_eq!(made[1].fields, TicketFields { why: "So it works".into(), see: "A white screen".into(), ..Default::default() });
+        assert_eq!(made[2].fields, TicketFields::default(), "What I see stays only on a fix");
+        assert_eq!(made.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["first-piece", "second-piece", "third-piece"]);
+        // The file reads back the same tickets, linked to the parent.
+        let back = read(&project);
+        for ticket in &made {
+            assert_eq!(back.iter().find(|t| t.id == ticket.id), Some(ticket));
+        }
+        // No parts: nothing.
+        let other = ticket_add(cwd(&project), "A small thing".into(), None, None, None).unwrap();
+        assert!(open_parts(&project, &other.id, &[]).unwrap().is_empty());
+        assert_eq!(read(&project).len(), 5);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_part_makes_no_parts_of_its_own() {
+        let (project, base) = scratch("no-nesting");
+        let (_, parts) = chain(&project, 1);
+        let before = fs::read_to_string(project.tickets_file()).unwrap();
+        assert!(open_parts(&project, &parts[0].id, &[plan_part("Deeper", "", "", "")]).unwrap().is_empty());
+        assert_eq!(fs::read_to_string(project.tickets_file()).unwrap(), before);
+        assert!(ticket_add_part(cwd(&project), parts[0].id.clone(), "Deeper".into(), None, None, None, None).is_err());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_second_approve_opens_no_second_set() {
+        let (project, base) = scratch("second-approve");
+        let (parent, parts) = chain(&project, 2);
+        assert_eq!(parts.len(), 2);
+        let before = fs::read_to_string(project.tickets_file()).unwrap();
+        assert!(open_parts(&project, &parent.id, &[plan_part("Again", "", "", "")]).unwrap().is_empty());
+        assert_eq!(fs::read_to_string(project.tickets_file()).unwrap(), before);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn the_first_part_moves_to_new_when_the_parent_task_is_done() {
+        let (project, base) = scratch("first-part");
+        let (parent, parts) = chain(&project, 2);
+        let waiting = ticket_add(cwd(&project), "Waits in New".into(), None, None, None).unwrap();
+        ticket_move(cwd(&project), waiting.id.clone(), NEW.into(), vec![waiting.id.clone()], None).unwrap();
+        let mut list = read(&project);
+        let later = now() + 1000;
+        // The parent's task runs, then waits for Merge: the parts wait.
+        follow(&project, &mut list, &[running(&parent.id, 1)]).unwrap();
+        let waits = TaskFacts { waits_merge: true, ..done_task(&parent.id, later) };
+        follow(&project, &mut list, &[waits]).unwrap();
+        assert_eq!(column(&list, &parent.id), at(IN_PROGRESS, ""));
+        assert_eq!(column(&list, &parts[0].id), at(BACKLOG, ""));
+        // Done: part 1 goes to the end of the queue of New; the parent waits In progress.
+        follow(&project, &mut list, &[done_task(&parent.id, later)]).unwrap();
+        assert_eq!(column(&list, &parent.id), at(IN_PROGRESS, ""));
+        assert_eq!(column(&list, &parts[0].id), at(NEW, ""));
+        assert_eq!(list.iter().find(|t| t.id == parts[0].id).unwrap().order, Some(2));
+        assert_eq!(column(&list, &parts[1].id), at(BACKLOG, ""));
+        assert_eq!(read(&project), list, "the file has the moves");
+        // The same facts again write nothing.
+        let text = fs::read_to_string(project.tickets_file()).unwrap();
+        follow(&project, &mut list, &[done_task(&parent.id, later)]).unwrap();
+        assert_eq!(fs::read_to_string(project.tickets_file()).unwrap(), text);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn the_next_part_moves_to_new_when_a_part_is_done() {
+        let (project, base) = scratch("next-part");
+        let (parent, parts) = chain(&project, 2);
+        let mut list = read(&project);
+        let later = now() + 1000;
+        follow(&project, &mut list, &[done_task(&parent.id, later)]).unwrap();
+        // Part 1 runs: part 2 waits.
+        follow(&project, &mut list, &[done_task(&parent.id, later), running(&parts[0].id, 1)]).unwrap();
+        assert_eq!(column(&list, &parts[0].id), at(IN_PROGRESS, ""));
+        assert_eq!(column(&list, &parts[1].id), at(BACKLOG, ""));
+        // Part 1 is done: part 2 moves to New in the same read.
+        follow(&project, &mut list, &[done_task(&parent.id, later), done_task(&parts[0].id, 0)]).unwrap();
+        assert_eq!(column(&list, &parts[0].id), at(DONE, "done"));
+        assert_eq!(column(&list, &parts[1].id), at(NEW, ""));
+        assert_eq!(column(&list, &parent.id), at(IN_PROGRESS, ""));
+        assert_eq!(read(&project), list);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn the_parent_counts_its_parts_and_closes_after_the_last() {
+        let (project, base) = scratch("parent-closes");
+        let (parent, parts) = chain(&project, 3);
+        // The user cancels part 2: the chain skips it, and the count leaves it out.
+        ticket_move(cwd(&project), parts[1].id.clone(), CANCELED.into(), vec![], None).unwrap();
+        let mut list = read(&project);
+        let later = now() + 1000;
+        let done_count = |list: &[Ticket]| parts_of(list, &parent.id).into_iter().filter(|part| part_end(part) == PartEnd::Done).count();
+        follow(&project, &mut list, &[done_task(&parent.id, later)]).unwrap();
+        follow(&project, &mut list, &[done_task(&parent.id, later), done_task(&parts[0].id, 0)]).unwrap();
+        assert_eq!(done_count(&list), 1);
+        assert_eq!(column(&list, &parts[1].id), at(CANCELED, "canceled"));
+        assert_eq!(column(&list, &parts[2].id), at(NEW, ""), "the skipped part does not hold the chain");
+        assert_eq!(column(&list, &parent.id), at(IN_PROGRESS, ""));
+        // The last part is done: the parent goes to Done.
+        follow(&project, &mut list, &[done_task(&parent.id, later), done_task(&parts[0].id, 0), done_task(&parts[2].id, 0)]).unwrap();
+        assert_eq!(done_count(&list), 2);
+        assert_eq!(column(&list, &parent.id), at(DONE, "done"));
+        assert_eq!(read(&project), list);
+        // It stays there at the next read.
+        let text = fs::read_to_string(project.tickets_file()).unwrap();
+        follow(&project, &mut list, &[done_task(&parent.id, later), done_task(&parts[0].id, 0), done_task(&parts[2].id, 0)]).unwrap();
+        assert_eq!(fs::read_to_string(project.tickets_file()).unwrap(), text);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_failed_or_stopped_part_stops_the_chain() {
+        for (word, failed) in [("failed", TaskFacts { report: Some("failed"), ..running("x", 0) }), ("stopped", TaskFacts { state: "stopped", ..running("x", 0) })] {
+            let (project, base) = scratch(&format!("chain-{word}"));
+            let (parent, parts) = chain(&project, 3);
+            let mut list = read(&project);
+            let later = now() + 1000;
+            follow(&project, &mut list, &[done_task(&parent.id, later)]).unwrap();
+            let part_one = TaskFacts { name: &parts[0].id, ..failed };
+            follow(&project, &mut list, &[done_task(&parent.id, later), part_one]).unwrap();
+            assert_eq!(column(&list, &parts[0].id).1, word);
+            // The other parts stay in Backlog; the parent stays In progress (user decision 4).
+            assert_eq!(column(&list, &parts[1].id), at(BACKLOG, ""), "{word}");
+            assert_eq!(column(&list, &parts[2].id), at(BACKLOG, ""), "{word}");
+            assert_eq!(column(&list, &parent.id), at(IN_PROGRESS, ""), "{word}");
+            // The user removes the rest: the parent closes as failed.
+            for part in &parts[1..] {
+                ticket_move(cwd(&project), part.id.clone(), CANCELED.into(), vec![], None).unwrap();
+            }
+            let mut list = read(&project);
+            let part_one = TaskFacts { name: &parts[0].id, ..failed };
+            follow(&project, &mut list, &[done_task(&parent.id, later), part_one]).unwrap();
+            assert_eq!(column(&list, &parent.id), at(DONE, "failed"), "{word}");
+            assert_eq!(read(&project), list);
+            let _ = fs::remove_dir_all(base);
+        }
+    }
+
+    #[test]
+    fn a_part_moved_back_by_hand_stays_in_backlog() {
+        let (project, base) = scratch("moved-back");
+        let (parent, parts) = chain(&project, 2);
+        let mut list = read(&project);
+        let ended = list.iter().find(|t| t.id == parts[0].id).unwrap().moved + 1;
+        follow(&project, &mut list, &[done_task(&parent.id, ended)]).unwrap();
+        assert_eq!(column(&list, &parts[0].id), at(NEW, ""));
+        // The user moves part 1 back to Backlog after the end of the parent.
+        std::thread::sleep(Duration::from_millis(5));
+        ticket_move(cwd(&project), parts[0].id.clone(), BACKLOG.into(), vec![], None).unwrap();
+        let mut list = read(&project);
+        follow(&project, &mut list, &[done_task(&parent.id, ended)]).unwrap();
+        assert_eq!(column(&list, &parts[0].id), at(BACKLOG, ""), "it does not jump to New again");
+        assert_eq!(column(&list, &parent.id), at(IN_PROGRESS, ""));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn parts_in_backlog_can_be_edited_added_canceled_and_reordered() {
+        let (project, base) = scratch("edit-parts");
+        let (parent, parts) = chain(&project, 2);
+        // Edit: title, Goal, type, level and fields; What I see stays on a fix.
+        let fields = TicketFields { done: "It scrolls".into(), see: "A white board".into(), ..Default::default() };
+        let edited = ticket_edit(cwd(&project), parts[0].id.clone(), Some(" New   title ".into()), Some("Do it better".into()), Some("fix".into()), Some("hard".into()), Some(fields.clone())).unwrap();
+        assert_eq!((edited.title.as_str(), edited.summary.as_str(), edited.kind.as_str(), edited.level.as_str(), edited.renamed), ("New title", "Do it better", "fix", "hard", true));
+        assert_eq!(edited.fields, fields);
+        assert_eq!((edited.parent.as_str(), edited.part, edited.status.as_str()), (parent.id.as_str(), 1, BACKLOG));
+        let back = ticket_edit(cwd(&project), parts[0].id.clone(), None, None, Some("feature".into()), None, None).unwrap();
+        assert_eq!(back.fields, TicketFields { done: "It scrolls".into(), ..Default::default() }, "another type drops What I see");
+        let lines = fs::read_to_string(project.tickets_file()).unwrap().lines().count();
+        assert_eq!(ticket_edit(cwd(&project), parts[0].id.clone(), None, None, None, None, None).unwrap(), back);
+        assert_eq!(fs::read_to_string(project.tickets_file()).unwrap().lines().count(), lines, "no change, no line");
+        assert!(ticket_edit(cwd(&project), parent.id.clone(), Some("x".into()), None, None, None, None).is_err(), "no part");
+        assert!(ticket_edit(cwd(&project), parts[0].id.clone(), Some(" ".into()), None, None, None, None).is_err());
+        assert!(ticket_edit(cwd(&project), parts[0].id.clone(), None, None, None, Some("extreme".into()), None).is_err());
+        // Add: a new part at the end of the chain.
+        let added = ticket_add_part(cwd(&project), parent.id.clone(), "Clean up after it".into(), Some("Cleanup".into()), None, Some("simple".into()), None).unwrap();
+        assert_eq!((added.title.as_str(), added.kind.as_str(), added.level.as_str(), added.part, added.status.as_str()), ("Cleanup", "refactor", "simple", 3, BACKLOG));
+        assert_eq!(added.parent, parent.id);
+        let untitled = ticket_add_part(cwd(&project), parent.id.clone(), "write the help".into(), None, None, None, None).unwrap();
+        assert_eq!((untitled.title.as_str(), untitled.part), ("Write the help", 4));
+        assert!(ticket_add_part(cwd(&project), parent.id.clone(), " ".into(), None, None, None, None).is_err());
+        // Reorder: the named parts take the Backlog places in the given order; the others follow.
+        let after = ticket_parts(cwd(&project), parent.id.clone(), vec![added.id.clone(), parts[0].id.clone()]).unwrap();
+        let order: Vec<&str> = parts_of(&after, &parent.id).into_iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(order, [added.id.as_str(), parts[0].id.as_str(), parts[1].id.as_str(), untitled.id.as_str()]);
+        // A part outside Backlog keeps its place and cannot be edited.
+        ticket_move(cwd(&project), added.id.clone(), NEW.into(), vec![added.id.clone()], None).unwrap();
+        assert!(ticket_edit(cwd(&project), added.id.clone(), Some("x".into()), None, None, None, None).is_err());
+        let after = ticket_parts(cwd(&project), parent.id.clone(), vec![untitled.id.clone()]).unwrap();
+        let order: Vec<(&str, u32)> = parts_of(&after, &parent.id).into_iter().map(|t| (t.id.as_str(), t.part)).collect();
+        assert_eq!(order, [(added.id.as_str(), 1), (untitled.id.as_str(), 2), (parts[0].id.as_str(), 3), (parts[1].id.as_str(), 4)]);
+        // Cancel: the part goes to Canceled, and the user can bring it back (user decision 3).
+        let after = ticket_move(cwd(&project), parts[1].id.clone(), CANCELED.into(), vec![], None).unwrap();
+        assert_eq!(part_end(after.iter().find(|t| t.id == parts[1].id).unwrap()), PartEnd::Skipped);
+        let after = ticket_move(cwd(&project), parts[1].id.clone(), BACKLOG.into(), vec![], None).unwrap();
+        assert_eq!(column(&after, &parts[1].id), at(BACKLOG, ""));
+        // The night box sits on the parent only.
+        assert!(ticket_night(cwd(&project), parent.id.clone(), true).unwrap().night);
+        assert!(ticket_night(cwd(&project), parts[0].id.clone(), true).is_err());
+        assert!(!ticket_night(cwd(&project), parent.id.clone(), false).unwrap().night);
+        // A closed parent takes no new part.
+        ticket_move(cwd(&project), parent.id.clone(), DONE.into(), vec![], None).unwrap();
+        assert!(ticket_add_part(cwd(&project), parent.id.clone(), "One more".into(), None, None, None, None).is_err());
         let _ = fs::remove_dir_all(base);
     }
 }

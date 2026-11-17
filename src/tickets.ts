@@ -31,6 +31,12 @@ export interface Ticket {
   level?: string;
   /** The optional fields of the new ticket form; an older host does not send them. */
   fields?: TicketFields;
+  /** The ticket whose plan listed this ticket as a part (ticket subtickets); empty or absent: no parent. */
+  parent?: string;
+  /** The place of a part in the chain of its parent, 1 first; 0 or absent for a ticket that is no part. */
+  part?: number;
+  /** On a parent: its parts may start their work by night mode (the night box of the plan card). */
+  night?: boolean;
 }
 
 /** The optional fields of a new ticket (ticket ticket-form-optional-fields-on-a-new); empty: not filled. */
@@ -288,7 +294,7 @@ export function nextPlanTicket<T extends Pick<Ticket, "id" | "status" | "order" 
  * title, then the words, then one block `<label>: <text>` per filled optional field in the order of
  * `FIELDS`. A ticket with only the Goal gives the message of before.
  */
-export function ticketMessage(ticket: Pick<Ticket, "id" | "title" | "summary" | "fields">): string {
+export function ticketMessage(ticket: Pick<Ticket, "id" | "title" | "summary" | "fields">, chain: readonly string[] = []): string {
   const { paths, words } = splitImages(ticket.summary);
   const quoted = paths.map((path) => (path.includes(" ") ? `"${path}"` : path));
   const blocks = [`Ticket ${ticket.id}: ${ticket.title}`];
@@ -297,6 +303,9 @@ export function ticketMessage(ticket: Pick<Ticket, "id" | "title" | "summary" | 
     const text = (ticket.fields?.[field.key] ?? "").trim();
     if (text !== "") blocks.push(`${field.label}: ${text}`);
   }
+  // A part of a chain (ticket subtickets): the block `Part N of M of ticket <id>` with the lines of
+  // `ticket_chain`; triage copies it into the brief.
+  if (chain.length > 0) blocks.push(chain.join("\n"));
   return [...quoted, blocks.join("\n\n")].join(" ");
 }
 
@@ -363,9 +372,71 @@ export function ticketMatches(ticket: Pick<Ticket, "id" | "title" | "summary" | 
  * The cards of a column in their order: New by the queue, the other columns newest first (by their
  * last change).
  */
-export function columnTickets<T extends Pick<Ticket, "id" | "status" | "order" | "created" | "updated">>(tickets: readonly T[], status: TicketStatus): T[] {
+export function columnTickets<T extends Pick<Ticket, "id" | "status" | "order" | "created" | "updated"> & Partial<Pick<Ticket, "parent" | "part">>>(
+  tickets: readonly T[],
+  status: TicketStatus,
+): T[] {
   if (status === "new") return queueOrder(tickets);
-  return tickets.filter((ticket) => ticket.status === status).sort((a, b) => b.updated - a.updated || b.created - a.created);
+  const sorted = tickets.filter((ticket) => ticket.status === status).sort((a, b) => b.updated - a.updated || b.created - a.created);
+  if (status !== "backlog") return sorted;
+  // The parts of one parent stand together in their order, at the place of the newest of them (ticket subtickets).
+  const shown: T[] = [];
+  for (const ticket of sorted) {
+    if (shown.includes(ticket)) continue;
+    if (!ticket.parent) {
+      shown.push(ticket);
+      continue;
+    }
+    shown.push(...sorted.filter((one) => one.parent === ticket.parent).sort((a, b) => (a.part ?? 0) - (b.part ?? 0) || a.created - b.created));
+  }
+  return shown;
+}
+
+/** The end words of the user's own cancel: such a part leaves the chain and its count (`USER_CANCELS` in tickets.rs). */
+const USER_CANCELS = ["canceled", "asked triage"];
+
+/** How a part stands: open, done, skipped (the user canceled it) or stopped (failed, stopped, or canceled by Dispatch). */
+export function partEnd(ticket: Pick<Ticket, "status" | "note">): "open" | "done" | "skipped" | "stopped" {
+  if (ticket.status === "done") return ticket.note === "done" || ticket.note === USER_DONE ? "done" : "stopped";
+  if (ticket.status === "canceled") return USER_CANCELS.includes(ticket.note) ? "skipped" : "stopped";
+  return "open";
+}
+
+/** The parts of a parent in the order of the chain, with the parts that the user canceled. */
+export function partsOf<T extends Pick<Ticket, "parent" | "part" | "created">>(parent: string, tickets: readonly T[]): T[] {
+  return tickets.filter((ticket) => !!parent && ticket.parent === parent).sort((a, b) => (a.part ?? 0) - (b.part ?? 0) || a.created - b.created);
+}
+
+/**
+ * The count of the parts of a parent (ticket subtickets): the done parts, all parts without those that
+ * the user canceled, and the place of the first part that failed or stopped (0: none).
+ */
+export function partProgress(
+  ticket: Pick<Ticket, "id">,
+  tickets: readonly Pick<Ticket, "parent" | "part" | "created" | "status" | "note">[],
+): { done: number; total: number; stopped: number } {
+  const parts = partsOf(ticket.id, tickets).filter((part) => partEnd(part) !== "skipped");
+  const stopped = parts.findIndex((part) => partEnd(part) === "stopped") + 1;
+  return { done: parts.filter((part) => partEnd(part) === "done").length, total: parts.length, stopped };
+}
+
+/** The progress line of a parent: `2 of 4 parts done`, or `stopped at part 2`; empty without parts. */
+export function partText(ticket: Pick<Ticket, "id">, tickets: readonly Pick<Ticket, "parent" | "part" | "created" | "status" | "note">[]): string {
+  const { done, total, stopped } = partProgress(ticket, tickets);
+  if (total === 0) return "";
+  if (stopped > 0) return `stopped at part ${stopped}`;
+  return `${done} of ${total} ${total === 1 ? "part" : "parts"} done`;
+}
+
+/** The place of a part among the counted parts of its parent and their number, for `Part N of M`; null for no part. */
+export function partPlace(
+  ticket: Pick<Ticket, "id" | "parent">,
+  tickets: readonly Pick<Ticket, "id" | "parent" | "part" | "created" | "status" | "note">[],
+): { at: number; of: number } | null {
+  if (!ticket.parent) return null;
+  const parts = partsOf(ticket.parent, tickets).filter((part) => part.id === ticket.id || partEnd(part) !== "skipped");
+  const at = parts.findIndex((part) => part.id === ticket.id) + 1;
+  return at > 0 ? { at, of: parts.length } : null;
 }
 
 /**

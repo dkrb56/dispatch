@@ -51,7 +51,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, parseBoardSize, queueOrder, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES } from "./tickets";
+import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, parseBoardSize, queueOrder, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { type Typed, typedAfter, typingState } from "./typing";
@@ -2213,6 +2213,19 @@ interface TaskInfo {
   elsewhere?: boolean;
   /** The advice of the plan for the model and the effort of the work run (ticket ticket-form-optional-fields-on-a-new). Null or absent without it. */
   workChoice?: WorkChoice | null;
+  /** The parts of the plan that follow its work run (ticket subtickets); empty for a part. Absent from an older host. */
+  parts?: PlanPart[];
+  /** A part whose parent did not tick the night box: night mode does not start it (ticket subtickets). Absent from an older host. */
+  nightHold?: boolean;
+}
+
+/** One part of the section Parts of a plan (ticket subtickets). */
+interface PlanPart {
+  title: string;
+  level: string;
+  type: string;
+  goal: string;
+  fields: TicketFields;
 }
 
 /** One Bash command of a task with its result, from the transcripts (ticket task-evidence). */
@@ -2691,6 +2704,7 @@ function approvePlans(): void {
         auto: !!task.info?.auto,
         blocked: taskLeftovers(project, task.info).length > 0,
         plain: !!task.info?.plain,
+        nightHold: !!task.info?.nightHold,
       })),
     });
     const task = choice ? tasks.find((task) => task.name === choice.task) : undefined;
@@ -3656,8 +3670,11 @@ async function dispatchTickets(): Promise<void> {
       // The level of the ticket gives the model of its plan run (ticket ticket-form-optional-fields-on-a-new):
       // triage runs the plan verb, and the script reads the file. An older host without the call sends as before.
       await call(record.host, "ticket_level_file", { cwd, id: ticket.id }).catch((error) => console.warn("the level file of the ticket was not written", error));
+      // A part of a chain (ticket subtickets): the message names the parent and the earlier parts.
+      // An older host without the call sends the message of before.
+      const chain = ticket.parent ? await call<string[]>(record.host, "ticket_chain", { cwd, id: ticket.id }).catch(() => []) : [];
       try {
-        await pane.chat.deliver(ticketMessage(ticket));
+        await pane.chat.deliver(ticketMessage(ticket, chain));
       } catch (error) {
         console.warn("ticket not sent", error);
         if (claimed) void call(record.host, "ticket_claim", { cwd, id: ticket.id, release: true }).catch(() => {});
@@ -4556,6 +4573,50 @@ function workElement(task: Task, busy: boolean): HTMLElement {
   return row;
 }
 
+/** The word of the type of a part of a plan: the four types, else Auto (the guess from its Goal). */
+function partTypeName(type: string): string {
+  const known = TYPES.find((one) => one.type === type.trim().toLowerCase());
+  return known ? known.name : type.trim() ? type.trim() : "Auto";
+}
+
+/**
+ * The parts of a plan on its card (ticket subtickets): "Parts that follow (M)" with one line per part,
+ * and the night box of decision 1, unticked at first: ticked, night mode starts the work of the parts.
+ */
+function partsElement(task: Task, parts: PlanPart[], busy: boolean): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "card-parts";
+  const head = document.createElement("div");
+  head.className = "card-parts-head";
+  head.textContent = `Parts that follow (${parts.length})`;
+  head.title = "Approve opens one ticket per part in Backlog. Part 1 starts when the work of this plan is done, and each next part when the part before it is done.";
+  const list = document.createElement("ol");
+  list.className = "card-parts-list";
+  for (const part of parts) {
+    const item = document.createElement("li");
+    const level = LEVELS.find((one) => one.level === levelOf(part))?.name ?? "Medium";
+    item.textContent = `${part.title} · ${level} · ${partTypeName(part.type)}`;
+    item.title = part.goal || part.title;
+    list.append(item);
+  }
+  box.append(head, list);
+  const project = task.project;
+  const ticket = project?.tickets.find((one) => (one.task || one.id) === task.name);
+  if (project && ticket) {
+    const label = document.createElement("label");
+    label.className = "card-parts-night";
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.checked = !!ticket.night;
+    check.disabled = busy;
+    check.addEventListener("change", () => void ticketAction(projectKey(project.host, project.cwd), "ticket_night", { id: ticket.id, on: check.checked }));
+    label.title = "Unticked, night mode does not start the work of a part: its plan waits for your click.";
+    label.append(check, document.createTextNode("At night, the parts may start their work without my click"));
+    box.append(label);
+  }
+  return box;
+}
+
 /** The row of the checks that the user chose for a task, after Approve (ticket task-checks), or null. */
 function checksRow(checks: CheckInfo[]): HTMLElement | null {
   const text = checksText(checks);
@@ -4593,6 +4654,9 @@ function planCard(task: Task): HTMLElement {
     text.textContent = summary.join("\n");
     card.append(text);
   }
+  // The parts that follow the work run of the plan, before Approve (ticket subtickets).
+  const parts = task.info?.parts ?? [];
+  if (parts.length > 0) card.append(partsElement(task, parts, busy));
   // A measuring command of the plan run changed the working tree (ticket measure-before-plan).
   const changed = task.info?.measureChanged ?? [];
   if (changed.length > 0) {
@@ -5773,7 +5837,9 @@ function taskAttentionWait(task: Task): AttentionWait | null {
   const info = task.info;
   const key = `${projectKey(task.project?.host ?? LOCAL, task.project?.cwd ?? "")}|${task.name}`;
   if (approvalQueued(task)) return null;
-  if (planReady(task) && info?.plan) return { key, kind: info.hold ? "hold" : "plan", stamp: String(info.plan.modified) };
+  // A part without the night box waits for the click of the user at night, as a HOLD plan (ticket subtickets).
+  const holds = !!info?.hold || (!!info?.nightHold && nightOf(task.project?.host ?? LOCAL));
+  if (planReady(task) && info?.plan) return { key, kind: holds ? "hold" : "plan", stamp: String(info.plan.modified) };
   const report = String(info?.report?.modified ?? "");
   if (repeatedQuestionsOf(task)) return { key, kind: "repeat", stamp: report };
   if (reportWaits(task)) return { key, kind: permissionWaits(task) ? "permission" : "question", stamp: report };
@@ -5962,6 +6028,33 @@ function emptyTicketDraft(): TicketDraft {
  * next render builds the form again. Add and Cancel clear it.
  */
 let newTicketDraft: TicketDraft = emptyTicketDraft();
+
+/**
+ * The form in Backlog for a part (ticket subtickets): `edit` changes the part `id` that waits there,
+ * `part` adds a part at the end of the chain of the parent `id`. Both have a Title box.
+ */
+interface PartForm {
+  mode: "edit" | "part";
+  id: string;
+  title: string;
+  draft: TicketDraft;
+}
+let partForm: PartForm | null = null;
+
+/** Opens the form in Backlog with a part to edit, or empty for a new part of a parent. */
+function openPartForm(mode: "edit" | "part", ticket: Ticket): void {
+  const draft = emptyTicketDraft();
+  if (mode === "edit") {
+    draft.text = ticket.summary;
+    draft.kind = ticket.type;
+    draft.level = levelOf(ticket);
+    draft.fields = { ...draft.fields, ...(ticket.fields ?? {}) };
+    draft.more = FIELDS.some((field) => (ticket.fields?.[field.key] ?? "") !== "");
+  }
+  partForm = { mode, id: ticket.id, title: mode === "edit" ? ticket.title : "", draft };
+  focusNew = true;
+  renderTickets();
+}
 
 /** Opens the board of a project. */
 function openTickets(ref: ProjectRef): void {
@@ -7044,8 +7137,10 @@ function renderTickets(): void {
     }
     const list = mapElement("div", "tickets-list");
     if (status === "new" && newTicketOpen) list.append(newTicketForm(key));
+    // The form of a part stands in Backlog (ticket subtickets).
+    if (status === "backlog" && partForm) list.append(newTicketForm(key, partForm));
     list.append(...items.map((ticket) => ticketCard(key, ticket, queueIds, record)));
-    if (items.length === 0 && !(status === "new" && newTicketOpen)) {
+    if (items.length === 0 && !(status === "new" && newTicketOpen) && !(status === "backlog" && partForm)) {
       const none = paused ? PAUSED_NEW_EMPTY : "No tickets. A message to triage lands here, and Dispatch sends it when triage is free.";
       const backlog = "No tickets. Dispatch never sends a Backlog ticket: drag it to New when it should go.";
       list.append(mapElement("p", "tickets-none", status === "new" ? none : status === "backlog" ? backlog : "No tickets"));
@@ -7071,21 +7166,26 @@ const FORM_TYPES = ["", ...TYPES.map((one) => one.type)];
  * the box follows it, the type button starts at Auto, and More opens the optional fields (ticket
  * ticket-form-optional-fields-on-a-new); the fields of a fix show only for the type Fix.
  */
-function newTicketForm(project: string): HTMLElement {
-  const draft = newTicketDraft;
+function newTicketForm(project: string, part: PartForm | null = null): HTMLElement {
+  const draft = part ? part.draft : newTicketDraft;
   const form = mapElement("div", "ticket-new");
   const box = mapElement("textarea");
   box.rows = 3;
   box.value = draft.text;
-  box.placeholder = "What is the ticket about? Enter adds it to New; Dispatch sends it when triage is free. Shift+Enter makes a new line.";
+  box.placeholder = part
+    ? "The goal of the part. Enter saves it in Backlog; it starts in its turn of the chain. Shift+Enter makes a new line."
+    : "What is the ticket about? Enter adds it to New; Dispatch sends it when triage is free. Shift+Enter makes a new line.";
   box.setAttribute("aria-label", "Goal");
   box.addEventListener("input", () => (draft.text = box.value));
   const hint = mapElement("div", "ticket-hint", goalHint(draft.level));
   const add = mapElement("button", "", "Add");
   const cancel = mapElement("button", "", "Cancel");
   const close = () => {
-    newTicketOpen = false;
-    newTicketDraft = emptyTicketDraft();
+    if (part) partForm = null;
+    else {
+      newTicketOpen = false;
+      newTicketDraft = emptyTicketDraft();
+    }
     (document.activeElement as HTMLElement | null)?.blur();
     renderTickets();
   };
@@ -7096,6 +7196,15 @@ function newTicketForm(project: string): HTMLElement {
     const fields = { why: "", done: "", keep: "", context: "", see: "", expect: "" };
     for (const field of FIELDS) if (!field.fix || fix) fields[field.key] = draft.fields[field.key].trim();
     const filled = Object.values(fields).some((value) => value !== "");
+    if (part) {
+      // A part: the edit of a waiting part, or a new part at the end of its chain (ticket subtickets).
+      partForm = null;
+      (document.activeElement as HTMLElement | null)?.blur();
+      const title = part.title.trim();
+      if (part.mode === "edit") void ticketAction(project, "ticket_edit", { id: part.id, title: title || null, summary: text, kind: draft.kind || null, level: draft.level, fields });
+      else void ticketAction(project, "ticket_add_part", { parent: part.id, text, title: title || null, kind: draft.kind || null, level: draft.level, fields: filled ? fields : null });
+      return;
+    }
     newTicketOpen = false;
     newTicketDraft = emptyTicketDraft();
     (document.activeElement as HTMLElement | null)?.blur();
@@ -7137,6 +7246,16 @@ function newTicketForm(project: string): HTMLElement {
     renderTickets();
   });
   options.append(level, kind, more);
+  if (part) {
+    const title = mapElement("input", "ticket-part-title");
+    title.value = part.title;
+    title.placeholder = part.mode === "edit" ? "Title" : "Title (empty: from the goal)";
+    title.setAttribute("aria-label", "Title");
+    title.addEventListener("input", () => (part.title = title.value));
+    title.addEventListener("keydown", keys(false));
+    const head = mapElement("div", "ticket-part-head", part.mode === "edit" ? "Edit the part" : "A new part at the end of the chain");
+    form.append(head, title);
+  }
   form.append(box, hint, options);
   if (draft.more) {
     for (const field of FIELDS) {
@@ -7151,6 +7270,7 @@ function newTicketForm(project: string): HTMLElement {
       form.append(label);
     }
   }
+  if (part) add.textContent = part.mode === "edit" ? "Save" : "Add part";
   add.addEventListener("click", save);
   cancel.addEventListener("click", close);
   const buttons = mapElement("div", "ticket-tools");
@@ -7266,6 +7386,15 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   }
   const state = mapElement("span", `ticket-state${endFailed(ticket) ? " failed" : ""}`, ticketState(project, ticket, queueIds, record));
   meta.append(tag, levelTag, mapElement("span", "ticket-date", chatTime(ticket.created)), state);
+  // The chain of the parts (ticket subtickets): a part names its place and its parent, a parent its count.
+  const tickets = record?.tickets ?? [];
+  const place = partPlace(ticket, tickets);
+  const parentTicket = ticket.parent ? tickets.find((one) => one.id === ticket.parent) : undefined;
+  const chainLine = place
+    ? mapElement("div", "ticket-part", `Part ${place.at} of ${place.of} · ${parentTicket?.title ?? ticket.parent}`)
+    : partText(ticket, tickets)
+      ? mapElement("div", `ticket-progress${partProgress(ticket, tickets).stopped > 0 ? " failed" : ""}`, partText(ticket, tickets))
+      : null;
   const tools = mapElement("div", "ticket-tools");
   const at = queueIds.indexOf(ticket.id);
   // New is the queue (ticket auto-todo): Dispatch sends its tickets in their order, unless the project is paused.
@@ -7281,6 +7410,23 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   } else if (ticket.status === "canceled" || ticket.status === "backlog") {
     tools.append(ticketButton("→ New", "Back to New, at the end of the queue: Dispatch sends it to triage in its turn", () => void moveTicket(project, ticket.id, "new", [...queueIds, ticket.id])));
   }
+  // A part that waits in Backlog moves in its chain, opens in the form, and goes to Canceled (ticket subtickets, user decision 3).
+  const waitingPart = !!ticket.parent && ticket.status === "backlog";
+  if (waitingPart) {
+    const ids = partsOf(ticket.parent ?? "", tickets)
+      .filter((one) => one.status === "backlog")
+      .map((one) => one.id);
+    const spot = ids.indexOf(ticket.id);
+    tools.append(
+      ticketButton("▲", "Move up in the chain: this part starts earlier", () => void ticketAction(project, "ticket_parts", { parent: ticket.parent, ids: movedIds(ids, ticket.id, spot - 1) }), spot <= 0),
+      ticketButton("▼", "Move down in the chain: this part starts later", () => void ticketAction(project, "ticket_parts", { parent: ticket.parent, ids: movedIds(ids, ticket.id, spot + 1) }), spot === ids.length - 1),
+      ticketButton("×", "Remove this part: it goes to Canceled, the chain skips it, and you can bring it back", () => void moveTicket(project, ticket.id, "canceled", queueIds)),
+    );
+  }
+  // A parent with parts that is not closed takes a new part at the end of its chain.
+  if (!ticket.parent && ticket.status !== "done" && ticket.status !== "canceled" && partsOf(ticket.id, tickets).length > 0) {
+    tools.append(ticketButton("+ Part", "Add a part at the end of the chain: it waits in Backlog for its turn", () => openPartForm("part", ticket)));
+  }
   if (planError !== undefined) {
     tools.prepend(
       ticketButton("Retry", "Start the plan of this ticket again", () => {
@@ -7290,8 +7436,9 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
       }),
     );
   }
-  tools.append(ticketButton("✎", "Rename the ticket", rename));
+  tools.append(waitingPart ? ticketButton("✎", "Edit the part: title, goal, type, level and fields", () => openPartForm("edit", ticket)) : ticketButton("✎", "Rename the ticket", rename));
   card.append(top, meta);
+  if (chainLine) card.append(chainLine);
   if (planError !== undefined) card.append(mapElement("div", "ticket-error", `The plan did not start: ${planError}`));
   card.append(tools);
   return card;
@@ -7687,7 +7834,9 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
       const info = task.info;
       const base = { key: `${key}|${task.name}`, scope, name: task.name, project: projectName({ host: project.host, root: project.cwd }), text: taskStatus(task).text };
       if (planReady(task) && !approvalQueued(task) && info?.plan) {
-        waits.push({ ...base, kind: info.hold ? "hold" : "plan", stamp: String(info.plan.modified) });
+        // A part without the night box waits for the click of the user at night (ticket subtickets).
+        const holds = info.hold || (!!info.nightHold && nightOf(project.host));
+        waits.push({ ...base, kind: holds ? "hold" : "plan", stamp: String(info.plan.modified) });
       } else if (openQuestions(task).length > 0 && info?.report) {
         waits.push({ ...base, kind: "question", stamp: String(info.report.modified) });
         questionWaitTasks.set(base.key, task);
