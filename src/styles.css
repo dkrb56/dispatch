@@ -1977,7 +1977,8 @@ button.task-head:hover {
 }
 
 /* The corner that resizes the tickets window; main.ts keeps the size in localStorage. */
-#tickets-resize {
+#tickets-resize,
+#git-state-resize {
   position: absolute;
   right: 0;
   bottom: 0;
@@ -5615,6 +5616,7 @@ button.ticket-level {
 /* The Git state window of a project (ticket add-git-state-button-to-the-project): the history as a
    tree and the changes on the left, the diff of the selected file on the right. It only shows. */
 #git-state {
+  position: relative;
   width: 90vw;
   height: 85vh;
   padding: 0;

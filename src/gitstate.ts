@@ -75,6 +75,9 @@ export type DiffClass = "added" | "removed" | "hunk" | "plain";
 /** The most diff lines that the window shows. */
 export const DIFF_MAX_LINES = 3000;
 
+/** The localStorage key of the size that the user gave the Git state window with its corner. */
+export const GIT_STATE_SIZE_KEY = "git-state-size";
+
 /**
  * The lines of a diff text with their look. The header lines before the first hunk (`diff --git`,
  * `index`, `---`, `+++`) are left out when a hunk exists; a text without a hunk shows as it is. After

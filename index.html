@@ -274,6 +274,7 @@
         </section>
       </div>
       <footer id="git-state-note"></footer>
+      <div id="git-state-resize" title="Drag to resize the window; double-click for the usual size"></div>
     </dialog>
     <dialog id="questions">
       <header>
@@ -745,7 +746,7 @@
           <li>With <b>Tickets start their plan</b> on in Setup pipeline, Dispatch starts the plan of a New ticket itself. A question still goes to triage.</li>
           <li>With <b>No triage</b> on in Setup pipeline, Dispatch starts the plan of every New ticket itself, a question too. A ticket whose start fails stays in New with the error and a <b>Retry</b> button. Ask your questions in <b>Chat</b>.</li>
           <li><b>Chat</b> among the buttons of a project opens a plain Claude Code chat in the project folder; it shows as a chat tab in the head of the triage pane. Ask a question there without a ticket; it is no triage chat and starts no task.</li>
-          <li><b>Git state</b> among the buttons of a project opens a window with the commits of all branches as a tree, the branch with its commits ahead and behind its remote, and the files that are not committed yet. Click a file to see its changes on the right. <b>Refresh</b> reads git again. The window only shows; it does not commit, pull or push.</li>
+          <li><b>Git state</b> among the buttons of a project opens a window with the commits of all branches as a tree, the branch with its commits ahead and behind its remote, and the files that are not committed yet. Click a file to see its changes on the right. <b>Refresh</b> reads git again. The window only shows; it does not commit, pull or push. Drag its bottom-right corner to resize it; Dispatch keeps the size, and a double-click on the corner gives the usual size back.</li>
           <li><b>Parts.</b> A plan for a large task can list parts that follow it. The plan card shows them before you approve. Approve puts one ticket per part in Backlog, and they run one after the other.</li>
         </ul>
         <details class="help-more">

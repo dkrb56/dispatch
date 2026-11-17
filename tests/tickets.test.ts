@@ -273,7 +273,7 @@ test("the tickets meet the page: the commands, the board, the dispatcher, the bo
   assert.match(CSS, /\.ticket-card \{/);
   // The whole card drags, and the corner resizes the window (ticket tickets-drag-resize).
   assert.match(HTML, /id="tickets-resize"/);
-  assert.match(CSS, /#tickets-resize \{/);
+  assert.match(CSS, /#tickets-resize,\n#git-state-resize \{/);
   assert.match(CSS, /\.ticket-card\.draggable \{/);
   assert.ok(MAIN.includes("TICKETS_SIZE_KEY"), "the size is kept");
   assert.match(MAIN, /canDrag\(ticket, inFlight\)/);

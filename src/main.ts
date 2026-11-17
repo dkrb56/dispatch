@@ -92,7 +92,7 @@ import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./atten
 import { alertOptions, compactOn, initOptions, ownHostRuns, pulseOn, useOwnHost } from "./options";
 import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
-import { ageText, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "./gitstate";
+import { GIT_STATE_SIZE_KEY, ageText, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "./gitstate";
 import { initRules, openRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
 import { terminalTheme, themeName, themeTokens } from "./theme";
@@ -5493,7 +5493,10 @@ function openGitState(ref: ProjectRef): void {
   document.querySelector("#git-state-files")!.replaceChildren();
   document.querySelector("#git-state-diff-name")!.textContent = "";
   document.querySelector("#git-state-diff")!.replaceChildren();
-  if (!gitStateDialog.open) gitStateDialog.showModal();
+  if (!gitStateDialog.open) {
+    applySavedSize(gitStateDialog, GIT_STATE_SIZE_KEY);
+    gitStateDialog.showModal();
+  }
   readGitState();
 }
 
@@ -5598,6 +5601,7 @@ function showGitDiff(ref: ProjectRef, file: GitFile): void {
 }
 
 function initGitState(): void {
+  connectResizeCorner("#git-state-resize", gitStateDialog, GIT_STATE_SIZE_KEY);
   document.querySelector("#git-state-close")!.addEventListener("click", () => gitStateDialog.close());
   document.querySelector("#git-state-refresh")!.addEventListener("click", () => readGitState());
   gitStateDialog.addEventListener("click", (event) => {
@@ -6589,7 +6593,7 @@ function openTickets(ref: ProjectRef): void {
   ticketError = "";
   renamingTicket = null;
   ticketsSearchEl.value = "";
-  applyTicketsSize();
+  applySavedSize(ticketsDialog, TICKETS_SIZE_KEY);
   if (!ticketsDialog.open) ticketsDialog.showModal();
   renderTickets();
   // A project that no view reads gets its list now; the task poll reads it while the board shows.
@@ -6608,36 +6612,36 @@ function viewSize(): { width: number; height: number } {
   return { width: window.innerWidth, height: window.innerHeight };
 }
 
-/** Gives the board the size that the user saved with its corner, fitted to the app window; none: the size of the CSS. */
-function applyTicketsSize(): void {
+/** Gives a window the size that the user saved with its corner, fitted to the app window; none: the size of the CSS. */
+function applySavedSize(dialog: HTMLDialogElement, key: string): void {
   let text: string | null = null;
   try {
-    text = localStorage.getItem(TICKETS_SIZE_KEY);
+    text = localStorage.getItem(key);
   } catch {
     // No storage: the size of the CSS.
   }
   const saved = parseBoardSize(text);
   const size = saved ? fitBoardSize(saved, viewSize()) : null;
-  ticketsDialog.style.width = size ? `${size.width}px` : "";
-  ticketsDialog.style.height = size ? `${size.height}px` : "";
+  dialog.style.width = size ? `${size.width}px` : "";
+  dialog.style.height = size ? `${size.height}px` : "";
 }
 
 /**
- * A drag of the corner of the board changes its size, and the drop saves it. The window stays in
+ * A drag of the corner of a window changes its size, and the drop saves it. The window stays in
  * the middle, so a move of the pointer by dx changes the width by 2 × dx: the corner stays under
  * the pointer. A double-click gives the size of the CSS back.
  */
-function dragTicketsSize(event: PointerEvent): void {
+function dragDialogSize(event: PointerEvent, dialog: HTMLDialogElement, key: string): void {
   if (event.button !== 0) return;
   event.preventDefault();
   const corner = event.currentTarget as HTMLElement;
   corner.setPointerCapture(event.pointerId);
-  const start = { x: event.clientX, y: event.clientY, width: ticketsDialog.clientWidth, height: ticketsDialog.clientHeight };
+  const start = { x: event.clientX, y: event.clientY, width: dialog.clientWidth, height: dialog.clientHeight };
   let size: { width: number; height: number } | null = null;
   const move = (moved: PointerEvent) => {
     size = fitBoardSize({ width: start.width + 2 * (moved.clientX - start.x), height: start.height + 2 * (moved.clientY - start.y) }, viewSize());
-    ticketsDialog.style.width = `${size.width}px`;
-    ticketsDialog.style.height = `${size.height}px`;
+    dialog.style.width = `${size.width}px`;
+    dialog.style.height = `${size.height}px`;
   };
   const end = () => {
     corner.removeEventListener("pointermove", move);
@@ -6645,7 +6649,7 @@ function dragTicketsSize(event: PointerEvent): void {
     corner.removeEventListener("pointercancel", end);
     if (!size) return;
     try {
-      localStorage.setItem(TICKETS_SIZE_KEY, JSON.stringify(size));
+      localStorage.setItem(key, JSON.stringify(size));
     } catch {
       // No storage: the size holds until Dispatch closes.
     }
@@ -6655,19 +6659,24 @@ function dragTicketsSize(event: PointerEvent): void {
   corner.addEventListener("pointercancel", end);
 }
 
-/** Connects the buttons of the board. */
-function initTickets(): void {
-  const corner = document.querySelector<HTMLElement>("#tickets-resize")!;
-  corner.addEventListener("pointerdown", dragTicketsSize);
+/** Connects the resize corner of a window: a drag resizes and saves, a double-click gives the CSS size back. */
+function connectResizeCorner(selector: string, dialog: HTMLDialogElement, key: string): void {
+  const corner = document.querySelector<HTMLElement>(selector)!;
+  corner.addEventListener("pointerdown", (event) => dragDialogSize(event, dialog, key));
   corner.addEventListener("dblclick", () => {
-    ticketsDialog.style.width = "";
-    ticketsDialog.style.height = "";
+    dialog.style.width = "";
+    dialog.style.height = "";
     try {
-      localStorage.removeItem(TICKETS_SIZE_KEY);
+      localStorage.removeItem(key);
     } catch {
       // No storage: nothing to forget.
     }
   });
+}
+
+/** Connects the buttons of the board. */
+function initTickets(): void {
+  connectResizeCorner("#tickets-resize", ticketsDialog, TICKETS_SIZE_KEY);
   document.querySelector("#tickets-close")!.addEventListener("click", () => ticketsDialog.close());
   // New ticket opens the Add ticket window over the board (ticket give-the-app-an-add-ticket-button-that-i, user decision 4).
   document.querySelector("#tickets-new")!.addEventListener("click", () => {

@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ageText, DIFF_MAX_LINES, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "../src/gitstate.ts";
+import { ageText, DIFF_MAX_LINES, GIT_STATE_SIZE_KEY, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "../src/gitstate.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -88,4 +88,9 @@ test("page: the Git state window, its commands and the project button", () => {
   assert.match(MAIN, /"git_file_diff"/);
   assert.match(MAIN, /gitState\.classList\.add\("project-git-state"\)/);
   assert.match(MAIN, /initGitState\(\);/);
+  assert.ok(HTML.includes('id="git-state-resize"'));
+  assert.ok(read("../src/styles.css").includes("#git-state-resize"));
+  assert.ok(MAIN.includes("GIT_STATE_SIZE_KEY"));
+  assert.equal(GIT_STATE_SIZE_KEY, "git-state-size");
+  assert.match(HTML, /Drag its bottom-right corner to resize it; Dispatch keeps the size/);
 });
