@@ -1164,6 +1164,13 @@ function Branches-On {
   try { return [bool]((Get-Content -LiteralPath $file -Raw) | ConvertFrom-Json).taskBranches } catch { return $false }
 }
 
+# The setting "Task files local only" of the project in options.json; off without the file or the field.
+function Tasks-Local {
+  $file = Join-Path $Reports 'options.json'
+  if (-not (Test-Path -LiteralPath $file)) { return $false }
+  try { return [bool]((Get-Content -LiteralPath $file -Raw) | ConvertFrom-Json).ignoreTasks } catch { return $false }
+}
+
 # The branch that the main checkout is on; empty when HEAD is detached or the folder is no repository.
 function Current-Branch {
   $result = Invoke-Git @('symbolic-ref', '--short', '-q', 'HEAD')
@@ -1215,6 +1222,10 @@ function Enter-TaskBranch {
   $holder = Lock-Holder (Merge-Lock)
   if ($holder) { Refuse "a merge of this project runs (task $holder); try again when it has ended" }
   $exists = (Invoke-Git @('rev-parse', '--verify', '--quiet', "refs/heads/$($info.branch)")).Code -eq 0
+  if ($exists) {
+    $aligned = "$(Align-Tasks $info.branch)"
+    if ($aligned) { Refuse "the checkout stays on ${current}: $aligned" }
+  }
   $result = if ($exists) { Invoke-Git @('checkout', '-q', $info.branch) } else { Invoke-Git @('checkout', '-q', '-b', $info.branch, $info.base) }
   if ($result.Code -ne 0) { Refuse "git could not check out $($info.branch): $($result.Text)" }
   $current
@@ -1410,6 +1421,49 @@ function Sync-Base {
   ''
 }
 
+# Whether a commit tracks a file under .dispatch.
+function Tracks-Tasks([string]$Rev) {
+  $result = Invoke-Git @('ls-tree', '-r', '--name-only', $Rev, '--', '.dispatch')
+  $result.Code -eq 0 -and @($result.Lines | Where-Object { $_ }).Count -gt 0
+}
+
+# Makes a task branch hold the task files the way the checkout holds them (ticket
+# local-only-deletes-task-files), so no checkout, sync or merge deletes or overwrites a file of
+# .dispatch on the disk. "Task files local only" on: a branch that tracks a file of .dispatch, while
+# HEAD tracks none, gets a commit that takes the folder out of git. Off: a branch that tracks none,
+# while HEAD tracks some, gets the folder as HEAD has it. Git writes a tracked file of the target over
+# an ignored file, and deletes a tracked file that the target lacks. It moves the ref only, through an
+# index of its own; nothing is checked out. Gives the reason of a failure, or ''.
+function Align-Tasks([string]$Branch) {
+  $ref = "refs/heads/$Branch"
+  $old = Invoke-Git @('rev-parse', '--verify', '--quiet', $ref)
+  if ($old.Code -ne 0) { return '' }
+  $tip = "$($old.Lines | Select-Object -Last 1)".Trim()
+  $local = Tasks-Local
+  $branchTracks = Tracks-Tasks $tip
+  $headTracks = Tracks-Tasks 'HEAD'
+  if ($local -and -not ($branchTracks -and -not $headTracks)) { return '' }
+  if (-not $local -and -not ($headTracks -and -not $branchTracks)) { return '' }
+  $message = if ($local) { 'Dispatch: task files are local only' } else { 'Dispatch: task files in git again' }
+  $index = Join-Path ([IO.Path]::GetTempPath()) "dispatch-align-$PID.index"
+  $env:GIT_INDEX_FILE = $index
+  try {
+    $built = (Invoke-Git @('read-tree', $tip)).Code -eq 0
+    if ($built -and $local) { $built = (Invoke-Git @('rm', '--cached', '-r', '-q', '-f', '--ignore-unmatch', '--', '.dispatch')).Code -eq 0 }
+    if ($built -and -not $local) { $built = (Invoke-Git @('read-tree', '--prefix=.dispatch/', 'HEAD:.dispatch')).Code -eq 0 }
+    $tree = if ($built) { Invoke-Git @('write-tree') } else { $null }
+  } finally {
+    Remove-Item Env:GIT_INDEX_FILE -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $index -Force -ErrorAction SilentlyContinue
+  }
+  if ($null -eq $tree -or $tree.Code -ne 0) { return "git could not build the task files of $Branch" }
+  $commit = Invoke-Git @('commit-tree', "$($tree.Lines | Select-Object -Last 1)".Trim(), '-p', $tip, '-m', $message)
+  if ($commit.Code -ne 0) { return "git could not commit the task files of ${Branch}: $($commit.Text)" }
+  $move = Invoke-Git @('update-ref', $ref, "$($commit.Lines | Select-Object -Last 1)".Trim(), $tip)
+  if ($move.Code -ne 0) { return "git could not move ${Branch}: $($move.Text)" }
+  ''
+}
+
 # The sentence for the prompt of a run when Sync-Base did not bring the newer commits of the base, else
 # ''. Quotes and line breaks go, as in a reply.
 function Sync-Note {
@@ -1596,7 +1650,7 @@ switch ($Verb) {
   'merge' {
     Need-Id
     if ($env:CLAUDECODE) { Refuse 'only the Merge button of Dispatch merges a task branch; a Claude Code session may not run this verb' }
-    if (-not (Branches-On)) { Refuse 'Task branches is off in this project; Setup pipeline turns it on' }
+    # A branch that waits keeps its merge also with Task branches off (ticket local-only-deletes-task-files).
     $info = Read-BranchFile $Id
     if ($null -eq $info -or -not $info.branch -or -not $info.base) { Refuse "the task $Id has no branch file" }
     if ($info.merge) { Refuse "the branch $($info.branch) is merged already: $($info.merge)" }
@@ -1609,13 +1663,17 @@ switch ($Verb) {
     $held = @(Task-Leftovers)
     if ($held.Count -gt 0) { Refuse "the checkout has uncommitted changes in files that the branch changes; commit, stash or undo them first:`n$($held -join "`n")" }
     # The changed task files (the tickets file among them) go into one commit first, so git merge
-    # never meets a changed file of .dispatch.
-    $tasks = @((Invoke-Git @('status', '--porcelain', '--untracked-files=all', '--', '.dispatch')).Lines | Where-Object { $_ })
+    # never meets a changed file of .dispatch. With "Task files local only" on, git tracks none.
+    $local = Tasks-Local
+    $tasks = if ($local) { @() } else { @((Invoke-Git @('status', '--porcelain', '--untracked-files=all', '--', '.dispatch')).Lines | Where-Object { $_ }) }
     if ($tasks.Count -gt 0) {
       Invoke-Git @('add', '--all', '--', '.dispatch') | Out-Null
       $saved = Invoke-Git @('commit', '-q', '-m', "Dispatch: task files before the merge of $Id", '--', '.dispatch')
       if ($saved.Code -ne 0) { Refuse "git could not commit the task files before the merge: $($saved.Text)" }
     }
+    # The branch holds the task files as the base does, so the merge deletes none of them.
+    $aligned = "$(Align-Tasks $info.branch)"
+    if ($aligned) { Refuse $aligned }
     $gate ="$(@(Command-Lines 'merge-gate.txt') | Select-Object -First 1)"
     $limit = Command-Limit 'merge-gate.txt' 14400
     Enter-Lock (Merge-Lock) 0 'merge'
@@ -2198,6 +2256,34 @@ fn remove_notes_block(project: &Project) -> Result<(), String> {
 /// Then the index of the repository drops the task files too. The files stay on the disk.
 fn untrack_tasks(project: &Project) -> Result<(), String> {
     untrack(project, TASKS_DIR, TASKS_LOCAL_MESSAGE)
+}
+
+/// Whether a commit tracks a file under `.dispatch`.
+fn tracks_tasks(project: &Project, rev: &str) -> bool {
+    git(&project.root, &["ls-tree", "-r", "--name-only", rev, "--", TASKS_DIR]).is_some_and(|files| !files.trim().is_empty())
+}
+
+/// Commits the removal of the task files from git on a branch (ticket local-only-deletes-task-files),
+/// the Rust twin of the removal half of `Align-Tasks` of the script. The current branch goes through
+/// `untrack_tasks`. Another branch only moves its ref, through an index of its own: nothing is checked
+/// out, and the files on the disk stay. `update-ref` takes the old tip, so a branch that moved
+/// meanwhile is not overwritten.
+fn untrack_tasks_at(project: &Project, branch: &str) -> Result<(), String> {
+    if current_branch(project).as_deref() == Some(branch) {
+        return untrack_tasks(project);
+    }
+    let reference = format!("refs/heads/{branch}");
+    let tip = run_git(&project.root, &["rev-parse", "--verify", "--quiet", &reference])?.trim().to_string();
+    let index = std::env::temp_dir().join(format!("dispatch-untrack-at-{}-{}.index", std::process::id(), stamp(&project.root.to_string_lossy())));
+    let result = (|| {
+        run_git_index(&project.root, Some(&index), &["read-tree", &tip])?;
+        run_git_index(&project.root, Some(&index), &["rm", "-r", "--cached", "-q", "--ignore-unmatch", "--", TASKS_DIR])?;
+        let tree = run_git_index(&project.root, Some(&index), &["write-tree"])?.trim().to_string();
+        let commit = run_git(&project.root, &["commit-tree", &tree, "-p", &tip, "-m", TASKS_LOCAL_MESSAGE])?.trim().to_string();
+        run_git(&project.root, &["update-ref", &reference, &commit, &tip]).map(|_| ())
+    })();
+    let _ = fs::remove_file(&index);
+    result
 }
 
 /// Commits the removal of a file or a folder from git with a message, as `untrack_tasks` does: through
@@ -3569,9 +3655,26 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
             info.base
         ));
     }
+    // With "Task files local only" on, a branch that still tracks task files (made before the switch)
+    // would delete them from the disk at the checkout of a base that tracks none: both branches drop
+    // them from git first (ticket local-only-deletes-task-files).
+    let local = project.options().ignore_tasks;
+    if local {
+        for branch in [info.name.as_str(), info.base.as_str()] {
+            if tracks_tasks(project, branch) {
+                if let Err(error) = untrack_tasks_at(project, branch) {
+                    return Err(format!("The checkout stays on {}: Dispatch could not take the task files out of git on {branch}: {error}", info.name));
+                }
+            }
+        }
+    }
     // Git carries the other changes along, or refuses when a file differs on the base.
     if let Err(error) = run_git(&project.root, &["checkout", "-q", &info.base]) {
         return Err(format!("The checkout stays on {}: {error}", info.name));
+    }
+    // Local only: the disk holds the only copy of the task files, and no branch has one to take.
+    if local {
+        return Ok((true, String::new()));
     }
     let mut paths = Vec::new();
     let mut failed = Vec::new();
@@ -3607,8 +3710,8 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
         format!("Dispatch switched back to {}, but could not take these task files from {}: {}", info.base, info.name, failed.join("; "))
     };
     // A later return (after a reply) finds the files of the first one on the base already. With
-    // "Task files local only" on, git tracks no task file, so the diff above is empty and `paths`
-    // too: the return ends here without a commit (ticket ignore-tasks).
+    // "Task files local only" on, the return ended after the checkout (ticket
+    // local-only-deletes-task-files): a branch made before the switch still tracked task files.
     let mut status = vec!["status", "--porcelain", "--"];
     status.extend(paths.iter().map(String::as_str));
     if paths.is_empty() || run_git(&project.root, &status)?.trim().is_empty() {
@@ -3625,8 +3728,13 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
 /// newer (ticket stale-report-loop). After a merge by hand that kept the copy of the base, git lists
 /// the report in no diff from the merge-base, and an old question would stand on the base for ever.
 /// A report with an uncommitted change in the checkout, a newer copy on the base, and a branch
-/// without the report stay as they are. It commits nothing; gives whether it took the file.
+/// without the report stay as they are. It commits nothing; gives whether it took the file. With
+/// "Task files local only" on it takes nothing: an old branch copy would come over the only copy on
+/// the disk (ticket local-only-deletes-task-files).
 fn report_from_branch(project: &Project, ticket: &str, info: &BranchInfo) -> Result<bool, String> {
+    if project.options().ignore_tasks {
+        return Ok(false);
+    }
     let path = format!("{TASKS_DIR}/{ticket}.md");
     if run_git(&project.root, &["diff", "--name-only", &info.base, &info.name, "--", &path])?.trim().is_empty() {
         return Ok(false);
@@ -4096,6 +4204,11 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     // A switch back or a report taken from a branch sets `moved`: `task_list` reads again.
     let merging = project.merging();
     let mut moved = false;
+    // A task that lost its branch file gets it again from its branch (ticket
+    // local-only-deletes-task-files, user decision 2); the file then counts below.
+    if project.in_git {
+        restore_branch_files(project, &tasks);
+    }
     if project.in_git && (project.options().task_branches || tasks.iter().any(|task| project.branch_file(&task.name).is_file())) {
         let current = if merging.is_none() { current_branch(&project).unwrap_or_default() } else { String::new() };
         for task in tasks.iter_mut() {
@@ -4128,6 +4241,40 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     let setup = setup_time(&project);
     let options = project.options();
     Ok((TaskList { tasks, dirty, auto_approve: options.auto_approve, paused: options.paused, setup, tickets, merging, gate: project.merge_gate(), actions }, moved))
+}
+
+/// Writes the branch file of each task that has none while its branch `task/<ticket>` exists and is
+/// not merged into the current branch (ticket local-only-deletes-task-files, user decision 2): a
+/// checkout or a sync could delete the file, and the Merge card needs it. The base is the branch of
+/// the oldest reflog entry `branch: Created from <base>` when that branch exists; else the current
+/// branch when it is no task branch; else no file. One `for-each-ref` per read.
+fn restore_branch_files(project: &Project, tasks: &[TaskInfo]) {
+    let missing: Vec<&str> = tasks.iter().map(|task| task.name.as_str()).filter(|name| !project.branch_file(name).is_file()).collect();
+    if missing.is_empty() {
+        return;
+    }
+    let Some(refs) = git(&project.root, &["for-each-ref", "--format=%(refname:short)", "refs/heads/task/"]) else { return };
+    let Some(current) = current_branch(project) else { return };
+    let exists = |name: &str| git(&project.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_some();
+    for name in missing {
+        let branch = format!("task/{name}");
+        if !refs.lines().any(|line| line.trim() == branch) {
+            continue;
+        }
+        if git(&project.root, &["merge-base", "--is-ancestor", &branch, &current]).is_some() {
+            continue;
+        }
+        let log = git(&project.root, &["reflog", "show", "--format=%gs", &format!("refs/heads/{branch}")]).unwrap_or_default();
+        let created = log.lines().rev().find(|line| !line.trim().is_empty()).and_then(|line| line.trim().strip_prefix("branch: Created from ")).map(str::trim);
+        let base = match created.filter(|base| *base != "HEAD" && !base.starts_with("task/") && exists(base)) {
+            Some(base) => base.to_string(),
+            None if !current.starts_with("task/") => current.clone(),
+            None => continue,
+        };
+        if let Err(error) = write_file(&project.branch_file(name), &format!("branch: {branch}\nbase: {base}\n")) {
+            eprintln!("branch file of {name} not written again: {error}");
+        }
+    }
 }
 
 /// At most this many open tasks get their own part in the hand-off; the rest are counted.
@@ -7691,6 +7838,130 @@ if (args[0] === 'agents') {
         let text = &last_call(&fake)[0];
         assert!(text.starts_with("Answer to question 1: Run the gate now Dispatch could not bring the newer commits of "), "{text}");
         assert!(text.contains(&format!("of {base} into this branch: ")) && text.contains("work-t-1.txt"), "{text}");
+        clean(&project);
+    }
+
+    /// The paths under `.dispatch` that a commit tracks; empty when it tracks none.
+    fn tracked_tasks(project: &Project, rev: &str) -> String {
+        git_out(project, &["ls-tree", "-r", "--name-only", rev, "--", TASKS_DIR])
+    }
+
+    /// A newer brief and tickets file of the user on the disk, and the check that a step kept them,
+    /// the script, the branch file and the settings (ticket local-only-deletes-task-files).
+    fn newer_task_files(project: &Project) -> impl Fn(&str) + '_ {
+        let ticket = "{\"op\":\"open\",\"id\":\"t-9\",\"title\":\"A newer ticket\",\"status\":\"todo\",\"order\":1}\n";
+        write_file(&project.briefs().join("t-1.md"), "the newer brief\n").unwrap();
+        write_file(&project.tickets_file(), ticket).unwrap();
+        let ignore = project.options().ignore_tasks;
+        move |step: &str| {
+            assert_eq!(read(&project.briefs().join("t-1.md")), "the newer brief\n", "{step}: the brief");
+            assert_eq!(read(&project.tickets_file()), ticket, "{step}: the tickets file");
+            assert_eq!(read(&project.script()), WORKER_SCRIPT, "{step}: the script");
+            assert!(project.branch_file("t-1").is_file(), "{step}: the branch file is gone");
+            assert_eq!(project.options().ignore_tasks, ignore, "{step}: the settings");
+        }
+    }
+
+    #[test]
+    fn local_only_keeps_the_task_files_through_the_branch_switches() {
+        let (project, fake, base) = branch_project("local-only-switches");
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert!(!tracked_tasks(&project, "task/t-1").is_empty(), "the branch tracks the task files from before the switch");
+        // On: Apply takes the task files out of git on the base.
+        set_ignore(&project, true);
+        apply(&project, &[]).unwrap();
+        commit_setup(&project).unwrap();
+        assert_eq!(tracked_tasks(&project, &base), "");
+        let kept = newer_task_files(&project);
+        // A reply puts the checkout on the branch of the task.
+        let (code, out) = run_script(&project, &fake, "done", &["reply", "t-1", "go on"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        kept("on the branch");
+        // The worker ends; the read switches back to the base.
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        kept("back on the base");
+        assert_eq!(tracked_tasks(&project, &base), "");
+        let merged = task_merge(project.root.to_string_lossy().into_owned(), "t-1".to_string());
+        assert!(merged.is_ok(), "{merged:?}");
+        kept("after the merge");
+        assert_eq!(tracked_tasks(&project, &base), "");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    #[test]
+    fn turning_local_only_off_keeps_the_task_files_at_the_switch() {
+        let (project, fake, base) = branch_project("local-only-off");
+        set_ignore(&project, true);
+        apply(&project, &[]).unwrap();
+        // The branch starts while local only is on: it tracks no task file.
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(tracked_tasks(&project, "task/t-1"), "");
+        // Off: Apply commits the task files on the base again.
+        set_ignore(&project, false);
+        apply(&project, &[]).unwrap();
+        let kept = newer_task_files(&project);
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert!(!tracked_tasks(&project, &base).is_empty());
+        let (code, out) = run_script(&project, &fake, "done", &["reply", "t-1", "go on"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        kept("on the branch");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        kept("back on the base");
+        let merged = task_merge(project.root.to_string_lossy().into_owned(), "t-1".to_string());
+        assert!(merged.is_ok(), "{merged:?}");
+        kept("after the merge");
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    #[test]
+    fn a_branch_keeps_its_merge_with_task_branches_off() {
+        let (project, fake, base) = branch_project("merge-branches-off");
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        set_branches(&project, false);
+        apply(&project, &[]).unwrap();
+        commit_setup(&project).unwrap();
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.exists && branch.merge.is_empty(), "{branch:?}");
+        let merged = task_merge(project.root.to_string_lossy().into_owned(), "t-1".to_string());
+        assert!(merged.as_ref().is_ok_and(|text| text.starts_with(&format!("merged task/t-1 into {base}: "))), "{merged:?}");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    #[test]
+    fn a_lost_branch_note_is_found_by_the_branch_name() {
+        let (project, fake, base) = branch_project("lost-branch-note");
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        fs::remove_file(project.branch_file("t-1")).unwrap();
+        set_branches(&project, false);
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.exists && !branch.checked_out && branch.merge.is_empty(), "{branch:?}");
+        assert_eq!(read(&project.branch_file("t-1")), format!("branch: task/t-1\nbase: {base}\n"));
+        let merged = task_merge(project.root.to_string_lossy().into_owned(), "t-1".to_string());
+        assert!(merged.is_ok(), "{merged:?}");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
+        // A merged branch gets no new note.
+        fs::remove_file(project.branch_file("t-1")).unwrap();
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        assert!(list.tasks.iter().find(|task| task.name == "t-1").is_some_and(|task| task.branch.is_none()));
         clean(&project);
     }
 
