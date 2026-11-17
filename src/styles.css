@@ -6591,6 +6591,46 @@ body:not(.map-mode):not(.overview-mode) #stale-alert {
   content: "";
 }
 
+/* An approved task: a blue "✓ Approved" mark (ticket when-ticket-is-approved-i-need-more). */
+.task.approved {
+  border-color: var(--accent-line);
+}
+
+.task.approved .task-dot {
+  background: var(--accent);
+}
+
+.task-approved {
+  margin-right: 4px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.task-card.approved {
+  border: 1px solid var(--accent-line);
+}
+
+.task-card .card-title.approved {
+  color: var(--accent);
+}
+
+.task-card .card-title.approved::before {
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: none;
+  color: var(--accent);
+  content: "✓";
+}
+
+.ticket-state.approved {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .task-card .card-summary {
   color: var(--text-2);
   line-height: 1.55;

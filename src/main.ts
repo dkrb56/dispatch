@@ -4372,6 +4372,14 @@ function approvalQueued(task: Task): boolean {
   return (planReady(task) || awayPlan(task)) && queuedApprovals.has(queueKey(task));
 }
 
+/**
+ * The task shows the blue "✓ Approved" mark (ticket when-ticket-is-approved-i-need-more): its approval
+ * waits for the project, or its work run starts (user decision 2: until the work run starts).
+ */
+function approvedMark(task: Task): boolean {
+  return approvalQueued(task) || taskPhase(task) === "starting";
+}
+
 /** The plan run of a task is done, and its plan waits for the user. */
 function planReady(task: Task): boolean {
   const info = task.info;
@@ -4708,7 +4716,11 @@ function planCard(task: Task): HTMLElement {
   const decisions = task.info?.decisions ?? [];
   // Approved while the project was not free: the card waits with a way back.
   const queued = queuedApprovals.has(queueKey(task));
-  if (queued) title.textContent = "Approved · waits for the project";
+  if (queued) {
+    title.textContent = "Approved · waits for the project";
+    card.classList.add("approved");
+    title.classList.add("approved");
+  }
   const wait = approveWait(task);
   const approve = document.createElement("button");
   approve.className = queued ? "" : "primary";
@@ -8033,6 +8045,9 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
     levelTag.addEventListener("click", () => void updateTicket(project, ticket.id, { level: nextLevel(level) }));
   }
   const state = mapElement("span", `ticket-state${endFailed(ticket) ? " failed" : ""}`, ticketState(project, ticket, queueIds, record));
+  // An approved ticket: its state line in blue and bold (ticket when-ticket-is-approved-i-need-more, user decision 3).
+  const ticketTask = ticket.status === "in-progress" && record ? projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id)) : undefined;
+  if (ticketTask && approvedMark(ticketTask)) state.classList.add("approved");
   meta.append(tag, levelTag, mapElement("span", "ticket-date", chatTime(ticket.created)), state);
   // The chain of the parts (ticket subtickets): a part names its place and its parent, a parent its count.
   const tickets = record?.tickets ?? [];
@@ -8278,6 +8293,15 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   const state = document.createElement("span");
   state.className = "task-status";
   state.textContent = status.text;
+  // An approved task: a blue "✓ Approved" badge before the rest of its state (ticket when-ticket-is-approved-i-need-more).
+  if (approvedMark(task)) {
+    made.classList.add("approved");
+    const badge = document.createElement("span");
+    badge.className = "task-approved";
+    badge.textContent = "✓ Approved";
+    state.textContent = approvalQueued(task) ? "starts when the project is free" : "work run starts";
+    state.prepend(badge);
+  }
   head.append(top, state);
   // An approval that waits for the project: what it waits for, short, with an eye; the full reason in the tooltip.
   const reason = approvalQueued(task) ? holdWaitOf(task) : null;

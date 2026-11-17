@@ -98,3 +98,18 @@ test("leftovers outside the files of the task: no reason; the card names only th
   assert.doesNotMatch(reason?.full ?? "", /changes of the project/);
   assert.match(reason?.full ?? "", /files of this task are committed, stashed or undone/);
 });
+
+// Ticket when-ticket-is-approved-i-need-more: an approved task shows a blue "✓ Approved" mark.
+test("an approved task shows the Approved mark in its row, its card and the tickets board", () => {
+  assert.match(MAIN, /function approvedMark\(task: Task\): boolean \{\n  return approvalQueued\(task\) \|\| taskPhase\(task\) === "starting";/);
+  assert.match(MAIN, /badge\.className = "task-approved";\n    badge\.textContent = "✓ Approved";/);
+  assert.match(MAIN, /made\.classList\.add\("approved"\)/);
+  assert.match(MAIN, /title\.classList\.add\("approved"\)/);
+  assert.match(MAIN, /if \(ticketTask && approvedMark\(ticketTask\)\) state\.classList\.add\("approved"\);/);
+  assert.match(CSS, /\.task\.approved \{[^}]*var\(--accent-line\)/);
+  assert.match(CSS, /\.task-approved \{[^}]*var\(--accent-bg\)[^}]*var\(--accent\)/);
+  assert.match(CSS, /\.task-card \.card-title\.approved::before \{[^}]*background: none;[^}]*content: "✓";/);
+  assert.match(CSS, /\.ticket-state\.approved \{[^}]*var\(--accent\)[^}]*font-weight: 600/);
+  assert.ok(CSS.indexOf(".task-card .card-title.approved::before") > CSS.lastIndexOf(".task-card .card-title::before {"), "the approved rule comes after the calm-look dot");
+  assert.match(HTML, /show a blue "✓ Approved" mark/);
+});
