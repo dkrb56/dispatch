@@ -231,6 +231,25 @@
         </div>
       </footer>
     </dialog>
+    <dialog id="commit" aria-labelledby="commit-title">
+      <header>
+        <h2 id="commit-title">Commit files</h2>
+        <button id="commit-close" title="Close (Esc); nothing is committed">&times;</button>
+      </header>
+      <p id="commit-intro">One local commit on the current branch, with only these files. Dispatch does not push.</p>
+      <div id="commit-body">
+        <div class="commit-label">Files of this task that the commit takes</div>
+        <ul id="commit-files"></ul>
+        <label class="commit-label" for="commit-message">Commit message</label>
+        <textarea id="commit-message" rows="6" spellcheck="false"></textarea>
+        <div id="commit-note"></div>
+      </div>
+      <footer id="commit-footer">
+        <div id="commit-error"></div>
+        <button id="commit-cancel" title="Close the window; nothing is committed">Cancel</button>
+        <button id="commit-send" class="primary" title="Commit these files with this message on the current branch. Dispatch makes no push">Commit</button>
+      </footer>
+    </dialog>
     <dialog id="questions">
       <header>
         <h2 id="questions-title">Questions</h2>
@@ -813,7 +832,7 @@
             <li><b>Approve all</b> also takes the HOLD decisions, writes the options into the plan under "User decisions", and starts the work run. A plan without decisions shows <b>Approve</b>. A task that waits for you is first in the list.</li>
             <li>The Decisions window starts with your words from the brief, the Goal and the <b>TL;DR</b> of the plan. Click an option, or type your own answer under Other. Then click <b>Approve and start the work</b>, or <b>Revise the plan with my choices</b>: the planner writes the plan again with them, and the card comes back. A line under each button says what happens. While Dispatch approves or sends the plan back, the button shows a spinner and the window is locked.</li>
             <li>Not sure about a decision? Click <b>Ask about this</b> at the decision, or <b>Ask</b> on the plan card, and type your question in the box at the bottom of the window. <b>Ask triage about this plan</b> sends it to the triage chat, and the answer shows there. With No triage on, the button is <b>Ask about this plan in a Chat</b>: a new Chat opens and gets your question. An Ask approves nothing and changes nothing. Your picks in the window stay until the plan changes or Dispatch restarts.</li>
-            <li>Approve is grey while a file of the task has uncommitted changes or another work run of the project runs; the reason shows below it and names only the files of the task. Commit, stash or undo those changes to free it.</li>
+            <li>Approve is grey while a file of the task has uncommitted changes or another work run of the project runs; the reason shows below it and names only the files of the task. Commit, stash or undo those changes to free it. The <b>Commit files…</b> button under that reason opens a window with these files and a suggested commit message, which you can change; Commit makes one local commit of only these files on the current branch, with no push.</li>
             <li>Your answer goes to the worker word for word, with the number of the question in front. With several questions each click is a choice: the chosen option is marked, and another click changes it. When every question has a choice, the answers go to the worker together in one reply.</li>
             <li>When a worker leaves an answered question in its report, the card shows no buttons for it again. It says what you answered and offers <b>Continue</b>, <b>Send the answer again</b> or <b>Stop</b>. Triage hears about your answer once. A changed question or a new question shows its buttons as before.</li>
             <li>A new question also opens a window by itself; <b>Answer in a window</b> in the card opens it again. Click the options, then <b>Send the answers</b>. While Dispatch sends the answers, the button shows a spinner and the window is locked. The window does not open by itself in night mode, at the start of Dispatch, or while another window is open.</li>

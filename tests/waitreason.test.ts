@@ -113,3 +113,22 @@ test("an approved task shows the Approved mark in its row, its card and the tick
   assert.ok(CSS.indexOf(".task-card .card-title.approved::before") > CSS.lastIndexOf(".task-card .card-title::before {"), "the approved rule comes after the calm-look dot");
   assert.match(HTML, /show a blue "✓ Approved" mark/);
 });
+
+// Ticket i-need-a-button-here-which-would-commit: the wait reason of a plan card has a Commit files
+// button that opens a window with the changed files of the task and an editable commit message.
+test("the wait reason of a plan card has a Commit files button and its window", () => {
+  assert.match(MAIN, /commit\.textContent = "Commit files…";/);
+  assert.match(MAIN, /if \(facts\.dirty\.length > 0 && !facts\.editing && !facts\.merging\) \{/, "only while no other work run and no merge holds the task");
+  assert.match(MAIN, /commit\.disabled = busy;/);
+  assert.match(MAIN, /call<\{ lines: string\[\]; message: string \}>\(host, "task_commit_preview"/);
+  assert.match(MAIN, /call<string>\(host, "task_commit_message"/);
+  assert.match(MAIN, /call<string>\(taskHost\(task\), "task_commit", \{ cwd: taskCwd\(task\), id: task\.name, message: message\.value, files: commitLines \}\)/);
+  assert.match(MAIN, /if \(!message\.dataset\.typed && !commitSending\) message\.value = text;/, "Claude's message does not replace typed text");
+  assert.match(MAIN, /setDialogSending\(commitDialog, send, "Committing…"\);/);
+  assert.match(MAIN, /initCommit\(\);/);
+  assert.match(HTML, /<dialog id="commit" aria-labelledby="commit-title">/);
+  assert.match(HTML, /<textarea id="commit-message"/);
+  assert.match(HTML, /Dispatch does not push\./);
+  assert.match(HTML, /The <b>Commit files…<\/b> button under that reason opens a window with these files and a suggested commit message/);
+  assert.match(CSS, /#commit-files \{[^}]*"Cascadia Mono"/);
+});

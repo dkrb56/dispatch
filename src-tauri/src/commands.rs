@@ -15,7 +15,7 @@ use crate::core::chats::{self, Chat, ChatView, Worker};
 use crate::core::context::{self, ContextUsage};
 use crate::core::flow::{self, FlowFile};
 use crate::core::info::{self, DirList, FileEntry, PaneInfo};
-use crate::core::pipeline::{self, Choice, Options, Plan, ProjectRoot, TaskList, WorkerFlags};
+use crate::core::pipeline::{self, Choice, Options, Plan, ProjectRoot, TaskCommitPreview, TaskList, WorkerFlags};
 use crate::core::rules::{self, Rules};
 use crate::core::rules_check::{self, RulesCheck};
 use crate::core::status::{self, StatusInfo, UsageInfo};
@@ -188,6 +188,21 @@ pub fn pipeline_apply(cwd: String, rules: Vec<usize>) -> Result<Plan, String> {
 #[tauri::command(async)]
 pub fn pipeline_commit(cwd: String) -> Result<String, String> {
     pipeline::pipeline_commit(cwd)
+}
+
+#[tauri::command(async)]
+pub fn task_commit_preview(cwd: String, id: String) -> Result<TaskCommitPreview, String> {
+    pipeline::task_commit_preview(cwd, id)
+}
+
+#[tauri::command(async)]
+pub fn task_commit_message(cwd: String, id: String, files: Vec<String>) -> Result<String, String> {
+    pipeline::task_commit_message(cwd, id, files)
+}
+
+#[tauri::command(async)]
+pub fn task_commit(cwd: String, id: String, message: String, files: Vec<String>) -> Result<String, String> {
+    pipeline::task_commit(cwd, id, message, files)
 }
 
 #[tauri::command(async)]

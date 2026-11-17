@@ -4819,6 +4819,18 @@ function planCard(task: Task): HTMLElement {
     reason.className = "card-reason";
     const full = holdWaitOf(task)?.full ?? wait;
     reason.textContent = queued ? full : `${full.replace(/^Its work run starts/, "Approve now: its work run starts")}`;
+    // Commit files (ticket i-need-a-button-here-which-would-commit): only while no other work run and
+    // no merge holds the task, because the checkout can then be on another branch.
+    const facts = waitFacts(task);
+    if (facts.dirty.length > 0 && !facts.editing && !facts.merging) {
+      const commit = document.createElement("button");
+      commit.className = "card-commit";
+      commit.textContent = "Commit files…";
+      commit.title = "Commit the changed files of this task on the current branch. A window shows the files and a commit message you can change";
+      commit.disabled = busy;
+      commit.addEventListener("click", () => openCommit(task));
+      reason.append(commit);
+    }
     card.append(reason);
   }
   approve.addEventListener("click", () => {
@@ -5292,6 +5304,138 @@ function footerButton(selector: string, disabled: boolean, reason: string): void
   button.dataset.title ??= button.title;
   button.disabled = disabled;
   button.title = reason || button.dataset.title;
+}
+
+const commitDialog = document.querySelector<HTMLDialogElement>("#commit")!;
+/** The task whose changed files the Commit files window shows. */
+let commitTask: Task | null = null;
+/** The `git status --porcelain` lines that the Commit files window shows; Commit takes only these. */
+let commitLines: string[] = [];
+/** True from a click on Commit until its call ends: the window is locked. */
+let commitSending = false;
+/** Counts the openings and closes of the window, so a late answer of an older opening changes nothing. */
+let commitOpening = 0;
+
+/**
+ * Opens the Commit files window of a plan card (ticket i-need-a-button-here-which-would-commit): the
+ * changed files of the task and the fixed message at once, then the message that Claude writes, when
+ * the user has not typed yet (user decision 1).
+ */
+function openCommit(task: Task): void {
+  if (busyTasks.has(task.name)) return;
+  const opening = ++commitOpening;
+  commitTask = task;
+  commitLines = [];
+  const files = document.querySelector<HTMLUListElement>("#commit-files")!;
+  const message = document.querySelector<HTMLTextAreaElement>("#commit-message")!;
+  const note = document.querySelector<HTMLElement>("#commit-note")!;
+  const error = document.querySelector<HTMLElement>("#commit-error")!;
+  const send = document.querySelector<HTMLButtonElement>("#commit-send")!;
+  document.querySelector("#commit-title")!.textContent = `Commit files of ${task.name}`;
+  files.replaceChildren();
+  message.value = "";
+  delete message.dataset.typed;
+  note.textContent = "Reading the changed files…";
+  error.textContent = "";
+  send.disabled = true;
+  commitDialog.showModal();
+  const host = taskHost(task);
+  const cwd = taskCwd(task);
+  const current = (): boolean => opening === commitOpening && commitDialog.open;
+  call<{ lines: string[]; message: string }>(host, "task_commit_preview", { cwd, id: task.name })
+    .then((preview) => {
+      if (!current()) return;
+      commitLines = preview.lines;
+      files.replaceChildren(
+        ...preview.lines.map((line) => {
+          const item = document.createElement("li");
+          const status = document.createElement("span");
+          status.className = "commit-status";
+          status.textContent = line.slice(0, 2).trim();
+          item.append(status, document.createTextNode(line.slice(3)));
+          return item;
+        }),
+      );
+      if (preview.lines.length === 0) {
+        note.textContent = "";
+        error.textContent = "No changed file of this task is left to commit.";
+        return;
+      }
+      if (!message.dataset.typed) message.value = preview.message;
+      send.disabled = false;
+      note.textContent = "Writing a message…";
+      return call<string>(host, "task_commit_message", { cwd, id: task.name, files: preview.lines }).then(
+        (text) => {
+          if (!current()) return;
+          if (!message.dataset.typed && !commitSending) message.value = text;
+          note.textContent = "";
+        },
+        () => {
+          if (current()) note.textContent = "";
+        },
+      );
+    })
+    .catch((reason) => {
+      if (!current()) return;
+      note.textContent = "";
+      error.textContent = String(reason);
+    });
+}
+
+function initCommit(): void {
+  const send = document.querySelector<HTMLButtonElement>("#commit-send")!;
+  const message = document.querySelector<HTMLTextAreaElement>("#commit-message")!;
+  const error = document.querySelector<HTMLElement>("#commit-error")!;
+  const close = (): void => {
+    if (!commitSending) commitDialog.close();
+  };
+  document.querySelector("#commit-close")!.addEventListener("click", close);
+  document.querySelector("#commit-cancel")!.addEventListener("click", close);
+  commitDialog.addEventListener("click", (event) => {
+    if (event.target === commitDialog) close();
+  });
+  // Esc waits while the commit runs.
+  commitDialog.addEventListener("cancel", (event) => {
+    if (commitSending) event.preventDefault();
+  });
+  commitDialog.addEventListener("close", () => {
+    commitOpening++;
+    commitTask = null;
+  });
+  message.addEventListener("input", () => {
+    message.dataset.typed = "1";
+  });
+  send.addEventListener("click", () => {
+    const task = commitTask;
+    if (!task || commitSending || commitLines.length === 0) return;
+    if (!message.value.trim()) {
+      error.textContent = "Write a commit message first.";
+      return;
+    }
+    commitSending = true;
+    error.textContent = "";
+    setDialogSending(commitDialog, send, "Committing…");
+    call<string>(taskHost(task), "task_commit", { cwd: taskCwd(task), id: task.name, message: message.value, files: commitLines }).then(
+      async () => {
+        commitSending = false;
+        setDialogSending(commitDialog, send, null);
+        commitDialog.close();
+        tasksShown = "";
+        try {
+          await refreshTasks();
+        } catch (reason) {
+          console.error("task list refresh failed", reason);
+        }
+        renderChats();
+      },
+      (reason) => {
+        // The error stands in the window, and the message stays.
+        commitSending = false;
+        setDialogSending(commitDialog, send, null);
+        error.textContent = String(reason);
+      },
+    );
+  });
 }
 
 function initDecisions(): void {
@@ -12140,6 +12284,7 @@ async function start(): Promise<void> {
   });
   initStatusBar(() => focusedPane()?.host ?? firstBackend());
   initDecisions();
+  initCommit();
   initQuestions();
   initStale();
   initRemoveProject();

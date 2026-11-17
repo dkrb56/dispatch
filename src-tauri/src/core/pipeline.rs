@@ -5318,6 +5318,137 @@ pub fn pipeline_commit(cwd: String) -> Result<String, String> {
     commit_setup(&Project::find(&cwd)?)
 }
 
+/// What the Commit files window of a plan card shows (ticket i-need-a-button-here-which-would-commit):
+/// the `git status --porcelain` lines of the changed files of the task and a fixed commit message.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskCommitPreview {
+    lines: Vec<String>,
+    message: String,
+}
+
+/// The paths of a `git status --porcelain` line: one, or both paths of a rename. Without quotes.
+fn porcelain_paths(line: &str) -> Vec<String> {
+    line.get(3..).unwrap_or_default().split(" -> ").map(|path| path.trim().trim_matches('"').to_string()).filter(|path| !path.is_empty()).collect()
+}
+
+/// The uncommitted changes in files of a task, as the Commit files window takes them: the lines of
+/// `git status --porcelain --untracked-files=all` outside `.dispatch` that `task_leftovers` matches.
+/// An untracked folder gives each of its files. Refused outside git and while a merge, rebase or
+/// merge of Dispatch is not finished.
+fn task_commit_lines(project: &Project, ticket: &str) -> Result<Vec<String>, String> {
+    if !project.in_git {
+        return Err("No commit: the project is not a git repository.".to_string());
+    }
+    if unfinished_git(project) {
+        return Err("No commit: a merge or rebase is not finished in this checkout.".to_string());
+    }
+    let status = run_git(&project.root, &["status", "--porcelain", "--untracked-files=all", "--", ".", NOT_TASKS])?;
+    let lines: Vec<String> = status.lines().filter(|line| !line.trim().is_empty()).map(str::to_string).collect();
+    if lines.is_empty() {
+        return Ok(Vec::new());
+    }
+    let branch = read_branch_file(&project.branch_file(ticket));
+    Ok(task_leftovers(&lines, &task_files(project, ticket, branch.as_ref())))
+}
+
+/// The fixed commit message of the Commit files window: a subject with the ticket and the number of
+/// files, a blank line, then one line per file.
+fn task_commit_template(ticket: &str, lines: &[String]) -> String {
+    let count = lines.len();
+    let noun = if count == 1 { "file" } else { "files" };
+    let files: Vec<String> = lines.iter().map(|line| format!("- {}", line.get(3..).unwrap_or(line).trim())).collect();
+    format!("{ticket}: commit the changes in {count} {noun} before its work run\n\n{}", files.join("\n"))
+}
+
+/// The lines of `lines` whose paths all stand in the lines that the window showed.
+fn shown_lines(lines: Vec<String>, shown: &[String]) -> Vec<String> {
+    let shown: Vec<String> = shown.iter().flat_map(|line| porcelain_paths(line)).collect();
+    lines.into_iter().filter(|line| porcelain_paths(line).iter().all(|path| shown.contains(path))).collect()
+}
+
+/// The Commit files window of a plan card opens: the changed files of the task and the fixed message.
+pub fn task_commit_preview(cwd: String, id: String) -> Result<TaskCommitPreview, String> {
+    check_ticket(&id)?;
+    let project = Project::find(&cwd)?;
+    let lines = task_commit_lines(&project, &id)?;
+    let message = task_commit_template(&id, &lines);
+    Ok(TaskCommitPreview { lines, message })
+}
+
+/// The longest diff, in characters, that the prompt of the commit message holds.
+const COMMIT_DIFF_LIMIT: usize = 12_000;
+
+/// The prompt for the commit message: the stat and the diff of the tracked files, the diff cut at
+/// `COMMIT_DIFF_LIMIT` characters, and the names of the untracked files.
+fn commit_message_prompt(ticket: &str, stat: &str, diff: &str, untracked: &[String]) -> String {
+    let mut diff_text: String = diff.chars().take(COMMIT_DIFF_LIMIT).collect();
+    if diff.chars().count() > COMMIT_DIFF_LIMIT {
+        diff_text.push_str("\n[diff cut here]");
+    }
+    let untracked = if untracked.is_empty() { "(none)".to_string() } else { untracked.join("\n") };
+    format!(
+        "Write a git commit message for these changes. The first line is a subject of at most 72 characters that starts with \"{ticket}: \". Then an optional blank line and a short body. Plain text only: no code fence, no quotes, no comment before or after the message.\n\nChanged tracked files (git diff --stat):\n{}\n\nNew files:\n{untracked}\n\nDiff:\n{diff_text}\n",
+        stat.trim_end()
+    )
+}
+
+/// The Commit files window asks Claude for a commit message of the changes in `files` (the lines
+/// that the window shows, which still are changes of the task). The window keeps its fixed message
+/// when this fails.
+pub fn task_commit_message(cwd: String, id: String, files: Vec<String>) -> Result<String, String> {
+    check_ticket(&id)?;
+    let project = Project::find(&cwd)?;
+    let lines = shown_lines(task_commit_lines(&project, &id)?, &files);
+    if lines.is_empty() {
+        return Err("Nothing to describe: these files changed in the meantime.".to_string());
+    }
+    let untracked: Vec<String> = lines.iter().filter(|line| line.starts_with("??")).flat_map(|line| porcelain_paths(line)).collect();
+    let tracked: Vec<String> = lines.iter().filter(|line| !line.starts_with("??")).flat_map(|line| porcelain_paths(line)).collect();
+    let (stat, diff) = if tracked.is_empty() {
+        (String::new(), String::new())
+    } else {
+        let mut stat_args = vec!["diff", "--stat", "HEAD", "--"];
+        stat_args.extend(tracked.iter().map(String::as_str));
+        let mut diff_args = vec!["diff", "HEAD", "--"];
+        diff_args.extend(tracked.iter().map(String::as_str));
+        (git(&project.root, &stat_args).unwrap_or_default(), git(&project.root, &diff_args).unwrap_or_default())
+    };
+    let prompt = commit_message_prompt(&id, &stat, &diff, &untracked);
+    crate::core::rules_check::commit_message(&project.root, &prompt)
+}
+
+/// Commits the changed files of a task that the Commit files window showed, by path, on the current
+/// branch, with the message of the window. It makes no push. A file that changed into a task file
+/// after the window opened is not taken; other staged changes of the user stay staged.
+pub fn task_commit(cwd: String, id: String, message: String, files: Vec<String>) -> Result<String, String> {
+    check_ticket(&id)?;
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("No commit: the commit message is empty.".to_string());
+    }
+    let project = Project::find(&cwd)?;
+    let lines = shown_lines(task_commit_lines(&project, &id)?, &files);
+    if lines.is_empty() {
+        return Err("Nothing to commit: these files changed in the meantime.".to_string());
+    }
+    // Only an untracked file needs `git add`: the old path of a staged rename is in no index and
+    // `git add` refuses it. A commit with paths takes the working tree of each tracked path.
+    let untracked: Vec<String> = lines.iter().filter(|line| line.starts_with("??")).flat_map(|line| porcelain_paths(line)).collect();
+    if !untracked.is_empty() {
+        let mut add = vec!["add", "--"];
+        add.extend(untracked.iter().map(String::as_str));
+        run_git(&project.root, &add)?;
+    }
+    let paths: Vec<String> = lines.iter().flat_map(|line| porcelain_paths(line)).collect();
+    // A commit with paths takes only these paths. Other staged changes of the user stay staged.
+    let mut commit = vec!["commit", "-q", "-m", message, "--"];
+    commit.extend(paths.iter().map(String::as_str));
+    run_git(&project.root, &commit)?;
+    let hash = run_git(&project.root, &["rev-parse", "--short", "HEAD"])?;
+    Ok(format!("Commit {} made with {}. Dispatch made no push.", hash.trim(), paths.join(", ")))
+}
+
 /// Saves the measuring commands of the project of a folder: one command per line, each line
 /// trimmed, empty lines at the end dropped. The steps then show what Apply must change.
 pub fn set_measure_commands(cwd: String, text: String) -> Result<Plan, String> {
@@ -7284,6 +7415,65 @@ if (args[0] === 'agents') {
         assert_eq!(git(&["status", "--porcelain", "--", ".dispatch"]), "");
         assert!(git(&["status", "--porcelain"]).contains("A  staged.txt"));
         clean(&project);
+    }
+
+    #[test]
+    fn task_commit_takes_only_the_shown_task_files() {
+        let project = git_scratch("task-commit-button");
+        let root = project.root.clone();
+        let git = |args: &[&str]| run_git(&root, args).unwrap();
+        let cwd = root.to_string_lossy().into_owned();
+        for file in ["a.txt", "b.txt", "other.txt", "staged.txt"] {
+            write_file(&root.join(file), "one\n").unwrap();
+        }
+        git(&["add", "--", "a.txt", "b.txt", "other.txt", "staged.txt"]);
+        git(&["commit", "-q", "-m", "base"]);
+        let plan = "# Plan t-1\n\n## Files to change\n- `a.txt` — one\n- `b.txt` — two\n- `new/` — a folder\n- `late.txt` — three\n\n## Steps\n- `other.txt` is no task file\n";
+        write_file(&project.plans().join("t-1.md"), plan).unwrap();
+        for file in ["a.txt", "b.txt", "other.txt", "staged.txt"] {
+            write_file(&root.join(file), "two\n").unwrap();
+        }
+        // A staged change of the user in a file that is no task file stays staged.
+        git(&["add", "staged.txt"]);
+        write_file(&root.join("new/one.txt"), "new\n").unwrap();
+        write_file(&root.join("new/two.txt"), "new\n").unwrap();
+
+        // The preview lists only the task files, and each file of an untracked folder.
+        let preview = task_commit_preview(cwd.clone(), "t-1".into()).unwrap();
+        assert_eq!(preview.lines, vec![" M a.txt", " M b.txt", "?? new/one.txt", "?? new/two.txt"]);
+        assert_eq!(preview.message, "t-1: commit the changes in 4 files before its work run\n\n- a.txt\n- b.txt\n- new/one.txt\n- new/two.txt");
+        assert!(task_commit_preview(cwd.clone(), "../t-1".into()).is_err());
+
+        // An empty message is refused, and nothing is committed.
+        assert_eq!(task_commit(cwd.clone(), "t-1".into(), " \n ".into(), preview.lines.clone()).unwrap_err(), "No commit: the commit message is empty.");
+        assert_eq!(git(&["log", "--format=%s"]).lines().count(), 1);
+
+        // A task file that changes after the window opened, and a file that the window did not
+        // show, stay out of the commit.
+        write_file(&root.join("late.txt"), "late\n").unwrap();
+        let shown: Vec<String> = preview.lines.iter().filter(|line| !line.ends_with("two.txt")).cloned().collect();
+        let text = task_commit(cwd.clone(), "t-1".into(), "  t-1: the task files\n".into(), shown).unwrap();
+        assert!(text.starts_with("Commit ") && text.ends_with("made with a.txt, b.txt, new/one.txt. Dispatch made no push."), "{text}");
+        assert_eq!(git(&["log", "-1", "--format=%B"]).trim(), "t-1: the task files");
+        let files = git(&["show", "--name-only", "--format=", "HEAD"]);
+        assert_eq!(files.lines().filter(|line| !line.is_empty()).collect::<Vec<_>>(), vec!["a.txt", "b.txt", "new/one.txt"]);
+        let status = git(&["status", "--porcelain", "--untracked-files=all", "--", ".", NOT_TASKS]);
+        let status: Vec<&str> = status.lines().collect();
+        assert_eq!(status, vec![" M other.txt", "M  staged.txt", "?? late.txt", "?? new/two.txt"]);
+
+        // Nothing of the shown list is left to commit: an error.
+        assert_eq!(task_commit(cwd.clone(), "t-1".into(), "t-1: again".into(), vec![" M a.txt".into()]).unwrap_err(), "Nothing to commit: these files changed in the meantime.");
+        clean(&project);
+    }
+
+    #[test]
+    fn task_commit_message_prompt_cuts_the_diff() {
+        let long = "§".repeat(COMMIT_DIFF_LIMIT + 50);
+        let text = commit_message_prompt("t-1", " a.txt | 1 +\n", &long, &["new/one.txt".to_string()]);
+        assert_eq!(text.matches('§').count(), COMMIT_DIFF_LIMIT);
+        assert!(text.contains("[diff cut here]") && text.contains("\"t-1: \"") && text.contains("a.txt | 1 +") && text.contains("new/one.txt"), "{text}");
+        let text = commit_message_prompt("t-1", "", "-old\n+new\n", &[]);
+        assert!(!text.contains("[diff cut here]") && text.contains("-old\n+new") && text.contains("New files:\n(none)"), "{text}");
     }
 
     #[test]

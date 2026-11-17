@@ -5442,6 +5442,182 @@ button.ticket-level {
   line-height: 1.35;
 }
 
+/* The Commit files window of a plan card (ticket i-need-a-button-here-which-would-commit): the
+   changed files of the task and an editable commit message. It has the frame of the Decisions window. */
+#commit {
+  width: min(92vw, 720px);
+  max-height: 86vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 50%);
+  color: var(--text);
+  font-size: calc(13px * var(--text-scale));
+}
+
+#commit[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#commit::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+#commit header {
+  display: flex;
+  align-items: center;
+  padding-left: 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+#commit h2 {
+  flex: 1;
+  margin: 0;
+  font-size: calc(16px * var(--text-scale));
+  font-weight: 600;
+}
+
+#commit-close {
+  width: 32px;
+  height: 32px;
+  margin: 8px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: calc(18px * var(--text-scale));
+  cursor: pointer;
+}
+
+#commit-close:hover {
+  background: var(--card);
+}
+
+#commit-intro {
+  flex: none;
+  margin: 0;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+#commit-body {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 20px 12px;
+  overflow-y: auto;
+}
+
+#commit .commit-label {
+  display: block;
+  margin: 4px 0;
+  color: var(--muted);
+}
+
+#commit-files {
+  max-height: 180px;
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  overflow-y: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--bg);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+  list-style: none;
+  white-space: pre;
+}
+
+#commit-files .commit-status {
+  display: inline-block;
+  width: 3ch;
+  color: var(--wait);
+}
+
+#commit-message {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: calc(6 * 1.4em + 12px);
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+  line-height: 1.4;
+  resize: vertical;
+}
+
+#commit-message:focus {
+  border-color: var(--accent-line);
+  outline: none;
+}
+
+#commit-note {
+  min-height: 1.3em;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
+#commit-footer {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--hairline);
+}
+
+#commit-error {
+  flex: 1 1 100%;
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+
+#commit-error:empty {
+  display: none;
+}
+
+#commit-footer button {
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+#commit-footer button.primary {
+  border-color: var(--work-line);
+  background: var(--work-bg);
+  color: var(--work);
+}
+
+#commit-footer button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#commit.busy {
+  cursor: progress;
+}
+
+/* The Commit files button under the wait reason of a plan card. */
+.task-card .card-reason .card-commit {
+  display: block;
+  margin-top: 6px;
+}
+
 .decision-title .decision-ask {
   margin-left: 8px;
   padding: 1px 8px;
