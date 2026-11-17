@@ -27,7 +27,7 @@ import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 import { onReturn } from "./chatend";
-import { markedProject, showMark, watchArea } from "./focusmark";
+import { barHost, markedProject, showMark, watchArea } from "./focusmark";
 import { removeAnswer, removeTexts } from "./removeproject";
 import { type ColumnAction, type ColumnChoice, applyAction, columnStates, dragPartner, mayMinimize, parseChoice } from "./focuslayout";
 import { type FoldPart, type Folds, foldOpen, parseFolds, setFold, splitNewest } from "./focuslists";
@@ -10385,6 +10385,7 @@ let focusCurrent = "";
 function setFocusCurrent(key: string): void {
   focusCurrent = key;
   showFocusMark();
+  redrawStatusBar();
 }
 
 /** Puts the frame on the column of the project in focus; with one project no column has it. */
@@ -11700,17 +11701,20 @@ async function setView(mode: ViewMode): Promise<void> {
     // Last, so that its word is the marked one.
     showOverview(true);
     renderPills();
+    redrawStatusBar();
     return;
   }
   if (mode === "map") {
     if (focusOn) await setFocus(false);
     showMap(true);
     renderPills();
+    redrawStatusBar();
     return;
   }
   if (mapOn) showMap(false);
   await setFocus(mode === "focus");
   renderPills();
+  redrawStatusBar();
 }
 
 function showMap(on: boolean): void {
@@ -11867,6 +11871,7 @@ function mapSection(ref: ProjectRef): HTMLElement {
 
   const section = mapElement("section", "map-project");
   section.dataset.project = key;
+  watchArea(section, key, setFocusCurrent);
   const head = mapElement("div", "map-head");
   const dot = mapElement("span", `focus-dot ${waiting.length > 0 ? "waits" : live.length > 0 ? "working" : ""}${attentionClasses(projectSignal(key))}`);
   dot.setAttribute("aria-hidden", "true");
@@ -12220,6 +12225,7 @@ function overviewCard(ref: ProjectRef): OverviewCard {
   if (known) return known;
   const el = mapElement("section", "overview-card");
   el.dataset.project = key;
+  watchArea(el, key, setFocusCurrent);
   el.setAttribute("aria-label", projectName(ref));
   const head = mapElement("div", "overview-head");
   const grip = mapElement("span", "entry-grip overview-grip", "⠿");
@@ -12588,7 +12594,16 @@ async function start(): Promise<void> {
       .then((reply) => applyShared(host, parseShared(reply)))
       .catch((error) => console.warn("shared state read failed", error));
   });
-  initStatusBar(() => focusedPane()?.host ?? firstBackend());
+  // The bar shows the computer of the project that the user works in (this-line-should-reflect-which-project).
+  initStatusBar(() =>
+    barHost(
+      (focusOn ? focusProjects : mapOn ? mapProjects() : overviewOn ? overviewProjects() : []).map((ref) => ({ key: refKey(ref), host: ref.host })),
+      focusCurrent,
+      focusedPane()?.host ?? null,
+      firstBackend(),
+      focusOn || mapOn || overviewOn,
+    ),
+  );
   initDecisions();
   initCommit();
   initGitState();

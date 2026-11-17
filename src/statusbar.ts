@@ -3,7 +3,7 @@
 // version of Dispatch. It reads the
 // account and the versions at the start and then once a minute, the usage at the start and then
 // every 5 minutes. With several hosts (ticket remote-multi-host) it reads every host and keeps the
-// last values of each; it shows the host of the focused terminal, with the host's name in front.
+// last values of each; it shows the host of the current project, with the host's name in front.
 //
 // The email and the usage numbers stay in the bar only: they go into no storage, no console line
 // and no file. The usage numbers stand in the tooltip of their part too.
@@ -23,7 +23,7 @@ interface HostValues {
   usageReadAt: Date | null;
 }
 const values = new Map<HostId, HostValues>();
-/** The host whose values the bar shows: the host of the focused terminal. */
+/** The host whose values the bar shows: the host of the current project. */
 let shownHost: () => HostId = () => backends()[0];
 
 function valuesOf(host: HostId): HostValues {

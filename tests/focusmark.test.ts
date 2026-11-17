@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { EDGES, MARK, markedProject, showMark, watchArea } from "../src/focusmark.ts";
+import { barHost, EDGES, MARK, markedProject, showMark, watchArea } from "../src/focusmark.ts";
 
 // ---- Stand-ins ---------------------------------------------------------------------------------
 
@@ -238,4 +238,36 @@ test("the mark meets the page: main.ts watches the areas, the Help says what the
   assert.doesNotMatch(MAIN, /el\.addEventListener\("pointerdown", \(\) => \(focusCurrent = key\)\);/);
   assert.match(HTML, /a blue frame marks the project you work in/);
   assert.doesNotMatch(HTML, /clicked last/);
+});
+
+// ---- The computer of the bar at the bottom (ticket this-line-should-reflect-which-project) -----
+
+const PROJECTS = [
+  { key: "local|a", host: "local" },
+  { key: "h1|b", host: "h1" },
+];
+
+test("the bar in Tabs shows the computer of the focused terminal, else the first", () => {
+  assert.equal(barHost(PROJECTS, "h1|b", "local", "first", false), "local");
+  assert.equal(barHost(PROJECTS, "local|a", "h1", "first", false), "h1");
+  assert.equal(barHost(PROJECTS, "h1|b", null, "first", false), "first");
+});
+
+test("the bar in Focus, Map and Overview shows the computer of the project worked in last", () => {
+  assert.equal(barHost(PROJECTS, "h1|b", "local", "first", true), "h1");
+  assert.equal(barHost(PROJECTS, "local|a", "h1", "first", true), "local");
+});
+
+test("the bar falls back to the first project, then the focused terminal, then the first computer", () => {
+  assert.equal(barHost(PROJECTS, "gone|c", "local", "first", true), "local");
+  assert.equal(barHost([PROJECTS[1], PROJECTS[0]], "", "local", "first", true), "h1");
+  assert.equal(barHost([], "h1|b", "h1", "first", true), "h1");
+  assert.equal(barHost([], "h1|b", null, "first", true), "first");
+});
+
+test("the bar meets the page: main.ts redraws it when the project changes and the areas of Map and Overview are watched", () => {
+  assert.match(MAIN, /focusCurrent = key;\n  showFocusMark\(\);\n  redrawStatusBar\(\);/);
+  assert.match(MAIN, /initStatusBar\(\(\) =>\s*barHost\(/);
+  assert.match(MAIN, /watchArea\(section, key, setFocusCurrent\)/);
+  assert.match(MAIN, /el\.dataset\.project = key;\n  watchArea\(el, key, setFocusCurrent\);/);
 });

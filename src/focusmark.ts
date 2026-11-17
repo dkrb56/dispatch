@@ -19,6 +19,25 @@ export function markedProject(keys: readonly string[], remembered: string): stri
   return keys.includes(remembered) ? remembered : keys[0];
 }
 
+/** A project of a view, as the bar at the bottom sees it: its key and its computer. */
+export interface BarProject<H> {
+  key: string;
+  host: H;
+}
+
+/**
+ * The computer whose values the bar at the bottom shows. In a view that goes by project (Focus,
+ * Map, Overview): the computer of the remembered project, else of the first project, else of the
+ * focused terminal, else `fallback`. In Tabs: the computer of the focused terminal, else `fallback`.
+ */
+export function barHost<H>(projects: readonly BarProject<H>[], remembered: string, focused: H | null, fallback: H, byProject: boolean): H {
+  if (byProject) {
+    const project = projects.find((known) => known.key === remembered) ?? projects[0];
+    if (project) return project.host;
+  }
+  return focused ?? fallback;
+}
+
 /** A project area, as the mark sees it. */
 export interface MarkArea {
   key: string;
