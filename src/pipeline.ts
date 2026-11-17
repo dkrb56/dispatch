@@ -33,6 +33,12 @@ interface Options {
   notesInGit: boolean;
   /** Dispatch sends no ticket of New and starts no work run for the project (ticket pause-tasks). Off at the start. */
   paused: boolean;
+  /** Dispatch starts the work run of a plan without decisions by itself (ticket simpler-process). Off at the start. */
+  startPlainPlans: boolean;
+  /** The chosen checks run once, at the merge, through the gate command (ticket simpler-process). Off at the start. */
+  checksAtGate: boolean;
+  /** Merge pushes the base to its upstream branch after the merge, never with force (ticket simpler-process). Off at the start. */
+  pushAfterMerge: boolean;
 }
 
 /** The reply of the `pipeline_plan`, `pipeline_apply` and `set_project_options` commands. */

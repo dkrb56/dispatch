@@ -137,13 +137,24 @@ pub struct Options {
     /// on (ticket pause-tasks). A worker that runs finishes. Off at the start; a settings file without
     /// the field is off.
     pub(crate) paused: bool,
+    /// Dispatch starts the work run of a plan without decisions by itself (ticket simpler-process,
+    /// change 2). Off at the start; a settings file without the field is off.
+    start_plain_plans: bool,
+    /// The chosen checks run once, at the merge, through the gate command; the work run does not run
+    /// them (ticket simpler-process, change 3). Needs task branches and a gate command. Off at the
+    /// start; a settings file without the field is off.
+    checks_at_gate: bool,
+    /// The merge verb pushes the base to its upstream branch after the merge commit, never with
+    /// force (ticket simpler-process, change 4). Needs task branches. Off at the start; a settings
+    /// file without the field is off.
+    push_after_merge: bool,
 }
 
 // A settings file of an older version has a field for answers in the triage chat. Serde drops a
 // field it does not know, so such a file reads without an error.
 impl Default for Options {
     fn default() -> Self {
-        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false }
+        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, push_after_merge: false }
     }
 }
 
@@ -176,6 +187,29 @@ fn branches_rule(reports: &str, script: &str) -> String {
         "- Task branches is on in this project. The plan verb of the script writes the base branch (the current branch) into `{reports}/<ticket-id>.branch`. Approve makes the branch `{BRANCH_PREFIX}<ticket-id>` from that base and checks it out in the main checkout; the work run commits on that branch, switches no branch, and never merges or pushes. A work run that stops with a question or fails first commits its own files by name on the branch as `<ticket-id> WIP`; the next run adds its own commit. When a run forgot that commit, Dispatch makes it: the changed files of the task that are not newer than the report go onto the branch as `<ticket-id> WIP (Dispatch: files of the work run)`. At each start of a run (Approve and each reply) Dispatch brings the newer commits of the base into the branch with a merge commit; when a file outside `{reports}` changed on both sides, the branch stays as it is and the prompt of the run says so. When the report is written, Dispatch switches the checkout back to the base and commits the task files there. Uncommitted changes outside the files of the task go along with the switch to the branch and back; a change in a file of the task holds the switch. The user merges the branch with the Merge button in the task card of Dispatch, and night mode of Dispatch merges a task with a done report by itself when the project has a gate command: the script merges it with `--no-ff` into the base, after the gate command of `{reports}/merge-gate.txt` passed on the merged code. Triage never runs `{script} merge`; the local settings deny it that verb.
 "
     )
+}
+
+/// The line of the "Background workers" section for a project with "Start plans without decisions"
+/// on (ticket simpler-process, change 2). The rule of a plain plan is `plan_is_plain`.
+fn plain_rule() -> String {
+    "- Start plans without decisions is on in this project: a plan whose section Decisions has no numbered item, no list item and no `HOLD:` (for example only `None.`) starts its work run without a click, with the recommended checks; the plan stays readable in the task card, and the triage chat gets one line.
+".to_string()
+}
+
+/// The line of the "Background workers" section for a project with "Checks at the gate" on, task
+/// branches on and a gate command (ticket simpler-process, change 3).
+fn gate_checks_rule(reports: &str) -> String {
+    format!(
+        "- Checks at the gate is on in this project: the checks that the user chose run once, at the merge, through the gate command of `{reports}/merge-gate.txt`, which reads them from the file that `DISPATCH_CHECKS` names. The work run does not run them and needs no Verification claim for them.
+"
+    )
+}
+
+/// The line of the "Background workers" section for a project with "Push after the merge" on and
+/// task branches on (ticket simpler-process, change 4).
+fn push_rule() -> String {
+    "- Push after the merge is on in this project: after the merge commit, the Merge button (and the merge of night mode) pushes the base to its upstream branch, never with force. A refused or failed push leaves the base merged on this computer, and the task card says so. Triage pushes nothing after a merge.
+".to_string()
 }
 
 /// The worker script is PowerShell, so the pipeline stops on other systems. `plan` calls this
@@ -727,6 +761,12 @@ impl Project {
         let branches = if self.options().task_branches { branches_rule(&reports, &script) } else { String::new() };
         // A project without a list of checks (ticket task-checks): the section is the text of the version before.
         let checks = if self.checks().is_empty() { String::new() } else { checks_rule(&reports) };
+        // The three switches of ticket simpler-process: off, each line is empty and the section is
+        // the text of the version before.
+        let options = self.options();
+        let plain = if options.start_plain_plans { plain_rule() } else { String::new() };
+        let gate_checks = if options.checks_at_gate && options.task_branches && !self.merge_gate().is_empty() { gate_checks_rule(&reports) } else { String::new() };
+        let push = if options.push_after_merge && options.task_branches { push_rule() } else { String::new() };
         // The same for "Task files local only" (ticket ignore-tasks): off, the sentence of the version before.
         let tasks_git = if self.options().ignore_tasks {
             format!("git ignores `{reports}/`: the task files stay on this computer, and a clone has none")
@@ -739,9 +779,9 @@ impl Project {
 - A message that Dispatch sends from its tickets board starts with the line `Ticket <id>: <title>`. Triage uses that id as the ticket id of the task. Dispatch keeps the tickets file `{reports}/tickets.jsonl`; triage and the workers do not edit it.
 - `{script} plan <ticket-id>` starts the plan run on the options in `{reports}/plan-flags.txt`: without the Edit tool, without the Agent tool and without a prompt; its Write tool may write only into `{reports}/plans/`. The plan run writes the plan to `{reports}/plans/<ticket-id>.md`, changes nothing else, and ends its turn.
 {measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Notes for the work run (the facts from the code that the other sections do not hold, because the work run starts without the context of the plan run: how the touched code works, why an anchor was chosen, traps it saw, and the command that showed a fact; one fact per line, 15 lines maximum); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; each question, option and reason in everyday words for the user, who does not read the code: what changes for the user and what the user sees or does, not how the code does it; no file, function or command names and no terms of the code, or a short explanation of a term that must stay; the technical detail goes into Files to change, Notes for the work run or Steps; a question 20 words maximum and an option 15 words maximum, its reason not counted; for example, not `No: they follow the same rule; Setup pipeline still offers Commit to git` but `No, these files stop no task; you can still commit them in Setup pipeline`; the word HOLD stands in no other line of this section); Do not touch; Size (files). No code in a plan.
-{checks}- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which starts the work run as a new session on the options in `{reports}/work-flags.txt`, with the brief, the plan and the user's decisions as its input, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when an uncommitted change outside `{reports}/` touches a file of the task (a path of the section Files to change of its plan, or a file that its task branch changed), when the worker still runs, or when the task was stopped; other uncommitted changes stay where they are and hold no task ({tasks_git}).
-- The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It commits only the files that it changed, each by name, never with `git add -A`, `git add .` or `git commit -a`, and leaves every other change as it is. It never pushes or merges. The user decides the push.
-{branches}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification lists each command the worker ran as a line that starts with a code span with the exact text of the Bash call, for example `` `cargo test --lib` ``, followed by what it showed. Only a line without indent is a claim: the results of a command stand as indented lines under it, and Dispatch does not compare them. Dispatch compares these spans with the Bash commands of the transcripts of the task, without a leading `cd <folder> && ` on both sides: a done report with a claim that no command matches, or without the section, counts as working, and its ticket stays open.
+{checks}{gate_checks}- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which starts the work run as a new session on the options in `{reports}/work-flags.txt`, with the brief, the plan and the user's decisions as its input, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when an uncommitted change outside `{reports}/` touches a file of the task (a path of the section Files to change of its plan, or a file that its task branch changed), when the worker still runs, or when the task was stopped; other uncommitted changes stay where they are and hold no task ({tasks_git}).
+{plain}- The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It commits only the files that it changed, each by name, never with `git add -A`, `git add .` or `git commit -a`, and leaves every other change as it is. It never pushes or merges. The user decides the push.
+{branches}{push}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification lists each command the worker ran as a line that starts with a code span with the exact text of the Bash call, for example `` `cargo test --lib` ``, followed by what it showed. Only a line without indent is a claim: the results of a command stand as indented lines under it, and Dispatch does not compare them. Dispatch compares these spans with the Bash commands of the transcripts of the task, without a leading `cd <folder> && ` on both sides: a done report with a claim that no command matches, or without the section, counts as working, and its ticket stays open.
 - A worker starts no session and sends no message to a chat. It has no question tool. A question for the user goes into the report under the heading `## Questions`: numbered items, each with its options as list items, the recommended option first. Each option is one short line, because Dispatch shows it as a button and sends it back word for word; the question and each option follow the rule of plain words of the Decisions of a plan; the details stand above the questions. The worker then writes `state: needs-decision` and `needs: decision` and ends its turn, also when the question is about a permission. `needs: permission` means: a refused tool call stopped the work, the report names the refused call and the rule it needs, and the work goes on with a follow-up `Continue` once the user changed the rule. The user answers in the task card of Dispatch, and the answer arrives as a follow-up `Answer to question N: <option>`. An answered question never comes back unchanged: after the answer the worker takes the question out of its report or writes what it decided and did, and ends with `state: done` or a new question. A follow-up `Continue` after an answer means: take the answers as given and go on.
 - A follow-up goes through `{script} reply <ticket-id> \"<message>\"` and quotes the user's words exactly. The script takes the options of the run from `{reports}/<ticket-id>.state`.
 - Triage does no implementation. It classifies, writes briefs, starts the plan run, shows the plan, relays the yes, checks results and reports to the user.
@@ -904,7 +944,8 @@ Dispatch worker script. Triage starts and resumes a worker only through this fil
   status                        the tasks with their state and the state of their worker
   stop <ticket-id>              stop the worker of a task; state: stopped
   measure <ticket-id> <n>       run command n of measure-commands.txt for the plan run (Measure before the plan)
-  merge <ticket-id>             merge the task branch into its base after the gate command (Task branches; Dispatch only)
+  merge <ticket-id>             merge the task branch into its base after the gate command (Task branches; Dispatch only);
+                                with Push after the merge, then push the base to its upstream branch, never with force
 Exit codes: 0 done, 2 refused (the reason is on stderr), 124 a measuring command stopped at its
 time limit, other: the exit code of claude or of the measuring command.
 The gate command of merge gets DISPATCH_TICKET (the ticket id) and DISPATCH_CHECKS (the path of
@@ -1083,6 +1124,14 @@ function Measure-On {
   try { return [bool]((Get-Content -LiteralPath $file -Raw) | ConvertFrom-Json).measureBeforePlan } catch { return $false }
 }
 
+# One boolean setting of the project in options.json (ticket simpler-process); off without the file
+# or the field.
+function Option-On([string]$Name) {
+  $file = Join-Path $Reports 'options.json'
+  if (-not (Test-Path -LiteralPath $file)) { return $false }
+  try { return [bool]((Get-Content -LiteralPath $file -Raw) | ConvertFrom-Json).$Name } catch { return $false }
+}
+
 # The command lines of a list file of .dispatch: the lines that are not empty and do not start with #.
 # Setup pipeline writes the files; command n is the line n of this list.
 function Command-Lines([string]$Name) {
@@ -1179,20 +1228,22 @@ function Current-Branch {
 }
 
 # The branch file of a ticket: "branch: task/<ticket>", "base: <branch>", and "merge: done <sha> <time>"
-# after the merge. $null without the file.
+# after the merge; with Push after the merge also "push: pushed <remote>/<branch> <time>", "push: failed
+# <reason>" or "push: no-upstream". $null without the file.
 function Branch-Path([string]$Ticket) { Join-Path $Reports "$Ticket.branch" }
 function Read-BranchFile([string]$Ticket) {
   $file = Branch-Path $Ticket
   if (-not (Test-Path -LiteralPath $file)) { return $null }
-  $info = @{ branch = ''; base = ''; merge = '' }
+  $info = @{ branch = ''; base = ''; merge = ''; push = '' }
   foreach ($line in Get-Content -LiteralPath $file) {
-    if ($line -match '^\s*(branch|base|merge):\s*(.*?)\s*$') { $info[$Matches[1]] = $Matches[2] }
+    if ($line -match '^\s*(branch|base|merge|push):\s*(.*?)\s*$') { $info[$Matches[1]] = $Matches[2] }
   }
   [pscustomobject]$info
 }
-function Write-BranchFile([string]$Branch, [string]$Base, [string]$Merge) {
+function Write-BranchFile([string]$Branch, [string]$Base, [string]$Merge, [string]$Push = '') {
   $text = "branch: $Branch`nbase: $Base`n"
   if ($Merge) { $text += "merge: $Merge`n" }
+  if ($Push) { $text += "push: $Push`n" }
   [IO.File]::WriteAllText((Branch-Path $Id), $text)
 }
 
@@ -1284,6 +1335,37 @@ function Merge-Branch($Info, [string]$Gate, [int]$Limit) {
   Invoke-Git @('branch', '-d', $branch) | Out-Null
   Write-BranchFile $branch $Info.base "done $script:Merged $((Get-Date).ToString('s'))"
   ''
+}
+
+# Pushes the base after its merge (Push after the merge, ticket simpler-process): only the base to its
+# upstream branch (branch.<base>.remote and branch.<base>.merge), never with force, without a prompt
+# for a password, with the time limit of 300 s. Gives the value of the push line of the branch file.
+function Push-Base([string]$Base) {
+  $remote = (Invoke-Git @('config', '--get', "branch.$Base.remote")).Text
+  $target = (Invoke-Git @('config', '--get', "branch.$Base.merge")).Text
+  if (-not $remote -or $remote -eq '.' -or -not $target.StartsWith('refs/heads/')) { return 'no-upstream' }
+  $folder = Join-Path $Reports 'merge'
+  if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder | Out-Null }
+  $log = Join-Path $folder "$Id-push.log"
+  # cmd.exe reads % in a batch file as a variable; a git name can hold one.
+  $command = "git push `"$remote`" `"refs/heads/${Base}:$target`"".Replace('%', '%%')
+  $before = @{ GIT_TERMINAL_PROMPT = $env:GIT_TERMINAL_PROMPT; GCM_INTERACTIVE = $env:GCM_INTERACTIVE }
+  $env:GIT_TERMINAL_PROMPT = '0'
+  $env:GCM_INTERACTIVE = 'never'
+  try {
+    $code = Run-Measured $command $log 300
+  } finally {
+    foreach ($name in @($before.Keys)) {
+      if ($null -eq $before[$name]) { Remove-Item -Path "Env:$name" -ErrorAction SilentlyContinue }
+      else { Set-Item -Path "Env:$name" -Value $before[$name] }
+    }
+  }
+  $branch = $target.Substring('refs/heads/'.Length)
+  if ($code -eq 0) { return "pushed $remote/$branch $((Get-Date).ToString('s'))" }
+  $lines = if (Test-Path -LiteralPath $log) { @(Get-Content -LiteralPath $log | ForEach-Object { "$_".Trim() } | Where-Object { $_ }) } else { @() }
+  $reason = @($lines | Where-Object { $_ -match '^(!|error:|fatal:|stopped after)' } | Select-Object -First 1)
+  $why = if ($reason.Count -gt 0) { $reason[0] } elseif ($code -eq 124) { 'the push took longer than 300 s' } else { "git push ended with exit code $code" }
+  "failed $why (the log is $log)"
 }
 
 # The changed files of the project outside .dispatch, as git status gives them; none outside git.
@@ -1540,7 +1622,12 @@ switch ($Verb) {
     $chosen = Join-Path $Reports "$Id.checks"
     if (Test-Path -LiteralPath $chosen) {
       $names = @(Get-Content -LiteralPath $chosen | Where-Object { $_.Trim() -ne '' } | ForEach-Object { ($_ -split "`t", 2)[0].Trim() -replace '"', "'" })
-      if ($names.Count -gt 0) {
+      # Checks at the gate (ticket simpler-process): with task branches and a gate command, the gate
+      # runs the chosen checks once, at the merge, so the work run does not run them.
+      $gateLine = "$(@(Command-Lines 'merge-gate.txt') | Select-Object -First 1)"
+      if ($names.Count -gt 0 -and (Option-On 'checksAtGate') -and (Branches-On) -and $gateLine) {
+        $prompt += " The user chose these checks: $($names -join ', '). Checks at the gate is on: the gate command runs them once, at the merge, so this run does not run them and needs no Verification claim for them."
+      } elseif ($names.Count -gt 0) {
         $prompt += " The user chose these checks: $($names -join ', '). Run each with the command of the section Checks chosen of the plan, and name each in Verification with that exact command."
       }
     }
@@ -1685,6 +1772,17 @@ switch ($Verb) {
     }
     if ($refusal) { Refuse $refusal }
     "merged $($info.branch) into $($info.base): $script:Merged"
+    # Push after the merge (ticket simpler-process): after a merge commit, outside the merge lock, which
+    # guards the checkout and the gate, not the network. A failed push leaves the merge as it is, and
+    # the verb ends with 0: the merge is done.
+    if ($script:Merged -ne 'nothing to merge' -and (Option-On 'pushAfterMerge') -and (Branches-On)) {
+      $push = Push-Base $info.base
+      $merged = Read-BranchFile $Id
+      Write-BranchFile $merged.branch $merged.base $merged.merge $push
+      if ($push.StartsWith('pushed ')) { "pushed $($info.base) to $(($push -split ' ')[1])" }
+      elseif ($push -eq 'no-upstream') { "no push: $($info.base) has no upstream branch" }
+      else { "push failed: $($push.Substring(7)); $($info.base) is merged on this computer only" }
+    }
   }
   'stop' {
     Need-Id
@@ -2844,6 +2942,22 @@ fn parse_plan(text: &str) -> (Vec<String>, bool) {
 
 const SUMMARY_LINES: usize = 5;
 
+/// A plan without decisions (ticket simpler-process, change 2): it has the heading `## Decisions`,
+/// `parse_decisions` finds none, no line is `HOLD`, and no line of the section starts with a number
+/// and `.` or `)`, with `- `, `* ` or `#`. A section that the parser cannot read is not plain, so
+/// such a plan waits for the click.
+fn plan_is_plain(text: &str, hold: bool) -> bool {
+    let heading = text.lines().any(|line| line.trim().strip_prefix("## ").is_some_and(|title| title.trim().eq_ignore_ascii_case("Decisions")));
+    if !heading || hold || !parse_decisions(text).is_empty() {
+        return false;
+    }
+    !section_text(text, "Decisions").iter().any(|line| {
+        let line = line.trim_start();
+        let digits = line.chars().take_while(char::is_ascii_digit).count();
+        (digits > 0 && line[digits..].starts_with(['.', ')'])) || line.starts_with("- ") || line.starts_with("* ") || line.starts_with('#')
+    })
+}
+
 /// The title of a brief or a plan: the text after the first `: ` of its first `# ` line
 /// (`# task-stop: a Stop button` gives "a Stop button"). Empty without such a line.
 fn title_after_colon(text: &str) -> String {
@@ -3402,6 +3516,9 @@ pub struct TaskInfo {
     /// A running action run names this ticket in a Claude step with "Approve the plan by itself"
     /// (ticket project-actions): the driver window approves its plan without the project setting.
     auto: bool,
+    /// The plan has no decisions (`plan_is_plain`, ticket simpler-process): with "Start plans
+    /// without decisions" on, Dispatch starts its work run without a click. False without a plan.
+    plain: bool,
     /// The newest line of `<ticket>.session` names a session without a transcript on this computer:
     /// the run started on another computer, and no worker of it runs here (ticket second-computer).
     /// False without the file.
@@ -3430,6 +3547,10 @@ pub struct BranchInfo {
     /// holds the branch (ticket merged-outside); `<what>` is the short hash of the merge commit,
     /// `fast-forward` or `same-changes`. Empty before.
     merge: String,
+    /// The push line of the branch file after a merge with "Push after the merge" on (ticket
+    /// simpler-process): `pushed <remote>/<branch> <time>`, `failed <reason>` or `no-upstream`.
+    /// Empty without one.
+    push: String,
     /// The branch exists in git and waits for Merge: Approve made it, and no merge removed it. False
     /// after an outside merge too, although the branch may still stand in git.
     exists: bool,
@@ -3439,7 +3560,7 @@ pub struct BranchInfo {
     note: String,
 }
 
-/// Reads a branch file: the lines `branch:`, `base:` and `merge:`. None without the file.
+/// Reads a branch file: the lines `branch:`, `base:`, `merge:` and `push:`. None without the file.
 fn read_branch_file(path: &Path) -> Option<BranchInfo> {
     let text = fs::read_to_string(path).ok()?;
     let mut info = BranchInfo::default();
@@ -3450,6 +3571,7 @@ fn read_branch_file(path: &Path) -> Option<BranchInfo> {
             "branch" => info.name = value,
             "base" => info.base = value,
             "merge" => info.merge = value,
+            "push" => info.push = value,
             _ => {}
         }
     }
@@ -3922,6 +4044,13 @@ fn current_branch(project: &Project) -> Option<String> {
     git(&project.root, &["symbolic-ref", "--short", "-q", "HEAD"]).map(|name| name.trim().to_string()).filter(|name| !name.is_empty())
 }
 
+/// "Checks at the gate" works in the project (ticket simpler-process, change 3): the switch, task
+/// branches and a gate command. Without one of them the work run runs the chosen checks.
+fn checks_at_gate(project: &Project) -> bool {
+    let options = project.options();
+    options.checks_at_gate && options.task_branches && !project.merge_gate().is_empty()
+}
+
 /// The reply of the `task_list` command.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -3932,6 +4061,12 @@ pub struct TaskList {
     dirty: Vec<String>,
     /// The setting of the project: Dispatch approves a plan without a `HOLD` decision itself.
     auto_approve: bool,
+    /// The setting of the project: Dispatch starts the work run of a plan without decisions itself
+    /// (ticket simpler-process, change 2).
+    start_plain_plans: bool,
+    /// The setting of the project, with task branches on: Merge pushes the base after the merge
+    /// (ticket simpler-process, change 4).
+    push_after_merge: bool,
     /// The setting of the project: Dispatch starts nothing new for it (ticket pause-tasks).
     paused: bool,
     /// When the project got its Dispatch setup: the creation time of the task folder (or of its
@@ -4044,6 +4179,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             log: None,
             checks: Vec::new(),
             auto: false,
+            plain: false,
             elsewhere: false,
         });
         tasks.len() - 1
@@ -4062,6 +4198,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         tasks[at].summary = summary;
         tasks[at].hold = hold;
         tasks[at].decisions = parse_decisions(&text);
+        tasks[at].plain = plan_is_plain(&text, hold);
         tasks[at].goal = section_lines(&text, "Goal");
         tasks[at].tldr = section_lines(&text, "TL;DR");
         tasks[at].checks = plan_checks(&text, &check_list);
@@ -4087,6 +4224,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     // The tasks with sessions of which no transcript is on this computer (ticket second-computer):
     // their log keeps what the computer of the sessions wrote.
     let mut no_transcript: Vec<String> = Vec::new();
+    let gate_checks = checks_at_gate(project);
     for task in tasks.iter_mut() {
         let sessions = read_session_file(&project.session_file(&task.name));
         let mut transcript = false;
@@ -4104,7 +4242,9 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         // A done report needs a command of the evidence for each Verification claim (ticket
         // report-check), and a claim for each check that the user chose (ticket task-checks, also
         // without a transcript). The report file stays; the task list shows it as working (user decision 3).
-        let chosen = chosen_checks(&task.checks);
+        // With "Checks at the gate" on (ticket simpler-process, change 3) the gate runs the chosen
+        // checks at the merge, so the report needs no claim for them.
+        let chosen = if gate_checks { Vec::new() } else { chosen_checks(&task.checks) };
         if task.header.as_ref().is_some_and(|header| header.state == "done") && (transcript || !chosen.is_empty()) {
             let text = fs::read_to_string(project.reports.join(format!("{}.md", task.name))).unwrap_or_default();
             let taken = fs::read_to_string(project.taken_file(&task.name)).ok();
@@ -4240,7 +4380,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     }
     let setup = setup_time(&project);
     let options = project.options();
-    Ok((TaskList { tasks, dirty, auto_approve: options.auto_approve, paused: options.paused, setup, tickets, merging, gate: project.merge_gate(), actions }, moved))
+    Ok((TaskList { tasks, dirty, auto_approve: options.auto_approve, start_plain_plans: options.start_plain_plans, push_after_merge: options.push_after_merge && options.task_branches, paused: options.paused, setup, tickets, merging, gate: project.merge_gate(), actions }, moved))
 }
 
 /// Writes the branch file of each task that has none while its branch `task/<ticket>` exists and is
@@ -5872,6 +6012,7 @@ evidence: no
             log: None,
             checks: Vec::new(),
             auto: false,
+            plain: false,
             elsewhere: false,
         };
         let planning = task("t-plan", "planning");
@@ -7051,6 +7192,249 @@ if (args[0] === 'agents') {
         for (at, file) in files.iter().enumerate() {
             assert!(fs::read(file).unwrap() == first[at], "{} is not the file of the first Apply", file.display());
         }
+        clean(&project);
+    }
+
+    /// Sets the three switches of ticket simpler-process in the settings file, as the switches do.
+    fn set_simpler(project: &Project, plain: bool, gate: bool, push: bool) {
+        let options = Options { start_plain_plans: plain, checks_at_gate: gate, push_after_merge: push, ..project.options() };
+        write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
+    }
+
+    #[test]
+    fn an_old_settings_file_has_the_three_new_switches_off() {
+        let project = scratch("simpler-old");
+        apply(&project, &[0]).unwrap();
+        // The settings file of 0.1.67: no field for the three switches of ticket simpler-process.
+        write_file(&project.options_file(), "{\n  \"shortReports\": true,\n  \"triageName\": true,\n  \"autoApprove\": false,\n  \"measureBeforePlan\": false,\n  \"taskBranches\": false,\n  \"ignoreTasks\": false,\n  \"notesInGit\": false,\n  \"paused\": false\n}\n").unwrap();
+        let files = [project.options_file(), project.plan_flags(), project.work_flags(), project.instructions(), project.triage_prompt(), project.local_settings(), project.settings(), project.script()];
+        let before: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+        let options = project.options();
+        assert!(!options.start_plain_plans && !options.checks_at_gate && !options.push_after_merge);
+        let shown = serde_json::to_value(&plan(&project).unwrap().options).unwrap();
+        for field in ["startPlainPlans", "checksAtGate", "pushAfterMerge"] {
+            assert_eq!(shown[field], json!(false), "{field}");
+        }
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        assert!(!list.start_plain_plans && !list.push_after_merge);
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        apply(&project, &[]).unwrap();
+        let after: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+        assert!(before == after, "Apply changed a file of the old project");
+        clean(&project);
+    }
+
+    #[test]
+    fn the_new_switches_change_only_their_line_of_the_section() {
+        let project = scratch("simpler-section");
+        apply(&project, &[0]).unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        let files = [project.script(), project.plan_flags(), project.work_flags()];
+        let first: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+        // All off: the section of the version before (the same project without the switches).
+        let before = project.section_body();
+        set_simpler(&project, false, false, false);
+        assert_eq!(project.section_body(), before);
+        assert!(!before.contains("Start plans without decisions") && !before.contains("Checks at the gate") && !before.contains("Push after the merge"));
+
+        // Start plans without decisions: one line after the line of Approve.
+        set_simpler(&project, true, false, false);
+        let body = project.section_body();
+        assert!(body.contains(&format!("and hold no task (Dispatch commits the files of `{}/` itself).\n{}- The work run follows the plan.", project.reports_text(), plain_rule())), "{body}");
+        assert_eq!(body.replacen(&plain_rule(), "", 1), before);
+        assert!(open_steps(&project).contains(&"Section in CLAUDE.md"));
+
+        // Checks at the gate and Push after the merge need task branches; the checks line needs a gate too.
+        set_simpler(&project, false, true, true);
+        assert_eq!(project.section_body(), before);
+        set_branches(&project, true);
+        set_simpler(&project, false, false, false);
+        let with_branches = project.section_body();
+        set_simpler(&project, false, true, false);
+        assert_eq!(project.section_body(), with_branches, "no gate command: no checks line");
+        set_merge_gate(cwd.clone(), "npm test\n".to_string()).unwrap();
+        let gate_on = project.section_body();
+        assert!(gate_on.contains(&format!("{}- When the plan run is done", gate_checks_rule(&project.reports_text()))), "{gate_on}");
+        assert_eq!(gate_on.replacen(&gate_checks_rule(&project.reports_text()), "", 1), with_branches);
+
+        set_simpler(&project, false, false, true);
+        let push_on = project.section_body();
+        assert!(push_on.contains(&format!("{}- A worker ends with a report", push_rule())), "{push_on}");
+        assert_eq!(push_on.replacen(&push_rule(), "", 1), with_branches);
+
+        // The script and the options files are the same text for each switch: the script reads options.json.
+        set_simpler(&project, true, true, true);
+        apply(&project, &[]).unwrap();
+        for (at, file) in files.iter().enumerate() {
+            assert!(fs::read(file).unwrap() == first[at], "{} changed with the switches", file.display());
+        }
+        clean(&project);
+    }
+
+    #[test]
+    fn a_plan_without_decisions_is_plain() {
+        let plain = |text: &str| plan_is_plain(text, parse_plan(text).1);
+        assert!(plain("# t-1: plan\n\n## Goal\nA goal.\n\n## Decisions\nNone.\n\n## Do not touch\n- `src/a.ts`\n"));
+        assert!(plain("## Decisions\n\n## Size (files)\n1\n"), "an empty section has no decision");
+        assert!(plain("## Decisions\nNo decisions: the brief fixes every choice.\n"));
+        assert!(!plain("## Decisions\n1. Which name?\n   - Default: A. Recommended: short.\n   - Other: B. Not recommended: long.\n"), "a numbered decision");
+        assert!(!plain("## Decisions\nHOLD: the user names the file.\n"), "a HOLD line");
+        assert!(!plain("## Decisions\n- none\n"), "a list item");
+        assert!(!plain("## Decisions\n* none\n"), "a list item with a star");
+        assert!(!plain("## Decisions\n### 1 The name\nA or B.\n"), "a subheading");
+        assert!(!plain("## Decisions\n2) The name: A or B.\n"), "a number with a bracket");
+        assert!(!plain("# t-1: plan\n\n## Goal\nA goal.\n"), "a plan without the heading");
+        assert!(!plain("## User decisions\nNone.\n"), "another heading");
+    }
+
+    #[test]
+    fn a_done_report_needs_no_claim_for_checks_that_the_gate_runs() {
+        let project = scratch("simpler-claims");
+        apply(&project, &[0]).unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        set_checks(cwd.clone(), "net | node net.mjs\n".to_string()).unwrap();
+        write_file(&project.plans().join("t-1.md"), "# t-1: a plan\n\n## Checks\n- [x] net — the network\n").unwrap();
+        task_checks(cwd.clone(), "t-1".into(), vec!["net".into()]).unwrap();
+        write_file(&project.reports.join("t-1.md"), "state: done\nneeds: nothing\nfiles: a.rs\nplan: p\n\n## What changed\n- a\n\n## Verification\n- `cargo test --lib`: ok.\n").unwrap();
+        let state = || listed_task(&project, "t-1").header.map(|header| header.state).unwrap_or_default();
+        assert_eq!(state(), "working", "without the switch the chosen check needs its claim");
+        set_branches(&project, true);
+        set_simpler(&project, false, true, false);
+        assert_eq!(state(), "working", "without a gate command the work run runs the checks");
+        set_merge_gate(cwd.clone(), "node gate.mjs\n".to_string()).unwrap();
+        assert_eq!(state(), "done", "the gate runs the chosen checks");
+        set_branches(&project, false);
+        assert_eq!(state(), "working", "without task branches there is no merge gate");
+        clean(&project);
+    }
+
+    #[test]
+    fn the_work_run_is_told_that_the_gate_runs_the_checks() {
+        let (project, fake, _base) = branch_project("simpler-prompt");
+        let cwd = project.root.to_string_lossy().into_owned();
+        set_simpler(&project, false, true, false);
+        let approve = |ticket: &str| {
+            write_file(&project.briefs().join(format!("{ticket}.md")), &format!("# {ticket}: a scratch task\n")).unwrap();
+            write_file(&project.reports.join("fake-name.txt"), ticket).unwrap();
+            let (code, out) = run_script(&project, &fake, "done", &["plan", ticket]);
+            assert_eq!(code, 0, "{out}");
+            write_file(&project.task_checks_file(ticket), "unit\tcargo test --lib\n").unwrap();
+            let (code, out) = run_script(&project, &fake, "done", &["approve", ticket]);
+            assert_eq!(code, 0, "{out}");
+            last_call(&fake)[0].clone()
+        };
+        // No gate command: the sentence of 0.1.67.
+        let prompt = approve("t-1");
+        assert!(prompt.contains(" The user chose these checks: unit. Run each with the command of the section Checks chosen of the plan, and name each in Verification with that exact command."), "{prompt}");
+        assert!(!prompt.contains("Checks at the gate"), "{prompt}");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        set_merge_gate(cwd, "cmd /c exit 0\n".to_string()).unwrap();
+        let prompt = approve("t-2");
+        assert!(prompt.contains(" The user chose these checks: unit. Checks at the gate is on: the gate command runs them once, at the merge, so this run does not run them and needs no Verification claim for them."), "{prompt}");
+        assert!(!prompt.contains("Run each with the command"), "{prompt}");
+        clean(&project);
+    }
+
+    /// A bare repository next to a branch project as its remote `origin`, with the base pushed and set
+    /// as the upstream branch. Gives the folder of the bare repository.
+    fn with_remote(project: &Project, base: &str) -> PathBuf {
+        let bare = project.root.parent().unwrap().join("remote.git");
+        run_git(project.root.parent().unwrap(), &["init", "-q", "--bare", &bare.to_string_lossy()]).unwrap();
+        git_out(project, &["remote", "add", "origin", &bare.to_string_lossy()]);
+        git_out(project, &["push", "-q", "-u", "origin", base]);
+        bare
+    }
+
+    /// The commit of a branch in the bare remote.
+    fn remote_head(bare: &Path, base: &str) -> String {
+        run_git(bare, &["rev-parse", &format!("refs/heads/{base}")]).unwrap().trim().to_string()
+    }
+
+    /// The plan run, the work run and the report of t-1, and the switch back to the base.
+    fn work_to_merge(project: &Project, fake: &Path) {
+        plan_and_approve(project, fake, "t-1");
+        write_report(project, "t-1");
+        assert!(!listed_branch(project, "t-1").checked_out);
+    }
+
+    #[test]
+    fn merge_pushes_the_base_to_its_upstream() {
+        let (project, fake, base) = branch_project("simpler-push");
+        let bare = with_remote(&project, &base);
+        set_simpler(&project, false, false, true);
+        work_to_merge(&project, &fake);
+        let merged = task_merge(project.root.to_string_lossy().into_owned(), "t-1".to_string()).unwrap();
+        let lines: Vec<&str> = merged.lines().collect();
+        assert_eq!(lines.len(), 2, "{merged}");
+        assert!(lines[0].starts_with(&format!("merged task/t-1 into {base}: ")), "{merged}");
+        assert_eq!(lines[1], format!("pushed {base} to origin/{base}"));
+        assert_eq!(remote_head(&bare, &base), git_out(&project, &["rev-parse", &base]), "the remote has the merge commit");
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", &base]), format!("Merge task/t-1 into {base} (t-1)"));
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.merge.starts_with("done ") && branch.push.starts_with(&format!("pushed origin/{base} ")), "{branch:?}");
+        assert!(!project.merge_dir().join("lock").exists(), "the merge lock stayed");
+        clean(&project);
+    }
+
+    #[test]
+    fn a_refused_push_leaves_the_merge_on_this_computer() {
+        let (project, fake, base) = branch_project("simpler-refused");
+        let bare = with_remote(&project, &base);
+        // Another computer pushed first: the push of the merge is no fast-forward.
+        let clone = project.root.parent().unwrap().join("clone");
+        run_git(project.root.parent().unwrap(), &["clone", "-q", &bare.to_string_lossy(), &clone.to_string_lossy()]).unwrap();
+        write_file(&clone.join("other.txt"), "from the other computer\n").unwrap();
+        run_git(&clone, &["add", "other.txt"]).unwrap();
+        run_git(&clone, &["-c", "user.name=Other", "-c", "user.email=other@example.invalid", "commit", "-q", "-m", "other"]).unwrap();
+        run_git(&clone, &["push", "-q", "origin", &base]).unwrap();
+        let remote = remote_head(&bare, &base);
+        set_simpler(&project, false, false, true);
+        work_to_merge(&project, &fake);
+
+        let merged = task_merge(project.root.to_string_lossy().into_owned(), "t-1".to_string()).unwrap();
+        let lines: Vec<&str> = merged.lines().collect();
+        assert_eq!(lines.len(), 2, "{merged}");
+        assert!(lines[0].starts_with("merged task/t-1"), "{merged}");
+        assert!(lines[1].starts_with("push failed: ") && lines[1].ends_with(&format!("; {base} is merged on this computer only")), "{merged}");
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", &base]), format!("Merge task/t-1 into {base} (t-1)"), "the merge stays");
+        assert_eq!(remote_head(&bare, &base), remote, "the remote did not move");
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.merge.starts_with("done ") && branch.push.starts_with("failed "), "{branch:?}");
+        // The push names only the base and its upstream branch, never a force.
+        let command = read(&project.merge_dir().join("t-1-push.cmd"));
+        assert!(command.contains(&format!("git push \"origin\" \"refs/heads/{base}:refs/heads/{base}\"")), "{command}");
+        for word in ["force", "--tags", "\"+", " -f"] {
+            assert!(!command.contains(word), "{word} in {command}");
+        }
+        clean(&project);
+    }
+
+    #[test]
+    fn no_upstream_means_no_push() {
+        let (project, fake, base) = branch_project("simpler-no-upstream");
+        set_simpler(&project, false, false, true);
+        work_to_merge(&project, &fake);
+        let merged = task_merge(project.root.to_string_lossy().into_owned(), "t-1".to_string()).unwrap();
+        let lines: Vec<&str> = merged.lines().collect();
+        assert_eq!(lines.len(), 2, "{merged}");
+        assert_eq!(lines[1], format!("no push: {base} has no upstream branch"));
+        assert_eq!(listed_branch(&project, "t-1").push, "no-upstream");
+        assert!(!project.merge_dir().join("t-1-push.cmd").exists(), "git push ran");
+        clean(&project);
+    }
+
+    #[test]
+    fn the_merge_does_not_push_with_the_switch_off() {
+        let (project, fake, base) = branch_project("simpler-push-off");
+        let bare = with_remote(&project, &base);
+        let remote = remote_head(&bare, &base);
+        work_to_merge(&project, &fake);
+        let merged = task_merge(project.root.to_string_lossy().into_owned(), "t-1".to_string()).unwrap();
+        assert_eq!(merged.lines().count(), 1, "{merged}");
+        assert_eq!(remote_head(&bare, &base), remote);
+        assert!(!read(&project.branch_file("t-1")).contains("push:"));
+        assert_eq!(listed_branch(&project, "t-1").push, "");
         clean(&project);
     }
 

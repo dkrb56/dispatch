@@ -28,6 +28,21 @@ export function mergedWords(merge: string): string {
   return ["merged outside Dispatch", byWhat(parts.what), parts.time].filter(Boolean).join(" · ");
 }
 
+/**
+ * The push line of the branch file after a merge with "Push after the merge" (ticket simpler-process)
+ * in the words of the branch row: `pushed <remote>/<branch> <time>`, `failed <reason>` or
+ * `no-upstream`. `failed` marks a push that did not reach the remote. Null for an empty value.
+ */
+export function pushWords(push: string): { words: string; failed: boolean } | null {
+  const value = push.trim();
+  if (!value) return null;
+  const pushed = /^pushed\s+(\S+)/.exec(value);
+  if (pushed) return { words: `pushed to ${pushed[1]}`, failed: false };
+  if (value === "no-upstream") return { words: "no upstream branch, not pushed", failed: false };
+  const failed = /^failed\s*(.*)$/.exec(value);
+  return { words: `push failed: ${failed ? failed[1] : value}`, failed: true };
+}
+
 /** The texts of the merge verb of the worker script: a refusal of the Merge button. */
 const MERGE_REFUSALS = [
   /the checkout has uncommitted changes; commit or stash them first/,

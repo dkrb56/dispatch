@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { mergedWords, mergeParts, outsideLine, refusalGoes } from "../src/merged.ts";
+import { mergedWords, mergeParts, outsideLine, pushWords, refusalGoes } from "../src/merged.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -60,7 +60,7 @@ test("the line for triage names the ticket, the branch, the base and the merge c
 });
 
 test("main.ts: the branch row, the task lists and the refusal rule use the module", () => {
-  assert.match(MAIN, /import \{ mergedWords, outsideLine, refusalGoes \} from "\.\/merged";/);
+  assert.match(MAIN, /import \{ mergedWords, outsideLine, pushWords, refusalGoes \} from "\.\/merged";/);
   const row = MAIN.slice(MAIN.indexOf("function branchRow("), MAIN.indexOf("function stopRow("));
   assert.match(row, /mergedWords\(branch\.merge\)/);
   const store = MAIN.slice(MAIN.indexOf("function storeProjectTasks("), MAIN.indexOf("/** The last reply of the `task_list` command"));
@@ -84,4 +84,41 @@ test("the new refusal of changes in files of the branch goes when they are gone"
 
 test("main.ts: the card takes the leftovers of the task for an old refusal", () => {
   assert.match(MAIN, /refusalGoes\(error, \{ merged: Boolean\(branch\.merge\), dirty: info\.leftovers \?\? record\.dirty \}\)/);
+});
+
+// Ticket simpler-process, change 4: the push line of the branch file in the words of the branch row,
+// the triage line after the merge, and the switches of the Setup dialog.
+test("the push line gives the words of the branch row", () => {
+  assert.deepEqual(pushWords("pushed origin/main 2026-11-17T10:00:00"), { words: "pushed to origin/main", failed: false });
+  assert.deepEqual(pushWords("no-upstream"), { words: "no upstream branch, not pushed", failed: false });
+  assert.deepEqual(pushWords("failed ! [rejected] main -> main (fetch first) (the log is C:\\p\\.dispatch\\merge\\t-1-push.log)"), { words: "push failed: ! [rejected] main -> main (fetch first) (the log is C:\\p\\.dispatch\\merge\\t-1-push.log)", failed: true });
+  assert.equal(pushWords(""), null);
+  assert.equal(pushWords("  "), null);
+});
+
+test("a push line of the merge verb is no merge refusal", () => {
+  for (const line of ["pushed main to origin/main", "push failed: ! [rejected] main -> main (fetch first); main is merged on this computer only", "no push: main has no upstream branch"]) {
+    assert.equal(refusalGoes(line, { merged: false, dirty: [] }), false, line);
+  }
+});
+
+test("main.ts: the merge line for triage reads the commit from the first line and the push from the second", () => {
+  const body = MAIN.slice(MAIN.indexOf("async function mergeTask("), MAIN.indexOf("function mergeCard("));
+  assert.match(body, /const \[first = "", pushed = ""\] = result\.split\(\/\\r\?\\n\/\);/);
+  assert.match(body, /const commit = first\.split\(": "\)\.pop\(\)/);
+  assert.match(body, /: "No push\.";/);
+  assert.match(MAIN, /pushWords\(branch\.push \?\? ""\)/);
+});
+
+test("index.html: the Setup dialog has the three switches of simpler-process", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  for (const option of ["startPlainPlans", "checksAtGate", "pushAfterMerge"]) {
+    assert.match(html, new RegExp(`data-option="${option}"`), option);
+  }
+  const help = html.slice(html.indexOf("<h3>Project settings</h3>"), html.indexOf("<h3>The workspace</h3>"));
+  for (const phrase of ["Start plans without decisions", "Checks at the gate", "Push after the merge"]) {
+    assert.ok(help.includes(`<b>${phrase}.</b>`), phrase);
+  }
+  const night = html.slice(html.indexOf("<h3>Night mode</h3>"), html.indexOf("<h3>The Chats panel</h3>"));
+  assert.match(night, /a merge of night mode also pushes/);
 });

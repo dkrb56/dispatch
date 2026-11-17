@@ -75,7 +75,7 @@ import { type AskDecision, askAbout, askBlocked, askLine } from "./discuss";
 import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
-import { mergedWords, outsideLine, refusalGoes } from "./merged";
+import { mergedWords, outsideLine, pushWords, refusalGoes } from "./merged";
 import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
 import { type CheckInfo, checkRows, checksSentence, checksText, choiceNames, defaultChoice } from "./checks";
 import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards, triageFree } from "./pending";
@@ -2179,6 +2179,8 @@ interface TaskInfo {
   checks?: CheckInfo[];
   /** A running action approves the plan of this task by itself (ticket project-actions). Absent from an older host. */
   auto?: boolean;
+  /** The plan has no decisions (ticket simpler-process): "Start plans without decisions" starts it. Absent from an older host. */
+  plain?: boolean;
   /**
    * The newest session of the task has no transcript on this computer: the run started on another
    * computer (ticket second-computer). Absent from an older host.
@@ -2235,6 +2237,11 @@ interface BranchInfo {
   checkedOut: boolean;
   /** Why Dispatch did not switch the checkout back to the base, or empty. */
   note: string;
+  /**
+   * The push after the merge (ticket simpler-process): `pushed <remote>/<branch> <time>`, `failed
+   * <reason>` or `no-upstream`; empty or absent without one.
+   */
+  push?: string;
 }
 
 /** A decision of a plan, with its options; the recommended one is first. */
@@ -2253,6 +2260,10 @@ interface TaskListReply {
   dirty: string[];
   /** The setting of the project: Dispatch approves a plan without a HOLD decision itself. */
   autoApprove: boolean;
+  /** The setting of the project: Dispatch starts a plan without decisions itself (ticket simpler-process). Absent from an older host. */
+  startPlainPlans?: boolean;
+  /** The setting of the project, with task branches on: Merge pushes the base (ticket simpler-process). Absent from an older host. */
+  pushAfterMerge?: boolean;
   /** The setting of the project: Dispatch starts nothing new for it (ticket pause-tasks). Absent from an older host. */
   paused?: boolean;
   /** When the project got its Dispatch setup (the reports folder was made); null without one. */
@@ -2275,6 +2286,10 @@ interface ProjectTasks {
   infos: TaskInfo[];
   dirty: string[];
   autoApprove: boolean;
+  /** Dispatch starts a plan without decisions itself (ticket simpler-process). */
+  startPlain: boolean;
+  /** Merge pushes the base after the merge (ticket simpler-process). */
+  pushAfterMerge: boolean;
   /** The user paused the project: no ticket goes to triage and no work run starts (ticket pause-tasks). */
   paused: boolean;
   setup: number | null;
@@ -2296,6 +2311,8 @@ function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTa
     infos: hostedTasks(host, reply.tasks),
     dirty: reply.dirty,
     autoApprove: reply.autoApprove,
+    startPlain: reply.startPlainPlans ?? false,
+    pushAfterMerge: reply.pushAfterMerge ?? false,
     paused: reply.paused ?? false,
     setup: reply.setup ?? null,
     tickets: reply.tickets ?? [],
@@ -2350,6 +2367,8 @@ let dirtyLines: string[] = [];
 /** The merge in progress and the gate command of the project of the focused terminal (ticket task-branches). */
 let mergingTask: string | null = null;
 let gateCommand = "";
+/** Merge pushes in that project (ticket simpler-process). */
+let pushAfterMerge = false;
 /** The setup time of that project: the chats that started before it are old. */
 let projectSetup: number | null = null;
 /** The plans that Dispatch approved itself, or tried to: the task name and the time of the plan file. One try per plan. */
@@ -2548,6 +2567,7 @@ async function refreshTasks(): Promise<void> {
   dirtyLines = reply.dirty;
   mergingTask = reply.merging ?? null;
   gateCommand = reply.gate ?? "";
+  pushAfterMerge = reply.pushAfterMerge ?? false;
   projectSetup = reply.setup ?? null;
   tasksFolder = projectKey(host, cwd);
   tasksCwd = cwd ?? "";
@@ -2603,6 +2623,7 @@ function approvePlans(): void {
       queued: queued?.name ?? null,
       auto: project.autoApprove,
       night,
+      plain: project.startPlain,
       tasks: tasks.map((task) => ({
         name: task.name,
         ready: planReady(task),
@@ -2612,6 +2633,7 @@ function approvePlans(): void {
         tried: autoApproved.get(task.name),
         auto: !!task.info?.auto,
         blocked: taskLeftovers(project, task.info).length > 0,
+        plain: !!task.info?.plain,
       })),
     });
     const task = choice ? tasks.find((task) => task.name === choice.task) : undefined;
@@ -2626,6 +2648,14 @@ function approvePlans(): void {
       const decisions = task.info.decisions ?? [];
       const choices = decisions.map((decision) => ({ decision, answer: decision.options[0]?.choice ?? "" }));
       void approveWithDecisions(task, choices, "by night mode (DEFAULT DECISION: all its decisions have a default; the recommended option of each is taken)");
+    } else if (choice.kind === "plain") {
+      // A plan without decisions with "Start plans without decisions" on (ticket simpler-process):
+      // the recommended checks go into the plan, as with "Approve plans automatically".
+      const checks = checksSentence(task.info.checks ?? [], checkChoice(task));
+      void leasedStart(task, async () => {
+        if ((await writeDecisions(task, [])) === null) return false;
+        return taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name} has no decisions: Dispatch started the work run by itself.${checks}`);
+      });
     } else {
       // The checks of the plan with their default choice go into the plan first (ticket task-checks).
       const checks = checksSentence(task.info.checks ?? [], checkChoice(task));
@@ -5155,10 +5185,14 @@ async function mergeTask(task: Task, night = false): Promise<void> {
     const host = taskHost(task);
     const cwd = taskCwd(task);
     const result = await call<string>(host, "task_merge", { cwd, id: task.name });
-    const commit = result.split(": ").pop()?.trim() ?? "";
+    // The first line names the merge commit; with "Push after the merge" a second line says what the
+    // push did (ticket simpler-process).
+    const [first = "", pushed = ""] = result.split(/\r?\n/);
+    const commit = first.split(": ").pop()?.trim() ?? "";
+    const push = pushed.trim() ? `${pushed.trim().replace(/\.$/, "")}.` : "No push.";
     const line = night
-      ? `Night mode merged branch ${branch.name} of ${task.name} into ${branch.base} in Dispatch after the merge check passed (merge ${commit}). No push.`
-      : `Branch ${branch.name} of ${task.name} merged into ${branch.base} in Dispatch (merge ${commit}). No push.`;
+      ? `Night mode merged branch ${branch.name} of ${task.name} into ${branch.base} in Dispatch after the merge check passed (merge ${commit}). ${push}`
+      : `Branch ${branch.name} of ${task.name} merged into ${branch.base} in Dispatch (merge ${commit}). ${push}`;
     tellTriage(projectFor(host, cwd), line);
   } catch (error) {
     actionErrors.set(task.name, String(error));
@@ -5179,6 +5213,7 @@ async function mergeTask(task: Task, night = false): Promise<void> {
 function mergeCard(task: Task): HTMLElement {
   const branch = task.info!.branch!;
   const gate = task.project ? task.project.gate : gateCommand;
+  const push = task.project ? task.project.pushAfterMerge : pushAfterMerge;
   const running = mergeRunning(task);
   const started = mergeStarts.get(task.name);
   const card = document.createElement("div");
@@ -5193,7 +5228,7 @@ function mergeCard(task: Task): HTMLElement {
   text.textContent =
     `The work of ${task.name} is on ${branch.name}. Merge brings it into ${branch.base} with a merge commit` +
     (gate ? `, after the gate command passed on the merged code: ${gate}` : "; the project has no gate command") +
-    ". Dispatch makes no push.";
+    (push ? `, then pushes ${branch.base} to its upstream branch, never with force.` : ". Dispatch makes no push.");
   const actions = document.createElement("div");
   actions.className = "actions";
   const button = document.createElement("button");
@@ -5263,7 +5298,7 @@ function mergeCard(task: Task): HTMLElement {
 }
 
 /** The row of the branch of a task in its open card: the branch, its base and where it stands. */
-function branchRow(branch: BranchInfo): HTMLElement {
+function branchRow(branch: BranchInfo, push = false): HTMLElement {
   const row = document.createElement("div");
   row.className = "task-branch";
   const state = branch.merge
@@ -5278,9 +5313,18 @@ function branchRow(branch: BranchInfo): HTMLElement {
   name.textContent = `Branch ${branch.name}`;
   const when = document.createElement("span");
   when.className = "when";
-  when.textContent = `from ${branch.base} · ${state}`;
-  row.title = `The task works on ${branch.name}, made from ${branch.base}. The push stays with you.`;
+  // The push after the merge (ticket simpler-process): its words follow the merge, and a failed push
+  // also gets a reason line.
+  const pushed = pushWords(branch.push ?? "");
+  when.textContent = `from ${branch.base} · ${state}${pushed ? ` · ${pushed.words}` : ""}`;
+  row.title = `The task works on ${branch.name}, made from ${branch.base}.${push ? "" : " The push stays with you."}`;
   row.append(name, when);
+  if (pushed?.failed) {
+    const failed = document.createElement("div");
+    failed.className = "card-reason";
+    failed.textContent = `${pushed.words}. ${branch.base} is merged on this computer only; push it yourself.`;
+    row.append(failed);
+  }
   if (branch.note) {
     const note = document.createElement("div");
     note.className = "card-reason";
@@ -7031,7 +7075,7 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     // The checks that the user chose at Approve (ticket task-checks).
     const checks = checksRow(info?.checks ?? []);
     if (checks) body.append(checks);
-    if (info?.branch) body.append(branchRow(info.branch));
+    if (info?.branch) body.append(branchRow(info.branch, task.project ? task.project.pushAfterMerge : pushAfterMerge));
     // Stop stands under the runs that it stops.
     const stop = stopRow(task);
     if (stop) body.append(stop);

@@ -260,3 +260,39 @@ test("main.ts: approvePlans merges at night before a start, and the line for tri
   assert.match(MAIN, /`Night mode merged branch \$\{branch\.name\} of \$\{task\.name\}/);
   assert.doesNotMatch(MAIN, /Night mode never merges/);
 });
+
+// Ticket simpler-process, change 2: a plan without decisions starts by itself with the setting
+// "Start plans without decisions"; every other rule of a start stays.
+test("a plain plan starts with the setting and waits without it", () => {
+  const facts = (task: StartCandidate, plain: boolean): StartFacts => ({ merging: null, running: null, leased: null, queued: null, auto: false, night: false, plain, tasks: [task] });
+  const plainPlan = { ...candidate("t-plain"), plain: true };
+  assert.deepEqual(chooseStart(facts(plainPlan, true)), { task: "t-plain", kind: "plain" });
+  assert.equal(chooseStart(facts(plainPlan, false)), null, "the setting off: the plan waits for the click");
+  assert.equal(chooseStart({ ...facts(plainPlan, true), plain: undefined }), null, "an older record without the setting");
+  assert.equal(chooseStart(facts(candidate("t-decisions"), true)), null, "a plan with decisions waits");
+  assert.equal(chooseStart(facts({ ...plainPlan, hold: true }, true)), null, "HOLD waits");
+  assert.equal(chooseStart(facts({ ...plainPlan, busy: true }, true)), null, "a click runs");
+  assert.equal(chooseStart(facts({ ...plainPlan, blocked: true }, true)), null, "uncommitted changes in its files");
+  assert.equal(chooseStart(facts({ ...plainPlan, tried: 100 }, true)), null, "tried with the same plan file");
+  assert.equal(chooseStart({ ...facts(plainPlan, true), running: "t-other" }), null, "another work run runs");
+  assert.equal(chooseStart({ ...facts(plainPlan, true), paused: true }), null, "the project is paused");
+  assert.equal(chooseStart({ ...facts(plainPlan, true), merging: "t-other" }), null, "a merge runs");
+});
+
+test("night mode: a plain plan gets the kind plain, a plan with defaults the kind night", () => {
+  const facts = (task: StartCandidate): StartFacts => ({ merging: null, running: null, leased: null, queued: null, auto: false, night: true, plain: true, tasks: [task] });
+  assert.deepEqual(chooseStart(facts({ ...candidate("t-plain"), plain: true })), { task: "t-plain", kind: "plain" });
+  assert.deepEqual(chooseStart(facts(candidate("t-defaults"))), { task: "t-defaults", kind: "night" });
+  assert.deepEqual(chooseStart({ ...facts({ ...candidate("t-plain"), plain: true }), night: false, auto: true }), { task: "t-plain", kind: "plain" }, "with Approve plans automatically too");
+  assert.deepEqual(chooseStart({ ...facts({ ...candidate("t-plain"), plain: true }), queued: "t-queued" }), { task: "t-queued", kind: "queued" }, "a waiting approval first");
+});
+
+test("main.ts: approvePlans passes the plain facts and starts a plain plan with the recommended checks", () => {
+  const body = MAIN.slice(MAIN.indexOf("function approvePlans("), MAIN.indexOf("function nextQueued("));
+  assert.match(body, /plain: project\.startPlain,/);
+  assert.match(body, /plain: !!task\.info\?\.plain,/);
+  const plain = body.slice(body.indexOf('choice.kind === "plain"'));
+  assert.match(plain, /writeDecisions\(task, \[\]\)/);
+  assert.match(plain, /`Plan \$\{task\.name\} has no decisions: Dispatch started the work run by itself\.\$\{checks\}`/);
+  assert.match(MAIN, /startPlain: reply\.startPlainPlans \?\? false,/);
+});

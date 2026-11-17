@@ -96,6 +96,8 @@ export interface StartCandidate {
   auto?: boolean;
   /** An uncommitted change touches a file of the task (ticket leftover-files-block-tasks): it does not start. */
   blocked?: boolean;
+  /** The plan has no decisions (ticket simpler-process): it starts with the setting "Start plans without decisions". */
+  plain?: boolean;
 }
 
 /** The facts of one project at one poll. */
@@ -106,25 +108,34 @@ export interface StartFacts extends BusyFacts {
   auto: boolean;
   /** Night mode of the host of the project. */
   night: boolean;
+  /** The setting "Start plans without decisions" of the project (ticket simpler-process); absent = off. */
+  plain?: boolean;
   /** The tasks in the order of the task list. */
   tasks: StartCandidate[];
 }
 
-/** How a start came: an approval of the user that waited, night mode, or the setting of the project. */
-export type StartKind = "queued" | "night" | "auto";
+/**
+ * How a start came: an approval of the user that waited, night mode, the setting "Approve plans
+ * automatically", or a plan without decisions with the setting "Start plans without decisions".
+ */
+export type StartKind = "queued" | "night" | "auto" | "plain";
 
 /**
  * The one task to start at this poll, or null. Nothing starts while the project is busy. An
  * approval of the user that waited comes first; then the first ready plan without HOLD, not busy,
  * and not tried before with the same plan file, with the setting or night mode on, or of a task
- * that a running action approves by itself (ticket project-actions). A blocked task is skipped, and
- * the next one can start (ticket leftover-files-block-tasks).
+ * that a running action approves by itself (ticket project-actions), or a plan without decisions with
+ * the setting "Start plans without decisions" (ticket simpler-process). A blocked task is skipped, and
+ * the next one can start (ticket leftover-files-block-tasks). A plain plan with that setting gets the
+ * kind "plain", also in night mode, so the triage line names why it started.
  */
 export function chooseStart(facts: StartFacts): { task: string; kind: StartKind } | null {
   if (projectBusy(facts)) return null;
   if (facts.queued) return { task: facts.queued, kind: "queued" };
-  const task = facts.tasks.find((task) => task.ready && !task.hold && !task.busy && !task.blocked && task.planTime !== null && task.tried !== task.planTime && (facts.auto || facts.night || !!task.auto));
-  return task ? { task: task.name, kind: facts.night ? "night" : "auto" } : null;
+  const plain = (task: StartCandidate) => !!facts.plain && !!task.plain;
+  const task = facts.tasks.find((task) => task.ready && !task.hold && !task.busy && !task.blocked && task.planTime !== null && task.tried !== task.planTime && (facts.auto || facts.night || !!task.auto || plain(task)));
+  if (!task) return null;
+  return { task: task.name, kind: plain(task) ? "plain" : facts.night ? "night" : "auto" };
 }
 
 /** A task of the project as the night merge sees it (ticket task-branches-blocked-work). */
