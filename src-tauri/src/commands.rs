@@ -221,8 +221,15 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
 }
 
 #[tauri::command(async)]
-pub fn ticket_add(cwd: String, text: String, kind: Option<String>, level: Option<String>, fields: Option<TicketFields>) -> Result<Ticket, String> {
-    tickets::ticket_add(cwd, text, kind, level, fields)
+pub fn ticket_add(
+    cwd: String,
+    text: String,
+    kind: Option<String>,
+    level: Option<String>,
+    fields: Option<TicketFields>,
+    column: Option<String>,
+) -> Result<Ticket, String> {
+    tickets::ticket_add_in(cwd, text, kind, level, fields, column)
 }
 
 #[tauri::command(async)]

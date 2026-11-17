@@ -881,6 +881,25 @@ pub(crate) fn find(tickets: &[Ticket], id: &str) -> Result<Ticket, String> {
 /// level (none: Medium) and the optional fields of the form are optional; What I see and What I
 /// expect stay only on a fix (ticket ticket-form-optional-fields-on-a-new).
 pub fn ticket_add(cwd: String, text: String, kind: Option<String>, level: Option<String>, fields: Option<TicketFields>) -> Result<Ticket, String> {
+    ticket_add_in(cwd, text, kind, level, fields, None)
+}
+
+/// `ticket_add` into a chosen column: none or "new" is New, "backlog" is Backlog, in one write, so
+/// a No triage project never sees the Backlog ticket in New (ticket i-need-a-right-mouse-click-option-to-add).
+pub fn ticket_add_in(
+    cwd: String,
+    text: String,
+    kind: Option<String>,
+    level: Option<String>,
+    fields: Option<TicketFields>,
+    column: Option<String>,
+) -> Result<Ticket, String> {
+    let status = match column.as_deref().map(|column| column.trim().to_ascii_lowercase()).filter(|column| !column.is_empty()) {
+        None => NEW,
+        Some(column) if column == "new" => NEW,
+        Some(column) if column == "backlog" => BACKLOG,
+        Some(column) => return Err(format!("a new ticket goes only into New or Backlog, not {column}")),
+    };
     let project = Project::find(&cwd)?;
     let text = text.trim();
     if text.is_empty() {
@@ -895,7 +914,7 @@ pub fn ticket_add(cwd: String, text: String, kind: Option<String>, level: Option
         None => MEDIUM,
     };
     let tickets = list(&project);
-    let mut ticket = open_ticket(&project, &tickets, text, now(), NEW, None);
+    let mut ticket = open_ticket(&project, &tickets, text, now(), status, None);
     if let Some(kind) = kind {
         ticket.kind = kind.to_string();
     }
@@ -2053,6 +2072,22 @@ mod tests {
         let back = read(&project);
         assert_eq!(back.iter().find(|t| t.id == fix.id), Some(&fix));
         assert_eq!(back.iter().find(|t| t.id == feature.id), Some(&feature));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_new_ticket_goes_into_new_or_backlog_in_one_line() {
+        let (project, base) = scratch("column");
+        let backlog = ticket_add_in(cwd(&project), "Later work".into(), None, None, None, Some("Backlog".into())).unwrap();
+        assert_eq!(backlog.status, BACKLOG);
+        let text = fs::read_to_string(project.tickets_file()).unwrap();
+        assert_eq!(text.lines().count(), 1, "one write: {text}");
+        assert!(text.contains("\"status\":\"backlog\""), "{text}");
+        let new = ticket_add_in(cwd(&project), "Now work".into(), None, None, None, Some("new".into())).unwrap();
+        assert_eq!(new.status, NEW);
+        assert_eq!(ticket_add_in(cwd(&project), "Plain".into(), None, None, None, None).unwrap().status, NEW);
+        assert!(ticket_add_in(cwd(&project), "x".into(), None, None, None, Some("done".into())).is_err());
+        assert_eq!(read(&project).iter().find(|t| t.id == backlog.id).unwrap().status, BACKLOG);
         let _ = fs::remove_dir_all(base);
     }
 

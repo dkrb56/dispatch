@@ -594,7 +594,7 @@ test("the message to triage has each filled field once, in order, and nothing fo
 
 test("the form keeps its draft outside, sends the level, the type and the fields, and the card has a level tag", () => {
   assert.match(MAIN, /const addTicketDrafts = new Map<string, TicketDraft>\(\);/);
-  assert.match(MAIN, /"ticket_add", \{ text, kind: draft\.kind \|\| null, level: draft\.level, fields: filled \? fields : null \}/);
+  assert.match(MAIN, /"ticket_add", \{ text, kind: draft\.kind \|\| null, level: draft\.level, fields: filled \? fields : null, column: addTicketColumn \}/);
   assert.match(MAIN, /goalHint\(draft\.level\)/);
   assert.match(MAIN, /ticket-level level-\$\{level\}/);
   assert.match(MAIN, /updateTicket\(project, ticket\.id, \{ level: nextLevel\(level\) \}\)/);
@@ -617,7 +617,7 @@ test("the Add ticket window adds to New without the board", () => {
   const line = MAIN.slice(MAIN.indexOf("function ticketsLine("), MAIN.indexOf("/** Shows or hides the Overview."));
   assert.match(line, /openAddTicket\(\{ host, root \}\)/);
   const window = MAIN.slice(MAIN.indexOf("// ---- The Add ticket window"), MAIN.indexOf("// ---- The Actions panel"));
-  assert.match(window, /"ticket_add", \{ text, kind: draft\.kind \|\| null, level: draft\.level, fields: filled \? fields : null \}/);
+  assert.match(window, /"ticket_add", \{ text, kind: draft\.kind \|\| null, level: draft\.level, fields: filled \? fields : null, column: addTicketColumn \}/);
   assert.ok(!window.includes("openTickets("), "the window opens no board");
   assert.ok(!window.includes("ticketsDialog.showModal"), "the window opens no board");
   assert.match(window, /for \(const field of FIELDS\) if \(!field\.fix \|\| fix\)/);
@@ -753,4 +753,22 @@ test("subtickets: the plan card lists the parts before Approve, with the night b
   assert.ok(HTML.includes("<li><b>Parts.</b> A plan for a large task can list parts that follow it."));
   assert.ok(HTML.includes("<b>Parts at night.</b> A plan card with parts has the box"));
   assert.ok(read("../README.md").includes("A plan can list parts that follow it: Approve puts one linked ticket per part in Backlog"));
+});
+
+test("a right-click on the board adds a ticket to New or Backlog", () => {
+  const fill = MAIN.slice(MAIN.indexOf("function fillTicketColumns("), MAIN.indexOf("function focusTicketBox("));
+  assert.match(fill, /column\.addEventListener\("contextmenu", /);
+  assert.match(fill, /openBoardMenu\(event, key\)/);
+  assert.match(fill, /closest\("input, textarea, select"\)/);
+  assert.ok(fill.includes('item("New ticket in New", "new", '));
+  assert.ok(fill.includes('item("New ticket in Backlog", "backlog", '));
+  assert.match(fill, /openAddTicket\(project, column\)/);
+  assert.match(fill, /closest\("dialog"\)/);
+  assert.match(MAIN, /function openAddTicket\(ref: ProjectRef, column: "new" \| "backlog" = "new"\): void \{/);
+  assert.ok(MAIN.includes("The ticket goes to Backlog. Dispatch does not start it: drag it to New when it should go."));
+  assert.match(MAIN, /"New ticket · Backlog"/);
+  assert.match(CSS, /\.ticket-menu \{[^}]*position: fixed;/);
+  assert.match(CSS, /\.ticket-menu button \{/);
+  assert.ok(HTML.includes("A right-click on the board opens a menu: New ticket in New, or New ticket in Backlog; a Backlog ticket waits until you drag it to New."));
+  assert.ok(read("../README.md").includes("a right-click on the board offers a new ticket in New or in Backlog"));
 });

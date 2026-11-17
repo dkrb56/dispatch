@@ -6243,6 +6243,8 @@ const addTicketTitleEl = document.querySelector<HTMLElement>("#ticket-add-title"
 
 /** The project of the open window, or null. */
 let addTicketRef: ProjectRef | null = null;
+/** The column of a new ticket: New, or Backlog from the right-click menu of the board. */
+let addTicketColumn: "new" | "backlog" = "new";
 /** One draft per project key: Esc keeps it for the next open of the window. */
 const addTicketDrafts = new Map<string, TicketDraft>();
 /** The pasted images of each project key: the saved file and its picture. Esc keeps them with the draft. */
@@ -6318,10 +6320,11 @@ function addTicketDraft(key: string): TicketDraft {
   return draft;
 }
 
-/** Opens the Add ticket window for a project; the Goal box gets the keyboard. */
-function openAddTicket(ref: ProjectRef): void {
+/** Opens the Add ticket window for a project; the Goal box gets the keyboard. The ticket goes to `column`. */
+function openAddTicket(ref: ProjectRef, column: "new" | "backlog" = "new"): void {
   endTicketEdit();
   addTicketRef = ref;
+  addTicketColumn = column;
   addTicketError = "";
   if (!addTicketDialog.open) addTicketDialog.showModal();
   renderAddTicket();
@@ -6334,11 +6337,16 @@ function renderAddTicket(): void {
   const ref = addTicketRef;
   const key = refKey(ref);
   addTicketProjectEl.replaceChildren(mapElement("b", "", projectName(ref)), mapElement("span", "ticket-add-folder", ref.root));
-  addTicketProjectEl.title = `The ticket goes to New of ${projectName(ref)}: ${ticketsFilePath(ref.root)}`;
   const edit = addTicketEdit;
-  addTicketTitleEl.textContent = edit ? "Edit ticket" : "New ticket";
+  const backlog = !edit && addTicketColumn === "backlog";
+  addTicketProjectEl.title = `The ticket goes to ${backlog ? "Backlog" : "New"} of ${projectName(ref)}: ${ticketsFilePath(ref.root)}`;
+  addTicketTitleEl.textContent = edit ? "Edit ticket" : backlog ? "New ticket · Backlog" : "New ticket";
   addTicketSaveEl.textContent = edit ? "Save" : "Add";
-  addTicketSaveEl.title = edit ? "Save the changes of the ticket (Enter in the Goal box)" : "Add the ticket at the end of New (Enter in the Goal box)";
+  addTicketSaveEl.title = edit
+    ? "Save the changes of the ticket (Enter in the Goal box)"
+    : backlog
+      ? "Add the ticket to Backlog (Enter in the Goal box)"
+      : "Add the ticket at the end of New (Enter in the Goal box)";
   document.querySelector<HTMLElement>("#ticket-add-close")!.title = edit ? "Close (Esc) without a save" : "Close (Esc); your text stays for the next time";
   if (edit) {
     addTicketNoteEl.textContent = "Save changes the ticket; it keeps its place.";
@@ -6346,11 +6354,13 @@ function renderAddTicket(): void {
     addTicketBodyEl.replaceChildren(addTicketForm(edit.draft, edit));
     return;
   }
-  addTicketNoteEl.textContent = projectPaused(key)
-    ? "The ticket goes to the end of New. The project is paused: the ticket waits for Resume."
-    : projectNoTriage(key)
-      ? "The ticket goes to the end of New. Dispatch starts its plan."
-      : "The ticket goes to the end of New. Dispatch sends it when triage is free.";
+  addTicketNoteEl.textContent = backlog
+    ? "The ticket goes to Backlog. Dispatch does not start it: drag it to New when it should go."
+    : projectPaused(key)
+      ? "The ticket goes to the end of New. The project is paused: the ticket waits for Resume."
+      : projectNoTriage(key)
+        ? "The ticket goes to the end of New. Dispatch starts its plan."
+        : "The ticket goes to the end of New. Dispatch sends it when triage is free.";
   showAddTicketError();
   addTicketBodyEl.replaceChildren(addTicketForm(addTicketDraft(key)));
 }
@@ -6525,7 +6535,7 @@ async function saveAddTicket(): Promise<void> {
     renderTickets();
     return;
   }
-  const added = await ticketAction(key, "ticket_add", { text, kind: draft.kind || null, level: draft.level, fields: filled ? fields : null });
+  const added = await ticketAction(key, "ticket_add", { text, kind: draft.kind || null, level: draft.level, fields: filled ? fields : null, column: addTicketColumn });
   addTicketBusy = false;
   addTicketSaveEl.disabled = false;
   if (!added) {
@@ -7712,9 +7722,90 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
       list.append(mapElement("p", "tickets-none", status === "new" ? none : status === "backlog" ? backlog : "No tickets"));
     }
     column.append(head, list);
+    // The right-click menu of the board (ticket i-need-a-right-mouse-click-option-to-add): in every
+    // column and on a card; a box (rename, part form) keeps the normal menu.
+    column.addEventListener("contextmenu", (event) => {
+      if (ticketDragging) return;
+      if (event.target instanceof Element && event.target.closest("input, textarea, select")) return;
+      openBoardMenu(event, key);
+    });
     return column;
   });
   container.replaceChildren(...columns);
+}
+
+/** The open right-click menu of a board and the listeners that close it. */
+let boardMenu: { el: HTMLElement; off: () => void } | null = null;
+
+/** Opens the right-click menu of a board at the mouse: a new ticket in New or in Backlog. */
+function openBoardMenu(event: MouseEvent, key: string): void {
+  const ref = ticketsRef && refKey(ticketsRef) === key ? ticketsRef : focusColumns.get(key);
+  if (!ref) return;
+  event.preventDefault();
+  closeBoardMenu();
+  const project: ProjectRef = { host: ref.host, root: ref.root };
+  const menu = mapElement("div", "ticket-menu");
+  menu.setAttribute("role", "menu");
+  const item = (label: string, column: "new" | "backlog", title: string): HTMLButtonElement => {
+    const button = mapElement("button", "", label);
+    button.type = "button";
+    button.title = title;
+    button.setAttribute("role", "menuitem");
+    button.addEventListener("click", () => {
+      closeBoardMenu();
+      openAddTicket(project, column);
+    });
+    return button;
+  };
+  menu.append(
+    item("New ticket in New", "new", "Open the New ticket window; the ticket goes to the end of New"),
+    item("New ticket in Backlog", "backlog", "Open the New ticket window; the ticket waits in Backlog"),
+  );
+  // A modal dialog stands in the top layer: the menu goes into the dialog of the board.
+  const dialog = (event.currentTarget as HTMLElement).closest("dialog");
+  (dialog ?? document.body).append(menu);
+  const width = menu.offsetWidth;
+  const height = menu.offsetHeight;
+  menu.style.left = `${Math.max(0, Math.min(event.clientX, window.innerWidth - width - 4))}px`;
+  menu.style.top = `${Math.max(0, Math.min(event.clientY, window.innerHeight - height - 4))}px`;
+  const outside = (other: Event): void => {
+    if (!(other.target instanceof Node) || !menu.contains(other.target)) closeBoardMenu();
+  };
+  const onKey = (other: KeyboardEvent): void => {
+    if (other.key !== "Escape") return;
+    other.preventDefault();
+    other.stopPropagation();
+    closeBoardMenu();
+  };
+  const close = (): void => closeBoardMenu();
+  document.addEventListener("mousedown", outside, true);
+  document.addEventListener("contextmenu", outside, true);
+  document.addEventListener("keydown", onKey, true);
+  document.addEventListener("scroll", close, true);
+  window.addEventListener("resize", close);
+  window.addEventListener("blur", close);
+  dialog?.addEventListener("close", close);
+  boardMenu = {
+    el: menu,
+    off: () => {
+      document.removeEventListener("mousedown", outside, true);
+      document.removeEventListener("contextmenu", outside, true);
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("scroll", close, true);
+      window.removeEventListener("resize", close);
+      window.removeEventListener("blur", close);
+      dialog?.removeEventListener("close", close);
+    },
+  };
+  menu.querySelector("button")?.focus();
+}
+
+/** Closes the right-click menu of a board, when one is open. */
+function closeBoardMenu(): void {
+  if (!boardMenu) return;
+  boardMenu.off();
+  boardMenu.el.remove();
+  boardMenu = null;
 }
 
 /** Gives the keyboard to the rename box or to the form of a part inside `container`, when one is open. */

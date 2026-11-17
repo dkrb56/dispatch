@@ -149,7 +149,14 @@ pub fn run(
         "set_merge_gate" => json(pipeline::set_merge_gate(a.req("cwd")?, a.req("text")?)?),
         "set_checks" => json(pipeline::set_checks(a.req("cwd")?, a.req("text")?)?),
         "task_list" => json(pipeline::task_list(a.req("cwd")?)?),
-        "ticket_add" => json(tickets::ticket_add(a.req("cwd")?, a.req("text")?, a.opt("kind")?, a.opt("level")?, a.opt("fields")?)?),
+        "ticket_add" => json(tickets::ticket_add_in(
+            a.req("cwd")?,
+            a.req("text")?,
+            a.opt("kind")?,
+            a.opt("level")?,
+            a.opt("fields")?,
+            a.opt("column")?,
+        )?),
         "ticket_update" => json(tickets::ticket_update(
             a.req("cwd")?,
             a.req("id")?,
