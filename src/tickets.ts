@@ -124,6 +124,14 @@ export function canDrag(ticket: Pick<Ticket, "status" | "note">, inFlight: boole
 }
 
 /**
+ * A move into New from another column (ticket i-cant-dragged-canceled-ticket-back-to): the ticket
+ * loses its send marks, so Dispatch can start it again.
+ */
+export function reentersNew(from: TicketStatus, to: TicketStatus): boolean {
+  return to === "new" && from !== "new";
+}
+
+/**
  * The queue of New after a drop of the ticket `id` at `index` among the shown cards of New (`shownIds`,
  * in their order; the index counts the card itself too): the shown cards in their new order, then
  * the New tickets that a search hides.

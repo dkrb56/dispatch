@@ -37,6 +37,7 @@ import {
   partsOf,
   partText,
   queueOrder,
+  reentersNew,
   repairLine,
   splitImages,
   ticketMatches,
@@ -783,4 +784,17 @@ test("a right-click on the board adds a ticket to New or Backlog", () => {
   assert.match(CSS, /\.ticket-menu button \{/);
   assert.ok(HTML.includes("A right-click on the board opens a menu: New ticket in New, or New ticket in Backlog; a Backlog ticket waits until you drag it to New."));
   assert.ok(read("../README.md").includes("a right-click on the board offers a new ticket in New or in Backlog"));
+});
+
+test("a ticket that comes back into New loses its send marks (ticket i-cant-dragged-canceled-ticket-back-to)", () => {
+  assert.equal(reentersNew("canceled", "new"), true);
+  assert.equal(reentersNew("backlog", "new"), true);
+  assert.equal(reentersNew("done", "new"), true);
+  assert.equal(reentersNew("new", "new"), false, "a new order in New keeps the marks");
+  assert.equal(reentersNew("canceled", "backlog"), false);
+  const body = MAIN.slice(MAIN.indexOf("async function moveTicket("), MAIN.indexOf("function moveAllTickets("));
+  assert.match(body, /reentersNew\(current\.status, status\)/);
+  assert.match(body, /sentTickets\.delete\(/);
+  assert.match(body, /"ticket_claim", \{ cwd, id, release: true \}/);
+  assert.ok(HTML.includes("A stopped ticket that you move back to New or Backlog stays there; from New it starts again from the start, and its old files go to <code>.dispatch/old</code>."));
 });

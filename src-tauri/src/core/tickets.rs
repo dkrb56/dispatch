@@ -721,7 +721,8 @@ const USER_DONE: &str = "done by hand";
 /// after its report or its merge, Canceled with `stopped`. A ticket in Done or Canceled moves back to
 /// In progress only for a run that started after its last change, and never for a merged task: a
 /// close wins over a stale state file (ticket board-in-progress). A ticket in New follows its task too, because Dispatch
-/// sends the New tickets (ticket auto-todo); a ticket canceled or done by the user stays. The title of the
+/// sends the New tickets (ticket auto-todo); a ticket canceled or done by the user stays. A ticket that the user
+/// moved into New or Backlog after the end of its run stays there (ticket i-cant-dragged-canceled-ticket-back-to). The title of the
 /// brief replaces the generated title, unless the user renamed the ticket. Writes one line per
 /// change and changes the tickets in place. While the project is paused it changes them only in
 /// place and writes nothing (ticket tickets-backlog): the first read after Resume writes the lines.
@@ -749,6 +750,11 @@ pub(crate) fn follow(project: &Project, tickets: &mut [Ticket], facts: &[TaskFac
             (column, note) = (IN_PROGRESS, "");
         }
         if closed && column == IN_PROGRESS && (task.merged || task.started <= ticket.updated) {
+            continue;
+        }
+        // The user moved the ticket into New or Backlog after the end of its run: the move wins over
+        // the old end (ticket i-cant-dragged-canceled-ticket-back-to).
+        if (ticket.status == NEW || ticket.status == BACKLOG) && (column == DONE || column == CANCELED) && task.started != 0 && task.started <= ticket.moved {
             continue;
         }
         if !ticket.renamed && !task.brief.is_empty() && task.brief != ticket.title {
@@ -1899,6 +1905,37 @@ mod tests {
         follow(&project, &mut list, &[TaskFacts { name: "one", state: "planning", report: None, brief: "The brief of one", merged: false, waits_merge: false, started: 0, ended: 0 }]).unwrap();
         assert_eq!(list.iter().find(|t| t.id == one.id).map(|t| (t.status.as_str(), t.note.as_str())), Some((DONE, USER_DONE)));
         assert_eq!(text(), written);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_stopped_ticket_moved_back_into_new_or_backlog_stays_there() {
+        let (project, base) = scratch("stopped-back");
+        let one = ticket_add(cwd(&project), "one".into(), None, None, None).unwrap();
+        let two = ticket_add(cwd(&project), "two".into(), None, None, None).unwrap();
+        let stopped = |name, started| TaskFacts { name, state: "stopped", report: None, brief: "", merged: false, waits_merge: false, started, ended: 0 };
+        let status = |list: &[Ticket], id: &str| list.iter().find(|t| t.id == id).map(|t| (t.status.clone(), t.note.clone())).unwrap();
+        for (id, back) in [(one.id.clone(), NEW), (two.id.clone(), BACKLOG)] {
+            let name = if id == one.id { "one" } else { "two" };
+            // The run starts, then the user stops it: the ticket goes to Canceled "stopped".
+            let mut list = read(&project);
+            follow(&project, &mut list, &[running(name, 1)]).unwrap();
+            assert_eq!(status(&list, &id), (IN_PROGRESS.to_string(), String::new()));
+            let stop = now();
+            follow(&project, &mut list, &[stopped(name, stop)]).unwrap();
+            assert_eq!(status(&list, &id), (CANCELED.to_string(), "stopped".to_string()));
+            // The user moves it back after the stop: it stays, and follow writes nothing.
+            ticket_move(cwd(&project), id.clone(), back.into(), vec![], None).unwrap();
+            let mut list = read(&project);
+            let before = fs::read_to_string(project.tickets_file()).unwrap();
+            follow(&project, &mut list, &[stopped(name, stop)]).unwrap();
+            assert_eq!(status(&list, &id), (back.to_string(), String::new()));
+            assert_eq!(fs::read_to_string(project.tickets_file()).unwrap(), before);
+            // A new run starts later: the ticket follows it to In progress.
+            let later = list.iter().find(|t| t.id == id).unwrap().moved + 1000;
+            follow(&project, &mut list, &[TaskFacts { state: "planning", ..running(name, later) }]).unwrap();
+            assert_eq!(status(&list, &id), (IN_PROGRESS.to_string(), String::new()));
+        }
         let _ = fs::remove_dir_all(base);
     }
 

@@ -51,7 +51,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, parseBoardSize, queueOrder, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages } from "./tickets";
+import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, parseBoardSize, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { type Typed, typedAfter, typingState } from "./typing";
@@ -3470,7 +3470,19 @@ function queueIdsWithout(project: string, id: string): string[] {
 }
 
 /** Moves a ticket into Backlog, New, Done or Canceled; `ids` is the queue of New after the move. */
-function moveTicket(project: string, id: string, status: TicketStatus, ids: string[], note?: string): Promise<boolean> {
+async function moveTicket(project: string, id: string, status: TicketStatus, ids: string[], note?: string): Promise<boolean> {
+  // A ticket that comes back into New loses its send marks and its claim: else Dispatch never
+  // starts it again (ticket i-cant-dragged-canceled-ticket-back-to).
+  const current = projectTickets(project).find((ticket) => ticket.id === id);
+  if (current && reentersNew(current.status, status)) {
+    const mark = `${project}
+${id}`;
+    sentTickets.delete(mark);
+    toTriage.delete(mark);
+    for (const one of ticketsToSettle.filter((one) => one.project === project && one.ticket === id)) ticketsToSettle.splice(ticketsToSettle.indexOf(one), 1);
+    const { host, cwd } = projectCwd(project);
+    await call(host, "ticket_claim", { cwd, id, release: true }).catch(() => {});
+  }
   return ticketAction(project, "ticket_move", { id, status, ids, note: note ?? null });
 }
 

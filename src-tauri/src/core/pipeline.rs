@@ -4956,10 +4956,15 @@ fn ticket_plan_with(project: &Project, id: &str, start: &dyn Fn(&Project, &[&str
     let state = project.reports.join(format!("{id}.state"));
     let leftovers = [state.clone(), project.branch_file(id), project.session_file(id)];
     let plan = project.plans().join(format!("{id}.md"));
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
+    // A stopped task whose ticket went back to New starts again: its old files go into
+    // `old/<id>-<stamp>/` (ticket i-cant-dragged-canceled-ticket-back-to, user decision 1).
+    if fs::read_to_string(&state).is_ok_and(|text| text.trim() == "stopped") {
+        move_old_task(project, id, now)?;
+    }
     if brief.exists() || plan.exists() || leftovers.iter().any(|path| path.exists()) {
         return Err(format!("a task {id} exists already"));
     }
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
     let chain = chain_lines(project, &tickets, &ticket);
     write_file(&brief, &ticket_brief(&ticket, now, options.no_triage, &chain))?;
     // The level of the ticket gives the model and the effort of the plan run (ticket
@@ -4980,6 +4985,28 @@ fn ticket_plan_with(project: &Project, id: &str, start: &dyn Fn(&Project, &[&str
         // `planning` would move it to In progress although no plan run runs.
         undo(&brief);
     })
+}
+
+/// The kinds of the files `<id>.<kind>` of a task in the task folder.
+const TASK_FILE_KINDS: [&str; 7] = ["md", "state", "session", "models", "branch", "taken", "checks"];
+
+/// Moves the files of the task `id` into `old/<id>-<yyyyMMdd-HHmmss>/` of the task folder (UTC): its
+/// files `<id>.<kind>`, its brief, its plan and its measure folder, each under its own folder name.
+/// Only exact names move: the files of `<id>-other` stay.
+fn move_old_task(project: &Project, id: &str, now: u64) -> Result<(), String> {
+    let digits: String = crate::core::tickets::iso(now).chars().filter(char::is_ascii_digit).take(14).collect();
+    let target = project.reports.join("old").join(format!("{id}-{}-{}", &digits[..8], &digits[8..]));
+    let mut moves: Vec<(PathBuf, PathBuf)> = TASK_FILE_KINDS.iter().map(|kind| format!("{id}.{kind}")).map(|name| (project.reports.join(&name), target.join(name))).collect();
+    moves.push((project.briefs().join(format!("{id}.md")), target.join("briefs").join(format!("{id}.md"))));
+    moves.push((project.plans().join(format!("{id}.md")), target.join("plans").join(format!("{id}.md"))));
+    moves.push((project.measure_dir().join(id), target.join("measure").join(id)));
+    for (from, to) in moves.iter().filter(|(from, _)| from.exists()) {
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
+        }
+        fs::rename(from, to).map_err(|error| format!("{} → {}: {error}", from.display(), to.display()))?;
+    }
+    Ok(())
 }
 
 /// Sends the plan run back with the reason of the user: the Reject button of the task card.
@@ -7915,6 +7942,69 @@ if (args[0] === 'agents') {
         assert!(ticket_plan_with(&project, "no-such-ticket", &start).is_err());
         assert_eq!(started.get(), 0, "no call of the script");
         assert!(!project.briefs().join(format!("{}.md", other.id)).exists());
+        clean(&project);
+    }
+
+    #[test]
+    fn ticket_plan_moves_a_stopped_task_into_old_and_starts() {
+        let project = scratch("tickets-stopped");
+        apply(&project, &[0]).unwrap();
+        set_tickets(&project, true);
+        let cwd = project.root.to_string_lossy().into_owned();
+        let started = std::cell::Cell::new(0);
+        let start = |_: &Project, _: &[&str]| -> Result<String, String> {
+            started.set(started.get() + 1);
+            Ok(String::new())
+        };
+        let ticket = crate::core::tickets::ticket_add(cwd.clone(), "A stopped task".to_string(), None, None, None).unwrap();
+        let id = ticket.id.clone();
+        let files = |state: &str| {
+            write_file(&project.briefs().join(format!("{id}.md")), "# the old brief
+").unwrap();
+            write_file(&project.plans().join(format!("{id}.md")), "# the old plan
+").unwrap();
+            write_file(&project.reports.join(format!("{id}.state")), &format!("{state}
+")).unwrap();
+            write_file(&project.session_file(&id), "old-session
+").unwrap();
+            write_file(&project.models_file(&id), "opus high
+").unwrap();
+        };
+        // The files of another ticket whose id starts with the same text stay.
+        let other = project.reports.join(format!("{id}-other.state"));
+        write_file(&other, "stopped
+").unwrap();
+        // A task in another state still refuses.
+        files("planning");
+        assert!(ticket_plan_with(&project, &id, &start).unwrap_err().contains("exists already"));
+        assert_eq!(started.get(), 0);
+        assert!(!project.reports.join("old").exists());
+        // A stopped task moves into old/<id>-<stamp>/, and the plan starts.
+        files("stopped");
+        ticket_plan_with(&project, &id, &start).unwrap();
+        assert_eq!(started.get(), 1);
+        let olds: Vec<PathBuf> = fs::read_dir(project.reports.join("old")).unwrap().flatten().map(|entry| entry.path()).collect();
+        assert_eq!(olds.len(), 1, "{olds:?}");
+        let old = &olds[0];
+        let name = old.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with(&format!("{id}-")) && name.len() == id.len() + 16, "{name}");
+        assert_eq!(read(&old.join("briefs").join(format!("{id}.md"))), "# the old brief
+");
+        assert_eq!(read(&old.join("plans").join(format!("{id}.md"))), "# the old plan
+");
+        assert_eq!(read(&old.join(format!("{id}.state"))), "stopped
+");
+        assert_eq!(read(&old.join(format!("{id}.session"))), "old-session
+");
+        assert!(old.join(format!("{id}.models")).exists());
+        assert!(!project.plans().join(format!("{id}.md")).exists());
+        assert!(!project.session_file(&id).exists());
+        assert!(!read(&project.briefs().join(format!("{id}.md"))).contains("the old brief"), "a new brief");
+        assert_eq!(read(&other), "stopped
+");
+        // The folder old is no task.
+        let list = task_list(cwd).unwrap();
+        assert!(!list.tasks.iter().any(|task| task.name == "old"), "{:?}", list.tasks.iter().map(|task| &task.name).collect::<Vec<_>>());
         clean(&project);
     }
 
