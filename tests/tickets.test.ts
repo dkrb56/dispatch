@@ -497,7 +497,7 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   assert.ok(open.indexOf("if (info.noTriage) {") < open.indexOf("const triage = workspaceTriage(host, project, action);"), "before the tab with triage");
   assert.match(fresh, /role: "agents"/);
   assert.match(fresh, /layout: agents, focus: agents\.id/);
-  assert.match(MAIN, /if \(info\.noTriage\) return new Map\(roles\.filter\(\(pane\) => pane\.role !== "triage"\)/);
+  assert.match(MAIN, /if \(info\.noTriage\) \{\s*const starts = new Map\(roles\.filter\(\(pane\) => pane\.role !== "triage"\)/);
   assert.match(MAIN, /if \(triage \|\| \(agents && projectNoTriage\(refKey\(ref\)\)\)\) return;/);
   // User decision 2: the note and a Chat button where triage would stand.
   assert.match(MAIN, /const NO_TRIAGE_NOTE = "No triage in this project";/);

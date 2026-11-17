@@ -70,6 +70,7 @@ import { PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { HOLD_NOTE, holdWait } from "./holdstep";
+import { triagePanesToClose, withoutTriage } from "./notriage";
 import { isTerminalReport, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { type AskDecision, askAbout, askBlocked, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
 import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
@@ -1465,21 +1466,26 @@ function hasWorkspace(host: HostId, project: string): boolean {
 /**
  * The start commands of the workspace panes of a saved tab, when the app starts: triage resumes
  * its chat and the agent view starts, as if the user clicked Workspace. A tab without a
- * workspace pane gets none.
+ * workspace pane gets none. With "No triage" (ticket with-no-triage-on-a-project-shows-no) the
+ * layout to open has no triage pane; `null` when no pane is left.
  */
-async function restoredStarts(layout: SavedNode): Promise<Map<string, StartCommand> | undefined> {
+async function restoredStarts(layout: SavedNode): Promise<{ layout: SavedNode | null; starts: Map<string, StartCommand> | undefined }> {
   const roles: SavedPane[] = [];
   const walk = (node: SavedNode) => ("children" in node ? node.children.forEach(walk) : node.role && roles.push(node));
   walk(layout);
   const first = roles.find((pane) => pane.project);
   const project = first?.project;
-  if (!first || !project) return undefined;
+  if (!first || !project) return { layout, starts: undefined };
   try {
     const saved = new Set(roles.map((pane) => pane.id));
     const host = knownBackend(first.host);
     const { info, triage, action } = await workspaceStart(host, project, (id) => panes.has(id) || saved.has(id));
     // "No triage" (ticket no-triage-a-project-switch-no-triage-in, point 7): a triage pane gets no start command.
-    if (info.noTriage) return new Map(roles.filter((pane) => pane.role !== "triage").map((pane) => [pane.id, { run: "claude agents" as const }]));
+    // A saved triage pane does not open (ticket with-no-triage-on-a-project-shows-no): the agent view stays.
+    if (info.noTriage) {
+      const starts = new Map(roles.filter((pane) => pane.role !== "triage").map((pane) => [pane.id, { run: "claude agents" as const }]));
+      return { layout: withoutTriage<SavedNode>(layout), starts };
+    }
     for (const pane of roles) {
       if (pane.role !== "triage") continue;
       if (action.kind === "join" && pane.id !== action.terminal) {
@@ -1491,11 +1497,12 @@ async function restoredStarts(layout: SavedNode): Promise<Map<string, StartComma
       }
     }
     // A joined pane joins again; when the chat stopped, it leaves and the project shows Start triage (decision 2).
-    return new Map(roles.map((pane) => [pane.id, pane.role === "triage" ? (pane.joined ? { join: true } : triage) : { run: "claude agents" as const }]));
+    const starts = new Map(roles.map((pane) => [pane.id, pane.role === "triage" ? (pane.joined ? { join: true } : triage) : { run: "claude agents" as const }]));
+    return { layout, starts };
   } catch (error) {
     // A project folder that is gone gives plain shells.
     console.error("workspace restore failed", error);
-    return undefined;
+    return { layout, starts: undefined };
   }
 }
 
@@ -2408,6 +2415,25 @@ function storeProjectTasks(key: string, record: ProjectTasks): void {
   // A task end marks the triage chat of the project for a compaction (triage-compact-after-task).
   if (before && taskEnds(taskShape(before), taskShape(record)).length > 0) markCompact(projectFor(record.host, record.cwd));
   projectTasks.set(key, record);
+  // "No triage" (ticket with-no-triage-on-a-project-shows-no): the triage pane of the project closes
+  // when the switch goes on, also in the middle of an answer (user decision 1). The agent view stays.
+  if (record.noTriage) void closeTriagePanes(key);
+}
+
+/** Closes the open triage panes of the project with the key `key`, then shows Focus and the Overview again. */
+async function closeTriagePanes(key: string): Promise<void> {
+  const open = [...panes.values()].map((pane) => ({ id: pane.id, role: pane.role, key: paneKey(pane) }));
+  const ids = triagePanesToClose(open, key);
+  if (ids.length === 0) return;
+  for (const id of ids) {
+    const pane = panes.get(id);
+    if (!pane) continue;
+    // A chat tab that shows in the head of this triage pane goes back to its own tab first.
+    if (shownChat?.triage === pane.id) hideChatTab(pane);
+    await closePane(id);
+  }
+  if (focusOn) renderFocus();
+  if (overviewOn) renderOverview();
 }
 
 /** The tasks and tickets of a project record in the shape of the task-end rule of src/compact.ts. */
@@ -11274,8 +11300,11 @@ async function start(): Promise<void> {
   for (const saved of loaded?.tabs ?? []) {
     const tab = "layout" in saved ? saved : { id: saved.id, layout: saved, focus: saved.id };
     // A workspace runs again: triage resumes its chat, and the agent view starts.
-    const starts = await restoredStarts(tab.layout);
-    await openTab(tab, true, starts);
+    const { layout, starts } = await restoredStarts(tab.layout);
+    // "No triage" (ticket with-no-triage-on-a-project-shows-no): a tab with only a triage pane does not open.
+    // openTab gives the focus to the first pane when the focused pane was the triage pane.
+    if (!layout) continue;
+    await openTab({ ...tab, layout }, true, starts);
     for (const [id, start] of starts ?? []) {
       const pane = panes.get(id);
       if (pane?.role === "triage") pane.startedWith = choiceFlags({ model: start.model ?? "", effort: start.effort ?? "" });
