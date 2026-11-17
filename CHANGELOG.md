@@ -2,6 +2,12 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.68 (2026-11-17)
+- Setup pipeline has the new switch Start plans without decisions, off by default. With it on, a plan that asks you nothing starts its work run by itself, with the recommended checks; a plan with a decision still waits for your click.
+- Setup pipeline has the new switch Checks at the gate, off by default. It needs Task branches and a gate command. With it on, the checks that you tick on the task card run once, at the merge, through the gate command, and the worker does not run them.
+- Setup pipeline has the new switch Push after the merge, off by default. It needs Task branches. With it on, Merge, also the merge of night mode, pushes your branch to its upstream branch, never with force. The task card shows whether the push worked, and a failed push leaves the merge on this computer.
+- Setup pipeline has the new switch Tickets start their plan, off by default. With it on, Dispatch writes the brief of a New ticket from its text and starts its plan itself, without triage, and writes one line into the triage chat. A ticket that ends with a question mark, or has only images, still goes to triage. A new plan starts only while fewer than 3 workers of the project run. With Start plans without decisions on too, a ticket can run to its report without a click.
+
 ## 0.1.67 (2026-11-17)
 - Keys that you type into a terminal window now arrive in their order. A Backspace no longer overtakes its letter, so the first letter of a line no longer sticks.
 - With Task branches on, Dispatch switches the project back to your branch only when the work run has ended. An answer to a worker's question no longer brings back an older report of the task.
