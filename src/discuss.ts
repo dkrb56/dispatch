@@ -25,6 +25,10 @@ export const FOOTER_HINTS = {
   approve: "Your choices go into the plan. The work starts.",
 } as const;
 
+/** The Ask button and its hint in a project with "No triage" on (ticket no-triage-a-project-switch-no-triage-in, user decision 4). */
+export const CHAT_ASK_LABEL = "Ask about this plan in a Chat";
+export const CHAT_ASK_HINT = "A new Chat opens with your question. Nothing changes.";
+
 /** The question when the user typed none. */
 function defaultQuestion(decision?: AskDecision): string {
   return decision ? "Explain this decision and its options in plain words." : "Explain this plan and its decisions in plain words.";
@@ -44,12 +48,27 @@ export function askLine(ticket: string, question: string, decision?: AskDecision
   );
 }
 
+/**
+ * The text that Dispatch types into a new plain Chat for a question of the user in a project with
+ * "No triage" on (ticket no-triage-a-project-switch-no-triage-in, point 6). It names the plan file,
+ * never starts with `Ticket `, and asks for an explanation only: the Chat changes no file and
+ * approves, revises or rejects nothing.
+ */
+export function askChatLine(ticket: string, question: string, decision?: AskDecision): string {
+  const about = decision ? `, decision ${decision.number} (${decision.name})` : "";
+  const text = question.trim().replace(/\s+/g, " ") || defaultQuestion(decision);
+  return (
+    `Question of the user about the plan .dispatch/plans/${ticket}.md${about}, from the Decisions window of Dispatch: ${text} ` +
+    "Read the plan and explain in plain words. Change no file. Do not approve, revise or reject the plan; the user decides in Dispatch."
+  );
+}
+
 /** The line over the Ask box: what the question is about. */
 export function askAbout(decision?: AskDecision): string {
   return decision ? `Your question about decision ${decision.number}: ${decision.name}` : "Your question about this plan";
 }
 
-/** Why the Ask button is off: "" when the project has an open triage chat, else the reason for its tooltip. */
-export function askBlocked(triageOpen: boolean): string {
-  return triageOpen ? "" : "This project has no open triage chat. Open triage to ask about the plan.";
+/** Why the Ask button is off: "" when the project has an open triage chat, else the reason for its tooltip. With "No triage" on, nothing blocks it: the question goes to a new Chat. */
+export function askBlocked(triageOpen: boolean, noTriage = false): string {
+  return triageOpen || noTriage ? "" : "This project has no open triage chat. Open triage to ask about the plan.";
 }

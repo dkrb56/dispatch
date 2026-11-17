@@ -41,6 +41,8 @@ interface Options {
   pushAfterMerge: boolean;
   /** Dispatch writes the brief from a New ticket and starts its plan run itself; a question goes to triage (ticket simpler-process-tickets). Off at the start. */
   ticketsStartPlans: boolean;
+  /** No triage runs: Dispatch starts the plan of every New ticket, writes no line to a triage chat, and the cards and alerts tell the user (ticket no-triage-a-project-switch-no-triage-in). Off at the start. */
+  noTriage: boolean;
 }
 
 /** The reply of the `pipeline_plan`, `pipeline_apply` and `set_project_options` commands. */

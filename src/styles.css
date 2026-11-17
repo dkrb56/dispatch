@@ -1884,6 +1884,14 @@ button.task-head:hover {
   font-weight: 600;
 }
 
+/* The error of a failed plan start of a ticket with "No triage" on (ticket no-triage-a-project-switch-no-triage-in). */
+.ticket-error {
+  color: var(--danger);
+  font-weight: 600;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .ticket-tools {
   display: flex;
   flex-wrap: wrap;

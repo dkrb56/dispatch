@@ -71,7 +71,7 @@ import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { HOLD_NOTE, holdWait } from "./holdstep";
 import { isTerminalReport, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, type TriageStart, triagePlace, triageStart } from "./triageowner";
-import { type AskDecision, askAbout, askBlocked, askLine } from "./discuss";
+import { type AskDecision, askAbout, askBlocked, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
 import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
@@ -85,7 +85,7 @@ import { initPipeline, openSetup, setupNeeded, setupTodo, showSetup } from "./pi
 import { setupDue, setupLook, setupStamp, setupTitle } from "./setupmark";
 import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersion } from "./help";
 import { lastRunVersion, newEntries } from "./changelog";
-import { alertActions, alertState, CHIME, newWaits, notificationText, type Wait } from "./alerts";
+import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, type Wait, type WorkerEnd } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
 import { alertOptions, compactOn, initOptions, ownHostRuns, pulseOn, useOwnHost } from "./options";
 import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
@@ -828,7 +828,7 @@ async function openChat(chat: Chat): Promise<void> {
  * the pipeline, for a question without a ticket. The tab shows as a chat tab in the head of the
  * triage pane in Details (chat-tabs-by-triage), so the view goes there.
  */
-async function openProjectChat(ref: ProjectRef): Promise<void> {
+async function openProjectChat(ref: ProjectRef): Promise<string> {
   if (focusOn || mapOn || overviewOn) await setView("tabs");
   const pane: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: ref.root, host: ref.host };
   const starts = new Map<string, StartCommand>([[pane.id, { run: "claude" }]]);
@@ -836,6 +836,8 @@ async function openProjectChat(ref: ProjectRef): Promise<void> {
   await openTab({ id: tabId, layout: pane, focus: pane.id }, false, starts);
   openChatTab(tabId);
   await saveState();
+  // The pane id: the Ask of a project with "No triage" sends its question there.
+  return pane.id;
 }
 
 /** The key under which the app remembers the triage chat of a project (its project key, with the host). */
@@ -1471,7 +1473,9 @@ async function restoredStarts(layout: SavedNode): Promise<Map<string, StartComma
   try {
     const saved = new Set(roles.map((pane) => pane.id));
     const host = knownBackend(first.host);
-    const { triage, action } = await workspaceStart(host, project, (id) => panes.has(id) || saved.has(id));
+    const { info, triage, action } = await workspaceStart(host, project, (id) => panes.has(id) || saved.has(id));
+    // "No triage" (ticket no-triage-a-project-switch-no-triage-in, point 7): a triage pane gets no start command.
+    if (info.noTriage) return new Map(roles.filter((pane) => pane.role !== "triage").map((pane) => [pane.id, { run: "claude agents" as const }]));
     for (const pane of roles) {
       if (pane.role !== "triage") continue;
       if (action.kind === "join" && pane.id !== action.terminal) {
@@ -1518,13 +1522,14 @@ async function openWorkspace(host: HostId, cwd: string | null | undefined): Prom
   if (known) {
     activate(known.tabId);
     const tabTriage = tabPanes(known.tabId).find((pane) => pane.role === "triage");
-    if (!tabTriage && action.kind !== "note") {
+    // "No triage" (ticket no-triage-a-project-switch-no-triage-in, point 7): no triage pane and no triage chat.
+    if (!tabTriage && action.kind !== "note" && !info.noTriage) {
       // A joined pane left after its chat stopped (decision 2): the tab gets a triage pane again, at the left.
       const agents = tabPanes(known.tabId).find((pane) => pane.role === "agents") ?? known;
       await addTriagePane(agents, workspaceTriage(host, project, action), start, flags);
     }
     for (const pane of tabPanes(known.tabId)) {
-      if (!pane.role || pane.joined || (await call<boolean>(pane.host, "pane_busy", { id: pane.id }))) continue;
+      if (!pane.role || pane.joined || (pane.role === "triage" && info.noTriage) || (await call<boolean>(pane.host, "pane_busy", { id: pane.id }))) continue;
       if (pane.role === "triage" && action.kind === "join") {
         // The chat runs in a terminal of another window: this idle pane gives way to that terminal.
         await replaceTriagePane(pane, workspaceTriage(host, project, action), start, flags);
@@ -1541,6 +1546,14 @@ async function openWorkspace(host: HostId, cwd: string | null | undefined): Prom
         pane.barEl.querySelector(".hint")!.textContent = "";
       }
     }
+    await saveState();
+    return;
+  }
+
+  // "No triage" (point 7): a new workspace tab has the agent view only.
+  if (info.noTriage) {
+    const agents: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: project, role: "agents", project, host };
+    await openTab({ id: crypto.randomUUID(), layout: agents, focus: agents.id }, false, new Map<string, StartCommand>([[agents.id, { run: "claude agents" }]]));
     await saveState();
     return;
   }
@@ -1578,6 +1591,9 @@ async function openWorkspace(host: HostId, cwd: string | null | undefined): Prom
  * shows the note there and starts no second chat (why-are-there-two-chats).
  */
 const triageNotes = new Set<string>();
+
+/** Where triage would stand in a project with "No triage" on (ticket no-triage-a-project-switch-no-triage-in, user decision 2). */
+const NO_TRIAGE_NOTE = "No triage in this project";
 
 /** The saved form of a new triage pane: a joined pane takes the id of the terminal that it shows. */
 function workspaceTriage(host: HostId, project: string, action: TriageStart): SavedPane {
@@ -2271,6 +2287,8 @@ interface TaskListReply {
   pushAfterMerge?: boolean;
   /** The setting of the project: Dispatch starts the plan run of a New ticket itself (ticket simpler-process-tickets). Absent from an older host. */
   ticketsStartPlans?: boolean;
+  /** The setting of the project: no triage runs (ticket no-triage-a-project-switch-no-triage-in). Absent from an older host. */
+  noTriage?: boolean;
   /** The setting of the project: Dispatch starts nothing new for it (ticket pause-tasks). Absent from an older host. */
   paused?: boolean;
   /** When the project got its Dispatch setup (the reports folder was made); null without one. */
@@ -2306,6 +2324,8 @@ interface ProjectTasks {
   pushAfterMerge: boolean;
   /** Dispatch writes the brief of a New ticket and starts its plan run itself (ticket simpler-process-tickets). */
   ticketsStartPlans: boolean;
+  /** No triage runs: Dispatch starts the plan of every New ticket and tells no triage chat (ticket no-triage-a-project-switch-no-triage-in). */
+  noTriage: boolean;
   /** The user paused the project: no ticket goes to triage and no work run starts (ticket pause-tasks). */
   paused: boolean;
   setup: number | null;
@@ -2330,6 +2350,7 @@ function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTa
     startPlain: reply.startPlainPlans ?? false,
     pushAfterMerge: reply.pushAfterMerge ?? false,
     ticketsStartPlans: reply.ticketsStartPlans ?? false,
+    noTriage: reply.noTriage ?? false,
     paused: reply.paused ?? false,
     setup: reply.setup ?? null,
     tickets: reply.tickets ?? [],
@@ -3303,7 +3324,7 @@ async function addTicket(host: HostId, project: string, message: string): Promis
   await readProjectTasks(host, project).catch((error) => console.warn("task list read failed", error));
   renderChats();
   const key = projectKey(host, project);
-  return addedText(ticket, projectPaused(key), (projectTasks.get(key)?.ticketsStartPlans ?? false) && ticketRoute(ticket) === "plan");
+  return addedText(ticket, projectPaused(key), projectNoTriage(key) || ((projectTasks.get(key)?.ticketsStartPlans ?? false) && ticketRoute(ticket) === "plan"));
 }
 
 /** The host and the folder of the record of a project key, or the host and the path of the key itself. */
@@ -3375,6 +3396,11 @@ function projectPaused(key: string): boolean {
   return projectTasks.get(key)?.paused ?? false;
 }
 
+/** The project (by its key) has "No triage" on in its last task list (ticket no-triage-a-project-switch-no-triage-in). */
+function projectNoTriage(key: string): boolean {
+  return projectTasks.get(key)?.noTriage ?? false;
+}
+
 /** The queue ids of a project (by its key) without one ticket: the queue of New after that ticket left it. */
 function queueIdsWithout(project: string, id: string): string[] {
   return queueOrder(projectTickets(project))
@@ -3414,6 +3440,12 @@ async function triageStatus(pane: Pane): Promise<string | null> {
 const planStarts = new Map<string, number | null>();
 /** The tickets whose plan start failed, as `<project key>\n<id>`: they go to triage. */
 const toTriage = new Set<string>();
+/**
+ * The tickets of a project with "No triage" on whose plan start failed, as `<project key>\n<id>`,
+ * with the error (ticket no-triage-a-project-switch-no-triage-in, point 4). The ticket stays in New
+ * and its card shows the error with Retry. Only in memory: after a restart the ticket tries once more.
+ */
+const planErrors = new Map<string, string>();
 
 /** A plan start from a ticket of the project (by its key) runs, or no task read saw it yet. */
 function planStarting(key: string): boolean {
@@ -3471,8 +3503,14 @@ async function adoptTasks(key: string, record: ProjectTasks): Promise<void> {
  * second start. A failed start goes to triage on a later tick.
  */
 async function startTicketPlan(key: string, record: ProjectTasks): Promise<void> {
-  const sent = (id: string) => ticketSent(key, id) || toTriage.has(`${key}\n${id}`);
-  const ticket = nextPlanTicket(record.tickets, sent, record.paused, liveWorkers(record), planStarting(key));
+  // A ticket that left New loses its error (ticket no-triage-a-project-switch-no-triage-in).
+  for (const one of [...planErrors.keys()]) {
+    const [owner, id] = one.split("\n");
+    if (owner === key && !record.tickets.some((ticket) => ticket.id === id && ticket.status === "new")) planErrors.delete(one);
+  }
+  const sent = (id: string) => ticketSent(key, id) || toTriage.has(`${key}\n${id}`) || planErrors.has(`${key}\n${id}`);
+  // With "No triage" on, a question and a ticket with only images start their plan too (point 1).
+  const ticket = nextPlanTicket(record.tickets, sent, record.paused, liveWorkers(record), planStarting(key), record.noTriage);
   if (!ticket) return;
   const { cwd } = projectCwd(key);
   planStarts.set(key, null);
@@ -3491,9 +3529,16 @@ async function startTicketPlan(key: string, record: ProjectTasks): Promise<void>
       await call<string>(record.host, "ticket_plan", { cwd, id: ticket.id });
       started = true;
     } catch (error) {
-      console.warn("the plan of the ticket did not start; it goes to triage", error);
       if (claimed) await call(record.host, "ticket_claim", { cwd, id: ticket.id, release: true }).catch(() => {});
       sentTickets.delete(`${key}\n${ticket.id}`);
+      if (record.noTriage) {
+        // No triage: the ticket stays in New with its error and a Retry button (point 4).
+        console.warn("the plan of the ticket did not start", error);
+        planErrors.set(`${key}\n${ticket.id}`, String(error));
+        renderTickets();
+        return;
+      }
+      console.warn("the plan of the ticket did not start; it goes to triage", error);
       toTriage.add(`${key}\n${ticket.id}`);
       return;
     }
@@ -3535,6 +3580,14 @@ async function dispatchTickets(): Promise<void> {
       // Only the window that drives the project's host and shows its triage chat sends its tickets
       // (remote-shared-state); the claim below keeps a ticket from a second window (why-are-there-two-chats).
       const pane = triagePane(key);
+      // "No triage" (ticket no-triage-a-project-switch-no-triage-in, point 5): the plan lane and the
+      // adoption need no triage chat, only the window that drives the host; no ticket goes to triage.
+      if (record.noTriage) {
+        if (!driverOf(record.host)) continue;
+        await startTicketPlan(key, record);
+        if (!settling.has(key)) await adoptTasks(key, record);
+        continue;
+      }
       if (!pane?.chat || !maySendTicket({ driver: driverOf(record.host), triage: true, sent: false })) continue;
       // The plan lane comes first and does not wait for a ticket of triage in flight (ticket simpler-process-tickets).
       if (record.ticketsStartPlans) await startTicketPlan(key, record);
@@ -3950,6 +4003,8 @@ function loadTriageQueue(): void {
 
 /** Puts a line for the triage chat of a project into the queue, and sends what can be sent now. */
 function tellTriage(project: string, text: string): void {
+  // "No triage" (ticket no-triage-a-project-switch-no-triage-in, point 2): no chat waits for the line.
+  if (projectNoTriage(project)) return;
   triageQueue.push({ project, text, since: Date.now() });
   saveTriageQueue();
   void flushTriageQueue();
@@ -4000,6 +4055,12 @@ async function flushTriageQueue(): Promise<void> {
   flushingTriage = true;
   try {
     for (const line of [...triageQueue]) {
+      // A line of a project that got "No triage" since leaves the queue without the note of a dropped line.
+      if (projectNoTriage(line.project)) {
+        triageQueue.splice(triageQueue.indexOf(line), 1);
+        saveTriageQueue();
+        continue;
+      }
       if (Date.now() - line.since > TRIAGE_LINE_MAX_AGE_MS) {
         triageQueue.splice(triageQueue.indexOf(line), 1);
         saveTriageQueue();
@@ -4115,6 +4176,19 @@ function announceWorkerChanges(workers: Worker[]): void {
     if (now === "done" || now === "failed") markCompact(project);
   }
   for (const [project, text] of lines) tellTriage(project, text.join(" "));
+  // "No triage" (ticket no-triage-a-project-switch-no-triage-in, point 3): a done work run and a
+  // failed run alert, since no triage chat tells the user. `told` holds each end once, and a done run
+  // only with its result (early-done-line).
+  const ends: WorkerEnd[] = told
+    .filter(({ worker }) => worker.state === "done" || worker.state === "failed")
+    .map(({ worker }) => ({
+      ticket: workerTask(worker),
+      run: RUN_NAME.exec(worker.name ?? worker.id)?.[2] ?? "",
+      state: worker.state ?? "",
+      project: projectName({ host: worker.host, root: worker.cwd ?? "" }),
+      noTriage: projectNoTriage(projectFor(worker.host, worker.cwd)),
+    }));
+  fireAlerts(endNotices(ends, nightAny()));
   // An ended session leaves the quiet set once Claude Code reports it stopped or lists it no more.
   for (const key of endingSessions) {
     if (states.get(key) === undefined || states.get(key) === "stopped") endingSessions.delete(key);
@@ -4853,6 +4927,8 @@ function saveDecisionPicks(task: Task): void {
  */
 function sendPlanQuestion(task: Task): void {
   const project = projectFor(taskHost(task), taskCwd(task));
+  // "No triage" (ticket no-triage-a-project-switch-no-triage-in, point 6): the question goes to a new plain Chat.
+  if (projectNoTriage(project)) return void askInChat(task, askChatLine(task.name, decisionsAskText().value, askDecision));
   const pane = triagePane(project);
   if (!pane) return updateDecisionsFooter();
   tellTriage(project, askLine(task.name, decisionsAskText().value, askDecision));
@@ -4862,6 +4938,36 @@ function sendPlanQuestion(task: Task): void {
   showTriageView(pane, "chat");
   if (!focusOn && !mapOn && !overviewOn) activate(pane.tabId);
   pane.chat?.focus();
+}
+
+/** How long a new Chat may take to start before the question goes back into the Ask box. */
+const CHAT_READY_MS = 60_000;
+
+/**
+ * Opens a new plain Chat of the project of a task and sends the question there (user decision 3):
+ * a paste once its session is idle, then Enter. A Chat that does not start in time gets nothing; the
+ * question goes back into the Ask box with a note.
+ */
+async function askInChat(task: Task, text: string): Promise<void> {
+  const question = decisionsAskText().value;
+  decisionsAskText().value = "";
+  askDecision = undefined;
+  decisionsDialog.close();
+  const id = await openProjectChat({ host: taskHost(task), root: taskCwd(task) });
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  for (const until = Date.now() + CHAT_READY_MS; Date.now() < until; await pause(1000)) {
+    const pane = panes.get(id);
+    if (!pane) break;
+    const info = await call<PaneInfo>(pane.host, "pane_info", { id: pane.id, cwd: pane.cwd }).catch(() => null);
+    if (info?.session?.status !== "idle") continue;
+    pane.term.paste(text);
+    await pause(RC_ENTER_WAIT_MS);
+    await call(pane.host, "pty_write", { id: pane.id, data: KEY_ENTER });
+    return;
+  }
+  if (decisionsAskText().value === "") decisionsAskText().value = question;
+  actionErrors.set(task.name, "The Chat did not start in time. Your question is still in the Ask box.");
+  if (decisionsTask === task) updateDecisionsFooter();
 }
 
 /** The answers of the window: the selected option of each decision, or the text under Other. */
@@ -4889,8 +4995,16 @@ function updateDecisionsFooter(): void {
   // A plan without decisions goes back through Reject on its card, with a reason.
   const none = (decisionsTask.info?.decisions ?? []).length === 0;
   footerButton("#decisions-revise", busy || none, none ? "This plan has no decisions. Use Reject on the plan card to send it back with your reason" : "");
-  const blocked = askBlocked(triagePane(projectFor(taskHost(decisionsTask), taskCwd(decisionsTask))) !== null);
+  const askProject = projectFor(taskHost(decisionsTask), taskCwd(decisionsTask));
+  const chatAsk = projectNoTriage(askProject);
+  const blocked = askBlocked(triagePane(askProject) !== null, chatAsk);
   footerButton("#decisions-ask", blocked !== "", blocked);
+  // "No triage": the button names the Chat (user decision 4).
+  const askButton = document.querySelector<HTMLButtonElement>("#decisions-ask")!;
+  askButton.textContent = chatAsk ? CHAT_ASK_LABEL : FOOTER_LABELS.ask;
+  if (chatAsk) askButton.title = "Open a new Chat with your question. It approves nothing and changes nothing";
+  const askHint = askButton.nextElementSibling;
+  if (askHint) askHint.textContent = chatAsk ? CHAT_ASK_HINT : FOOTER_HINTS.ask;
   document.querySelector("#decisions-ask-about")!.textContent = askAbout(askDecision);
 }
 
@@ -6711,7 +6825,8 @@ function ticketSignFacts(key: string, now = Date.now()): SignFacts {
   const waiting = waitingTickets(key).length;
   const inFlight = projectPending(key).length > 0;
   const paused = projectPaused(key);
-  const triageRuns = triagePane(key) !== null;
+  // A project with "No triage" needs no triage chat for its queue (ticket no-triage-a-project-switch-no-triage-in).
+  const triageRuns = triagePane(key) !== null || projectNoTriage(key);
   // Only the time in which the queue could go counts toward the grace time of a running triage.
   if (waiting > 0 && !inFlight && !paused && triageRuns) {
     if (!queueSince.has(key)) queueSince.set(key, now);
@@ -6974,17 +7089,31 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   const tools = mapElement("div", "ticket-tools");
   const at = queueIds.indexOf(ticket.id);
   // New is the queue (ticket auto-todo): Dispatch sends its tickets in their order, unless the project is paused.
+  // "No triage": Dispatch starts each ticket itself, and a failed start shows its error and Retry (point 4).
+  const alone = record?.noTriage ?? false;
+  const planError = ticket.status === "new" ? planErrors.get(`${project}\n${ticket.id}`) : undefined;
   if (ticket.status === "new" && !inFlight) {
     tools.append(
-      ticketButton("▲", "Move up: triage gets it earlier", () => void moveTicket(project, ticket.id, "new", movedIds(queueIds, ticket.id, at - 1)), at <= 0),
-      ticketButton("▼", "Move down: triage gets it later", () => void moveTicket(project, ticket.id, "new", movedIds(queueIds, ticket.id, at + 1)), at === queueIds.length - 1),
+      ticketButton("▲", alone ? "Move up: Dispatch starts it earlier" : "Move up: triage gets it earlier", () => void moveTicket(project, ticket.id, "new", movedIds(queueIds, ticket.id, at - 1)), at <= 0),
+      ticketButton("▼", alone ? "Move down: Dispatch starts it later" : "Move down: triage gets it later", () => void moveTicket(project, ticket.id, "new", movedIds(queueIds, ticket.id, at + 1)), at === queueIds.length - 1),
       ticketButton("×", "Cancel this ticket: it goes to Canceled, and Dispatch does not send it", () => void moveTicket(project, ticket.id, "canceled", queueIdsWithout(project, ticket.id))),
     );
   } else if (ticket.status === "canceled" || ticket.status === "backlog") {
     tools.append(ticketButton("→ New", "Back to New, at the end of the queue: Dispatch sends it to triage in its turn", () => void moveTicket(project, ticket.id, "new", [...queueIds, ticket.id])));
   }
+  if (planError !== undefined) {
+    tools.prepend(
+      ticketButton("Retry", "Start the plan of this ticket again", () => {
+        planErrors.delete(`${project}\n${ticket.id}`);
+        renderTickets();
+        void dispatchTickets();
+      }),
+    );
+  }
   tools.append(ticketButton("✎", "Rename the ticket", rename));
-  card.append(top, meta, tools);
+  card.append(top, meta);
+  if (planError !== undefined) card.append(mapElement("div", "ticket-error", `The plan did not start: ${planError}`));
+  card.append(tools);
   return card;
 }
 
@@ -7353,7 +7482,7 @@ function playChime(): void {
 }
 
 /** Shows the system notification; asks for the permission one time per run. */
-async function notify(waits: Wait[]): Promise<void> {
+async function notify(waits: Notice[]): Promise<void> {
   let granted = await isPermissionGranted();
   if (!granted && !notifyAsked) {
     notifyAsked = true;
@@ -7424,6 +7553,11 @@ function updateAlerts(): void {
   const opens = questionWaitToOpen(found, document.querySelector("dialog[open]") !== null);
   const asked = opens === null ? undefined : questionWaitTasks.get(opens);
   if (asked) openQuestionWindow(asked);
+  fireAlerts(found);
+}
+
+/** The notification, the chime and the blink for new notices, as the switches of the Options screen say. */
+function fireAlerts(found: Notice[]): void {
   const act = alertActions(alertOptions(), found.length > 0);
   const failed = (error: unknown) => console.error("alert failed", error);
   if (act.notify) notify(found).catch(failed);
@@ -7618,6 +7752,8 @@ interface ProjectRoot {
   triageStamp: string;
   /** A setting of the project: a new triage chat gets the name "Triage". */
   triageName: boolean;
+  /** A setting of the project: no triage runs, the workspace opens without a triage chat (ticket no-triage-a-project-switch-no-triage-in). Absent from an older host. */
+  noTriage?: boolean;
 }
 
 /** The project of each terminal folder that the `project_root` command gave. The key is the folder key, with the host. */
@@ -9321,7 +9457,13 @@ function renderFocus(): void {
 
     const { triage, agents } = workspacePanes(column);
     if (triage) moveInto(triage, column.triageEl);
-    else {
+    else if (projectNoTriage(key)) {
+      // "No triage" (user decision 2): a short note and the Chat button where triage would stand.
+      const chat = mapElement("button", "focus-start", "Chat");
+      chat.title = "A plain chat of this project for a question; it starts no task";
+      chat.addEventListener("click", () => void openProjectChat(column));
+      column.triageEl.replaceChildren(mapElement("p", "map-muted", NO_TRIAGE_NOTE), chat);
+    } else {
       const start = document.createElement("button");
       start.className = "focus-start";
       start.textContent = "Start triage";
@@ -9620,7 +9762,9 @@ function showProjectAttention(): void {
 
 /** Opens the workspace of a project when it has none: triage and the agent view start. */
 async function ensureWorkspace(ref: ProjectRef): Promise<void> {
-  if (workspacePanes(ref).triage) return;
+  const { triage, agents } = workspacePanes(ref);
+  // A project with "No triage" has only the agent view (ticket no-triage-a-project-switch-no-triage-in).
+  if (triage || (agents && projectNoTriage(refKey(ref)))) return;
   const back = activeId;
   await openWorkspace(ref.host, ref.root);
   // The new tab hides behind focus mode; the tab that was active stays active.
@@ -10037,7 +10181,7 @@ function mapSection(ref: ProjectRef): HTMLElement {
   const choice = triageChoice(key);
   const triageCard = mapElement("button", "map-node triage");
   triageCard.title = "Go to the triage chat of this project in focus mode";
-  const idle = triageNotes.has(key) ? "runs in another program" : "not running · click to start";
+  const idle = projectNoTriage(key) ? NO_TRIAGE_NOTE : triageNotes.has(key) ? "runs in another program" : "not running · click to start";
   triageCard.append(mapElement("b", "", "Triage"), mapElement("span", "map-line", triage ? [choice.model || "default model", choice.effort || "default effort"].join(" · ") : idle));
   triageCard.style.gridRow = `1 / span ${rows}`;
   triageCard.style.gridColumn = "2";
@@ -10376,7 +10520,7 @@ function overviewCard(ref: ProjectRef): OverviewCard {
   const startEl = mapElement("button", "focus-start", "Start triage");
   startEl.title = "Open the workspace of this project: triage and the agent view";
   startEl.hidden = true;
-  startEl.addEventListener("click", () => void ensureWorkspace(ref).then(renderOverview));
+  startEl.addEventListener("click", () => void (projectNoTriage(key) ? openProjectChat(ref) : ensureWorkspace(ref).then(renderOverview)));
   const chatEl = mapElement("div", "overview-chat");
   el.append(head, tasksEl, startEl, chatEl);
   const card: OverviewCard = { host, root, el, headEl: head, dotEl, countEl, expandEl, tasksEl, startEl, chatEl };
@@ -10451,6 +10595,11 @@ function renderOverview(): void {
     const elsewhere = triageNotes.has(key);
     card.startEl.textContent = elsewhere ? "Triage runs in another program · check again" : "Start triage";
     card.startEl.title = elsewhere ? OUTSIDE_NOTE : "Open the workspace of this project: triage and the agent view";
+    // "No triage" (user decision 2): the note and a Chat button.
+    if (projectNoTriage(key)) {
+      card.startEl.textContent = `${NO_TRIAGE_NOTE} · Chat`;
+      card.startEl.title = "A plain chat of this project for a question; it starts no task";
+    }
   }
   placeCards(cards);
 }

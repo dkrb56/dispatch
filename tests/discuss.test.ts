@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { FOOTER_HINTS, FOOTER_LABELS, askAbout, askBlocked, askLine } from "../src/discuss.ts";
+import { CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS, askAbout, askBlocked, askChatLine, askLine } from "../src/discuss.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = read("../src/main.ts");
@@ -63,7 +63,9 @@ test("the line never starts with Ticket, so triage never takes it for a new tick
 test("the Ask button is off with a reason when the project has no open triage chat", () => {
   assert.equal(askBlocked(true), "");
   assert.match(askBlocked(false), /no open triage chat/);
-  assert.match(MAIN, /const blocked = askBlocked\(triagePane\(projectFor\(taskHost\(decisionsTask\), taskCwd\(decisionsTask\)\)\) !== null\);/);
+  // The project of the task, and "No triage" as the second argument (ticket no-triage-a-project-switch-no-triage-in).
+  assert.match(MAIN, /const askProject = projectFor\(taskHost\(decisionsTask\), taskCwd\(decisionsTask\)\);/);
+  assert.match(MAIN, /const blocked = askBlocked\(triagePane\(askProject\) !== null, chatAsk\);/);
   assert.match(MAIN, /footerButton\("#decisions-ask", blocked !== "", blocked\);/);
 });
 
@@ -82,4 +84,34 @@ test("each decision has its Ask about this, the card has Ask, and the picks stay
   assert.match(MAIN, /ask\.addEventListener\("click", \(\) => openDecisions\(task, true\)\);/);
   assert.match(MAIN, /decisionsDialog\.addEventListener\("close", \(\) => \{\s*if \(decisionsTask\) saveDecisionPicks\(decisionsTask\);/);
   assert.match(MAIN, /stored\.modified === task\.info\?\.plan\?\.modified \? stored\.picks : undefined/);
+});
+
+// Ticket no-triage-a-project-switch-no-triage-in: with "No triage" on, the Ask goes to a new plain Chat.
+test("no triage: the question for the Chat names the plan file and never starts with Ticket", () => {
+  const line = askChatLine("add-gallery", "  Why not\n its own page?  ", { number: 2, name: "Where the gallery shows" });
+  assert.equal(
+    line,
+    "Question of the user about the plan .dispatch/plans/add-gallery.md, decision 2 (Where the gallery shows), from the Decisions window of Dispatch: Why not its own page? " +
+      "Read the plan and explain in plain words. Change no file. Do not approve, revise or reject the plan; the user decides in Dispatch.",
+  );
+  assert.match(askChatLine("fix-typo", ""), /\.dispatch\/plans\/fix-typo\.md, from the Decisions window of Dispatch: Explain this plan and its decisions in plain words\. /);
+  for (const one of [askChatLine("t", "Ticket x: y"), askChatLine("Ticket", "q", { number: 1, name: "Ticket 2" })]) assert.ok(!one.startsWith("Ticket "), one);
+});
+
+test("no triage: nothing blocks the Ask, and the button names the Chat", () => {
+  assert.equal(askBlocked(false, true), "");
+  assert.equal(askBlocked(true, true), "");
+  assert.match(askBlocked(false, false), /no open triage chat/);
+  assert.equal(CHAT_ASK_LABEL, "Ask about this plan in a Chat");
+  assert.equal(CHAT_ASK_HINT, "A new Chat opens with your question. Nothing changes.");
+  assert.match(MAIN, /askButton\.textContent = chatAsk \? CHAT_ASK_LABEL : FOOTER_LABELS\.ask;/);
+  assert.match(MAIN, /askHint\.textContent = chatAsk \? CHAT_ASK_HINT : FOOTER_HINTS\.ask;/);
+  const body = /function sendPlanQuestion\(task: Task\): void \{([\s\S]*?)\n\}/.exec(MAIN)?.[1] ?? "";
+  assert.match(body, /if \(projectNoTriage\(project\)\) return void askInChat\(task, askChatLine\(task\.name, decisionsAskText\(\)\.value, askDecision\)\);/);
+  assert.ok(body.indexOf("askInChat(") < body.indexOf("tellTriage("), "the Chat comes before the line to triage");
+  const chat = /async function askInChat\(task: Task, text: string\): Promise<void> \{([\s\S]*?)\n\}/.exec(MAIN)?.[1] ?? "";
+  assert.match(chat, /const id = await openProjectChat\(/);
+  assert.match(chat, /pane\.term\.paste\(text\);/);
+  assert.match(chat, /"pty_write", \{ id: pane\.id, data: KEY_ENTER \}/, "user decision 3: Dispatch sends it");
+  assert.doesNotMatch(chat, /approveOrQueue|task_reject|task_approve|taskAction|tellTriage/);
 });

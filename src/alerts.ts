@@ -103,8 +103,44 @@ export function alertActions(options: AlertOptions, anyNew: boolean): AlertOptio
   return { notify: anyNew && options.notify, chime: anyNew && options.chime, blink: anyNew && options.blink };
 }
 
+/** What a notification names: the task or worker name, the project folder name and the text. */
+export type Notice = Pick<Wait, "name" | "project" | "text">;
+
+/** One end of a worker as the announcements of a poll told it (`announceWorkerChanges`). */
+export interface WorkerEnd {
+  /** The ticket id of the task. */
+  ticket: string;
+  /** The run of the worker name: `plan`, `work`, or `` for a worker of an older script. */
+  run: string;
+  /** The state that was told: `done` (with its result, early-done-line) or `failed`. */
+  state: string;
+  /** The project folder name, for the notification. */
+  project: string;
+  /** The project has the switch "No triage" on (ticket no-triage-a-project-switch-no-triage-in). */
+  noTriage: boolean;
+}
+
+/**
+ * The notices for the ends of one poll (ticket no-triage-a-project-switch-no-triage-in, point 3):
+ * one per work run that is done and per plan or work run that failed, only for a project with "No
+ * triage" on. A done plan run gives the wait "plan", which alerts already. Night mode gives none
+ * (user decision 5): it alerts only what waits for the user.
+ */
+export function endNotices(ends: readonly WorkerEnd[], night: boolean): Notice[] {
+  if (night) return [];
+  const notices: Notice[] = [];
+  for (const end of ends) {
+    if (!end.noTriage) continue;
+    if (end.state === "done" && end.run === "work") notices.push({ name: end.ticket, project: end.project, text: "the task is done" });
+    else if (end.state === "failed" && (end.run === "plan" || end.run === "work")) {
+      notices.push({ name: end.ticket, project: end.project, text: end.run === "plan" ? "the plan run failed" : "the work run failed" });
+    }
+  }
+  return notices;
+}
+
 /** The title and the text of the system notification for the new waits. */
-export function notificationText(waits: Wait[]): { title: string; body: string } {
+export function notificationText(waits: Notice[]): { title: string; body: string } {
   const title = "Dispatch";
   if (waits.length === 1) {
     const [wait] = waits;

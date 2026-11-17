@@ -11,12 +11,14 @@ import {
   CHIME,
   chimeLength,
   DEFAULT_ALERT_OPTIONS,
+  endNotices,
   newWaits,
   notificationText,
   parseAlertOptions,
   type Wait,
   type WaitKind,
   waitsForUser,
+  type WorkerEnd,
 } from "../src/alerts.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -215,4 +217,27 @@ test("the Options dialog is as high as its content", () => {
   const frame = all.find((rule) => ["#rules", "#help", "#options"].every((one) => rule.selectors.includes(one)));
   assert.ok(frame, "the shared frame rule of the three dialogs");
   assert.deepEqual(frame.declarations.find(([name]) => name === "height"), ["height", "86vh"]);
+});
+
+// Ticket no-triage-a-project-switch-no-triage-in: with "No triage" on, a done or failed task alerts.
+const end = (ticket: string, run: string, state: string, noTriage = true): WorkerEnd => ({ ticket, run, state, project: "app", noTriage });
+
+test("no triage: a done work run and a failed run alert, a done plan run does not", () => {
+  assert.deepEqual(endNotices([end("t-1", "work", "done")], false), [{ name: "t-1", project: "app", text: "the task is done" }]);
+  assert.deepEqual(endNotices([end("t-2", "work", "failed")], false), [{ name: "t-2", project: "app", text: "the work run failed" }]);
+  assert.deepEqual(endNotices([end("t-3", "plan", "failed")], false), [{ name: "t-3", project: "app", text: "the plan run failed" }]);
+  assert.deepEqual(endNotices([end("t-4", "plan", "done")], false), [], "a ready plan alerts as the wait plan already");
+  // A run that stopped without its result is no done end (early-done-line): the announcements give it as done-early, not done.
+  assert.deepEqual(endNotices([end("t-5", "work", "done-early")], false), []);
+  assert.deepEqual(endNotices([end("t-6", "", "done")], false), [], "a worker of an older script names no run");
+});
+
+test("no triage: night mode and a project without the switch give no end alert", () => {
+  const ends = [end("t-1", "work", "done"), end("t-2", "plan", "failed")];
+  assert.deepEqual(endNotices(ends, true), [], "user decision 5: night mode stays quiet");
+  assert.deepEqual(endNotices(ends.map((one) => ({ ...one, noTriage: false })), false), []);
+  const notices = endNotices(ends, false);
+  assert.equal(notices.length, 2);
+  assert.deepEqual(notificationText([notices[0]]), { title: "Dispatch", body: "t-1 (app): the task is done" });
+  assert.deepEqual(notificationText(notices), { title: "Dispatch", body: "2 tasks wait for you: t-1, t-2" });
 });

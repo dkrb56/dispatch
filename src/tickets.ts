@@ -192,8 +192,11 @@ export const PLAN_WORKERS_MAX = 3;
  * Where a New ticket goes with the switch "Tickets start their plan" on (ticket
  * simpler-process-tickets, user decision 1): a ticket without words (only images) or whose words end
  * with a question mark goes to triage; every other ticket starts its plan run without triage.
+ * `all`: the switch "No triage" is on, and every ticket starts its plan run (ticket
+ * no-triage-a-project-switch-no-triage-in).
  */
-export function ticketRoute(ticket: Pick<Ticket, "summary">): "plan" | "triage" {
+export function ticketRoute(ticket: Pick<Ticket, "summary">, all = false): "plan" | "triage" {
+  if (all) return "plan";
   const { words } = splitImages(ticket.summary);
   const text = words.trim();
   return text === "" || text.endsWith("?") ? "triage" : "plan";
@@ -203,7 +206,8 @@ export function ticketRoute(ticket: Pick<Ticket, "summary">): "plan" | "triage" 
  * The ticket whose plan Dispatch starts next with the switch on: the first New ticket in the order
  * of the queue whose route is plan and that did not go yet. None while the project is paused, while a
  * start of the project is in flight (`starting`), or while `live` workers of the project run and
- * that is 3 or more (user decision 3). It does not wait for triage.
+ * that is 3 or more (user decision 3). It does not wait for triage. `all`: the switch "No triage"
+ * is on, so a question and a ticket with only images start their plan too.
  */
 export function nextPlanTicket<T extends Pick<Ticket, "id" | "status" | "order" | "created" | "summary">>(
   tickets: readonly T[],
@@ -211,9 +215,10 @@ export function nextPlanTicket<T extends Pick<Ticket, "id" | "status" | "order" 
   paused: boolean,
   live: number,
   starting: boolean,
+  all = false,
 ): T | null {
   if (paused || starting || live >= PLAN_WORKERS_MAX) return null;
-  return queueOrder(tickets).find((ticket) => ticketRoute(ticket) === "plan" && !sent(ticket.id)) ?? null;
+  return queueOrder(tickets).find((ticket) => ticketRoute(ticket, all) === "plan" && !sent(ticket.id)) ?? null;
 }
 
 /** The message that triage gets for a ticket: the image paths first, then the line with the id and the title, then the words. */

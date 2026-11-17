@@ -353,9 +353,10 @@ test("tickets start their plan: the dispatcher starts plans only behind the swit
   assert.ok(body.indexOf("startTicketPlan(") < body.indexOf("pendingCards.some("), "the plan lane does not wait for a ticket of triage in flight");
   // ticket_plan is called only in startTicketPlan, and only the dispatcher calls that.
   assert.equal(MAIN.split('"ticket_plan"').length - 1, 1);
-  assert.equal(MAIN.split("startTicketPlan(").length - 1, 2);
+  // The definition, the call of the triage lane and the call of the No triage lane (ticket no-triage-a-project-switch-no-triage-in).
+  assert.equal(MAIN.split("startTicketPlan(").length - 1, 3);
   const lane = MAIN.slice(MAIN.indexOf("async function startTicketPlan("), MAIN.indexOf("/** A run of `dispatchTickets` is on its way. */"));
-  assert.match(lane, /nextPlanTicket\(record\.tickets, sent, record\.paused, liveWorkers\(record\), planStarting\(key\)\)/);
+  assert.match(lane, /nextPlanTicket\(record\.tickets, sent, record\.paused, liveWorkers\(record\), planStarting\(key\), record\.noTriage\)/);
   assert.match(lane, /"ticket_claim", \{ cwd, id: ticket\.id, release: false \}/);
   assert.match(lane, /await call<string>\(record\.host, "ticket_plan", \{ cwd, id: ticket\.id \}\);/);
   assert.match(lane, /toTriage\.add\(/);
@@ -412,4 +413,114 @@ test("board in progress: the dispatcher adopts running tasks after the plan lane
   assert.ok(body.indexOf("startTicketPlan(") < body.indexOf("adoptTasks("));
   assert.equal(MAIN.split('"ticket_adopt"').length - 1, 1);
   assert.equal(MAIN.split('call<TaskListReply>').length - 1, MAIN.split("tellRepairs(host, ").length - 1, "each task list read tells its repairs");
+});
+
+// Ticket no-triage-a-project-switch-no-triage-in: the switch "No triage".
+const dispatchBody = () => {
+  const dispatch = MAIN.slice(MAIN.indexOf("async function dispatchTickets("));
+  return dispatch.slice(0, dispatch.indexOf("\n}\n"));
+};
+
+test("no triage: every New ticket routes to its plan, a question and a ticket with only images too", () => {
+  for (const summary of ["Make the board faster", "Why is the board slow?", '"C:/pics/a shot.png" C:/pics/b.png', ""]) {
+    assert.equal(ticketRoute({ summary }, true), "plan", summary);
+  }
+  // Off: the route of simpler-process-tickets.
+  assert.equal(ticketRoute({ summary: "Why is the board slow?" }, false), "triage");
+  assert.equal(ticketRoute({ summary: "Why is the board slow?" }), "triage");
+  const list = [asked("q", "Why?", 1), asked("b", "Second task", 3), asked("a", "First task", 2)];
+  const none = () => false;
+  assert.equal(nextPlanTicket(list, none, false, 0, false, true)?.id, "q", "the question first, in the order of the queue");
+  assert.equal(nextPlanTicket(list, none, false, 0, false)?.id, "a", "off: the question waits for triage");
+  assert.equal(nextPlanTicket(list, (id) => id === "q", false, 0, false, true)?.id, "a", "a sent or failed ticket is skipped");
+  assert.equal(nextPlanTicket(list, none, true, 0, false, true), null, "a paused project starts none");
+  assert.equal(nextPlanTicket(list, none, false, 3, false, true), null, "3 live workers stop the lane");
+});
+
+test("no triage: the dispatcher starts plans without a triage chat and sends no ticket to triage", () => {
+  const body = dispatchBody();
+  const lane = body.slice(body.indexOf("if (record.noTriage) {"), body.indexOf("if (!pane?.chat || !maySendTicket("));
+  assert.ok(body.indexOf("if (record.noTriage) {") > 0 && body.indexOf("if (record.noTriage) {") < body.indexOf("if (!pane?.chat || !maySendTicket("), "the No triage lane comes before the check of the triage chat");
+  assert.match(lane, /if \(!driverOf\(record\.host\)\) continue;/);
+  assert.match(lane, /await startTicketPlan\(key, record\);/);
+  assert.match(lane, /if \(!settling\.has\(key\)\) await adoptTasks\(key, record\);/);
+  assert.match(lane, /continue;\s*\}\s*$/);
+  assert.doesNotMatch(lane, /deliver|ticketMessage|pendingCard/, "no ticket goes to triage");
+  // The triage lane of the other projects is the same line as before.
+  assert.match(body, /if \(!pane\?\.chat \|\| !maySendTicket\(\{ driver: driverOf\(record\.host\), triage: true, sent: false \}\)\) continue;/);
+  assert.match(MAIN, /noTriage: reply\.noTriage \?\? false,/);
+});
+
+test("no triage: a failed plan start stays in New with its error and a Retry button", () => {
+  const lane = MAIN.slice(MAIN.indexOf("async function startTicketPlan("), MAIN.indexOf("/** A run of `dispatchTickets` is on its way. */"));
+  const failure = lane.slice(lane.indexOf("} catch (error) {"));
+  assert.match(failure, /if \(record\.noTriage\) \{[\s\S]*?planErrors\.set\(`\$\{key\}\\n\$\{ticket\.id\}`, String\(error\)\);[\s\S]*?return;\s*\}/);
+  assert.ok(failure.indexOf("planErrors.set(") < failure.indexOf("toTriage.add("), "a No triage ticket never goes to triage");
+  assert.match(lane, /\|\| planErrors\.has\(`\$\{key\}\\n\$\{id\}`\);/, "a ticket with an error does not start again by itself");
+  const card = MAIN.slice(MAIN.indexOf("function ticketCard("), MAIN.indexOf("function startTicketDrag("));
+  assert.match(card, /planErrors\.get\(`\$\{project\}\\n\$\{ticket\.id\}`\)/);
+  assert.match(card, /ticketButton\("Retry", "Start the plan of this ticket again", \(\) => \{\s*planErrors\.delete\(`\$\{project\}\\n\$\{ticket\.id\}`\);\s*renderTickets\(\);\s*void dispatchTickets\(\);/);
+  assert.match(card, /mapElement\("div", "ticket-error", `The plan did not start: \$\{planError\}`\)/);
+  assert.match(card, /alone \? "Move up: Dispatch starts it earlier" : "Move up: triage gets it earlier"/);
+  assert.match(CSS, /\.ticket-error \{[^}]*color: var\(--danger\);/);
+});
+
+test("no triage: the line of the chat for a new ticket says Dispatch starts its plan", () => {
+  assert.match(MAIN, /return addedText\(ticket, projectPaused\(key\), projectNoTriage\(key\) \|\| \(\(projectTasks\.get\(key\)\?\.ticketsStartPlans \?\? false\) && ticketRoute\(ticket\) === "plan"\)\);/);
+  assert.equal(addedText({ title: "Why slow?" }, false, true), 'Ticket "Why slow?" is in New: Dispatch starts its plan.');
+});
+
+test("no triage: no line goes to a triage chat, and a queued line leaves the queue quietly", () => {
+  const tell = MAIN.slice(MAIN.indexOf("function tellTriage("), MAIN.indexOf("/** The text that goes to triage"));
+  assert.match(tell, /if \(projectNoTriage\(project\)\) return;\s*triageQueue\.push/);
+  const flush = MAIN.slice(MAIN.indexOf("async function flushTriageQueue("));
+  const loop = flush.slice(0, flush.indexOf("TRIAGE_LINE_MAX_AGE_MS"));
+  assert.match(loop, /if \(projectNoTriage\(line\.project\)\) \{\s*triageQueue\.splice\(triageQueue\.indexOf\(line\), 1\);\s*saveTriageQueue\(\);\s*continue;\s*\}/);
+  assert.doesNotMatch(loop, /droppedLines/);
+});
+
+test("no triage: the workspace opens with the agent view only and starts no triage chat", () => {
+  const open = MAIN.slice(MAIN.indexOf("async function openWorkspace("), MAIN.indexOf("const triageNotes = new Set<string>();"));
+  assert.match(open, /if \(!tabTriage && action\.kind !== "note" && !info\.noTriage\) \{/);
+  assert.match(open, /\(pane\.role === "triage" && info\.noTriage\)/);
+  const fresh = open.slice(open.indexOf("if (info.noTriage) {"));
+  assert.ok(open.indexOf("if (info.noTriage) {") < open.indexOf("const triage = workspaceTriage(host, project, action);"), "before the tab with triage");
+  assert.match(fresh, /role: "agents"/);
+  assert.match(fresh, /layout: agents, focus: agents\.id/);
+  assert.match(MAIN, /if \(info\.noTriage\) return new Map\(roles\.filter\(\(pane\) => pane\.role !== "triage"\)/);
+  assert.match(MAIN, /if \(triage \|\| \(agents && projectNoTriage\(refKey\(ref\)\)\)\) return;/);
+  // User decision 2: the note and a Chat button where triage would stand.
+  assert.match(MAIN, /const NO_TRIAGE_NOTE = "No triage in this project";/);
+  assert.match(MAIN, /column\.triageEl\.replaceChildren\(mapElement\("p", "map-muted", NO_TRIAGE_NOTE\), chat\);/);
+  assert.match(MAIN, /projectNoTriage\(key\) \? openProjectChat\(ref\) : ensureWorkspace\(ref\)\.then\(renderOverview\)/);
+  assert.match(MAIN, /const triageRuns = triagePane\(key\) !== null \|\| projectNoTriage\(key\);/);
+});
+
+test("no triage: the done and failed alerts come from the announcements of a poll", () => {
+  const announce = MAIN.slice(MAIN.indexOf("function announceWorkerChanges("), MAIN.indexOf("/** The workers that wait for the user are first"));
+  assert.match(announce, /const ends: WorkerEnd\[\] = told\s*\.filter/);
+  assert.match(announce, /fireAlerts\(endNotices\(ends, nightAny\(\)\)\);/);
+  assert.doesNotMatch(announce, /workerList/, "never from the worker list directly");
+  assert.match(MAIN, /function fireAlerts\(found: Notice\[\]\): void \{/);
+});
+
+test("no triage: the Setup switch, the Help and the README", () => {
+  assert.match(HTML, /<input type="checkbox" data-option="noTriage" \/>\s*<span><b>No triage\.<\/b>/);
+  assert.match(HTML, /No triage changes the step "Section in CLAUDE\.md"\./);
+  const section = (from: string) => {
+    const start = HTML.indexOf(`<h3>${from}</h3>`);
+    return HTML.slice(start, HTML.indexOf("<h3>", start + 4));
+  };
+  const tickets = section("Tickets");
+  assert.ok(tickets.includes("With <b>No triage</b> on in Setup pipeline"), "a visible item");
+  for (const fact of ["a question too", "<b>Retry</b>", "<b>Chat</b>"]) assert.ok(tickets.includes(fact), fact);
+  const settings = section("Project settings");
+  assert.ok(settings.includes("<li><b>No triage.</b>"));
+  assert.ok(settings.includes("<li><b>No triage</b> is off at the start."));
+  assert.ok(section("What Setup pipeline changes").includes("No triage adds one line too."));
+  assert.ok(HTML.includes("With No triage on, a task that is done or failed alerts too, but not in night mode."));
+  assert.ok(HTML.includes("With No triage on, the button is <b>Ask about this plan in a Chat</b>"));
+  const readme = read("../README.md");
+  assert.ok(readme.includes('"No triage" runs the project without a triage chat'));
+  assert.ok(readme.includes('with the switch "No triage", starts the plan run of every New ticket itself'));
 });
