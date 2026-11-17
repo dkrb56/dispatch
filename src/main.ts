@@ -65,7 +65,7 @@ import { agentsText, fileRowTitle, reportChip, rowParts, runChip, type RunChip, 
 import { announcements, parseEnded, serializeEnded } from "./announce";
 import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, type FailedEnds, oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
 import { barItems, currentProject, detailsProjects, groupCount, pillCount } from "./topbar";
-import { type ChatTab, headState, isChatTab } from "./chattabs";
+import { type ChatTab, headState, isChatTab, pasteSkipsPane } from "./chattabs";
 import { PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
@@ -9179,8 +9179,9 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
       const data = event.clipboardData;
       const image = [...(data?.files ?? [])].find((file) => file.type.startsWith("image/"));
       if (!image || data?.getData("text/plain")) return;
-      // The message box of the chat view saves a pasted image itself.
-      if (pane.chat?.el.contains(event.target as Node)) return;
+      // The message box of the chat view saves a pasted image itself. A chat tab in the chat slot has
+      // its own listener on its own pane element, and the slot is beside the chat view, not inside it.
+      if (pasteSkipsPane(event.target, [pane.chat?.el, pane.chatSlotEl])) return;
       event.preventDefault();
       event.stopPropagation();
       void pasteImage(pane, image);

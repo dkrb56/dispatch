@@ -20,6 +20,20 @@ export function isChatTab(panes: readonly PaneFacts[]): boolean {
   return !panes.some((pane) => pane.role && pane.project);
 }
 
+/** An element that can say whether a node lies inside it. */
+export interface Container {
+  contains(node: unknown): boolean;
+}
+
+/**
+ * True when a paste in the triage pane belongs to an inner element that saves the image itself: the
+ * message box of the chat view, or a chat tab shown in the chat slot. The slot is beside the chat
+ * view, not inside it, so both elements stand in the list. An entry may be undefined.
+ */
+export function pasteSkipsPane(target: unknown, inner: readonly (Container | null | undefined)[]): boolean {
+  return inner.some((el) => !!el && el.contains(target));
+}
+
 /** One chat tab of the head, with its own close. */
 export interface HeadTab {
   id: string;
