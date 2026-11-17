@@ -830,13 +830,19 @@ async function openChat(chat: Chat): Promise<void> {
  * the pipeline, for a question without a ticket. The tab shows as a chat tab in the head of the
  * triage pane in Details (chat-tabs-by-triage), so the view goes there.
  */
-async function openProjectChat(ref: ProjectRef): Promise<string> {
-  if (focusOn || mapOn || overviewOn) await setView("tabs");
+async function openProjectChat(ref: ProjectRef, keepFocus = false): Promise<string> {
+  // The terminal of Open terminal in focus mode stays in focus mode (ticket when-terminal-is-open-in-focus-mode-it).
+  const stay = keepFocus && focusOn;
+  if (!stay && (focusOn || mapOn || overviewOn)) await setView("tabs");
   const pane: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: ref.root, host: ref.host };
   const starts = new Map<string, StartCommand>([[pane.id, { run: "claude" }]]);
   const tabId = crypto.randomUUID();
+  const back = activeId;
   await openTab({ id: tabId, layout: pane, focus: pane.id }, false, starts);
-  openChatTab(tabId);
+  if (stay) {
+    // The new tab hides behind focus mode; the tab that was active stays active.
+    if (back && tabs.has(back)) activate(back);
+  } else openChatTab(tabId);
   await saveState();
   // The pane id: the Ask of a project with "No triage" sends its question there.
   return pane.id;
@@ -844,6 +850,16 @@ async function openProjectChat(ref: ProjectRef): Promise<string> {
 
 const projectTerminals = new Map<string, string>();
 const projectTerminalPending = new Set<string>();
+
+/** The open terminal pane of Open terminal of a project, if any. */
+function projectTerminalPane(ref: ProjectRef): Pane | undefined {
+  const key = refKey(ref);
+  let id = projectTerminals.get(key);
+  if (!id) {
+    try { id = localStorage.getItem(`project-terminal:${key}`) ?? undefined; } catch { /* no storage */ }
+  }
+  return id ? panes.get(id) : undefined;
+}
 
 /**
  * The Open terminal button above the tickets board (ticket move-this-chat-button-to-the-left-side):
@@ -860,9 +876,11 @@ async function openProjectTerminal(ref: ProjectRef): Promise<void> {
   if (projectTerminalPending.has(key)) return;
   projectTerminalPending.add(key);
   try {
-    const id = await openProjectChat(ref);
+    const id = await openProjectChat(ref, true);
     projectTerminals.set(key, id);
     try { localStorage.setItem(storeKey, id); } catch { /* no storage */ }
+    // In focus mode the terminal shows between the tasks and the board (ticket when-terminal-is-open-in-focus-mode-it).
+    if (focusOn) renderFocus();
   } catch (error) {
     console.error("project terminal failed", error);
   } finally {
@@ -9986,6 +10004,13 @@ interface FocusColumn {
   boardColumnsEl: HTMLElement;
   /** The Commands terminals of the project, below the chat. Hidden without one. */
   commandsEl: HTMLElement;
+  /**
+   * The terminal of Open terminal, between the left panel and the board, with its drag edge (ticket
+   * when-terminal-is-open-in-focus-mode-it). Hidden without one.
+   */
+  termEl: HTMLElement;
+  termSlotEl: HTMLElement;
+  termHandle: HTMLElement;
   agentsEl: HTMLElement;
   /** The Workers pane shows below the chat. Closed at the start. */
   workersOpen: boolean;
@@ -10156,6 +10181,8 @@ function moveBack(pane: Pane): void {
 interface FocusSize {
   grow?: number;
   side?: number;
+  /** The width of the terminal of Open terminal in pixels (ticket when-terminal-is-open-in-focus-mode-it). */
+  term?: number;
   /** The column is minimized to a strip or maximized (focus-column-size); none for a normal column. */
   state?: ColumnChoice;
 }
@@ -10164,6 +10191,9 @@ const FOCUS_SIZES_KEY = "focus-sizes";
 const FOCUS_COL_MIN = 360;
 const FOCUS_SIDE_MIN = 180;
 const FOCUS_SIDE_MAX = 640;
+/** The narrowest terminal of Open terminal, and the room that the board keeps beside it. */
+const FOCUS_TERM_MIN = 240;
+const FOCUS_BOARD_MIN = 240;
 /**
  * The width of the chat panel in Details that the user dragged, in pixels. It is also the usual width
  * of the left panel of each project in focus mode. In localStorage `chats-width`.
@@ -10193,10 +10223,11 @@ function saveFocusSize(key: string, size: FocusSize): void {
 }
 
 /** Sets the saved share of a column and the width of its left panel. */
-function applyFocusSizes(key: string, el: HTMLElement, sideEl: HTMLElement): void {
+function applyFocusSizes(key: string, el: HTMLElement, sideEl: HTMLElement, termEl: HTMLElement): void {
   const size = focusSizes()[key] ?? {};
   el.style.flexGrow = String(size.grow ?? 1);
   sideEl.style.width = size.side ? `${size.side}px` : "";
+  termEl.style.width = size.term ? `${size.term}px` : "";
 }
 
 /** The stored choice of each project of focus mode: minimized, maximized or none (focus-column-size). */
@@ -10290,6 +10321,25 @@ function dragSide(handle: HTMLElement, key: string, sideEl: HTMLElement): void {
   handle.addEventListener("dblclick", () => {
     sideEl.style.width = "";
     saveFocusSize(key, { side: undefined });
+  });
+}
+
+/** The handle on the right of the terminal of Open terminal: its width; the board keeps `FOCUS_BOARD_MIN`. */
+function dragTerm(handle: HTMLElement, key: string, termEl: HTMLElement, bodyEl: HTMLElement, sideEl: HTMLElement): void {
+  let width = 0;
+  let max = 0;
+  dragFrom(
+    handle,
+    () => {
+      width = termEl.getBoundingClientRect().width;
+      max = Math.max(FOCUS_TERM_MIN, bodyEl.getBoundingClientRect().width - sideEl.getBoundingClientRect().width - FOCUS_BOARD_MIN);
+    },
+    (dx) => (termEl.style.width = `${Math.round(Math.min(max, Math.max(FOCUS_TERM_MIN, width + dx)))}px`),
+    () => saveFocusSize(key, { term: Math.round(termEl.getBoundingClientRect().width) }),
+  );
+  handle.addEventListener("dblclick", () => {
+    termEl.style.width = "";
+    saveFocusSize(key, { term: undefined });
   });
 }
 
@@ -10483,13 +10533,32 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   boardEl.append(boardHead, autoEl, boardColumnsEl);
   // Drag handles: the left panel against the chat, and this column against the next one.
   const sideHandle = resizeHandle("side-resize", "Drag to make the panel of tasks wider or narrower; double-click for the usual width");
-  body.append(sideEl, sideHandle, main);
+  // The terminal of Open terminal, between the tasks and the board (ticket when-terminal-is-open-in-focus-mode-it).
+  const termEl = mapElement("div", "focus-terminal");
+  termEl.hidden = true;
+  const termHead = mapElement("div", "focus-terminal-head");
+  const termSpacer = mapElement("span", "");
+  termSpacer.style.flex = "1";
+  const termClose = mapElement("button", "focus-terminal-close", "×");
+  termClose.title = "Close this terminal and end its Claude session";
+  termClose.setAttribute("aria-label", `Close the terminal of ${projectName(ref)}`);
+  termClose.addEventListener("click", () => {
+    const pane = projectTerminalPane(ref);
+    if (pane) void closePane(pane.id).then(() => renderFocus());
+  });
+  termHead.append(mapElement("span", "", "Terminal"), termSpacer, termClose);
+  const termSlotEl = mapElement("div", "focus-terminal-slot");
+  termEl.append(termHead, termSlotEl);
+  const termHandle = resizeHandle("side-resize term-resize", "Drag to make the terminal wider or narrower; double-click for the usual width");
+  termHandle.hidden = true;
+  body.append(sideEl, sideHandle, termEl, termHandle, main);
   const colHandle = resizeHandle("col-resize", "Drag to give this project or the next one more room; double-click to share it evenly");
   el.append(head, body, colHandle);
-  applyFocusSizes(key, el, sideEl);
+  applyFocusSizes(key, el, sideEl, termEl);
   dragSide(sideHandle, key, sideEl);
+  dragTerm(termHandle, key, termEl, body, sideEl);
   dragColumns(colHandle, key, el);
-  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, boardEl, boardCountEl, boardColumnsEl, commandsEl, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, colHandle };
+  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, boardEl, boardCountEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, colHandle };
   // A click anywhere on a strip brings the column back; a button or a drag edge keeps its own action.
   el.addEventListener("click", (event) => {
     if (!el.classList.contains("min")) return;
@@ -10505,7 +10574,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   // drag edge) or the keyboard arriving in it.
   watchArea(el, key, setFocusCurrent);
   // The terminals follow the size of their slot.
-  for (const slot of [triageEl, commandsEl, agentsEl]) {
+  for (const slot of [triageEl, commandsEl, termSlotEl, agentsEl]) {
     new ResizeObserver(() => {
       for (const child of slot.children) {
         const pane = panes.get((child as HTMLElement).dataset.pane ?? "");
@@ -10662,6 +10731,12 @@ function renderFocus(): void {
     }
     for (const pane of commands) moveInto(pane, column.commandsEl, true);
     column.commandsEl.hidden = commands.length === 0;
+    // The terminal of Open terminal moves in like a Commands terminal (ticket when-terminal-is-open-in-focus-mode-it).
+    const terminal = projectTerminalPane(column);
+    if (terminal) moveInto(terminal, column.termSlotEl);
+    else column.termSlotEl.replaceChildren();
+    column.termEl.hidden = !terminal;
+    column.termHandle.hidden = !terminal;
     if (agents) moveInto(agents, column.agentsEl);
     showWorkers(column);
     showOld(column);
@@ -11082,7 +11157,7 @@ function removeFocusProject(ref: ProjectRef): void {
   const key = refKey(ref);
   focusProjects = focusProjects.filter((known) => refKey(known) !== key);
   const { triage, agents } = workspacePanes(ref);
-  for (const pane of [triage, agents, ...commandPanes(ref.host, ref.root)]) if (pane) moveBack(pane);
+  for (const pane of [triage, agents, projectTerminalPane(ref), ...commandPanes(ref.host, ref.root)]) if (pane) moveBack(pane);
   focusColumns.get(key)?.el.remove();
   focusColumns.delete(key);
   saveFocus();

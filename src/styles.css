@@ -5956,6 +5956,64 @@ body.chats-sized .focus-side {
   border-color: var(--accent-line);
 }
 
+/* The terminal of Open terminal in focus mode, between the tasks and the board, with a drag edge on
+   its right (ticket when-terminal-is-open-in-focus-mode-it). */
+.focus-terminal {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 6px;
+  box-sizing: border-box;
+  width: calc(420px * var(--text-scale));
+  min-width: 0;
+  padding: 0 0 14px;
+}
+
+.focus-terminal[hidden] {
+  display: none;
+}
+
+.focus-terminal-head {
+  display: flex;
+  flex: none;
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.focus-terminal-close {
+  flex: none;
+  padding: 0 6px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: calc(14px * var(--text-scale));
+  cursor: pointer;
+}
+
+.focus-terminal-close:hover {
+  color: var(--text);
+}
+
+.focus-terminal-slot {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.focus-terminal .pane {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  border-radius: 12px;
+}
+
+.focus-terminal .side {
+  display: none;
+}
+
 /* The agent view needs about 20 rows: in a shorter terminal every update of it leaves a copy of
    itself above (2026-11-08: 20 copies in a drawer of 9 rows). */
 .focus-agents {

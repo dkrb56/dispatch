@@ -509,6 +509,16 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   assert.match(HTML, /<b>Open terminal<\/b> button at the left above it/);
   assert.match(MAIN, /projectNoTriage\(key\) \? openProjectChat\(ref\) : ensureWorkspace\(ref\)\.then\(renderOverview\)/);
   assert.match(MAIN, /const triageRuns = triagePane\(key\) !== null \|\| projectNoTriage\(key\);/);
+
+  // Ticket when-terminal-is-open-in-focus-mode-it: in Focus the terminal stands between the tasks and the board.
+  assert.match(MAIN, /const id = await openProjectChat\(ref, true\);/);
+  assert.match(MAIN, /resizeHandle\("side-resize term-resize"/);
+  assert.match(MAIN, /body\.append\(sideEl, sideHandle, termEl, termHandle, main\);/);
+  assert.match(MAIN, /if \(terminal\) moveInto\(terminal, column\.termSlotEl\);/);
+  assert.match(MAIN, /interface FocusSize \{[\s\S]*?term\?: number;/);
+  assert.match(CSS, /\.focus-terminal \{/);
+  assert.match(CSS, /\.focus-terminal\[hidden\] \{\s*display: none;/);
+  assert.match(HTML, /In Focus the terminal opens between the task list and the board/);
 });
 
 test("no triage: Focus shows the tickets board where triage would stand", () => {
