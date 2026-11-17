@@ -519,6 +519,12 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   assert.match(CSS, /\.focus-terminal \{/);
   assert.match(CSS, /\.focus-terminal\[hidden\] \{\s*display: none;/);
   assert.match(HTML, /In Focus the terminal opens between the task list and the board/);
+
+  // Ticket when-terminal-is-open-say-that-it-s-open: the board button says so and is disabled while the terminal is open.
+  assert.match(MAIN, /column\.termButton\.disabled = !!terminal;/);
+  assert.match(MAIN, /column\.termButton\.textContent = terminal \? "Terminal open" : "Open terminal";/);
+  assert.match(CSS, /\.focus-terminal-button:disabled \{/);
+  assert.match(HTML, /the button says <b>Terminal open<\/b> and is greyed out/);
 });
 
 test("no triage: Focus shows the tickets board where triage would stand", () => {

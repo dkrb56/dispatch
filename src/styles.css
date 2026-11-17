@@ -5952,8 +5952,13 @@ body.chats-sized .focus-side {
   cursor: pointer;
 }
 
-.focus-terminal-button:hover {
+.focus-terminal-button:hover:not(:disabled) {
   border-color: var(--accent-line);
+}
+
+.focus-terminal-button:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 /* The terminal of Open terminal in focus mode, between the tasks and the board, with a drag edge on

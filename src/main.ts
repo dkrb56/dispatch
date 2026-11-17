@@ -10011,6 +10011,7 @@ interface FocusColumn {
   termEl: HTMLElement;
   termSlotEl: HTMLElement;
   termHandle: HTMLElement;
+  termButton: HTMLButtonElement;
   agentsEl: HTMLElement;
   /** The Workers pane shows below the chat. Closed at the start. */
   workersOpen: boolean;
@@ -10558,7 +10559,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   dragSide(sideHandle, key, sideEl);
   dragTerm(termHandle, key, termEl, body, sideEl);
   dragColumns(colHandle, key, el);
-  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, boardEl, boardCountEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, colHandle };
+  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, boardEl, boardCountEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, colHandle };
   // A click anywhere on a strip brings the column back; a button or a drag edge keeps its own action.
   el.addEventListener("click", (event) => {
     if (!el.classList.contains("min")) return;
@@ -10737,6 +10738,12 @@ function renderFocus(): void {
     else column.termSlotEl.replaceChildren();
     column.termEl.hidden = !terminal;
     column.termHandle.hidden = !terminal;
+    // The board button says that the terminal is open and cannot be clicked then (ticket when-terminal-is-open-say-that-it-s-open).
+    column.termButton.disabled = !!terminal;
+    column.termButton.textContent = terminal ? "Terminal open" : "Open terminal";
+    column.termButton.title = terminal
+      ? "This project's terminal is open; close it with × above it"
+      : "Opens a Claude Code terminal in the project folder for a question; it starts no task; one at a time";
     if (agents) moveInto(agents, column.agentsEl);
     showWorkers(column);
     showOld(column);
