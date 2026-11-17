@@ -2,6 +2,11 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.69 (2026-11-17)
+- The tickets board now shows every running task in In progress. A task that runs without a ticket gets its own ticket there. A finished task stays in In progress until you click Merge, and a merged task moves to Done. A closed ticket stays closed; only a new run after the close moves it back to In progress.
+- Dispatch no longer commits task files while a git merge is not finished. At Merge, the report and the log of the task keep the version of the task branch, and a side with conflict markers stops the merge. A task file that already has conflict markers keeps the task branch side, once, and the triage chat gets one line about it.
+- The new rule for the report and the log at Merge needs Setup pipeline → Apply in each project.
+
 ## 0.1.68 (2026-11-17)
 - Setup pipeline has the new switch Start plans without decisions, off by default. With it on, a plan that asks you nothing starts its work run by itself, with the recommended checks; a plan with a decision still waits for your click.
 - Setup pipeline has the new switch Checks at the gate, off by default. It needs Task branches and a gate command. With it on, the checks that you tick on the task card run once, at the merge, through the gate command, and the worker does not run them.
