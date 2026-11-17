@@ -502,7 +502,11 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   assert.match(MAIN, /if \(triage \|\| \(agents && projectNoTriage\(refKey\(ref\)\)\)\) return;/);
   // User decision 2: the note and a Chat button where triage would stand (in Focus, above the tickets board).
   assert.match(MAIN, /const NO_TRIAGE_NOTE = "No triage in this project";/);
-  assert.match(MAIN, /boardHead\.append\(mapElement\("span", "", NO_TRIAGE_NOTE\), boardCountEl, chat\);/);
+  assert.match(MAIN, /boardHead\.append\(terminal, mapElement\("span", "", NO_TRIAGE_NOTE\), boardCountEl\);/);
+  assert.match(MAIN, /mapElement\("button", "focus-terminal-button", "Open terminal"\)/);
+  assert.match(MAIN, /async function openProjectTerminal\([\s\S]*?panes\.has\(kept\)\) return;/);
+  assert.match(CSS, /\.focus-terminal-button \{/);
+  assert.match(HTML, /<b>Open terminal<\/b> button at the left above it/);
   assert.match(MAIN, /projectNoTriage\(key\) \? openProjectChat\(ref\) : ensureWorkspace\(ref\)\.then\(renderOverview\)/);
   assert.match(MAIN, /const triageRuns = triagePane\(key\) !== null \|\| projectNoTriage\(key\);/);
 });

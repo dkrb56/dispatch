@@ -5941,8 +5941,19 @@ body.chats-sized .focus-side {
   font-size: calc(12px * var(--text-scale));
 }
 
-.focus-board-head > button {
-  margin-left: auto;
+.focus-terminal-button {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.focus-terminal-button:hover {
+  border-color: var(--accent-line);
 }
 
 /* The agent view needs about 20 rows: in a shorter terminal every update of it leaves a copy of

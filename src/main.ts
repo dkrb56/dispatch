@@ -842,6 +842,34 @@ async function openProjectChat(ref: ProjectRef): Promise<string> {
   return pane.id;
 }
 
+const projectTerminals = new Map<string, string>();
+const projectTerminalPending = new Set<string>();
+
+/**
+ * The Open terminal button above the tickets board (ticket move-this-chat-button-to-the-left-side):
+ * one terminal per project. While its pane is open, a click does nothing (user decision 1).
+ */
+async function openProjectTerminal(ref: ProjectRef): Promise<void> {
+  const key = refKey(ref);
+  const storeKey = `project-terminal:${key}`;
+  let kept = projectTerminals.get(key);
+  if (!kept) {
+    try { kept = localStorage.getItem(storeKey) ?? undefined; } catch { /* no storage */ }
+  }
+  if (kept && panes.has(kept)) return;
+  if (projectTerminalPending.has(key)) return;
+  projectTerminalPending.add(key);
+  try {
+    const id = await openProjectChat(ref);
+    projectTerminals.set(key, id);
+    try { localStorage.setItem(storeKey, id); } catch { /* no storage */ }
+  } catch (error) {
+    console.error("project terminal failed", error);
+  } finally {
+    projectTerminalPending.delete(key);
+  }
+}
+
 /** The key under which the app remembers the triage chat of a project (its project key, with the host). */
 function triageKey(host: HostId, project: string): string {
   return `triage:${projectKey(host, project)}`;
@@ -10441,10 +10469,10 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   const boardEl = mapElement("div", "focus-board");
   const boardHead = mapElement("div", "focus-board-head");
   const boardCountEl = mapElement("span", "focus-board-count");
-  const chat = mapElement("button", "focus-workers-button", "Chat");
-  chat.title = "A plain chat of this project for a question; it starts no task";
-  chat.addEventListener("click", () => void openProjectChat(ref));
-  boardHead.append(mapElement("span", "", NO_TRIAGE_NOTE), boardCountEl, chat);
+  const terminal = mapElement("button", "focus-terminal-button", "Open terminal");
+  terminal.title = "Opens a Claude Code terminal in the project folder for a question; it starts no task; one at a time";
+  terminal.addEventListener("click", () => void openProjectTerminal(ref));
+  boardHead.append(terminal, mapElement("span", "", NO_TRIAGE_NOTE), boardCountEl);
   // The large auto-start switch above the board (ticket i-need-more-prominent-button-for).
   const autoEl = mapElement("div", "auto-switch");
   autoEl.dataset.project = key;
