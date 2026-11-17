@@ -1752,7 +1752,8 @@ button.task-head:hover {
   display: none;
 }
 
-#tickets-columns {
+#tickets-columns,
+.focus-board .tickets-columns {
   display: grid;
   flex: 1;
   grid-template-columns: repeat(5, minmax(180px, 1fr));
@@ -5674,6 +5675,33 @@ body.chats-sized .focus-side {
 
 .focus-triage {
   flex: 1;
+}
+
+/* The tickets board of a project with "No triage" where triage would stand (ticket
+   in-focus-mode-i-want-to-se-ticket-board): it fills the panel and scrolls sideways when narrow. */
+.focus-board {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.focus-board > .tickets-columns {
+  padding: 8px 0 0;
+}
+
+.focus-board-head {
+  display: flex;
+  flex: none;
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.focus-board-head > button {
+  margin-left: auto;
 }
 
 /* The agent view needs about 20 rows: in a shorter terminal every update of it leaves a copy of

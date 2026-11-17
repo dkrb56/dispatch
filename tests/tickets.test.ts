@@ -499,11 +499,34 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   assert.match(fresh, /layout: agents, focus: agents\.id/);
   assert.match(MAIN, /if \(info\.noTriage\) \{\s*const starts = new Map\(roles\.filter\(\(pane\) => pane\.role !== "triage"\)/);
   assert.match(MAIN, /if \(triage \|\| \(agents && projectNoTriage\(refKey\(ref\)\)\)\) return;/);
-  // User decision 2: the note and a Chat button where triage would stand.
+  // User decision 2: the note and a Chat button where triage would stand (in Focus, above the tickets board).
   assert.match(MAIN, /const NO_TRIAGE_NOTE = "No triage in this project";/);
-  assert.match(MAIN, /column\.triageEl\.replaceChildren\(mapElement\("p", "map-muted", NO_TRIAGE_NOTE\), chat\);/);
+  assert.match(MAIN, /boardHead\.append\(mapElement\("span", "", NO_TRIAGE_NOTE\), boardCountEl, chat\);/);
   assert.match(MAIN, /projectNoTriage\(key\) \? openProjectChat\(ref\) : ensureWorkspace\(ref\)\.then\(renderOverview\)/);
   assert.match(MAIN, /const triageRuns = triagePane\(key\) !== null \|\| projectNoTriage\(key\);/);
+});
+
+test("no triage: Focus shows the tickets board where triage would stand", () => {
+  const focus = MAIN.slice(MAIN.indexOf("function renderFocus(): void {"));
+  const branch = focus.slice(focus.indexOf("else if (projectNoTriage(key)) {"), focus.indexOf("const start = document.createElement(\"button\");"));
+  assert.match(branch, /if \(column\.boardEl\.parentElement !== column\.triageEl\) column\.triageEl\.replaceChildren\(column\.boardEl\);/);
+  assert.match(branch, /renderFocusBoard\(column, !ticketsDialog\.open\);/);
+  // One drawing for the window and the Focus board; each column names its project.
+  const board = MAIN.slice(MAIN.indexOf("function renderFocusBoard("), MAIN.indexOf("function renderFocusBoards("));
+  assert.match(board, /if \(typingIn\(column\.boardColumnsEl\)\) return;/);
+  assert.match(board, /fillTicketColumns\(column\.boardColumnsEl, projectKey\(column\.host, column\.root\), ""\);/);
+  assert.match(MAIN, /fillTicketColumns\(ticketsColumnsEl, key, ticketsSearchEl\.value\);/);
+  assert.match(MAIN, /column\.dataset\.project = key;/);
+  // renderTickets draws the Focus boards before the return of a closed window.
+  const render = MAIN.slice(MAIN.indexOf("function renderTickets(): void {"), MAIN.indexOf("function fillTicketColumns("));
+  assert.ok(render.indexOf("renderFocusBoards(!windowOpen);") < render.indexOf("if (!ticketsRef || !windowOpen) {"), "the boards before the return");
+  // A drag drops only on the board of its own project, and clears the marks of the whole page.
+  const drag = MAIN.slice(MAIN.indexOf("function startTicketDrag("));
+  assert.match(drag, /column\.dataset\.project !== project\) return;/);
+  assert.match(drag, /document\.querySelectorAll\("\.drag-over, \.drag-after, \.drop-target"\)/);
+  assert.match(CSS, /#tickets-columns,\n\.focus-board \.tickets-columns \{/);
+  assert.match(CSS, /\.focus-board \{\n  display: flex;\n  flex: 1;/);
+  assert.match(HTML, /A project with <b>No triage<\/b> shows its tickets board in the main panel of its column/);
 });
 
 test("no triage: the done and failed alerts come from the announcements of a poll", () => {
@@ -691,7 +714,7 @@ test("subtickets: the plan card lists the parts before Approve, with the night b
   const form = MAIN.slice(MAIN.indexOf("function newTicketForm("), MAIN.indexOf("/** A small button of a ticket card. */"));
   assert.match(form, /"ticket_edit", \{ id: part\.id, title: title \|\| null, summary: text,/);
   assert.match(form, /"ticket_add_part", \{ parent: part\.id, text, title: title \|\| null,/);
-  assert.match(MAIN, /if \(status === "backlog" && partForm\) list\.append\(newTicketForm\(key, partForm\)\);/);
+  assert.match(MAIN, /const form = status === "backlog" && partForm !== null && tickets\.some\(\(ticket\) => ticket\.id === partForm\?\.id\) \? partForm : null;\s*if \(form\) list\.append\(newTicketForm\(key, form\)\);/);
   assert.match(MAIN, /"ticket_chain", \{ cwd, id: ticket\.id \}/);
   for (const rule of [".task-card .card-parts", ".ticket-part,", ".ticket-progress.failed", ".ticket-new .ticket-part-title"]) assert.ok(CSS.includes(rule), rule);
   assert.ok(HTML.includes("<li><b>Parts.</b> A plan for a large task can list parts that follow it."));

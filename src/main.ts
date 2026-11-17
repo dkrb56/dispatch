@@ -7417,13 +7417,28 @@ function ticketsFilePath(root: string): string {
   return `${root.replace(/[\\/]+$/, "")}${sep}.dispatch${sep}tickets.jsonl`;
 }
 
-/** Draws the board of the open project again. A drag, a rename and a text in the form hold it. */
+/** A text box, a rename box or an open level list inside `container` has the keyboard: a render would take it away. */
+function typingIn(container: HTMLElement): boolean {
+  const active = document.activeElement;
+  return (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) && container.contains(active);
+}
+
+/**
+ * Draws the board of the open project again, and the boards of Focus mode (ticket
+ * in-focus-mode-i-want-to-se-ticket-board). A drag, a rename and a text in the form hold it.
+ */
 function renderTickets(): void {
   showTicketButtons();
-  if (!ticketsRef || !ticketsDialog.open || ticketDragging) return;
-  const active = document.activeElement;
+  if (ticketDragging) return;
+  // The window is modal: while it is open, the keyboard goes to the window, not to a Focus board.
+  const windowOpen = ticketsRef !== null && ticketsDialog.open;
+  renderFocusBoards(!windowOpen);
+  if (!ticketsRef || !windowOpen) {
+    focusNew = false;
+    return;
+  }
   // An open level list of the form holds it too: a render would close the list.
-  if ((active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) && ticketsColumnsEl.contains(active)) return;
+  if (typingIn(ticketsColumnsEl)) return;
   const key = refKey(ticketsRef);
   const record = projectTasks.get(key);
   const tickets = record?.tickets ?? [];
@@ -7436,13 +7451,28 @@ function renderTickets(): void {
   const paused = record?.paused ?? false;
   ticketsPausedEl.hidden = !paused;
   ticketsPausedTextEl.textContent = PAUSE_BANNER;
-  const shown = tickets.filter((ticket) => ticketMatches(ticket, ticketsSearchEl.value));
+  fillTicketColumns(ticketsColumnsEl, key, ticketsSearchEl.value);
+  focusTicketBox(ticketsColumnsEl);
+  focusNew = false;
+}
+
+/**
+ * Draws the five columns of the tickets of project `key` into `container`: the Tickets window and the
+ * board of a Focus column share it, so the cards, the buttons and the drag are the same. Each column
+ * names its project, so a drag drops only on the board of its own project.
+ */
+function fillTicketColumns(container: HTMLElement, key: string, search: string): void {
+  const record = projectTasks.get(key);
+  const tickets = record?.tickets ?? [];
+  const paused = record?.paused ?? false;
+  const shown = tickets.filter((ticket) => ticketMatches(ticket, search));
   const queueIds = queueOrder(tickets).map((ticket) => ticket.id);
   const inFlight = projectPending(key).flatMap((card) => (card.entry ? [card.entry] : []));
   const columns = COLUMNS.map(({ status, name }) => {
     const items = columnTickets(shown, status);
     const column = mapElement("section", "tickets-column");
     column.dataset.status = status;
+    column.dataset.project = key;
     const head = mapElement("div", "tickets-column-head");
     head.append(mapElement("b", "", name), mapElement("span", "tickets-column-count", String(items.length)));
     // The bulk move of the shown cards (ticket tickets-backlog, user decision 3): the search narrows the set.
@@ -7458,9 +7488,11 @@ function renderTickets(): void {
     }
     const list = mapElement("div", "tickets-list");
     // The form of a part stands in Backlog (ticket subtickets).
-    if (status === "backlog" && partForm) list.append(newTicketForm(key, partForm));
+    // A board of another project (Focus mode) shows no form of this part.
+    const form = status === "backlog" && partForm !== null && tickets.some((ticket) => ticket.id === partForm?.id) ? partForm : null;
+    if (form) list.append(newTicketForm(key, form));
     list.append(...items.map((ticket) => ticketCard(key, ticket, queueIds, record)));
-    if (items.length === 0 && !(status === "backlog" && partForm)) {
+    if (items.length === 0 && !form) {
       const none = paused ? PAUSED_NEW_EMPTY : "No tickets. A message to triage lands here, and Dispatch sends it when triage is free.";
       const backlog = "No tickets. Dispatch never sends a Backlog ticket: drag it to New when it should go.";
       list.append(mapElement("p", "tickets-none", status === "new" ? none : status === "backlog" ? backlog : "No tickets"));
@@ -7468,13 +7500,16 @@ function renderTickets(): void {
     column.append(head, list);
     return column;
   });
-  ticketsColumnsEl.replaceChildren(...columns);
-  const focus = ticketsColumnsEl.querySelector<HTMLInputElement | HTMLTextAreaElement>(renamingTicket ? ".ticket-rename" : focusNew ? ".ticket-new textarea" : ":not(*)");
+  container.replaceChildren(...columns);
+}
+
+/** Gives the keyboard to the rename box or to the form of a part inside `container`, when one is open. */
+function focusTicketBox(container: HTMLElement): void {
+  const focus = container.querySelector<HTMLInputElement | HTMLTextAreaElement>(renamingTicket ? ".ticket-rename" : focusNew ? ".ticket-new textarea" : ":not(*)");
   if (focus) {
     focus.focus();
     if (focus instanceof HTMLInputElement) focus.select();
   }
-  focusNew = false;
 }
 
 /** The types of the type button of the form: Auto (the guess from the words) first, then the four types. */
@@ -7766,14 +7801,16 @@ function startTicketDrag(event: PointerEvent, card: HTMLElement, project: string
   let started = false;
   let target = null as { status: TicketStatus; ids: string[] } | null;
   const clear = () => {
-    for (const one of ticketsColumnsEl.querySelectorAll(".drag-over, .drag-after, .drop-target")) one.classList.remove("drag-over", "drag-after", "drop-target");
+    // The whole page: the card can come from the Tickets window or from a board of Focus mode.
+    for (const one of document.querySelectorAll(".drag-over, .drag-after, .drop-target")) one.classList.remove("drag-over", "drag-after", "drop-target");
   };
   const mark = (x: number, y: number) => {
     clear();
     target = null;
     const column = document.elementFromPoint(x, y)?.closest<HTMLElement>(".tickets-column");
     const status = column?.dataset.status as TicketStatus | undefined;
-    if (!column || !status || !DROP_COLUMNS.includes(status)) return;
+    // A board of another project (Focus mode shows several side by side) takes no drop.
+    if (!column || !status || !DROP_COLUMNS.includes(status) || column.dataset.project !== project) return;
     column.classList.add("drop-target");
     // The queue of New after the drop: the shown cards in their new order, then the hidden ones of a search.
     const all = queueOrder(projectTickets(project)).map((one) => one.id);
@@ -9489,6 +9526,14 @@ interface FocusColumn {
   workersEl: HTMLButtonElement;
   sideEl: HTMLElement;
   triageEl: HTMLElement;
+  /**
+   * The tickets board of a project with "No triage", where triage would stand (ticket
+   * in-focus-mode-i-want-to-se-ticket-board): a head line with the note, the count and Chat, then the
+   * five columns. Made once and kept, so a render at each poll draws only the columns again.
+   */
+  boardEl: HTMLElement;
+  boardCountEl: HTMLElement;
+  boardColumnsEl: HTMLElement;
   /** The Commands terminals of the project, below the chat. Hidden without one. */
   commandsEl: HTMLElement;
   agentsEl: HTMLElement;
@@ -9970,6 +10015,16 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   commandsEl.className = "focus-commands";
   commandsEl.hidden = true;
   main.append(triageEl, commandsEl, agentsEl);
+  // The tickets board of a project with "No triage" (ticket in-focus-mode-i-want-to-se-ticket-board).
+  const boardEl = mapElement("div", "focus-board");
+  const boardHead = mapElement("div", "focus-board-head");
+  const boardCountEl = mapElement("span", "focus-board-count");
+  const chat = mapElement("button", "focus-workers-button", "Chat");
+  chat.title = "A plain chat of this project for a question; it starts no task";
+  chat.addEventListener("click", () => void openProjectChat(ref));
+  boardHead.append(mapElement("span", "", NO_TRIAGE_NOTE), boardCountEl, chat);
+  const boardColumnsEl = mapElement("div", "tickets-columns");
+  boardEl.append(boardHead, boardColumnsEl);
   // Drag handles: the left panel against the chat, and this column against the next one.
   const sideHandle = resizeHandle("side-resize", "Drag to make the panel of tasks wider or narrower; double-click for the usual width");
   body.append(sideEl, sideHandle, main);
@@ -9978,7 +10033,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   applyFocusSizes(key, el, sideEl);
   dragSide(sideHandle, key, sideEl);
   dragColumns(colHandle, key, el);
-  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, commandsEl, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, colHandle };
+  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, boardEl, boardCountEl, boardColumnsEl, commandsEl, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, colHandle };
   // A click anywhere on a strip brings the column back; a button or a drag edge keeps its own action.
   el.addEventListener("click", (event) => {
     if (!el.classList.contains("min")) return;
@@ -10065,6 +10120,36 @@ function setWorkersOpen(column: FocusColumn, open: boolean): void {
   renderFocus();
 }
 
+/**
+ * Draws the tickets board of a Focus column again (ticket in-focus-mode-i-want-to-se-ticket-board).
+ * A text box in the board holds it; each list keeps its scroll place. `takeFocus` gives the
+ * keyboard to an open rename box or form of a part.
+ */
+function renderFocusBoard(column: FocusColumn, takeFocus: boolean): void {
+  if (typingIn(column.boardColumnsEl)) return;
+  const record = projectTasks.get(projectKey(column.host, column.root));
+  const count = record?.tickets.length ?? 0;
+  column.boardCountEl.textContent = record ? `${count} ${count === 1 ? "ticket" : "tickets"}` : "Reading…";
+  const scrolls = new Map<string, number>();
+  for (const one of column.boardColumnsEl.querySelectorAll<HTMLElement>(".tickets-column")) {
+    scrolls.set(one.dataset.status ?? "", one.querySelector(".tickets-list")?.scrollTop ?? 0);
+  }
+  fillTicketColumns(column.boardColumnsEl, projectKey(column.host, column.root), "");
+  for (const one of column.boardColumnsEl.querySelectorAll<HTMLElement>(".tickets-column")) {
+    const list = one.querySelector(".tickets-list");
+    if (list) list.scrollTop = scrolls.get(one.dataset.status ?? "") ?? 0;
+  }
+  if (takeFocus) focusTicketBox(column.boardColumnsEl);
+}
+
+/** Draws the tickets boards that stand in Focus mode now. */
+function renderFocusBoards(takeFocus: boolean): void {
+  if (!focusOn) return;
+  for (const column of focusColumns.values()) {
+    if (column.boardEl.parentElement === column.triageEl && column.triageEl.isConnected) renderFocusBoard(column, takeFocus);
+  }
+}
+
 /** Builds the columns, moves the panes into them and fills the left column of each. */
 function renderFocus(): void {
   if (!focusOn || ticketDragging) return;
@@ -10099,11 +10184,10 @@ function renderFocus(): void {
     const { triage, agents } = workspacePanes(column);
     if (triage) moveInto(triage, column.triageEl);
     else if (projectNoTriage(key)) {
-      // "No triage" (user decision 2): a short note and the Chat button where triage would stand.
-      const chat = mapElement("button", "focus-start", "Chat");
-      chat.title = "A plain chat of this project for a question; it starts no task";
-      chat.addEventListener("click", () => void openProjectChat(column));
-      column.triageEl.replaceChildren(mapElement("p", "map-muted", NO_TRIAGE_NOTE), chat);
+      // "No triage": the tickets board of the project where triage would stand, under the note and the
+      // Chat button (ticket in-focus-mode-i-want-to-se-ticket-board). The board stays in its slot.
+      if (column.boardEl.parentElement !== column.triageEl) column.triageEl.replaceChildren(column.boardEl);
+      renderFocusBoard(column, !ticketsDialog.open);
     } else {
       const start = document.createElement("button");
       start.className = "focus-start";
