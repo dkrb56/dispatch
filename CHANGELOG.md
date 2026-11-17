@@ -2,6 +2,13 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.67 (2026-11-17)
+- Keys that you type into a terminal window now arrive in their order. A Backspace no longer overtakes its letter, so the first letter of a line no longer sticks.
+- With Task branches on, Dispatch switches the project back to your branch only when the work run has ended. An answer to a worker's question no longer brings back an older report of the task.
+- With Task branches on, a worker's own files that it forgot to commit before it asked no longer stop your answer: Dispatch commits them on the task branch as WIP. At each start of the worker the task branch takes the newer commits of your branch; when a file changed on both sides, the task branch stays as it was and the worker is told.
+- Night mode now merges a task with a done report by itself when the gate command passes, and writes Night mode merged into the triage chat. Without a gate command it does not merge, a failed gate waits for you, and nothing is pushed.
+- With Task files local only on, a branch switch, an update of a task branch or a merge no longer deletes or overwrites the task files on your disk. A task branch that waits keeps Merge also after you turn Task branches off, and a task that lost the note of its branch gets Merge back. On another computer, turn Task files local only on and Apply there before you pull, or git deletes the task files there.
+
 ## 0.1.66 (2026-11-16)
 - The Decisions window gets an Ask box. Click Ask about this at a decision, or Ask on the plan card, and type your question; Ask triage about this plan sends it to the triage chat, and the answer shows there. An Ask approves nothing and changes nothing. The buttons now read Ask triage about this plan, Revise the plan with my choices and Approve and start the work, each with a line that says what happens. Your picks in the window stay until the plan changes.
 - A project has one triage chat, however many windows of the same host show it. A second window shows the chat of the first, and you can type in either. When the chat ends, one click on Start triage continues the same chat. A New ticket goes to triage only once, also with two windows open. When the host of this PC runs but a window does the work of this PC itself, a bar offers Use the host.
