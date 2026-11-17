@@ -6244,6 +6244,8 @@ const addTicketSaveEl = document.querySelector<HTMLButtonElement>("#ticket-add-s
 let addTicketRef: ProjectRef | null = null;
 /** One draft per project key: Esc keeps it for the next open of the window. */
 const addTicketDrafts = new Map<string, TicketDraft>();
+/** The pasted images of each project key: the saved file and its picture. Esc keeps them with the draft. */
+const addTicketImages = new Map<string, { path: string; url: string }[]>();
 /** The error of the last Add; it shows in the window until the next Add. */
 let addTicketError = "";
 /** An Add runs: a second Enter or click adds nothing. */
@@ -6287,6 +6289,41 @@ function renderAddTicket(): void {
 function showAddTicketError(): void {
   addTicketErrorEl.textContent = addTicketError;
   addTicketErrorEl.hidden = addTicketError === "";
+}
+
+/** Draws the pasted images of a project key into its row: a picture with × each, as in the chat view. */
+function showAddTicketImages(row: HTMLElement, key: string): void {
+  const images = addTicketImages.get(key) ?? [];
+  row.replaceChildren(
+    ...images.map((image) => {
+      const chip = mapElement("span", "chat-image");
+      const picture = new Image();
+      picture.src = image.url;
+      const remove = mapElement("button", "", "×");
+      remove.type = "button";
+      remove.title = "Remove the image";
+      remove.addEventListener("click", () => {
+        URL.revokeObjectURL(image.url);
+        addTicketImages.set(key, (addTicketImages.get(key) ?? []).filter((other) => other !== image));
+        showAddTicketImages(row, key);
+      });
+      chip.title = image.path;
+      chip.append(picture, remove);
+      return chip;
+    }),
+  );
+  row.hidden = images.length === 0;
+}
+
+/** Takes the pasted images of a project key out and frees their pictures (Cancel and a good Add). */
+function clearAddTicketImages(key: string): void {
+  for (const image of addTicketImages.get(key) ?? []) URL.revokeObjectURL(image.url);
+  addTicketImages.delete(key);
+}
+
+/** The path of a pasted image in the text of a ticket: quoted when it has a space, as in the chat view. */
+function quoteImagePath(path: string): string {
+  return path.includes(" ") ? `"${path}"` : path;
 }
 
 /**
@@ -6357,20 +6394,26 @@ function addTicketForm(draft: TicketDraft): HTMLElement {
     draft.kind = kind.value;
     for (const one of fixFields) one.hidden = draft.kind !== "fix";
   });
-  form.append(goalField, row, ...extra);
+  // The pasted images stand above the Goal box; the row is hidden when there is none.
+  const images = mapElement("div", "chat-images ticket-add-images");
+  if (addTicketRef) showAddTicketImages(images, refKey(addTicketRef));
+  else images.hidden = true;
+  form.append(images, goalField, row, ...extra);
   return form;
 }
 
 /**
  * Adds the ticket of the open window at the end of New, with the field rule of the board: each box
- * trimmed, a box of a fix only for the type Fix, no fields when no box is filled. An empty Goal adds
+ * trimmed, a box of a fix only for the type Fix, no fields when no box is filled. The paths of the
+ * pasted images come first in the text, as in a chat message. An empty Goal without images adds
  * nothing and gives the Goal box the keyboard. A failed Add keeps the window, the draft and the error.
  */
 async function saveAddTicket(): Promise<void> {
   if (!addTicketRef || addTicketBusy) return;
   const key = refKey(addTicketRef);
   const draft = addTicketDraft(key);
-  const text = draft.text.trim();
+  const paths = (addTicketImages.get(key) ?? []).map((image) => quoteImagePath(image.path));
+  const text = [...paths, draft.text.trim()].filter(Boolean).join(" ");
   if (text === "") {
     addTicketBodyEl.querySelector<HTMLTextAreaElement>("#ticket-add-goal")?.focus();
     return;
@@ -6390,6 +6433,7 @@ async function saveAddTicket(): Promise<void> {
     return;
   }
   addTicketDrafts.delete(key);
+  clearAddTicketImages(key);
   if (addTicketDialog.open) addTicketDialog.close();
   renderTickets();
 }
@@ -6399,11 +6443,37 @@ function initAddTicket(): void {
   document.querySelector("#ticket-add-close")!.addEventListener("click", () => addTicketDialog.close());
   addTicketSaveEl.addEventListener("click", () => void saveAddTicket());
   document.querySelector("#ticket-add-cancel")!.addEventListener("click", () => {
-    if (addTicketRef) addTicketDrafts.delete(refKey(addTicketRef));
+    if (addTicketRef) {
+      addTicketDrafts.delete(refKey(addTicketRef));
+      clearAddTicketImages(refKey(addTicketRef));
+    }
     addTicketDialog.close();
   });
   addTicketDialog.addEventListener("click", (event) => {
     if (event.target === addTicketDialog) addTicketDialog.close();
+  });
+  // An image in the clipboard goes to a file on the computer of the project, in any box of the
+  // window (user decision 1). A paste with text stays text. The image belongs to the project of the
+  // paste, also when the window closed before the file was saved.
+  addTicketDialog.addEventListener("paste", (event) => {
+    const data = event.clipboardData;
+    const image = [...(data?.files ?? [])].find((file) => file.type.startsWith("image/"));
+    if (!image || data?.getData("text/plain") || !addTicketRef) return;
+    event.preventDefault();
+    const ref = addTicketRef;
+    const key = refKey(ref);
+    void image
+      .arrayBuffer()
+      .then((bytes) => call<string>(ref.host, "image_save", new Uint8Array(bytes)))
+      .then((path) => {
+        addTicketImages.set(key, [...(addTicketImages.get(key) ?? []), { path, url: URL.createObjectURL(image) }]);
+        const row = addTicketBodyEl.querySelector<HTMLElement>(".ticket-add-images");
+        if (row && addTicketRef && refKey(addTicketRef) === key) showAddTicketImages(row, key);
+      })
+      .catch((error) => {
+        addTicketError = `Could not save the image: ${error}`;
+        showAddTicketError();
+      });
   });
   // Esc closes the window by itself and keeps the draft (user decision 2).
   addTicketDialog.addEventListener("close", () => {

@@ -2282,6 +2282,11 @@ button.ticket-level {
   font-size: calc(11px * var(--text-scale));
 }
 
+/* The pasted images of a new ticket, above the Goal box. */
+.ticket-add-images {
+  margin: 6px 0 4px;
+}
+
 #ticket-add-footer {
   display: flex;
   flex: none;

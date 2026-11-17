@@ -609,6 +609,24 @@ test("the Add ticket window adds to New without the board", () => {
   assert.ok(read("../README.md").includes('The button "+ Ticket" next to Tickets, and on each Overview card, opens the window New ticket without the board'));
 });
 
+test("the Add ticket window takes pasted images", () => {
+  const window = MAIN.slice(MAIN.indexOf("// ---- The Add ticket window"), MAIN.indexOf("// ---- The Actions panel"));
+  // The paste listener sits on the dialog (user decision 1) and leaves a paste with text to the box.
+  assert.match(window, /addTicketDialog\.addEventListener\("paste"/);
+  assert.match(window, /if \(!image \|\| data\?\.getData\("text\/plain"\) \|\| !addTicketRef\) return;/);
+  assert.match(window, /call<string>\(ref\.host, "image_save", new Uint8Array\(bytes\)\)/);
+  assert.ok(window.includes("Could not save the image: "));
+  // The image paths come first in the text; only images is a ticket too (user decision 2).
+  assert.match(window, /const text = \[\.\.\.paths, draft\.text\.trim\(\)\]\.filter\(Boolean\)\.join\(" "\);/);
+  // Cancel and a good Add free the pictures; Esc keeps them (user decision 3).
+  assert.equal(window.split("clearAddTicketImages(").length - 1, 3);
+  assert.ok(window.includes("URL.revokeObjectURL(image.url)"));
+  assert.ok(window.includes('"chat-images ticket-add-images"'));
+  assert.match(CSS, /\.ticket-add-images \{/);
+  assert.ok(HTML.includes("Ctrl+V pastes an image from the clipboard into the window; × takes it out. A ticket can have only images."));
+  assert.ok(read("../README.md").includes("and Ctrl+V pastes an image into it"));
+});
+
 // Ticket subtickets: the parts of a plan as a chain of tickets.
 
 const part = (id: string, parent: string, at: number, status: Status = "backlog", note = "", updated = 0) => ({ ...ticket(id, status, null, at, updated), parent, part: at, note });
