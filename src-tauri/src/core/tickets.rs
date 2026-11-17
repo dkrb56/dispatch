@@ -564,14 +564,29 @@ pub(crate) struct TaskFacts<'a> {
     pub(crate) report: Option<&'a str>,
     /// The title of the brief, else the user's words of the brief; empty without a brief.
     pub(crate) brief: &'a str,
+    /// The branch file has a `merge:` line: the task is merged (ticket board-in-progress).
+    pub(crate) merged: bool,
+    /// The task has a branch file without a `merge:` line, with Task branches on: a done task still
+    /// waits for Merge and stays In progress (ticket board-in-progress, user decision 1).
+    pub(crate) waits_merge: bool,
+    /// When a run of the task started last: the newest modification time of its state and session
+    /// files in milliseconds since the Unix epoch, 0 without them. A closed ticket moves back to In
+    /// progress only for a run that started after the close (ticket board-in-progress).
+    pub(crate) started: u64,
 }
 
 /// The column and the end word that a task gives its ticket, or none (the task did not start).
 fn target(facts: &TaskFacts) -> Option<(&'static str, &'static str)> {
+    // A merged task is done, whatever its state file and its report say (ticket board-in-progress,
+    // user decision 6): a report with conflict markers has no header.
+    if facts.merged {
+        return Some((DONE, if facts.report == Some("failed") { "failed" } else { "done" }));
+    }
     if facts.state == "stopped" {
         return Some((CANCELED, "stopped"));
     }
     match facts.report {
+        Some("done") if facts.waits_merge => Some((IN_PROGRESS, "")),
         Some("done") => Some((DONE, "done")),
         Some("failed") => Some((DONE, "failed")),
         Some(_) => Some((IN_PROGRESS, "")),
@@ -589,7 +604,9 @@ const USER_CANCELS: [&str; 2] = ["canceled", "asked triage"];
 const USER_DONE: &str = "done by hand";
 
 /// Moves each ticket after its task: In progress while the task runs, Done with `done` or `failed`
-/// after its report, Canceled with `stopped`. A ticket in New follows its task too, because Dispatch
+/// after its report or its merge, Canceled with `stopped`. A ticket in Done or Canceled moves back to
+/// In progress only for a run that started after its last change, and never for a merged task: a
+/// close wins over a stale state file (ticket board-in-progress). A ticket in New follows its task too, because Dispatch
 /// sends the New tickets (ticket auto-todo); a ticket canceled or done by the user stays. The title of the
 /// brief replaces the generated title, unless the user renamed the ticket. Writes one line per
 /// change and changes the tickets in place. While the project is paused it changes them only in
@@ -606,6 +623,10 @@ pub(crate) fn follow(project: &Project, tickets: &mut [Ticket], facts: &[TaskFac
         }
         let Some(task) = facts.iter().find(|facts| facts.name == ticket.task_name()) else { continue };
         let Some((column, note)) = target(task) else { continue };
+        let closed = ticket.status == DONE || ticket.status == CANCELED;
+        if closed && column == IN_PROGRESS && (task.merged || task.started <= ticket.updated) {
+            continue;
+        }
         if !ticket.renamed && !task.brief.is_empty() && task.brief != ticket.title {
             let mut fields = Map::new();
             fields.insert("title".into(), json!(task.brief));
@@ -671,6 +692,45 @@ pub(crate) fn open_in_progress(project: &Project, id: &str, title: &str, text: &
         renamed: false,
     };
     append(project, &[open_event(&ticket)])?;
+    Ok(ticket)
+}
+
+/// Opens a ticket in In progress for a task that runs without a ticket (ticket board-in-progress): a
+/// plan run that triage or a script started outside the ticket flow. The ticket takes the id of the
+/// task, the title of the brief and the user's words of the brief. Refused for an invalid id, a task
+/// without a state file, and a task that a ticket has as its id or as its task.
+pub fn ticket_adopt(cwd: String, id: String) -> Result<Ticket, String> {
+    let project = Project::find(&cwd)?;
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) || id.starts_with('.') {
+        return Err(format!("invalid task name: {id}"));
+    }
+    if !project.reports.join(format!("{id}.state")).is_file() {
+        return Err(format!("the task {id} has no state file"));
+    }
+    let tickets = list(&project);
+    if tickets.iter().any(|ticket| ticket.id == id || ticket.task_name() == id) {
+        return Err(format!("the task {id} has a ticket already"));
+    }
+    let brief = fs::read_to_string(project.briefs().join(format!("{id}.md"))).unwrap_or_default();
+    let title = crate::core::pipeline::parse_brief(&brief);
+    let title = if title.is_empty() { id.clone() } else { title };
+    let words = crate::core::pipeline::section_lines(&brief, "The user's words").join("\n");
+    let summary = if words.trim().is_empty() { title.clone() } else { words };
+    let at = now();
+    let ticket = Ticket {
+        id: id.clone(),
+        title,
+        kind: kind_of(&summary).to_string(),
+        summary: summary.trim().to_string(),
+        status: IN_PROGRESS.to_string(),
+        order: None,
+        task: String::new(),
+        note: String::new(),
+        created: at,
+        updated: at,
+        renamed: false,
+    };
+    append(&project, &[open_event(&ticket)])?;
     Ok(ticket)
 }
 
@@ -1083,7 +1143,7 @@ mod tests {
         let one = ticket_add(cwd(&project), "one".into()).unwrap();
         crate::core::pipeline::set_paused(cwd(&project), true).unwrap();
         let before = fs::read_to_string(project.tickets_file()).unwrap();
-        let facts = [TaskFacts { name: &one.id, state: "working", report: Some("done"), brief: "The brief of one" }];
+        let facts = [TaskFacts { name: &one.id, state: "working", report: Some("done"), brief: "The brief of one", merged: false, waits_merge: false, started: 0 }];
         let mut list = read(&project);
         follow(&project, &mut list, &facts).unwrap();
         assert_eq!((list[0].status.as_str(), list[0].title.as_str()), (DONE, "The brief of one"), "the board shows the task");
@@ -1267,16 +1327,19 @@ mod tests {
         ticket_move(cwd(&project), tickets[5].clone(), CANCELED.into(), vec![], Some("triage answered without a task".into())).unwrap();
         ticket_move(cwd(&project), tickets[6].clone(), CANCELED.into(), vec![], None).unwrap();
         let mut list = read(&project);
+        // The task of six started after its cancel (ticket board-in-progress).
+        let later = now() + 1000;
+        let fact = |name, state, report, brief, started| TaskFacts { name, state, report, brief, merged: false, waits_merge: false, started };
         let facts = [
-            TaskFacts { name: "one", state: "planning", report: None, brief: "The brief of one" },
-            TaskFacts { name: "two", state: "working", report: Some("done"), brief: "" },
-            TaskFacts { name: "three", state: "working", report: Some("failed"), brief: "The brief of three" },
-            TaskFacts { name: "four", state: "planning", report: None, brief: "" },
-            TaskFacts { name: "t-other", state: "stopped", report: None, brief: "" },
-            TaskFacts { name: "six", state: "planning", report: None, brief: "" },
-            TaskFacts { name: "seven", state: "planning", report: None, brief: "" },
+            fact("one", "planning", None, "The brief of one", 0),
+            fact("two", "working", Some("done"), "", 0),
+            fact("three", "working", Some("failed"), "The brief of three", 0),
+            fact("four", "planning", None, "", 0),
+            fact("t-other", "stopped", None, "", 0),
+            fact("six", "planning", None, "", later),
+            fact("seven", "planning", None, "", later),
             // A done report without evidence for its claims (ticket report-check) does not reach Done.
-            TaskFacts { name: "eight", state: "working", report: Some("working"), brief: "" },
+            fact("eight", "working", Some("working"), "", 0),
         ];
         follow(&project, &mut list, &facts).unwrap();
         let shown: Vec<(&str, &str, &str)> = list.iter().map(|t| (t.title.as_str(), t.status.as_str(), t.note.as_str())).collect();
@@ -1318,9 +1381,104 @@ mod tests {
         assert_eq!((line["op"].as_str(), line["ref"].as_str(), line["resolution"].as_str(), line["note"].as_str()), (Some("close"), Some(one.id.as_str()), Some("done"), Some(USER_DONE)));
         // A task of that name starts later: the ticket stays in Done, and follow writes nothing.
         let mut list = read(&project);
-        follow(&project, &mut list, &[TaskFacts { name: "one", state: "planning", report: None, brief: "The brief of one" }]).unwrap();
+        follow(&project, &mut list, &[TaskFacts { name: "one", state: "planning", report: None, brief: "The brief of one", merged: false, waits_merge: false, started: 0 }]).unwrap();
         assert_eq!(list.iter().find(|t| t.id == one.id).map(|t| (t.status.as_str(), t.note.as_str())), Some((DONE, USER_DONE)));
         assert_eq!(text(), written);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    /// The facts of a running task without a report, for the tests of ticket board-in-progress.
+    fn running(name: &str, started: u64) -> TaskFacts<'_> {
+        TaskFacts { name, state: "working", report: None, brief: "", merged: false, waits_merge: false, started }
+    }
+
+    #[test]
+    fn a_closed_ticket_does_not_reopen_from_a_stale_state() {
+        let (project, base) = scratch("stale-state");
+        let one = ticket_add(cwd(&project), "one".into()).unwrap();
+        let mut list = read(&project);
+        follow(&project, &mut list, &[running("one", 1)]).unwrap();
+        assert_eq!(list[0].status, IN_PROGRESS);
+        // Triage or the board closes the ticket; the state file still says working.
+        ticket_move(cwd(&project), one.id.clone(), DONE.into(), vec![], Some("done".into())).unwrap();
+        let text = || fs::read_to_string(project.tickets_file()).unwrap();
+        let closed = text();
+        let mut list = read(&project);
+        let stale = list[0].updated - 1;
+        follow(&project, &mut list, &[running("one", stale)]).unwrap();
+        assert_eq!((list[0].status.as_str(), list[0].note.as_str()), (DONE, "done"));
+        assert_eq!(text(), closed, "no in_progress line after the close");
+        // A Canceled ticket stays too.
+        ticket_move(cwd(&project), one.id.clone(), CANCELED.into(), vec![], Some("triage answered without a task".into())).unwrap();
+        let canceled = text();
+        let mut list = read(&project);
+        let same = list[0].updated;
+        follow(&project, &mut list, &[running("one", same)]).unwrap();
+        assert_eq!(list[0].status, CANCELED);
+        assert_eq!(text(), canceled);
+        assert!(!text().lines().skip(closed.lines().count()).any(|line| line.contains("in_progress")));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_merged_task_moves_its_ticket_to_done_and_never_back() {
+        let (project, base) = scratch("merged");
+        ticket_add(cwd(&project), "one".into()).unwrap();
+        let mut list = read(&project);
+        follow(&project, &mut list, &[running("one", 1)]).unwrap();
+        // A done report whose task waits for Merge stays In progress (user decision 1).
+        let waits = TaskFacts { report: Some("done"), waits_merge: true, ..running("one", 1) };
+        follow(&project, &mut list, &[waits]).unwrap();
+        assert_eq!(list[0].status, IN_PROGRESS);
+        // The merge is done; the report has conflict markers, so it has no header, and the state
+        // file says working with a newer time.
+        let merged = TaskFacts { merged: true, ..running("one", now() + 60_000) };
+        follow(&project, &mut list, &[merged]).unwrap();
+        assert_eq!((list[0].status.as_str(), list[0].note.as_str()), (DONE, "done"));
+        let text = fs::read_to_string(project.tickets_file()).unwrap();
+        let again = TaskFacts { merged: true, ..running("one", now() + 120_000) };
+        follow(&project, &mut list, &[again]).unwrap();
+        assert_eq!(list[0].status, DONE);
+        assert_eq!(fs::read_to_string(project.tickets_file()).unwrap(), text, "a merged task never moves back");
+        assert_eq!(read(&project), list);
+        let failed = TaskFacts { merged: true, report: Some("failed"), ..running("one", 0) };
+        follow(&project, &mut list, &[failed]).unwrap();
+        assert_eq!(list[0].note, "failed");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_new_run_after_the_close_reopens_the_ticket() {
+        let (project, base) = scratch("new-run");
+        let one = ticket_add(cwd(&project), "one".into()).unwrap();
+        ticket_move(cwd(&project), one.id.clone(), DONE.into(), vec![], Some("done".into())).unwrap();
+        let mut list = read(&project);
+        let later = list[0].updated + 1;
+        follow(&project, &mut list, &[running("one", later)]).unwrap();
+        assert_eq!((list[0].status.as_str(), list[0].note.as_str()), (IN_PROGRESS, ""));
+        assert_eq!(read(&project), list, "the file has the move");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn adopt_opens_one_ticket_and_refuses_a_second() {
+        let (project, base) = scratch("adopt");
+        assert!(ticket_adopt(cwd(&project), "t-net".into()).is_err(), "no state file");
+        assert!(ticket_adopt(cwd(&project), "../t".into()).is_err(), "an invalid id");
+        write_file(&project.reports.join("t-net.state"), "planning\n").unwrap();
+        write_file(&project.briefs().join("t-net.md"), "# t-net: Fix the net flakes\n\n## The user's words\n\"The net tests fail now and then.\"\n\n## Constraints\n- none\n").unwrap();
+        let ticket = ticket_adopt(cwd(&project), "t-net".into()).unwrap();
+        assert_eq!((ticket.id.as_str(), ticket.title.as_str(), ticket.status.as_str()), ("t-net", "Fix the net flakes", IN_PROGRESS));
+        assert_eq!(ticket.summary, "\"The net tests fail now and then.\"");
+        assert_eq!(read(&project), vec![ticket], "one open line in In progress");
+        assert!(ticket_adopt(cwd(&project), "t-net".into()).is_err(), "a second ticket");
+        // A ticket that follows the task under another id holds it too; a task without a brief takes its id.
+        let other = ticket_add(cwd(&project), "other".into()).unwrap();
+        ticket_update(cwd(&project), other.id, None, None, Some("t-two".into()), None).unwrap();
+        write_file(&project.reports.join("t-two.state"), "planning\n").unwrap();
+        assert!(ticket_adopt(cwd(&project), "t-two".into()).is_err());
+        write_file(&project.reports.join("t-three.state"), "planning\n").unwrap();
+        assert_eq!(ticket_adopt(cwd(&project), "t-three".into()).unwrap().title, "t-three");
         let _ = fs::remove_dir_all(base);
     }
 

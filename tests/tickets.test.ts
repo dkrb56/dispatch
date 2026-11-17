@@ -24,8 +24,10 @@ import {
   nextPlanTicket,
   nextTicket,
   nextType,
+  orphanTasks,
   parseBoardSize,
   queueOrder,
+  repairLine,
   splitImages,
   ticketMatches,
   ticketMessage,
@@ -376,4 +378,38 @@ test("tickets start their plan: the Setup switch, the Help and the README", () =
   assert.ok(section("What Setup pipeline changes").includes("Push after the merge and Tickets start their plan adds one line to the section"));
   const readme = read("../README.md");
   assert.ok(readme.includes('"Tickets start their plan" starts the plan run of a New ticket without triage'));
+});
+
+test("board in progress: a running task without a ticket gets one, a linked or stopped task does not", () => {
+  const tickets = [
+    { id: "t-linked-ticket", task: "t-linked" },
+    { id: "t-own", task: "" },
+  ];
+  const tasks = [
+    { name: "t-netflakes", live: true },
+    { name: "t-linked", live: true },
+    { name: "t-own", live: true },
+    { name: "t-stopped", live: false },
+  ];
+  assert.deepEqual(orphanTasks(tasks, tickets), ["t-netflakes"]);
+  assert.deepEqual(orphanTasks(tasks, []), ["t-netflakes", "t-linked", "t-own"]);
+  assert.deepEqual(orphanTasks([], tickets), []);
+});
+
+test("board in progress: the repair line of the triage chat names each file", () => {
+  assert.equal(
+    repairLine([".dispatch/t-1.md: kept the task branch side of 1 conflict block"]),
+    "Dispatch removed broken merge text (git conflict markers) from 1 task file; no ticket was reopened. .dispatch/t-1.md: kept the task branch side of 1 conflict block.",
+  );
+  const two = repairLine(["a: x", "b: y"]);
+  assert.ok(two.includes("from 2 task files") && two.endsWith("a: x; b: y."), two);
+});
+
+test("board in progress: the dispatcher adopts running tasks after the plan lane, and each reply tells its repairs", () => {
+  const dispatch = MAIN.slice(MAIN.indexOf("async function dispatchTickets("));
+  const body = dispatch.slice(0, dispatch.indexOf("\n}\n"));
+  assert.match(body, /if \(!pendingCards\.some\(\(card\) => card\.project === key\) && !settling\.has\(key\)\) await adoptTasks\(key, record\);/);
+  assert.ok(body.indexOf("startTicketPlan(") < body.indexOf("adoptTasks("));
+  assert.equal(MAIN.split('"ticket_adopt"').length - 1, 1);
+  assert.equal(MAIN.split('call<TaskListReply>').length - 1, MAIN.split("tellRepairs(host, ").length - 1, "each task list read tells its repairs");
 });

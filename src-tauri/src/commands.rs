@@ -250,6 +250,12 @@ pub fn task_approve(cwd: String, id: String) -> Result<String, String> {
     pipeline::task_approve(cwd, id)
 }
 
+/// Opens a ticket in In progress for a running task without one (ticket board-in-progress).
+#[tauri::command(async)]
+pub fn ticket_adopt(cwd: String, id: String) -> Result<Ticket, String> {
+    tickets::ticket_adopt(cwd, id)
+}
+
 /// Starts the plan run of a New ticket without triage (ticket simpler-process-tickets).
 #[tauri::command(async)]
 pub fn ticket_plan(cwd: String, id: String) -> Result<String, String> {

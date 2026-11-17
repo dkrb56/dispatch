@@ -291,3 +291,19 @@ export function columnTickets<T extends Pick<Ticket, "id" | "status" | "order" |
   if (status === "new") return queueOrder(tickets);
   return tickets.filter((ticket) => ticket.status === status).sort((a, b) => b.updated - a.updated || b.created - a.created);
 }
+
+/**
+ * The tasks that run without a ticket (ticket board-in-progress, user decision 2): the names of the
+ * `live` tasks (a worker runs, or the plan run starts) that no ticket has as its id or as its task.
+ * Dispatch opens a ticket in In progress for each.
+ */
+export function orphanTasks(tasks: readonly { name: string; live: boolean }[], tickets: readonly Pick<Ticket, "id" | "task">[]): string[] {
+  const held = new Set(tickets.flatMap((ticket) => [ticket.id, ticket.task || ticket.id]));
+  return tasks.filter((task) => task.live && !held.has(task.name)).map((task) => task.name);
+}
+
+/** The line for the triage chat after Dispatch repaired task files with git conflict markers (ticket board-in-progress, user decision 4). */
+export function repairLine(notes: readonly string[]): string {
+  const files = notes.length === 1 ? "1 task file" : `${notes.length} task files`;
+  return `Dispatch removed broken merge text (git conflict markers) from ${files}; no ticket was reopened. ${notes.join("; ")}.`;
+}

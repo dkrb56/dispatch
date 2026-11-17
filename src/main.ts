@@ -51,7 +51,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, parseBoardSize, queueOrder, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE } from "./tickets";
+import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, parseBoardSize, queueOrder, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { type Typed, typedAfter, typingState } from "./typing";
@@ -2278,6 +2278,13 @@ interface TaskListReply {
   gate?: string;
   /** The actions of the Actions panel and their last runs (ticket project-actions). Absent from an older host. */
   actions?: ActionList;
+  /** What the read repaired in task files with git conflict markers, one note per file (ticket board-in-progress). Absent from an older host. */
+  repairs?: string[];
+}
+
+/** The repair notes of a task list reply go into one line of the triage chat of the project (ticket board-in-progress, user decision 4). */
+function tellRepairs(host: HostId, cwd: string, reply: TaskListReply): void {
+  if (reply.repairs && reply.repairs.length > 0) tellTriage(projectFor(host, cwd), repairLine(reply.repairs));
 }
 
 /** The tasks of one project, from its last `task_list` reply. Each task carries it, so a click acts on its own project. */
@@ -2561,6 +2568,7 @@ async function refreshTasks(): Promise<void> {
     try {
       reply = await call<TaskListReply>(host, "task_list", { cwd });
       taskReadTimes.set(projectKey(host, cwd), readAt);
+      tellRepairs(host, cwd, reply);
     } catch {
       // A folder that is no project has no tasks.
     }
@@ -3274,6 +3282,7 @@ function loadPending(): void {
 async function readProjectTasks(host: HostId, cwd: string): Promise<void> {
   const readAt = Date.now();
   const reply = await call<TaskListReply>(host, "task_list", { cwd });
+  tellRepairs(host, cwd, reply);
   storeProjectTasks(projectKey(host, cwd), tasksRecord(host, cwd, reply));
   taskReadTimes.set(projectKey(host, cwd), readAt);
 }
@@ -3418,11 +3427,36 @@ function planStarting(key: string): boolean {
  * yet. Triage's own workers count too.
  */
 function liveWorkers(record: ProjectTasks): number {
-  return projectTaskList(record).filter((task) => {
-    if (task.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) return true;
-    const info = task.info;
-    return task.workers.length === 0 && info?.state === "planning" && info.plan === null && !info.elsewhere;
-  }).length;
+  return projectTaskList(record).filter(runsNow).length;
+}
+
+/** A worker of the task works or is blocked, or its plan run starts and the list does not show its worker yet. */
+function runsNow(task: Task): boolean {
+  if (task.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) return true;
+  const info = task.info;
+  return task.workers.length === 0 && info?.state === "planning" && info.plan === null && !info.elsewhere;
+}
+
+/** The tasks that got one try of `ticket_adopt` in this window, by `<key>\n<name>` (ticket board-in-progress). */
+const adoptTried = new Set<string>();
+/** The projects (by key) with a ticket that `settleTicket` links to its task now: no adoption meanwhile. */
+const settling = new Map<string, number>();
+
+/**
+ * Opens a ticket in In progress for each task of the project that runs without one (ticket
+ * board-in-progress): a plan run that triage or a script started outside the ticket flow. One try per
+ * task; then the project is read again, so the board shows the ticket at once.
+ */
+async function adoptTasks(key: string, record: ProjectTasks): Promise<void> {
+  const tasks = projectTaskList(record).map((task) => ({ name: task.name, live: runsNow(task) }));
+  const names = orphanTasks(tasks, record.tickets).filter((name) => !adoptTried.has(`${key}\n${name}`));
+  if (names.length === 0) return;
+  for (const name of names) {
+    adoptTried.add(`${key}\n${name}`);
+    await call<Ticket>(record.host, "ticket_adopt", { cwd: record.cwd, id: name }).catch((error) => console.warn("no ticket for the running task", name, error));
+  }
+  await readProjectTasks(record.host, record.cwd).catch((error) => console.warn("task list read failed", error));
+  renderTickets();
 }
 
 /**
@@ -3499,6 +3533,9 @@ async function dispatchTickets(): Promise<void> {
       if (!pane?.chat || !maySendTicket({ driver: driverOf(record.host), triage: true, sent: false })) continue;
       // The plan lane comes first and does not wait for a ticket of triage in flight (ticket simpler-process-tickets).
       if (record.ticketsStartPlans) await startTicketPlan(key, record);
+      // A running task without a ticket gets one (ticket board-in-progress); a card in flight or a
+      // ticket that settles now may still link its task.
+      if (!pendingCards.some((card) => card.project === key) && !settling.has(key)) await adoptTasks(key, record);
       if (pendingCards.some((card) => card.project === key)) {
         // A card in flight: its turn of triage, also when the chat does not show.
         const status = await triageStatus(pane).catch(() => null);
@@ -3594,7 +3631,12 @@ function settlePending(readAt: number): void {
     const record = projectTasks.get(card.project);
     const knew = knewBefore.get(card) ?? null;
     const task = knew && record ? projectTaskList(record).map((one) => one.name).find((name) => !knew.includes(name)) : undefined;
-    void settleTicket(card.project, card.entry, task, card.endedAt !== null ? NO_TASK : NO_TASK_LATE);
+    settling.set(card.project, (settling.get(card.project) ?? 0) + 1);
+    void settleTicket(card.project, card.entry, task, card.endedAt !== null ? NO_TASK : NO_TASK_LATE).finally(() => {
+      const left = (settling.get(card.project) ?? 1) - 1;
+      if (left > 0) settling.set(card.project, left);
+      else settling.delete(card.project);
+    });
   }
   void dispatchTickets();
 }
@@ -9620,6 +9662,7 @@ async function refreshFocusTasks(): Promise<void> {
       const readAt = Date.now();
       try {
         const reply = await call<TaskListReply>(host, "task_list", { cwd: root });
+        tellRepairs(host, root, reply);
         storeProjectTasks(projectKey(host, root), tasksRecord(host, root, reply));
         taskReadTimes.set(projectKey(host, root), readAt);
       } catch {

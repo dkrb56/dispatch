@@ -163,6 +163,7 @@ pub fn run(
         "ticket_move_all" => json(tickets::ticket_move_all(a.req("cwd")?, a.req("ids")?, a.req("status")?)?),
         "task_approve" => json(pipeline::task_approve(a.req("cwd")?, a.req("id")?)?),
         "ticket_plan" => json(pipeline::ticket_plan(a.req("cwd")?, a.req("id")?)?),
+        "ticket_adopt" => json(tickets::ticket_adopt(a.req("cwd")?, a.req("id")?)?),
         "task_decide" => json(pipeline::task_decide(a.req("cwd")?, a.req("id")?, a.req("text")?)?),
         "task_checks" => json(pipeline::task_checks(a.req("cwd")?, a.req("id")?, a.req("names")?)?),
         "task_take_done" => json(pipeline::task_take_done(a.req("cwd")?, a.req("id")?)?),

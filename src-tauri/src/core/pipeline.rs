@@ -1308,7 +1308,9 @@ function Enter-TaskBranch {
 
 # Merges the task branch into the base in the main checkout: git merge --no-ff --no-commit, the gate
 # command on the merged code, then the merge commit, or git merge --abort. A conflict only in the task
-# files of .dispatch takes the version of the base, where Dispatch keeps them current. Gives the
+# files of .dispatch takes the version of the base, where Dispatch keeps them current, except the
+# report and the log of this task, which take the branch version; a side with a conflict marker stops
+# the merge (ticket board-in-progress). Gives the
 # reason of a refusal, or '' after the merge; $script:Merged holds the commit then. The verb merge
 # commits the changed task files first.
 function Merge-Branch($Info, [string]$Gate, [int]$Limit) {
@@ -1331,9 +1333,23 @@ function Merge-Branch($Info, [string]$Gate, [int]$Limit) {
       if ($code.Count -gt 0) { return "the merge of $branch into $($Info.base) does not apply; nothing was merged. Conflicts in:`n$($code -join "`n")" }
       return "git could not merge ${branch}: $($merge.Text)"
     }
+    # The report and the log of this task take the branch side, where its work run wrote them; every
+    # other task file takes the base side (ticket board-in-progress, user decision 5).
+    $own = @(".dispatch/$Id.md", ".dispatch/logs/$Id.md")
     foreach ($file in $conflicts) {
-      if ((Invoke-Git @('checkout', '--ours', '--', $file)).Code -eq 0) { Invoke-Git @('add', '--', $file) | Out-Null }
+      $side = if ($own -contains $file) { '--theirs' } else { '--ours' }
+      if ((Invoke-Git @('checkout', $side, '--', $file)).Code -eq 0) { Invoke-Git @('add', '--', $file) | Out-Null }
       else { Invoke-Git @('rm', '-q', '--', $file) | Out-Null }
+    }
+    # No task file keeps a conflict marker: a side that has one stops the merge.
+    foreach ($file in $conflicts) {
+      $path = Join-Path $Project $file
+      if (-not (Test-Path -LiteralPath $path)) { continue }
+      $marked = @(Get-Content -LiteralPath $path -Encoding UTF8 | Where-Object { $_ -match '^(<<<<<<<|>>>>>>>)( |$)' })
+      if ($marked.Count -gt 0) {
+        Invoke-Git @('merge', '--abort') | Out-Null
+        return "the merge of $branch into $($Info.base) would keep conflict markers in $file; nothing was merged. Remove the lines that start with <<<<<<< or >>>>>>> from that file on both branches, then merge again"
+      }
     }
   }
   if ($Gate) {
@@ -2792,7 +2808,7 @@ fn parse_report(text: &str) -> (Option<ReportHeader>, Vec<Question>) {
 
 /// The lines of a section of a Markdown text: from the `## ` heading with the title (the case
 /// does not matter) to the next `## ` heading, without empty lines and without the list marks.
-fn section_lines(text: &str, title: &str) -> Vec<String> {
+pub(crate) fn section_lines(text: &str, title: &str) -> Vec<String> {
     let mut lines = Vec::new();
     let mut in_section = false;
     for line in text.lines() {
@@ -2993,7 +3009,7 @@ fn title_after_colon(text: &str) -> String {
 
 /// What a brief says the task is about: its title, else the first quoted line under the heading
 /// "The user's words" without its quotes. Empty when it has neither.
-fn parse_brief(text: &str) -> String {
+pub(crate) fn parse_brief(text: &str) -> String {
     let title = title_after_colon(text);
     if !title.is_empty() {
         return title;
@@ -4102,6 +4118,9 @@ pub struct TaskList {
     setup: Option<u64>,
     /// The tickets of the project, in the order of the file (ticket tickets).
     tickets: Vec<crate::core::tickets::Ticket>,
+    /// What the repair of conflict markers changed in this read, one note per file (ticket
+    /// board-in-progress); empty mostly.
+    repairs: Vec<String>,
     /// The ticket whose merge runs now (ticket task-branches): Approve waits for it.
     merging: Option<String>,
     /// The gate command of the merge step, for the Merge card; empty without one.
@@ -4159,7 +4178,12 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
     if !moved {
         return Ok(list);
     }
-    read_tasks(&project).map(|(list, _)| list)
+    // The second read finds nothing to repair: the notes of the first read stay.
+    let repairs = list.repairs;
+    read_tasks(&project).map(|(mut list, _)| {
+        list.repairs.splice(0..0, repairs);
+        list
+    })
 }
 
 /// The lock of the task reads of a project folder: a second read waits until the first one has ended.
@@ -4173,6 +4197,8 @@ pub(crate) fn read_lock(root: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
 /// One read of the tasks of a project for `task_list`, and whether the branch step changed the
 /// checkout or a task file.
 fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
+    // Task files with conflict markers get one side before the read (ticket board-in-progress).
+    let repairs = repair_conflicts(project);
     let mut tasks: Vec<TaskInfo> = Vec::new();
     // The position of the task with a name; a new task when none has it.
     fn task_at(tasks: &mut Vec<TaskInfo>, name: &str) -> usize {
@@ -4300,13 +4326,29 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     let mut tickets = crate::core::tickets::list(&project);
     {
         let brief = |name: &str| brief_titles.iter().find(|(task, _)| task == name).map_or("", |(_, title)| title.as_str());
+        let branches_on = project.options().task_branches;
         let facts: Vec<crate::core::tickets::TaskFacts> = tasks
             .iter()
-            .map(|task| crate::core::tickets::TaskFacts {
-                name: &task.name,
-                state: &task.state,
-                report: task.header.as_ref().map(|header| header.state.as_str()),
-                brief: brief(&task.name),
+            .map(|task| {
+                // The branch step runs after `follow`: the branch file gives the merge here (ticket
+                // board-in-progress).
+                let branch = read_branch_file(&project.branch_file(&task.name));
+                let merged = branch.as_ref().is_some_and(|branch| !branch.merge.is_empty());
+                let started = [project.reports.join(format!("{}.state", task.name)), project.session_file(&task.name)]
+                    .iter()
+                    .filter_map(|path| file_entry(path))
+                    .map(|entry| entry.modified)
+                    .max()
+                    .unwrap_or(0);
+                crate::core::tickets::TaskFacts {
+                    name: &task.name,
+                    state: &task.state,
+                    report: task.header.as_ref().map(|header| header.state.as_str()),
+                    brief: brief(&task.name),
+                    merged,
+                    waits_merge: branch.is_some() && !merged && branches_on,
+                    started,
+                }
             })
             .collect();
         if let Err(error) = crate::core::tickets::follow(&project, &mut tickets, &facts) {
@@ -4326,7 +4368,10 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         task.auto = actions.approves(&task.name);
     }
     // The log of each task with a plan (ticket task-log): a first one with the plan, a new one when
-    // the report or the plan is newer than the log, before the commit of the task files.
+    // the report or the plan is newer than the log, before the commit of the task files. No log
+    // during an unfinished git merge, and none from a plan or a report with conflict markers (ticket
+    // board-in-progress).
+    let unfinished = unfinished_git(project);
     for task in tasks.iter_mut() {
         let path = project.log_file(&task.name);
         let plan = task.plan.as_ref().map(|entry| entry.modified);
@@ -4336,6 +4381,10 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         if !no_transcript.contains(&task.name) && log_needed(plan, report, file_entry(&path).map(|entry| entry.modified)) {
             let plan_text = fs::read_to_string(project.plans().join(format!("{}.md", task.name))).unwrap_or_default();
             let report_text = task.report.is_some().then(|| fs::read_to_string(project.reports.join(format!("{}.md", task.name))).unwrap_or_default());
+            if unfinished || has_markers(&plan_text) || report_text.as_deref().is_some_and(has_markers) {
+                task.log = file_entry(&path);
+                continue;
+            }
             let newest = plan.into_iter().chain(report).max().unwrap_or(0);
             let date = crate::core::tickets::iso(newest)[..10].to_string();
             let text = task_log_text(&LogInput {
@@ -4407,7 +4456,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     }
     let setup = setup_time(&project);
     let options = project.options();
-    Ok((TaskList { tasks, dirty, auto_approve: options.auto_approve, start_plain_plans: options.start_plain_plans, push_after_merge: options.push_after_merge && options.task_branches, tickets_start_plans: options.tickets_start_plans, paused: options.paused, setup, tickets, merging, gate: project.merge_gate(), actions }, moved))
+    Ok((TaskList { tasks, dirty, auto_approve: options.auto_approve, start_plain_plans: options.start_plain_plans, push_after_merge: options.push_after_merge && options.task_branches, tickets_start_plans: options.tickets_start_plans, paused: options.paused, setup, tickets, repairs, merging, gate: project.merge_gate(), actions }, moved))
 }
 
 /// Writes the branch file of each task that has none while its branch `task/<ticket>` exists and is
@@ -4820,6 +4869,95 @@ fn commit_setup(project: &Project) -> Result<String, String> {
     Ok(format!("Commit {} made with {}. Dispatch made no push.", hash.trim(), changed.join(", ")))
 }
 
+/// A git merge, rebase, cherry-pick or revert is not finished in the checkout, a merge of Dispatch
+/// holds the merge lock, or a task file is unmerged (ticket board-in-progress). Dispatch then
+/// commits no task file, writes no task log and repairs no conflict marker.
+fn unfinished_git(project: &Project) -> bool {
+    if project.merging().is_some() {
+        return true;
+    }
+    if !project.in_git {
+        return false;
+    }
+    if let Some(dir) = git(&project.root, &["rev-parse", "--absolute-git-dir"]) {
+        let dir = PathBuf::from(dir.trim());
+        if ["MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"].iter().any(|name| dir.join(name).exists()) {
+            return true;
+        }
+    }
+    git(&project.root, &["ls-files", "-u", "--", TASKS_DIR]).is_some_and(|text| !text.trim().is_empty())
+}
+
+/// A line is a git conflict marker of this kind: the seven characters alone or with a space after them.
+fn marker_line(line: &str, marker: &str) -> bool {
+    let line = line.trim_end_matches(['\r', '\n']);
+    line.strip_prefix(marker).is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+}
+
+/// The text has a git conflict marker line `<<<<<<<` or `>>>>>>>` (ticket board-in-progress).
+fn has_markers(text: &str) -> bool {
+    text.lines().any(|line| marker_line(line, "<<<<<<<") || marker_line(line, ">>>>>>>"))
+}
+
+/// The text with each complete conflict block (`<<<<<<<`, an optional `|||||||` base part,
+/// `=======`, `>>>>>>>`) replaced by its second side, and the number of the blocks. An incomplete
+/// block leaves the whole text as it is and gives 0: a `=======` alone is a Markdown underline.
+fn keep_second_side(text: &str) -> (String, usize) {
+    #[derive(PartialEq)]
+    enum Part {
+        Outside,
+        First,
+        Base,
+        Second,
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut part = Part::Outside;
+    let mut blocks = 0;
+    for line in text.split_inclusive('\n') {
+        match part {
+            Part::Outside if marker_line(line, "<<<<<<<") => part = Part::First,
+            Part::Outside => out.push_str(line),
+            Part::First if marker_line(line, "|||||||") => part = Part::Base,
+            Part::First | Part::Base if line.trim_end_matches(['\r', '\n']) == "=======" => part = Part::Second,
+            Part::First | Part::Base => {}
+            Part::Second if marker_line(line, ">>>>>>>") => {
+                part = Part::Outside;
+                blocks += 1;
+            }
+            Part::Second => out.push_str(line),
+        }
+    }
+    if part != Part::Outside || blocks == 0 {
+        return (text.to_string(), 0);
+    }
+    (out, blocks)
+}
+
+/// Repairs the reports, plans and logs of `.dispatch` (`*.md` and `logs/*.md`) that hold complete
+/// conflict blocks: each block keeps its second side, the side of the task branch in a `git merge`
+/// (ticket board-in-progress, user decision 5). Writes each such file once and gives one note per
+/// file. Does nothing during an unfinished git merge: git still needs the markers then.
+fn repair_conflicts(project: &Project) -> Vec<String> {
+    let mut notes = Vec::new();
+    if unfinished_git(project) {
+        return notes;
+    }
+    let logs = project.reports.join("logs");
+    for (_, path, _) in files_with(&project.reports, "md").into_iter().chain(files_with(&logs, "md")) {
+        let Ok(text) = fs::read_to_string(&path) else { continue };
+        let (repaired, blocks) = keep_second_side(&text);
+        if blocks == 0 {
+            continue;
+        }
+        let shown = path.strip_prefix(&project.root).unwrap_or(&path).to_string_lossy().replace('\\', "/");
+        match fs::write(&path, repaired) {
+            Ok(()) => notes.push(format!("{shown}: kept the task branch side of {blocks} conflict {}", if blocks == 1 { "block" } else { "blocks" })),
+            Err(error) => eprintln!("conflict markers not repaired in {shown}: {error}"),
+        }
+    }
+    notes
+}
+
 /// Commits the changes of the task files in `.dispatch` (briefs, plans, reports, state files,
 /// the script, the options files and the tickets file), and no other file. Other staged changes
 /// of the user stay staged.
@@ -4828,6 +4966,11 @@ fn commit_setup(project: &Project) -> Result<String, String> {
 /// the time between the switch and Apply (ticket ignore-tasks).
 fn keep_tasks_committed(project: &Project) -> Result<usize, String> {
     if !project.in_git || project.options().ignore_tasks {
+        return Ok(0);
+    }
+    // `git add --all` would stage a conflicted task file with its markers as resolved (ticket
+    // board-in-progress, the commit "Dispatch: 86 task files" of Starminer).
+    if unfinished_git(project) {
         return Ok(0);
     }
     // "Project notes in git" (ticket project-notes-in-git): the status also names the notes that
@@ -8839,5 +8982,147 @@ if (args[0] === 'agents') {
         assert_eq!(git_out(&project, &["status", "--porcelain"]), "");
         fs::write(dir.join("project.txt"), &cwd).unwrap();
         fs::write(dir.join("base.txt"), &base).unwrap();
+    }
+
+    /// A commit on a branch with the given files, without a checkout (a temporary index).
+    fn branch_commit(project: &Project, branch: &str, files: &[(&str, &str)]) {
+        let dir = project.root.parent().unwrap().join("branch-commit");
+        fs::create_dir_all(&dir).unwrap();
+        let index = dir.join("index");
+        let _ = fs::remove_file(&index);
+        let in_index = |args: &[&str]| run_git_index(&project.root, Some(&index), args).unwrap().trim().to_string();
+        in_index(&["read-tree", branch]);
+        for (at, (path, text)) in files.iter().enumerate() {
+            let blob = dir.join(format!("blob-{at}"));
+            fs::write(&blob, text).unwrap();
+            let sha = in_index(&["hash-object", "-w", &blob.to_string_lossy()]);
+            in_index(&["update-index", "--add", "--cacheinfo", &format!("100644,{sha},{path}")]);
+        }
+        let tree = in_index(&["write-tree"]);
+        let commit = git_out(project, &["commit-tree", &tree, "-p", branch, "-m", "branch copies"]);
+        git_out(project, &["update-ref", &format!("refs/heads/{branch}"), &commit]);
+    }
+
+    /// The task files of `.dispatch` (`*.md`, `logs/*.md`) with a line that starts with a conflict marker.
+    fn marked_files(project: &Project) -> Vec<String> {
+        let logs = project.reports.join("logs");
+        files_with(&project.reports, "md")
+            .into_iter()
+            .chain(files_with(&logs, "md"))
+            .filter(|(_, path, _)| read(path).lines().any(|line| ["<<<<<<<", "=======", ">>>>>>>"].iter().any(|marker| line.starts_with(marker))))
+            .map(|(_, path, _)| path.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_running_task_without_a_ticket_gets_one_in_progress() {
+        let project = scratch("adopt-task");
+        apply(&project, &[0]).unwrap();
+        let fake = fake_claude(project.root.parent().unwrap());
+        let cwd = project.root.to_string_lossy().into_owned();
+        // Triage starts the plan run with the script, outside the ticket flow.
+        write_file(&project.briefs().join("t-netflakes.md"), "# t-netflakes: Fix the flaky net tests\n\n## The user's words\n\"The net tests fail now and then.\"\n").unwrap();
+        write_file(&project.reports.join("fake-name.txt"), "t-netflakes [plan]").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["plan", "t-netflakes"]);
+        assert_eq!(code, 0, "{out}");
+        let list = task_list(cwd.clone()).unwrap();
+        let task = list.tasks.iter().find(|task| task.name == "t-netflakes").expect("the task is listed");
+        assert_eq!(task.state, "planning");
+        assert!(list.tickets.is_empty(), "no ticket yet: the board adopts the task");
+        let ticket = crate::core::tickets::ticket_adopt(cwd.clone(), "t-netflakes".to_string()).unwrap();
+        assert_eq!(ticket.title, "Fix the flaky net tests");
+        assert_eq!(ticket_status(&project, "t-netflakes"), crate::core::tickets::IN_PROGRESS);
+        assert!(crate::core::tickets::ticket_adopt(cwd.clone(), "t-netflakes".to_string()).is_err(), "one ticket per task");
+        // A close wins over the state file, which still says planning.
+        crate::core::tickets::ticket_move(cwd, "t-netflakes".to_string(), crate::core::tickets::DONE.to_string(), Vec::new(), Some("done".to_string())).unwrap();
+        let closed = read(&project.tickets_file());
+        assert_eq!(ticket_status(&project, "t-netflakes"), crate::core::tickets::DONE);
+        assert_eq!(read(&project.tickets_file()), closed, "no in_progress line after the close");
+        clean(&project);
+    }
+
+    #[test]
+    fn a_conflicted_merge_keeps_the_branch_report_and_log_without_markers() {
+        let (project, fake, base) = branch_project("merge-markers");
+        let cwd = project.root.to_string_lossy().into_owned();
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).unwrap(), base);
+        // The base and the branch hold other copies of the report and the log of t-1, and of the report of t-9.
+        let branch_report = "state: done\nneeds: nothing\nfiles: work-t-1.txt\nplan: p\n\nThe branch copy of the report.\n";
+        let branch_log = "# t-1: the branch copy of the log\n";
+        branch_commit(&project, "task/t-1", &[(".dispatch/t-1.md", branch_report), (".dispatch/logs/t-1.md", branch_log), (".dispatch/t-9.md", "state: done\n\nThe branch copy of t-9.\n")]);
+        let base_report = "state: done\nneeds: nothing\nfiles: work-t-1.txt\nplan: p\n\nThe base copy of the report.\n";
+        write_file(&project.reports.join("t-1.md"), base_report).unwrap();
+        write_file(&project.reports.join("logs").join("t-1.md"), "# t-1: the base copy of the log\n").unwrap();
+        write_file(&project.reports.join("t-9.md"), "state: done\n\nThe base copy of t-9.\n").unwrap();
+        git_out(&project, &["add", "--", ".dispatch"]);
+        git_out(&project, &["commit", "-q", "-m", "base copies", "--", ".dispatch"]);
+
+        let merged = task_merge(cwd, "t-1".to_string());
+        assert!(merged.is_ok(), "{merged:?}");
+        assert_no_merge_left(&project);
+        assert_eq!(read(&project.reports.join("t-1.md")), branch_report, "the report of the task takes the branch side");
+        assert_eq!(read(&project.reports.join("logs").join("t-1.md")), branch_log, "the log of the task takes the branch side");
+        assert_eq!(read(&project.reports.join("t-9.md")), "state: done\n\nThe base copy of t-9.\n", "another task keeps the base side");
+        assert!(marked_files(&project).is_empty(), "{:?}", marked_files(&project));
+        let committed = git_out(&project, &["show", "HEAD:.dispatch/t-1.md"]).replace("\r\n", "\n");
+        assert_eq!(format!("{committed}\n"), branch_report);
+        clean(&project);
+    }
+
+    #[test]
+    fn the_task_read_repairs_conflict_markers_once() {
+        let project = scratch("repair-markers");
+        apply(&project, &[0]).unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        let marked = "<<<<<<< HEAD\nstate: working\nneeds: nothing\n=======\nstate: done\nneeds: nothing\n>>>>>>> task/t-1\nfiles: a.txt\nplan: p\n\n## What changed\nDone.\n";
+        write_file(&project.reports.join("t-1.md"), marked).unwrap();
+        let log = "# t-1: log\n\n<<<<<<< HEAD\nthe base line\n||||||| merged common ancestors\nthe old line\n=======\nthe branch line\n>>>>>>> task/t-1\nend\n";
+        write_file(&project.reports.join("logs").join("t-1.md"), log).unwrap();
+        // A heading underline and an incomplete block stay as they are.
+        let underline = "state: done\nneeds: nothing\nfiles: none\nplan: p\n\nTitle\n=======\n\n<<<<<<< HEAD\nno end\n";
+        write_file(&project.reports.join("t-2.md"), underline).unwrap();
+
+        let list = task_list(cwd.clone()).unwrap();
+        assert_eq!(list.repairs.len(), 2, "{:?}", list.repairs);
+        assert!(list.repairs.iter().any(|note| note.starts_with(".dispatch/t-1.md: kept the task branch side of 1 conflict block")), "{:?}", list.repairs);
+        assert_eq!(read(&project.reports.join("t-1.md")), "state: done\nneeds: nothing\nfiles: a.txt\nplan: p\n\n## What changed\nDone.\n");
+        assert_eq!(read(&project.reports.join("logs").join("t-1.md")), "# t-1: log\n\nthe branch line\nend\n");
+        assert_eq!(read(&project.reports.join("t-2.md")), underline);
+        let task = list.tasks.iter().find(|task| task.name == "t-1").unwrap();
+        assert_eq!(task.header.as_ref().map(|header| header.state.as_str()), Some("done"), "the repaired report has its header");
+        // Once: the next read has nothing to repair.
+        assert!(task_list(cwd).unwrap().repairs.is_empty());
+        clean(&project);
+    }
+
+    #[test]
+    fn no_task_file_is_committed_during_an_unfinished_merge() {
+        let project = git_scratch("unfinished-merge");
+        apply(&project, &[]).unwrap();
+        write_file(&project.reports.join("t-1.md"), "state: working\n\nthe first copy\n").unwrap();
+        git_out(&project, &["add", "--all"]);
+        git_out(&project, &["commit", "-q", "-m", "scratch setup"]);
+        let base = current_branch(&project).unwrap();
+        git_out(&project, &["branch", "other"]);
+        branch_commit(&project, "other", &[(".dispatch/t-1.md", "state: done\n\nthe copy of other\n")]);
+        write_file(&project.reports.join("t-1.md"), "state: done\n\nthe copy of the base\n").unwrap();
+        git_out(&project, &["commit", "-q", "-m", "base copy", "--", ".dispatch/t-1.md"]);
+        assert!(run_git(&project.root, &["merge", "other"]).is_err(), "the merge conflicts");
+        assert_eq!(current_branch(&project).unwrap(), base);
+        let head = git_out(&project, &["rev-parse", "HEAD"]);
+        assert!(unfinished_git(&project));
+
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        assert!(list.repairs.is_empty(), "git still needs the markers");
+        assert_eq!(git_out(&project, &["rev-parse", "HEAD"]), head, "no commit during the merge");
+        assert!(!git_out(&project, &["ls-files", "-u", "--", ".dispatch/t-1.md"]).is_empty(), "the conflict stays unmerged");
+        assert!(read(&project.reports.join("t-1.md")).contains("<<<<<<<"));
+        assert!(!project.log_file("t-1").exists(), "no log from a marked report");
+        git_out(&project, &["merge", "--abort"]);
+        assert!(!unfinished_git(&project));
+        clean(&project);
     }
 }
