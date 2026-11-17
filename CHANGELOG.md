@@ -2,6 +2,14 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.70 (2026-11-17)
+- The triage chat now hears that a worker is done only when the worker wrote its plan or its report in that run. A worker that stops early gives one line about it, once.
+- Setup pipeline has the new switch No triage, off by default. With it on, Dispatch starts the plan of every New ticket itself, also a question or a ticket with only images, and writes nothing into a triage chat. The task card and the alerts tell you when a plan is ready, when a worker asks, and when a task is done or failed. A failed plan start stays in New with its error and a Retry button. The project opens without a triage chat and with a Chat button, and Ask about this plan in a Chat opens a plain Chat.
+- The New ticket form has a level: Simple plans with Opus at medium effort, Medium, the default, with Opus at high effort, and Hard with Fable at high effort. A click on the level tag of a waiting ticket gives the next level. The hint at the Goal follows the level. A type button and More add the optional fields Why, Done when, Do not change, Context, and What I see and What I expect for a fix; each filled field goes into the brief.
+- Each plan now ends with its advice for the work run. The Plan ready card shows it with a model list and an effort list, and Approve starts the work run with your choice.
+- A plan can list parts that follow. The Plan ready card lists them before Approve, with a box that lets the chain run at night without your click. Approve makes one Backlog ticket per part, in order. When a part is done, the next part moves to New and starts its plan; a failed or stopped part stops the chain. The parent counts its done parts and goes to Done after the last part. In Backlog you can edit, add, remove and reorder the waiting parts.
+- The rules of the workers changed for the level, the work advice, the parts and No triage, so each project needs Setup pipeline → Apply.
+
 ## 0.1.69 (2026-11-17)
 - The tickets board now shows every running task in In progress. A task that runs without a ticket gets its own ticket there. A finished task stays in In progress until you click Merge, and a merged task moves to Done. A closed ticket stays closed; only a new run after the close moves it back to In progress.
 - Dispatch no longer commits task files while a git merge is not finished. At Merge, the report and the log of the task keep the version of the task branch, and a side with conflict markers stops the merge. A task file that already has conflict markers keeps the task branch side, once, and the triage chat gets one line about it.
