@@ -325,6 +325,11 @@ interface StartCommand {
   join?: boolean;
   /** A plain shell starts and shows this note: the triage chat runs in a program outside the host. */
   note?: string;
+  /**
+   * A name for the terminal: the host remembers it, and another window finds the terminal with
+   * `pty_find` and joins it (the Open terminal of a project, ticket if-terminal-in-non-triage-mode-is-opened).
+   */
+  label?: string;
 }
 
 interface Tab {
@@ -831,12 +836,18 @@ async function openChat(chat: Chat): Promise<void> {
  * the pipeline, for a question without a ticket. The tab shows as a chat tab in the head of the
  * triage pane in Details (chat-tabs-by-triage), so the view goes there.
  */
-async function openProjectChat(ref: ProjectRef, keepFocus = false): Promise<string> {
+async function openProjectChat(ref: ProjectRef, keepFocus = false, terminal?: { label: string } | { join: string }): Promise<string> {
   // The terminal of Open terminal in focus mode stays in focus mode (ticket when-terminal-is-open-in-focus-mode-it).
   const stay = keepFocus && focusOn;
   if (!stay && (focusOn || mapOn || overviewOn)) await setView("tabs");
-  const pane: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: ref.root, host: ref.host };
-  const starts = new Map<string, StartCommand>([[pane.id, { run: "claude" }]]);
+  // Open terminal: a new session with the label of the project, or a joined pane that shows the
+  // terminal of another window of the host (ticket if-terminal-in-non-triage-mode-is-opened).
+  const join = terminal && "join" in terminal ? terminal.join : undefined;
+  const pane: SavedPane = join
+    ? { id: join, shell: "powershell", cwd: ref.root, host: ref.host, joined: true }
+    : { id: crypto.randomUUID(), shell: "powershell", cwd: ref.root, host: ref.host };
+  const start: StartCommand = join ? { join: true } : terminal && "label" in terminal ? { run: "claude", label: terminal.label } : { run: "claude" };
+  const starts = new Map<string, StartCommand>([[pane.id, start]]);
   const tabId = crypto.randomUUID();
   const back = activeId;
   await openTab({ id: tabId, layout: pane, focus: pane.id }, false, starts);
@@ -877,7 +888,15 @@ async function openProjectTerminal(ref: ProjectRef): Promise<void> {
   if (projectTerminalPending.has(key)) return;
   projectTerminalPending.add(key);
   try {
-    const id = await openProjectChat(ref, true);
+    // On a host, another window may have the terminal of the project open already: this window
+    // shows the same terminal (ticket if-terminal-in-non-triage-mode-is-opened).
+    const label = `project-terminal:${pathKey(ref.root)}`;
+    let found: string | null = null;
+    if (ref.host !== LOCAL) {
+      // An older host does not know pty_find: a new session starts, as before.
+      found = await call<string | null>(ref.host, "pty_find", { label }).catch(() => null);
+    }
+    const id = await openProjectChat(ref, true, found && !panes.has(found) ? { join: found } : { label });
     projectTerminals.set(key, id);
     try { localStorage.setItem(storeKey, id); } catch { /* no storage */ }
     // In focus mode the terminal shows between the tasks and the board (ticket when-terminal-is-open-in-focus-mode-it).
@@ -11101,6 +11120,13 @@ function renderFocus(): void {
     column.termButton.title = terminal
       ? "This project's terminal is open; close it with × above it"
       : "Opens a Claude Code terminal in the project folder for a question; it starts no task; one at a time";
+    // A terminal of another window closes only here (ticket if-terminal-in-non-triage-mode-is-opened, decision 1).
+    const termClose = column.termEl.querySelector<HTMLButtonElement>(".focus-terminal-close");
+    if (termClose) {
+      termClose.title = terminal?.joined
+        ? "Close this terminal here; it keeps running in the other window"
+        : "Close this terminal and end its Claude session";
+    }
     if (agents) moveInto(agents, column.agentsEl);
     showWorkers(column);
     showOld(column);

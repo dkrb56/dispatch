@@ -1,6 +1,6 @@
 //! The calls of a window: the command name and the arguments exactly as the page gives them to
-//! `invoke` (`commands.rs` of the app has the same list, without `pty_join` and `pty_leave`: only a
-//! host has terminals of other windows). The app gives the page the argument
+//! `invoke` (`commands.rs` of the app has the same list, without `pty_join`, `pty_leave` and
+//! `pty_find`: only a host has terminals of other windows). The app gives the page the argument
 //! names in camelCase: `new_text` is `newText`; the other names are one word.
 
 use std::collections::HashMap;
@@ -58,6 +58,7 @@ pub fn run(
     match command {
         "pty_spawn" => {
             let id: String = a.req("id")?;
+            let label: Option<String> = a.opt("label")?;
             if clients.spawn(window, &id)? == Spawn::Attached {
                 return json(());
             }
@@ -78,7 +79,12 @@ pub fn run(
                 a.opt("effort")?,
             );
             match &started {
-                Ok(_) => clients.sized(&id, cols, rows),
+                Ok(_) => {
+                    clients.sized(&id, cols, rows);
+                    if let Some(label) = &label {
+                        clients.label(&id, label);
+                    }
+                }
                 Err(_) => clients.spawn_failed(&id),
             }
             json(started?)
@@ -89,6 +95,7 @@ pub fn run(
             let (cols, rows) = clients.join(window, &a.req::<String>("id")?)?;
             json(serde_json::json!({ "cols": cols, "rows": rows }))
         }
+        "pty_find" => json(clients.find(window, &a.req::<String>("label")?)),
         "pty_leave" => {
             clients.leave(window, &a.req::<String>("id")?);
             json(())

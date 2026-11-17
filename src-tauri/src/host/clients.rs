@@ -72,6 +72,9 @@ struct Terminal {
     tail: String,
     /// The size of the pseudo console: columns and rows.
     size: (u16, u16),
+    /// The name that the page gave the terminal at its start (`pty_spawn` with `label`), for
+    /// example the Open terminal of a project; another window finds it with `pty_find`.
+    label: Option<String>,
 }
 
 #[derive(Default)]
@@ -214,6 +217,7 @@ impl Clients {
                     viewers: HashSet::new(),
                     tail: String::new(),
                     size: (0, 0),
+                    label: None,
                 };
                 inner.terminals.insert(id.to_string(), terminal);
                 Ok(Spawn::New)
@@ -224,6 +228,27 @@ impl Clients {
     /// The shell of a new terminal did not start.
     pub fn spawn_failed(&self, id: &str) {
         self.lock().terminals.remove(id);
+    }
+
+    /// The page started the terminal `id` with the name `label`.
+    pub fn label(&self, id: &str, label: &str) {
+        if let Some(terminal) = self.lock().terminals.get_mut(id) {
+            terminal.label = Some(label.to_string());
+        }
+    }
+
+    /// `pty_find` of `window`: the running terminal of another window with the name `label`, to
+    /// join; the smallest id when there are several.
+    pub fn find(&self, window: &str, label: &str) -> Option<String> {
+        let inner = self.lock();
+        inner
+            .terminals
+            .iter()
+            .filter(|(_, terminal)| {
+                terminal.owner != window && !terminal.killed && !terminal.ended && terminal.label.as_deref() == Some(label)
+            })
+            .map(|(id, _)| id.clone())
+            .min()
     }
 
     /// A call of `window` for the terminal `id`: an error when another window owns it.
@@ -447,6 +472,30 @@ mod tests {
         assert!(frames[0].contains(r#""terminals":[]"#), "{frames:?}");
         assert!(frames[1].contains("pty-exit") && frames[1].contains("t-1"), "{frames:?}");
         assert_eq!(clients.spawn("w-1", "t-1"), Ok(Spawn::New), "the id is free again");
+    }
+
+    #[test]
+    fn a_labelled_terminal_is_found_by_another_window_only() {
+        let clients = Clients::new("k".into());
+        let (tx1, _rx1) = unbounded_channel();
+        let (tx2, _rx2) = unbounded_channel();
+        let serial = clients.register("w-1", tx1, "0.0.0");
+        clients.register("w-2", tx2, "0.0.0");
+        clients.spawn("w-1", "t-1").unwrap();
+        assert_eq!(clients.find("w-2", "project-terminal:a"), None, "no label yet");
+        clients.label("t-1", "project-terminal:a");
+        assert_eq!(clients.find("w-2", "project-terminal:a"), Some("t-1".into()));
+        assert_eq!(clients.find("w-1", "project-terminal:a"), None, "not the own terminal");
+        assert_eq!(clients.find("w-2", "project-terminal:b"), None, "another label");
+        clients.killed("t-1");
+        assert_eq!(clients.find("w-2", "project-terminal:a"), None, "a killed terminal");
+
+        clients.spawn("w-1", "t-2").unwrap();
+        clients.label("t-2", "project-terminal:a");
+        assert_eq!(clients.find("w-2", "project-terminal:a"), Some("t-2".into()));
+        clients.unregister("w-1", serial);
+        clients.emit(PTY_EXIT, Value::String("t-2".into()));
+        assert_eq!(clients.find("w-2", "project-terminal:a"), None, "an ended terminal");
     }
 
     #[test]
