@@ -1,9 +1,9 @@
 // The tickets of a project (ticket tickets): one file `.dispatch/tickets.jsonl`, one JSON event per
 // line, in the form of the tickets file of starminer-manager, so its board can read it:
-//   {"op":"open","id":…,"ts":…,"title":…,"type":…,"summary":…,"tags":[],"status":…,"order":…}
+//   {"op":"open","id":…,"ts":…,"title":…,"type":…,"summary":…,"tags":[],"status":…,"order":…,"level":…,"fields":{…}}
 //   {"op":"status","ref":…,"ts":…,"status":"triage"|"backlog"|"in_progress","order":…}
 //   {"op":"close","ref":…,"ts":…,"resolution":"done"|"wontfix","note":…}
-//   {"op":"update","ref":…,"ts":…,"title":…,"type":…,"order":…,"task":…,"renamed":…}
+//   {"op":"update","ref":…,"ts":…,"title":…,"type":…,"order":…,"task":…,"renamed":…,"level":…}
 // A ticket is the fold of its lines. A line that is no JSON, an unknown op or an unknown field is
 // skipped, so a file edited by hand still reads. Dispatch is the only writer: a message of the user
 // opens a ticket in New, which is the queue (ticket auto-todo), the board orders, cancels and renames
@@ -20,7 +20,7 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::core::pipeline::Project;
@@ -46,6 +46,56 @@ const CANCEL_WORDS: [&str; 5] = ["wontfix", "duplicate", "superseded", "canceled
 
 /// The types of a ticket, as the file writes them.
 const KINDS: [&str; 4] = ["fix", "feature", "refactor", "content"];
+
+/// The levels of a ticket (ticket ticket-form-optional-fields-on-a-new) with the model and the effort
+/// of its plan run. Medium is the level of an old ticket and of a ticket without a level.
+const LEVELS: [(&str, &str, &str); 3] = [("simple", "opus", "medium"), ("medium", "opus", "high"), ("hard", "fable", "high")];
+const MEDIUM: &str = "medium";
+
+/// A known level, lower case; none for an unknown or empty level.
+fn known_level(level: &str) -> Option<&'static str> {
+    let level = level.trim().to_ascii_lowercase();
+    LEVELS.iter().map(|(name, ..)| *name).find(|name| *name == level)
+}
+
+/// The model and the effort of the plan run of a level; Medium for an unknown or empty level.
+pub(crate) fn level_choice(level: &str) -> (&'static str, &'static str) {
+    let name = known_level(level).unwrap_or(MEDIUM);
+    let (_, model, effort) = LEVELS.iter().find(|(known, ..)| *known == name).copied().unwrap_or(LEVELS[1]);
+    (model, effort)
+}
+
+/// The optional fields of a new ticket (ticket ticket-form-optional-fields-on-a-new): Why, Done
+/// when, Do not change, Context, and for a fix What I see and What I expect. Empty: not filled.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct TicketFields {
+    pub(crate) why: String,
+    pub(crate) done: String,
+    pub(crate) keep: String,
+    pub(crate) context: String,
+    pub(crate) see: String,
+    pub(crate) expect: String,
+}
+
+impl TicketFields {
+    /// The fields with their keys of the file, in the order of the form.
+    fn entries(&self) -> [(&'static str, &String); 6] {
+        [("why", &self.why), ("done", &self.done), ("keep", &self.keep), ("context", &self.context), ("see", &self.see), ("expect", &self.expect)]
+    }
+
+    /// The fields of a `fields` object of the file: unknown keys skipped, values trimmed.
+    fn of(value: Option<&Value>) -> TicketFields {
+        let Some(Value::Object(object)) = value else { return TicketFields::default() };
+        let text = |key: &str| object.get(key).and_then(Value::as_str).map(str::trim).unwrap_or_default().to_string();
+        TicketFields { why: text("why"), done: text("done"), keep: text("keep"), context: text("context"), see: text("see"), expect: text("expect") }
+    }
+
+    /// The object of the filled fields for the file; no key for an empty field.
+    fn filled(&self) -> Map<String, Value> {
+        self.entries().into_iter().filter(|(_, text)| !text.trim().is_empty()).map(|(key, text)| (key.to_string(), json!(text.trim()))).collect()
+    }
+}
 
 /// The type of a `type` value of the file: the four types, and the types of other tools mapped to
 /// them (ticket tickets-backlog); none for an unknown type.
@@ -89,6 +139,10 @@ pub struct Ticket {
     pub(crate) updated: u64,
     /// The user gave the title: the title of the brief does not replace it.
     pub(crate) renamed: bool,
+    /// `simple`, `medium` or `hard`: the model and the effort of the plan run (`level_choice`).
+    pub(crate) level: String,
+    /// The optional fields of the new ticket form; empty for an old ticket.
+    pub(crate) fields: TicketFields,
 }
 
 impl Ticket {
@@ -198,6 +252,8 @@ pub(crate) fn fold(text: &str) -> Vec<Ticket> {
                 created,
                 updated: created,
                 renamed: event.get("renamed").and_then(Value::as_bool).unwrap_or(false),
+                level: text_of("level").as_deref().and_then(known_level).unwrap_or(MEDIUM).to_string(),
+                fields: TicketFields::of(event.get("fields")),
             });
             continue;
         }
@@ -230,6 +286,9 @@ pub(crate) fn fold(text: &str) -> Vec<Ticket> {
                 }
                 if let Some(renamed) = event.get("renamed").and_then(Value::as_bool) {
                     ticket.renamed = renamed;
+                }
+                if let Some(level) = text_of("level").as_deref().and_then(known_level) {
+                    ticket.level = level.to_string();
                 }
             }
             _ => continue,
@@ -526,12 +585,14 @@ fn open_ticket(project: &Project, tickets: &[Ticket], text: &str, at: u64, statu
         created: at,
         updated: at,
         renamed: false,
+        level: MEDIUM.to_string(),
+        fields: TicketFields::default(),
     }
 }
 
-/// The `open` line of a new ticket.
+/// The `open` line of a new ticket: the level always, the fields only when one is filled.
 fn open_event(ticket: &Ticket) -> Value {
-    json!({
+    let mut line = json!({
         "op": "open",
         "id": ticket.id,
         "ts": iso(ticket.created),
@@ -541,7 +602,13 @@ fn open_event(ticket: &Ticket) -> Value {
         "tags": [],
         "status": file_status(&ticket.status),
         "order": ticket.order,
-    })
+        "level": ticket.level,
+    });
+    let filled = ticket.fields.filled();
+    if !filled.is_empty() {
+        line["fields"] = Value::Object(filled);
+    }
+    line
 }
 
 /// The tickets of a project for `task_list`: the planned messages of the old layout become tickets
@@ -656,15 +723,42 @@ pub(crate) fn find(tickets: &[Ticket], id: &str) -> Result<Ticket, String> {
     tickets.iter().find(|ticket| ticket.id == id).cloned().ok_or_else(|| format!("no ticket {id}"))
 }
 
-/// Opens a ticket for a message of the user in the column New and gives it.
-pub fn ticket_add(cwd: String, text: String) -> Result<Ticket, String> {
+/// Opens a ticket for a message of the user in the column New and gives it. The text is the Goal:
+/// the title and the id come from it alone. The type (none or empty: the guess of `kind_of`), the
+/// level (none: Medium) and the optional fields of the form are optional; What I see and What I
+/// expect stay only on a fix (ticket ticket-form-optional-fields-on-a-new).
+pub fn ticket_add(cwd: String, text: String, kind: Option<String>, level: Option<String>, fields: Option<TicketFields>) -> Result<Ticket, String> {
     let project = Project::find(&cwd)?;
     let text = text.trim();
     if text.is_empty() {
         return Err("the message is empty".to_string());
     }
+    let kind = match kind.map(|kind| kind.trim().to_ascii_lowercase()).filter(|kind| !kind.is_empty()) {
+        Some(kind) => Some(KINDS.iter().find(|known| **known == kind).copied().ok_or_else(|| format!("unknown type: {kind}"))?),
+        None => None,
+    };
+    let level = match level.filter(|level| !level.trim().is_empty()) {
+        Some(level) => known_level(&level).ok_or_else(|| format!("unknown level: {level}"))?,
+        None => MEDIUM,
+    };
     let tickets = list(&project);
-    let ticket = open_ticket(&project, &tickets, text, now(), NEW, None);
+    let mut ticket = open_ticket(&project, &tickets, text, now(), NEW, None);
+    if let Some(kind) = kind {
+        ticket.kind = kind.to_string();
+    }
+    ticket.level = level.to_string();
+    if let Some(fields) = fields {
+        let fix = ticket.kind == "fix";
+        let keep = |text: &str, on: bool| if on { text.trim().to_string() } else { String::new() };
+        ticket.fields = TicketFields {
+            why: keep(&fields.why, true),
+            done: keep(&fields.done, true),
+            keep: keep(&fields.keep, true),
+            context: keep(&fields.context, true),
+            see: keep(&fields.see, fix),
+            expect: keep(&fields.expect, fix),
+        };
+    }
     append(&project, &[open_event(&ticket)])?;
     Ok(ticket)
 }
@@ -690,6 +784,8 @@ pub(crate) fn open_in_progress(project: &Project, id: &str, title: &str, text: &
         created: at,
         updated: at,
         renamed: false,
+        level: MEDIUM.to_string(),
+        fields: TicketFields::default(),
     };
     append(project, &[open_event(&ticket)])?;
     Ok(ticket)
@@ -729,13 +825,23 @@ pub fn ticket_adopt(cwd: String, id: String) -> Result<Ticket, String> {
         created: at,
         updated: at,
         renamed: false,
+        level: MEDIUM.to_string(),
+        fields: TicketFields::default(),
     };
     append(&project, &[open_event(&ticket)])?;
     Ok(ticket)
 }
 
-/// Changes the title (the user renamed it), the type, the task or the end word of a ticket.
-pub fn ticket_update(cwd: String, id: String, title: Option<String>, kind: Option<String>, task: Option<String>, note: Option<String>) -> Result<Ticket, String> {
+/// Changes the title (the user renamed it), the type, the task, the end word or the level of a ticket.
+pub fn ticket_update(
+    cwd: String,
+    id: String,
+    title: Option<String>,
+    kind: Option<String>,
+    task: Option<String>,
+    note: Option<String>,
+    level: Option<String>,
+) -> Result<Ticket, String> {
     let project = Project::find(&cwd)?;
     let ticket = find(&read(&project), &id)?;
     let mut fields = Map::new();
@@ -765,6 +871,10 @@ pub fn ticket_update(cwd: String, id: String, title: Option<String>, kind: Optio
     }
     if let Some(note) = note {
         fields.insert("note".into(), json!(note.trim()));
+    }
+    if let Some(level) = level {
+        let known = known_level(&level).ok_or_else(|| format!("unknown level: {level}"))?;
+        fields.insert("level".into(), json!(known));
     }
     if fields.is_empty() {
         return Ok(ticket);
@@ -1088,8 +1198,8 @@ mod tests {
     #[test]
     fn a_ticket_moves_into_backlog_and_back_to_the_end_of_the_queue() {
         let (project, base) = scratch("backlog");
-        let a = ticket_add(cwd(&project), "one".into()).unwrap();
-        let b = ticket_add(cwd(&project), "two".into()).unwrap();
+        let a = ticket_add(cwd(&project), "one".into(), None, None, None).unwrap();
+        let b = ticket_add(cwd(&project), "two".into(), None, None, None).unwrap();
         ticket_move(cwd(&project), a.id.clone(), NEW.into(), vec![a.id.clone(), b.id.clone()], None).unwrap();
         let text = || fs::read_to_string(project.tickets_file()).unwrap();
         let before = text().lines().count();
@@ -1113,7 +1223,7 @@ mod tests {
     #[test]
     fn many_tickets_move_at_once_in_one_write() {
         let (project, base) = scratch("move-all");
-        let ids: Vec<String> = ["one", "two", "three", "four"].iter().map(|text| ticket_add(cwd(&project), (*text).into()).unwrap().id).collect();
+        let ids: Vec<String> = ["one", "two", "three", "four"].iter().map(|text| ticket_add(cwd(&project), (*text).into(), None, None, None).unwrap().id).collect();
         ticket_move(cwd(&project), ids[0].clone(), NEW.into(), ids.clone(), None).unwrap();
         ticket_move(cwd(&project), ids[3].clone(), CANCELED.into(), vec![], None).unwrap();
         let text = || fs::read_to_string(project.tickets_file()).unwrap();
@@ -1140,7 +1250,7 @@ mod tests {
     #[test]
     fn follow_writes_nothing_while_the_project_is_paused() {
         let (project, base) = scratch("paused");
-        let one = ticket_add(cwd(&project), "one".into()).unwrap();
+        let one = ticket_add(cwd(&project), "one".into(), None, None, None).unwrap();
         crate::core::pipeline::set_paused(cwd(&project), true).unwrap();
         let before = fs::read_to_string(project.tickets_file()).unwrap();
         let facts = [TaskFacts { name: &one.id, state: "working", report: Some("done"), brief: "The brief of one", merged: false, waits_merge: false, started: 0 }];
@@ -1254,20 +1364,20 @@ mod tests {
         let (project, base) = scratch("add");
         // A task of the folder takes its name: the new id does not collide with it.
         write_file(&project.tickets_file().with_file_name("fix-the-bar.state"), "planning\n").unwrap();
-        let a = ticket_add(cwd(&project), "fix the bar".into()).unwrap();
+        let a = ticket_add(cwd(&project), "fix the bar".into(), None, None, None).unwrap();
         assert_eq!((a.id.as_str(), a.title.as_str(), a.kind.as_str(), a.status.as_str()), ("fix-the-bar-2", "Fix the bar", "fix", NEW));
-        let b = ticket_add(cwd(&project), "fix the bar".into()).unwrap();
+        let b = ticket_add(cwd(&project), "fix the bar".into(), None, None, None).unwrap();
         assert_eq!(b.id, "fix-the-bar-3");
-        assert!(ticket_add(cwd(&project), "  ".into()).is_err());
+        assert!(ticket_add(cwd(&project), "  ".into(), None, None, None).is_err());
         let lines = || fs::read_to_string(project.tickets_file()).unwrap().lines().count();
         assert_eq!(lines(), 2);
 
-        let renamed = ticket_update(cwd(&project), a.id.clone(), Some("  Lower   the bar ".into()), Some("Content".into()), None, None).unwrap();
+        let renamed = ticket_update(cwd(&project), a.id.clone(), Some("  Lower   the bar ".into()), Some("Content".into()), None, None, None).unwrap();
         assert_eq!((renamed.title.as_str(), renamed.kind.as_str(), renamed.renamed), ("Lower the bar", "content", true));
         assert_eq!(lines(), 3);
-        assert!(ticket_update(cwd(&project), a.id.clone(), Some(" ".into()), None, None, None).is_err());
-        assert!(ticket_update(cwd(&project), a.id.clone(), None, Some("chore".into()), None, None).is_err());
-        assert!(ticket_update(cwd(&project), "nope".into(), Some("x".into()), None, None, None).is_err());
+        assert!(ticket_update(cwd(&project), a.id.clone(), Some(" ".into()), None, None, None, None).is_err());
+        assert!(ticket_update(cwd(&project), a.id.clone(), None, Some("chore".into()), None, None, None).is_err());
+        assert!(ticket_update(cwd(&project), "nope".into(), Some("x".into()), None, None, None, None).is_err());
         assert_eq!(lines(), 3);
 
         // The queue of New (ticket auto-todo): a first gives both tickets a place, one line each.
@@ -1316,13 +1426,13 @@ mod tests {
         let mut tickets = Vec::new();
         // Each message lands in New, the queue (ticket auto-todo).
         for text in ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine"] {
-            let ticket = ticket_add(cwd(&project), text.into()).unwrap();
+            let ticket = ticket_add(cwd(&project), text.into(), None, None, None).unwrap();
             assert_eq!(ticket.status, NEW);
             tickets.push(ticket.id);
         }
-        ticket_update(cwd(&project), tickets[2].clone(), Some("My own name".into()), None, None, None).unwrap();
+        ticket_update(cwd(&project), tickets[2].clone(), Some("My own name".into()), None, None, None, None).unwrap();
         // Triage gave the fifth task another name.
-        ticket_update(cwd(&project), tickets[4].clone(), None, None, Some("t-other".into()), None).unwrap();
+        ticket_update(cwd(&project), tickets[4].clone(), None, None, Some("t-other".into()), None, None).unwrap();
         // Dispatch canceled the sixth (triage answered without a task); the user canceled the seventh.
         ticket_move(cwd(&project), tickets[5].clone(), CANCELED.into(), vec![], Some("triage answered without a task".into())).unwrap();
         ticket_move(cwd(&project), tickets[6].clone(), CANCELED.into(), vec![], None).unwrap();
@@ -1370,7 +1480,7 @@ mod tests {
     #[test]
     fn a_ticket_done_by_hand_writes_one_close_line_and_stays_in_done() {
         let (project, base) = scratch("done-by-hand");
-        let one = ticket_add(cwd(&project), "one".into()).unwrap();
+        let one = ticket_add(cwd(&project), "one".into(), None, None, None).unwrap();
         let text = || fs::read_to_string(project.tickets_file()).unwrap();
         let before = text().lines().count();
         ticket_move(cwd(&project), one.id.clone(), DONE.into(), vec![], Some(USER_DONE.into())).unwrap();
@@ -1395,7 +1505,7 @@ mod tests {
     #[test]
     fn a_closed_ticket_does_not_reopen_from_a_stale_state() {
         let (project, base) = scratch("stale-state");
-        let one = ticket_add(cwd(&project), "one".into()).unwrap();
+        let one = ticket_add(cwd(&project), "one".into(), None, None, None).unwrap();
         let mut list = read(&project);
         follow(&project, &mut list, &[running("one", 1)]).unwrap();
         assert_eq!(list[0].status, IN_PROGRESS);
@@ -1423,7 +1533,7 @@ mod tests {
     #[test]
     fn a_merged_task_moves_its_ticket_to_done_and_never_back() {
         let (project, base) = scratch("merged");
-        ticket_add(cwd(&project), "one".into()).unwrap();
+        ticket_add(cwd(&project), "one".into(), None, None, None).unwrap();
         let mut list = read(&project);
         follow(&project, &mut list, &[running("one", 1)]).unwrap();
         // A done report whose task waits for Merge stays In progress (user decision 1).
@@ -1450,7 +1560,7 @@ mod tests {
     #[test]
     fn a_new_run_after_the_close_reopens_the_ticket() {
         let (project, base) = scratch("new-run");
-        let one = ticket_add(cwd(&project), "one".into()).unwrap();
+        let one = ticket_add(cwd(&project), "one".into(), None, None, None).unwrap();
         ticket_move(cwd(&project), one.id.clone(), DONE.into(), vec![], Some("done".into())).unwrap();
         let mut list = read(&project);
         let later = list[0].updated + 1;
@@ -1473,8 +1583,8 @@ mod tests {
         assert_eq!(read(&project), vec![ticket], "one open line in In progress");
         assert!(ticket_adopt(cwd(&project), "t-net".into()).is_err(), "a second ticket");
         // A ticket that follows the task under another id holds it too; a task without a brief takes its id.
-        let other = ticket_add(cwd(&project), "other".into()).unwrap();
-        ticket_update(cwd(&project), other.id, None, None, Some("t-two".into()), None).unwrap();
+        let other = ticket_add(cwd(&project), "other".into(), None, None, None).unwrap();
+        ticket_update(cwd(&project), other.id, None, None, Some("t-two".into()), None, None).unwrap();
         write_file(&project.reports.join("t-two.state"), "planning\n").unwrap();
         assert!(ticket_adopt(cwd(&project), "t-two".into()).is_err());
         write_file(&project.reports.join("t-three.state"), "planning\n").unwrap();
@@ -1503,9 +1613,77 @@ mod tests {
     fn a_line_by_hand_without_a_line_break_does_not_join_the_next_line() {
         let (project, base) = scratch("hand");
         write_file(&project.tickets_file(), "{\"op\":\"open\",\"id\":\"by-hand\",\"title\":\"By hand\"}").unwrap();
-        let added = ticket_add(cwd(&project), "a new one".into()).unwrap();
+        let added = ticket_add(cwd(&project), "a new one".into(), None, None, None).unwrap();
         let ids: Vec<String> = read(&project).into_iter().map(|t| t.id).collect();
         assert_eq!(ids, ["by-hand".to_string(), added.id]);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn an_old_ticket_line_has_the_level_medium_and_no_fields() {
+        let old = fold(&sample("a", Some("triage"), Some("fix"), &[]));
+        assert_eq!(old[0].level, "medium");
+        assert_eq!(old[0].fields, TicketFields::default());
+        let unknown = fold("{\"op\":\"open\",\"id\":\"b\",\"level\":\"extreme\",\"fields\":{\"why\":\" so \",\"color\":\"red\"}}\n");
+        assert_eq!(unknown[0].level, "medium", "an unknown level reads as Medium");
+        assert_eq!(unknown[0].fields, TicketFields { why: "so".into(), ..TicketFields::default() }, "an unknown key is skipped");
+        assert_eq!(level_choice(""), ("opus", "high"));
+        assert_eq!(level_choice("nope"), ("opus", "high"));
+        assert_eq!(level_choice("simple"), ("opus", "medium"));
+        assert_eq!(level_choice("Hard"), ("fable", "high"));
+    }
+
+    #[test]
+    fn a_new_ticket_keeps_its_level_its_type_and_its_filled_fields() {
+        let (project, base) = scratch("fields");
+        let fields = TicketFields {
+            why: " It stalls. ".into(),
+            done: "The board scrolls".into(),
+            keep: String::new(),
+            context: "   ".into(),
+            see: "A white screen".into(),
+            expect: "The list".into(),
+        };
+        // Only the Goal: Medium, the guessed type, no fields, and the open line has no `fields` key.
+        let plain = ticket_add(cwd(&project), "Make the board faster".into(), None, None, None).unwrap();
+        assert_eq!((plain.kind.as_str(), plain.level.as_str(), plain.title.as_str()), ("feature", "medium", "Make the board faster"));
+        assert_eq!(plain.fields, TicketFields::default());
+        let first = fs::read_to_string(project.tickets_file()).unwrap();
+        assert!(first.contains("\"level\":\"medium\"") && !first.contains("\"fields\""), "{first}");
+        // A fix keeps What I see and What I expect; an empty field writes nothing.
+        let fix = ticket_add(cwd(&project), "The board".into(), Some("Fix".into()), Some("hard".into()), Some(fields.clone())).unwrap();
+        assert_eq!((fix.kind.as_str(), fix.level.as_str(), fix.title.as_str()), ("fix", "hard", "The board"));
+        assert_eq!(fix.fields, TicketFields { why: "It stalls.".into(), context: String::new(), ..fields.clone() });
+        let line = fs::read_to_string(project.tickets_file()).unwrap().lines().nth(1).unwrap().to_string();
+        assert!(line.contains("\"why\":\"It stalls.\"") && !line.contains("\"keep\"") && !line.contains("\"context\""), "{line}");
+        // Another type drops the two fields of a fix.
+        let feature = ticket_add(cwd(&project), "A new button".into(), Some("feature".into()), Some("simple".into()), Some(fields.clone())).unwrap();
+        assert_eq!((feature.fields.see.as_str(), feature.fields.expect.as_str(), feature.fields.done.as_str()), ("", "", "The board scrolls"));
+        // An empty type keeps the guess; an unknown type or level is refused.
+        assert_eq!(ticket_add(cwd(&project), "fix the bar".into(), Some(String::new()), None, None).unwrap().kind, "fix");
+        assert!(ticket_add(cwd(&project), "x".into(), Some("chore".into()), None, None).is_err());
+        assert!(ticket_add(cwd(&project), "x".into(), None, Some("extreme".into()), None).is_err());
+        // The file reads back the same.
+        let back = read(&project);
+        assert_eq!(back.iter().find(|t| t.id == fix.id), Some(&fix));
+        assert_eq!(back.iter().find(|t| t.id == feature.id), Some(&feature));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_level_update_changes_only_the_level() {
+        let (project, base) = scratch("level");
+        let ticket = ticket_add(cwd(&project), "One".into(), None, None, None).unwrap();
+        let hard = ticket_update(cwd(&project), ticket.id.clone(), None, None, None, None, Some("Hard".into())).unwrap();
+        assert_eq!(hard.level, "hard");
+        assert_eq!((hard.title.as_str(), hard.kind.as_str(), hard.status.as_str(), hard.renamed), (ticket.title.as_str(), ticket.kind.as_str(), NEW, false));
+        let line = fs::read_to_string(project.tickets_file()).unwrap().lines().last().unwrap().to_string();
+        let line: Value = serde_json::from_str(&line).unwrap();
+        let keys: Vec<&str> = line.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys.len(), 4, "op, ref, ts and level only: {line}");
+        assert_eq!(line["level"], "hard");
+        assert!(ticket_update(cwd(&project), ticket.id.clone(), None, None, None, None, Some("extreme".into())).is_err());
+        assert_eq!(read(&project)[0].level, "hard");
         let _ = fs::remove_dir_all(base);
     }
 }

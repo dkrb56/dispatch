@@ -27,7 +27,69 @@ export interface Ticket {
   updated: number;
   /** The user gave the title. */
   renamed: boolean;
+  /** `simple`, `medium` or `hard`: the model of the plan run. An older host does not send it: Medium. */
+  level?: string;
+  /** The optional fields of the new ticket form; an older host does not send them. */
+  fields?: TicketFields;
 }
+
+/** The optional fields of a new ticket (ticket ticket-form-optional-fields-on-a-new); empty: not filled. */
+export interface TicketFields {
+  why: string;
+  done: string;
+  keep: string;
+  context: string;
+  see: string;
+  expect: string;
+}
+
+/** The levels of a ticket with the model and the effort of its plan run (`LEVELS` in tickets.rs). Medium is the default. */
+export const LEVELS: readonly { level: string; name: string; model: string; effort: string }[] = [
+  { level: "simple", name: "Simple", model: "opus", effort: "medium" },
+  { level: "medium", name: "Medium", model: "opus", effort: "high" },
+  { level: "hard", name: "Hard", model: "fable", effort: "high" },
+];
+
+/** The level of a ticket: Medium for an old ticket and an unknown level. */
+export function levelOf(ticket: Pick<Ticket, "level">): string {
+  const level = (ticket.level ?? "").trim().toLowerCase();
+  return LEVELS.some((one) => one.level === level) ? level : "medium";
+}
+
+function levelEntry(level: string) {
+  return LEVELS.find((one) => one.level === level) ?? LEVELS[1];
+}
+
+function capital(word: string): string {
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+/** The label of a level with its model and effort, for example `Medium (Opus, effort high)`. */
+export function levelLabel(level: string): string {
+  const entry = levelEntry(level);
+  return `${entry.name} (${capital(entry.model)}, effort ${entry.effort})`;
+}
+
+/** The level after this one on a click of the level tag: Simple, Medium, Hard, then Simple again. */
+export function nextLevel(level: string): string {
+  const at = LEVELS.findIndex((one) => one.level === level);
+  return LEVELS[(at + 1) % LEVELS.length].level;
+}
+
+/** The hint at the Goal box: it follows the model of the level. */
+export function goalHint(level: string): string {
+  return levelEntry(level).model === "fable" ? "Say the result, do not list steps." : "Name the screen or the button.";
+}
+
+/** The optional fields of the form in the order of the user; `fix`: only on a ticket of the type fix. */
+export const FIELDS: readonly { key: keyof TicketFields; label: string; fix: boolean }[] = [
+  { key: "why", label: "Why", fix: false },
+  { key: "done", label: "Done when", fix: false },
+  { key: "keep", label: "Do not change", fix: false },
+  { key: "context", label: "Context", fix: false },
+  { key: "see", label: "What I see", fix: true },
+  { key: "expect", label: "What I expect", fix: true },
+];
 
 /** The five columns of the board, in their order: Backlog first, left of New (ticket tickets-backlog, user decision 6). */
 export const COLUMNS: readonly { status: TicketStatus; name: string }[] = [
@@ -221,12 +283,21 @@ export function nextPlanTicket<T extends Pick<Ticket, "id" | "status" | "order" 
   return queueOrder(tickets).find((ticket) => ticketRoute(ticket, all) === "plan" && !sent(ticket.id)) ?? null;
 }
 
-/** The message that triage gets for a ticket: the image paths first, then the line with the id and the title, then the words. */
-export function ticketMessage(ticket: Pick<Ticket, "id" | "title" | "summary">): string {
+/**
+ * The message that triage gets for a ticket: the image paths first, then the line with the id and the
+ * title, then the words, then one block `<label>: <text>` per filled optional field in the order of
+ * `FIELDS`. A ticket with only the Goal gives the message of before.
+ */
+export function ticketMessage(ticket: Pick<Ticket, "id" | "title" | "summary" | "fields">): string {
   const { paths, words } = splitImages(ticket.summary);
   const quoted = paths.map((path) => (path.includes(" ") ? `"${path}"` : path));
-  const body = words === "" ? `Ticket ${ticket.id}: ${ticket.title}` : `Ticket ${ticket.id}: ${ticket.title}\n\n${words}`;
-  return [...quoted, body].join(" ");
+  const blocks = [`Ticket ${ticket.id}: ${ticket.title}`];
+  if (words !== "") blocks.push(words);
+  for (const field of FIELDS) {
+    const text = (ticket.fields?.[field.key] ?? "").trim();
+    if (text !== "") blocks.push(`${field.label}: ${text}`);
+  }
+  return [...quoted, blocks.join("\n\n")].join(" ");
 }
 
 /** The ids after a move of one ticket to a new index; the index is clamped to the list. */

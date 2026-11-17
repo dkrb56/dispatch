@@ -18,9 +18,15 @@ import {
   dropIds,
   endFailed,
   endWord,
+  FIELDS,
   fitBoardSize,
+  goalHint,
   goesStraight,
+  LEVELS,
+  levelLabel,
+  levelOf,
   movedIds,
+  nextLevel,
   nextPlanTicket,
   nextTicket,
   nextType,
@@ -523,4 +529,52 @@ test("no triage: the Setup switch, the Help and the README", () => {
   const readme = read("../README.md");
   assert.ok(readme.includes('"No triage" runs the project without a triage chat'));
   assert.ok(readme.includes('with the switch "No triage", starts the plan run of every New ticket itself'));
+});
+
+// Ticket ticket-form-optional-fields-on-a-new: the level of the plan run and the optional fields.
+test("an old ticket has the level Medium; each level has its label, its next level and its hint", () => {
+  assert.equal(levelOf({}), "medium", "an old ticket without a level");
+  assert.equal(levelOf({ level: "extreme" }), "medium", "an unknown level");
+  assert.equal(levelOf({ level: "Hard" }), "hard");
+  assert.deepEqual(
+    LEVELS.map((one) => levelLabel(one.level)),
+    ["Simple (Opus, effort medium)", "Medium (Opus, effort high)", "Hard (Fable, effort high)"],
+  );
+  assert.deepEqual([nextLevel("simple"), nextLevel("medium"), nextLevel("hard")], ["medium", "hard", "simple"]);
+  assert.equal(goalHint("hard"), "Say the result, do not list steps.");
+  assert.equal(goalHint("simple"), "Name the screen or the button.");
+  assert.equal(goalHint("medium"), "Name the screen or the button.");
+  assert.deepEqual(
+    FIELDS.map((field) => field.label),
+    ["Why", "Done when", "Do not change", "Context", "What I see", "What I expect"],
+  );
+  assert.deepEqual(FIELDS.filter((field) => field.fix).map((field) => field.key), ["see", "expect"]);
+});
+
+test("the message to triage has each filled field once, in order, and nothing for an empty field", () => {
+  const goal = { id: "x", title: "X", summary: "make it fast" };
+  assert.equal(ticketMessage(goal), "Ticket x: X\n\nmake it fast", "only the Goal: the message of before");
+  const empty = { why: "", done: " ", keep: "", context: "", see: "", expect: "" };
+  assert.equal(ticketMessage({ ...goal, fields: empty }), ticketMessage(goal));
+  const fields = { why: "It stalls.", done: "50 tickets scroll", keep: "", context: "Since 0.1.60", see: "A white board", expect: "" };
+  assert.equal(
+    ticketMessage({ ...goal, fields }),
+    "Ticket x: X\n\nmake it fast\n\nWhy: It stalls.\n\nDone when: 50 tickets scroll\n\nContext: Since 0.1.60\n\nWhat I see: A white board",
+  );
+  // The images stay first.
+  assert.equal(ticketMessage({ id: "i", title: "I", summary: "C:/p/a.png", fields: { ...empty, why: "To see it" } }), "C:/p/a.png Ticket i: I\n\nWhy: To see it");
+});
+
+test("the form keeps its draft outside, sends the level, the type and the fields, and the card has a level tag", () => {
+  assert.match(MAIN, /let newTicketDraft: TicketDraft = emptyTicketDraft\(\);/);
+  assert.match(MAIN, /"ticket_add", \{ text, kind: draft\.kind \|\| null, level: draft\.level, fields: filled \? fields : null \}/);
+  assert.match(MAIN, /goalHint\(draft\.level\)/);
+  assert.match(MAIN, /ticket-level level-\$\{level\}/);
+  assert.match(MAIN, /updateTicket\(project, ticket\.id, \{ level: nextLevel\(level\) \}\)/);
+  assert.match(MAIN, /"ticket_level_file", \{ cwd, id: ticket\.id \}/);
+  assert.match(MAIN, /"task_work", \{ cwd: taskCwd\(task\), id: task\.name, model: work\.model, effort: work\.effort \}/);
+  assert.match(CSS, /\.ticket-new \.ticket-options/);
+  assert.ok(HTML.includes("<b>Level.</b> Each ticket has a level for its plan: Simple (Opus, effort medium), Medium (Opus, effort high) or Hard (Fable, effort high)."));
+  assert.ok(HTML.includes("<b>Work run.</b> The Plan ready card shows the model and the effort that the plan advises for the work run"));
+  assert.ok(read("../README.md").includes("Each ticket has a level for its plan run: Simple (Opus, effort medium)"));
 });

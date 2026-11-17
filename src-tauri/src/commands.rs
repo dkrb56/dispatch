@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, State};
 
-use crate::core::tickets::{self, Ticket};
+use crate::core::tickets::{self, Ticket, TicketFields};
 use crate::core::actions::{self, Action, ActionList, ActionRun};
 use crate::core::builds::{self, BuildFolders, CleanResult};
 use crate::core::chats::{self, Chat, ChatView, Worker};
@@ -221,13 +221,21 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
 }
 
 #[tauri::command(async)]
-pub fn ticket_add(cwd: String, text: String) -> Result<Ticket, String> {
-    tickets::ticket_add(cwd, text)
+pub fn ticket_add(cwd: String, text: String, kind: Option<String>, level: Option<String>, fields: Option<TicketFields>) -> Result<Ticket, String> {
+    tickets::ticket_add(cwd, text, kind, level, fields)
 }
 
 #[tauri::command(async)]
-pub fn ticket_update(cwd: String, id: String, title: Option<String>, kind: Option<String>, task: Option<String>, note: Option<String>) -> Result<Ticket, String> {
-    tickets::ticket_update(cwd, id, title, kind, task, note)
+pub fn ticket_update(
+    cwd: String,
+    id: String,
+    title: Option<String>,
+    kind: Option<String>,
+    task: Option<String>,
+    note: Option<String>,
+    level: Option<String>,
+) -> Result<Ticket, String> {
+    tickets::ticket_update(cwd, id, title, kind, task, note, level)
 }
 
 #[tauri::command(async)]
@@ -260,6 +268,18 @@ pub fn ticket_adopt(cwd: String, id: String) -> Result<Ticket, String> {
 #[tauri::command(async)]
 pub fn ticket_plan(cwd: String, id: String) -> Result<String, String> {
     pipeline::ticket_plan(cwd, id)
+}
+
+/// Writes the plan model of the level of a ticket before it goes to triage (ticket ticket-form-optional-fields-on-a-new).
+#[tauri::command(async)]
+pub fn ticket_level_file(cwd: String, id: String) -> Result<(), String> {
+    pipeline::ticket_level_file(cwd, id)
+}
+
+/// Writes the model and the effort of the work run of a task before Approve (ticket ticket-form-optional-fields-on-a-new).
+#[tauri::command(async)]
+pub fn task_work(cwd: String, id: String, model: String, effort: String) -> Result<(), String> {
+    pipeline::task_work(cwd, id, model, effort)
 }
 
 #[tauri::command(async)]

@@ -55,6 +55,37 @@ export function checksSentence(checks: readonly CheckInfo[], choice: ReadonlySet
   return names.length > 0 ? ` Checks chosen: ${names.join(", ")}.` : " No check chosen.";
 }
 
+/** A model and an effort of the work run (`Choice` in pipeline.rs). Empty: the choice above Workers applies. */
+export interface WorkChoice {
+  model: string;
+  effort: string;
+}
+
+/** The change of the user in the Work run row of a card, with the change time of the plan it was made for. */
+export interface SavedWork extends WorkChoice {
+  planModified: number;
+}
+
+/** The start of the Work run row (ticket ticket-form-optional-fields-on-a-new): the advice of the plan, else empty values. */
+export function workDefault(recommended: WorkChoice | null | undefined): WorkChoice {
+  return recommended ? { model: recommended.model, effort: recommended.effort } : { model: "", effort: "" };
+}
+
+/**
+ * The model and the effort that Approve writes: a change of the user for the same plan time wins; a
+ * change for another plan time (a new plan) drops; without a change, the advice of the plan; without
+ * advice, empty values.
+ */
+export function workChosen(recommended: WorkChoice | null | undefined, saved: SavedWork | null | undefined, planModified: number): WorkChoice {
+  if (saved && saved.planModified === planModified) return { model: saved.model, effort: saved.effort };
+  return workDefault(recommended);
+}
+
+/** The values equal the advice of the plan: the row shows the mark "recommended". */
+export function workIsAdvice(recommended: WorkChoice | null | undefined, choice: WorkChoice): boolean {
+  return !!recommended && recommended.model === choice.model && recommended.effort === choice.effort;
+}
+
 /** The text of the Checks row of a task after Approve, or null before the user chose. */
 export function checksText(checks: readonly CheckInfo[]): string | null {
   if (!checks.some((check) => check.chosen !== null)) return null;

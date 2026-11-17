@@ -51,7 +51,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, parseBoardSize, queueOrder, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE } from "./tickets";
+import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, parseBoardSize, queueOrder, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { type Typed, typedAfter, typingState } from "./typing";
@@ -77,7 +77,7 @@ import { type Action, type ActionList, type ActionRun, actionsButtonText, checkA
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { mergedWords, outsideLine, pushWords, refusalGoes } from "./merged";
 import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
-import { type CheckInfo, checkRows, checksSentence, checksText, choiceNames, defaultChoice } from "./checks";
+import { type CheckInfo, checkRows, checksSentence, checksText, choiceNames, defaultChoice, type SavedWork, type WorkChoice, workChosen, workIsAdvice } from "./checks";
 import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards, triageFree } from "./pending";
 import { type FlowView, openFlow } from "./flow";
 import { drawLinks, type Link } from "./links";
@@ -1247,10 +1247,14 @@ function fillPaneBar(pane: Pane): void {
 
   // The first pair of selectors is the plan run. The second pair is the work run, with the
   // limit for the agents of each worker and the number of agents that the workers started.
-  model.title = "model of the plan run";
-  effort.title = "effort of the plan run";
+  // The level of a ticket and the advice of a plan come first (ticket ticket-form-optional-fields-on-a-new,
+  // user decision 1): these lists count for a task without them.
+  model.title = "model of the plan run, for a task without a ticket level";
+  effort.title = "effort of the plan run, for a task without a ticket level";
   const workModel = selector(MODELS, "model of the work run");
   const workEffort = selector(EFFORTS, "effort of the work run");
+  workModel.title = "model of the work run, for a task without a choice at Approve";
+  workEffort.title = "effort of the work run, for a task without a choice at Approve";
   for (const option of [...workModel.options, ...workEffort.options]) {
     if (!option.value) option.textContent = `default ${option.parentElement === workModel ? "model" : "effort"}`;
   }
@@ -2207,6 +2211,8 @@ interface TaskInfo {
    * computer (ticket second-computer). Absent from an older host.
    */
   elsewhere?: boolean;
+  /** The advice of the plan for the model and the effort of the work run (ticket ticket-form-optional-fields-on-a-new). Null or absent without it. */
+  workChoice?: WorkChoice | null;
 }
 
 /** One Bash command of a task with its result, from the transcripts (ticket task-evidence). */
@@ -2508,6 +2514,18 @@ const rejectDrafts = new Map<string, string>();
  * drops the choice; without one the card shows the recommended checks.
  */
 const checkChoices = new Map<string, { plan: number; names: Set<string> }>();
+
+/**
+ * The model and the effort of the work run that the user changed on a Plan ready card (ticket
+ * ticket-form-optional-fields-on-a-new), by project key and task name, with the time of the plan file.
+ * A new plan drops the change; without one, Approve takes the advice of the plan.
+ */
+const workChoices = new Map<string, SavedWork>();
+
+/** The model and the effort of the work run of a task: the change of the user on its card, else the advice of the plan. */
+function workChoiceOf(task: Task): WorkChoice {
+  return workChosen(task.info?.workChoice, workChoices.get(queueKey(task)), task.info?.plan?.modified ?? 0);
+}
 
 /** The ticked checks of a task: the choice of the user on its card, else the default of the plan. */
 function checkChoice(task: Task): Set<string> {
@@ -3421,9 +3439,16 @@ function moveAllTickets(project: string, ids: string[], status: "backlog" | "new
   return ticketAction(project, "ticket_move_all", { ids, status });
 }
 
-/** Changes the title (a rename of the user), the type, the task or the end word of a ticket. */
-function updateTicket(project: string, id: string, fields: { title?: string; kind?: string; task?: string; note?: string }): Promise<boolean> {
-  return ticketAction(project, "ticket_update", { id, title: fields.title ?? null, kind: fields.kind ?? null, task: fields.task ?? null, note: fields.note ?? null });
+/** Changes the title (a rename of the user), the type, the task, the end word or the level of a ticket. */
+function updateTicket(project: string, id: string, fields: { title?: string; kind?: string; task?: string; note?: string; level?: string }): Promise<boolean> {
+  return ticketAction(project, "ticket_update", {
+    id,
+    title: fields.title ?? null,
+    kind: fields.kind ?? null,
+    task: fields.task ?? null,
+    note: fields.note ?? null,
+    level: fields.level ?? null,
+  });
 }
 
 /** The status of the session of a triage pane from its session file (`idle`, `shell`, `busy`, `waiting`), or null. */
@@ -3628,6 +3653,9 @@ async function dispatchTickets(): Promise<void> {
       pendingCards.push(card);
       savePending();
       renderChats();
+      // The level of the ticket gives the model of its plan run (ticket ticket-form-optional-fields-on-a-new):
+      // triage runs the plan verb, and the script reads the file. An older host without the call sends as before.
+      await call(record.host, "ticket_level_file", { cwd, id: ticket.id }).catch((error) => console.warn("the level file of the ticket was not written", error));
       try {
         await pane.chat.deliver(ticketMessage(ticket));
       } catch (error) {
@@ -4481,6 +4509,53 @@ function checksElement(task: Task, checks: CheckInfo[], busy: boolean): HTMLElem
   return block;
 }
 
+/** The focus is on a list of a Work run row: a render waits, because it would close the open list. */
+function workListOpen(active: Element | null): active is HTMLSelectElement {
+  return active instanceof HTMLSelectElement && active.closest(".card-work") !== null;
+}
+
+/**
+ * The Work run row of a Plan ready card (ticket ticket-form-optional-fields-on-a-new): the model and
+ * the effort of the work run, preset with the advice of the plan and marked "recommended" while they
+ * equal it. An empty value takes the list above Workers. A change goes into `workChoices`, and the
+ * list gives the focus back so that the waiting render runs.
+ */
+function workElement(task: Task, busy: boolean): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "card-work";
+  const name = document.createElement("span");
+  name.className = "card-work-name";
+  name.textContent = "Work run";
+  const advice = task.info?.workChoice ?? null;
+  row.title = advice ? `The plan advises ${advice.model}, effort ${advice.effort}. You can change it before Approve.` : "The plan gives no advice: the lists above Workers apply unless you choose here.";
+  const choice = workChoiceOf(task);
+  const model = selector(MODELS, "model of the work run");
+  const effort = selector(EFFORTS, "effort of the work run");
+  for (const option of [...model.options, ...effort.options]) if (!option.value) option.textContent = "as above Workers";
+  model.value = choice.model;
+  effort.value = choice.effort;
+  const mark = document.createElement("span");
+  mark.className = "recommended";
+  mark.textContent = "recommended";
+  mark.hidden = !workIsAdvice(advice, choice);
+  for (const select of [model, effort]) {
+    select.disabled = busy;
+    select.addEventListener("change", () => {
+      const chosen = { model: model.value, effort: effort.value };
+      workChoices.set(queueKey(task), { ...chosen, planModified: task.info?.plan?.modified ?? 0 });
+      mark.hidden = !workIsAdvice(advice, chosen);
+      select.blur();
+    });
+    select.addEventListener("blur", () => {
+      if (!renderSkipped) return;
+      renderSkipped = false;
+      renderChats();
+    });
+  }
+  row.append(name, model, effort, mark);
+  return row;
+}
+
 /** The row of the checks that the user chose for a task, after Approve (ticket task-checks), or null. */
 function checksRow(checks: CheckInfo[]): HTMLElement | null {
   const text = checksText(checks);
@@ -4532,6 +4607,8 @@ function planCard(task: Task): HTMLElement {
   // decision 4): Approve all and the Decisions window both take them.
   const checks = task.info?.checks ?? [];
   if (checks.length > 0) card.append(checksElement(task, checks, busy));
+  // The model and the effort of the work run, with the advice of the plan (ticket ticket-form-optional-fields-on-a-new).
+  card.append(workElement(task, busy));
   const actions = document.createElement("div");
   actions.className = "actions";
   const decisions = task.info?.decisions ?? [];
@@ -4665,18 +4742,32 @@ async function approveWithDecisions(task: Task, choices: DecisionAnswer[], how: 
 async function writeDecisions(task: Task, choices: DecisionAnswer[]): Promise<number | null> {
   const checks = task.info?.checks ?? [];
   const names = choiceNames(checks, checkChoice(task));
+  // The work run takes the change of the user on the card, else the advice of the plan (ticket
+  // ticket-form-optional-fields-on-a-new); empty values remove the line, and the lists above Workers apply.
+  const planTime = task.info?.plan?.modified ?? 0;
+  const work = workChoiceOf(task);
   let written = await writeDecisionLines(task, choices);
-  if (written === null || checks.length === 0) return written;
-  try {
-    written = await call<number>(taskHost(task), "task_checks", { cwd: taskCwd(task), id: task.name, names });
-    // The written plan is the same plan: an automatic approval tries it once, not again.
-    autoApproved.set(task.name, written);
-    return written;
-  } catch (error) {
-    actionErrors.set(task.name, String(error));
-    renderChats();
-    return null;
+  if (written === null) return written;
+  if (checks.length > 0) {
+    try {
+      written = await call<number>(taskHost(task), "task_checks", { cwd: taskCwd(task), id: task.name, names });
+      // The written plan is the same plan: an automatic approval tries it once, not again.
+      autoApproved.set(task.name, written);
+    } catch (error) {
+      actionErrors.set(task.name, String(error));
+      renderChats();
+      return null;
+    }
   }
+  // An older host has no call: the work run takes the lists above Workers, as before.
+  await call(taskHost(task), "task_work", { cwd: taskCwd(task), id: task.name, model: work.model, effort: work.effort }).catch((error) =>
+    console.warn("the work model of the task was not written", error),
+  );
+  // The written plan is the same plan: a change of the user stays for a queued approval.
+  const key = queueKey(task);
+  const saved = workChoices.get(key);
+  if (saved && saved.planModified === planTime) workChoices.set(key, { ...saved, planModified: written });
+  return written;
 }
 
 /** Writes the decisions into the plan, as `writeDecisions` says; without decisions it writes nothing. */
@@ -5853,6 +5944,25 @@ let renamingTicket: string | null = null;
 let newTicketOpen = false;
 let focusNew = false;
 
+/** The draft of the new ticket form (ticket ticket-form-optional-fields-on-a-new): Goal, type (empty: Auto), level, More open, optional fields. */
+interface TicketDraft {
+  text: string;
+  kind: string;
+  level: string;
+  more: boolean;
+  fields: TicketFields;
+}
+
+function emptyTicketDraft(): TicketDraft {
+  return { text: "", kind: "", level: "medium", more: false, fields: { why: "", done: "", keep: "", context: "", see: "", expect: "" } };
+}
+
+/**
+ * The draft stays outside the form: a click on the level, the type or More moves the focus, and the
+ * next render builds the form again. Add and Cancel clear it.
+ */
+let newTicketDraft: TicketDraft = emptyTicketDraft();
+
 /** Opens the board of a project. */
 function openTickets(ref: ProjectRef): void {
   ticketsRef = ref;
@@ -6898,7 +7008,8 @@ function renderTickets(): void {
   showTicketButtons();
   if (!ticketsRef || !ticketsDialog.open || ticketDragging) return;
   const active = document.activeElement;
-  if ((active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) && ticketsColumnsEl.contains(active)) return;
+  // An open level list of the form holds it too: a render would close the list.
+  if ((active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) && ticketsColumnsEl.contains(active)) return;
   const key = refKey(ticketsRef);
   const record = projectTasks.get(key);
   const tickets = record?.tickets ?? [];
@@ -6951,41 +7062,100 @@ function renderTickets(): void {
   focusNew = false;
 }
 
-/** The form at the top of New: a new ticket in the words of the user, at the end of the queue. */
+/** The types of the type button of the form: Auto (the guess from the words) first, then the four types. */
+const FORM_TYPES = ["", ...TYPES.map((one) => one.type)];
+
+/**
+ * The form at the top of New: a new ticket in the words of the user, at the end of the queue. The box
+ * is the Goal, and Enter adds the ticket. The level selects the model of the plan run, the hint under
+ * the box follows it, the type button starts at Auto, and More opens the optional fields (ticket
+ * ticket-form-optional-fields-on-a-new); the fields of a fix show only for the type Fix.
+ */
 function newTicketForm(project: string): HTMLElement {
+  const draft = newTicketDraft;
   const form = mapElement("div", "ticket-new");
   const box = mapElement("textarea");
   box.rows = 3;
+  box.value = draft.text;
   box.placeholder = "What is the ticket about? Enter adds it to New; Dispatch sends it when triage is free. Shift+Enter makes a new line.";
+  box.setAttribute("aria-label", "Goal");
+  box.addEventListener("input", () => (draft.text = box.value));
+  const hint = mapElement("div", "ticket-hint", goalHint(draft.level));
   const add = mapElement("button", "", "Add");
   const cancel = mapElement("button", "", "Cancel");
   const close = () => {
     newTicketOpen = false;
-    box.blur();
+    newTicketDraft = emptyTicketDraft();
+    (document.activeElement as HTMLElement | null)?.blur();
     renderTickets();
   };
   const save = () => {
-    const text = box.value.trim();
+    const text = draft.text.trim();
     if (text === "") return close();
+    const fix = draft.kind === "fix";
+    const fields = { why: "", done: "", keep: "", context: "", see: "", expect: "" };
+    for (const field of FIELDS) if (!field.fix || fix) fields[field.key] = draft.fields[field.key].trim();
+    const filled = Object.values(fields).some((value) => value !== "");
     newTicketOpen = false;
-    box.blur();
-    void ticketAction(project, "ticket_add", { text });
+    newTicketDraft = emptyTicketDraft();
+    (document.activeElement as HTMLElement | null)?.blur();
+    void ticketAction(project, "ticket_add", { text, kind: draft.kind || null, level: draft.level, fields: filled ? fields : null });
   };
-  box.addEventListener("keydown", (event) => {
+  // Escape closes the form from each box; Enter adds the ticket from the Goal box, Shift+Enter makes a new line.
+  const keys = (goal: boolean) => (event: KeyboardEvent) => {
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
       close();
-    } else if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+    } else if (goal && event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       save();
     }
+  };
+  box.addEventListener("keydown", keys(true));
+  const options = mapElement("div", "ticket-options");
+  const level = mapElement("select", "ticket-level-select");
+  level.title = "The level of the ticket: the model and the effort of its plan run";
+  level.setAttribute("aria-label", "Level");
+  for (const one of LEVELS) {
+    const option = mapElement("option", "", levelLabel(one.level));
+    option.value = one.level;
+    level.append(option);
+  }
+  level.value = draft.level;
+  level.addEventListener("change", () => {
+    draft.level = level.value;
+    level.blur();
+    renderTickets();
   });
+  const kind = ticketButton(`Type: ${draft.kind ? typeName(draft.kind) : "Auto"}`, "The type of the ticket. Auto guesses it from the words. Fix shows What I see and What I expect. Click for the next type.", () => {
+    draft.kind = FORM_TYPES[(FORM_TYPES.indexOf(draft.kind) + 1) % FORM_TYPES.length];
+    renderTickets();
+  });
+  const more = ticketButton(draft.more ? "Less ▴" : "More ▾", draft.more ? "Close the optional fields" : "Open the optional fields: Why, Done when, Do not change, Context", () => {
+    draft.more = !draft.more;
+    renderTickets();
+  });
+  options.append(level, kind, more);
+  form.append(box, hint, options);
+  if (draft.more) {
+    for (const field of FIELDS) {
+      if (field.fix && draft.kind !== "fix") continue;
+      const label = mapElement("label", "ticket-field");
+      const area = mapElement("textarea");
+      area.rows = 2;
+      area.value = draft.fields[field.key];
+      area.addEventListener("input", () => (draft.fields[field.key] = area.value));
+      area.addEventListener("keydown", keys(false));
+      label.append(mapElement("span", "", field.label), area);
+      form.append(label);
+    }
+  }
   add.addEventListener("click", save);
   cancel.addEventListener("click", close);
   const buttons = mapElement("div", "ticket-tools");
   buttons.append(add, cancel);
-  form.append(box, buttons);
+  form.append(buttons);
   return form;
 }
 
@@ -7075,7 +7245,7 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   } else {
     const title = mapElement("button", "ticket-title", ticket.title);
     title.type = "button";
-    title.title = `${ticket.title}\n${ticket.id}\n\n${ticket.summary}\n\nClick to rename.`;
+    title.title = `${ticket.title}\n${ticket.id}\nLevel: ${levelLabel(levelOf(ticket))}\n\n${ticket.summary}\n\nClick to rename.`;
     title.addEventListener("click", rename);
     top.append(title);
   }
@@ -7084,8 +7254,18 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   tag.type = "button";
   tag.title = "The type of the ticket. Click for the next type.";
   tag.addEventListener("click", () => void updateTicket(project, ticket.id, { kind: nextType(ticket.type) }));
+  // The level tag (ticket ticket-form-optional-fields-on-a-new, user decision 4): a click gives a waiting
+  // ticket the next level; a ticket that went or ended shows it without the click.
+  const level = levelOf(ticket);
+  const waiting = (ticket.status === "new" && !inFlight) || ticket.status === "backlog";
+  const levelTag = mapElement(waiting ? "button" : "span", `ticket-level level-${level}`, LEVELS.find((one) => one.level === level)?.name ?? "Medium");
+  levelTag.title = waiting ? `The level: ${levelLabel(level)} for the plan run. Click for the next level.` : `The level: ${levelLabel(level)} for the plan run.`;
+  if (levelTag instanceof HTMLButtonElement) {
+    levelTag.type = "button";
+    levelTag.addEventListener("click", () => void updateTicket(project, ticket.id, { level: nextLevel(level) }));
+  }
   const state = mapElement("span", `ticket-state${endFailed(ticket) ? " failed" : ""}`, ticketState(project, ticket, queueIds, record));
-  meta.append(tag, mapElement("span", "ticket-date", chatTime(ticket.created)), state);
+  meta.append(tag, levelTag, mapElement("span", "ticket-date", chatTime(ticket.created)), state);
   const tools = mapElement("div", "ticket-tools");
   const at = queueIds.indexOf(ticket.id);
   // New is the queue (ticket auto-todo): Dispatch sends its tickets in their order, unless the project is paused.
@@ -7852,7 +8032,7 @@ function renderChats(): void {
   if (chatsEl.hidden) return;
   // A render replaces the cards. While the user types into one, the render waits for the blur.
   const active = document.activeElement;
-  if (active instanceof HTMLTextAreaElement && chatListEl.contains(active)) {
+  if ((active instanceof HTMLTextAreaElement || workListOpen(active)) && chatListEl.contains(active)) {
     renderSkipped = true;
     return;
   }
@@ -9429,7 +9609,7 @@ function renderFocus(): void {
   if (!focusOn || ticketDragging) return;
   // A render replaces the cards. While the user types into one, the render waits for the blur.
   const active = document.activeElement;
-  if (active instanceof HTMLTextAreaElement && focusEl.contains(active) && active.closest(".focus-side")) {
+  if ((active instanceof HTMLTextAreaElement || workListOpen(active)) && focusEl.contains(active) && active.closest(".focus-side")) {
     renderSkipped = true;
     return;
   }
@@ -10286,7 +10466,7 @@ function renderMap(): void {
   if (!mapOn || mapFlow) return;
   // A render replaces the cards. While the user types into one, the render waits for the blur.
   const active = document.activeElement;
-  if (active instanceof HTMLTextAreaElement && mapEl.contains(active)) {
+  if ((active instanceof HTMLTextAreaElement || workListOpen(active)) && mapEl.contains(active)) {
     renderSkipped = true;
     return;
   }
@@ -10537,7 +10717,7 @@ function renderOverview(): void {
   // A render replaces the task cards. While the user types a reason to reject, it waits for the
   // blur. The message box is not in the task place, so typing there needs no wait.
   const active = document.activeElement;
-  if (active instanceof HTMLTextAreaElement && active.closest(".overview-tasks")) {
+  if ((active instanceof HTMLTextAreaElement || workListOpen(active)) && active.closest(".overview-tasks")) {
     renderSkipped = true;
     return;
   }
