@@ -2,6 +2,13 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.72 (2026-11-17)
+- When Approve waits because files of the task have changes that are not saved in git, the plan card offers Commit files…. Its window lists those files and a commit message that Claude writes and you can edit. Commit saves only those files in one local commit and sends nothing to GitHub.
+- A stopped task shows Resume in its card. Resume starts the stopped plan or work run again where it stopped.
+- A new Git state button among the project buttons opens a window that only shows: the history of all branches as a graph, how far the branch is ahead of or behind GitHub, the files with changes, and the changes of the file you pick.
+- You can resize the Git state window at its corner, like the tickets board. It keeps its size, and a double-click gives the usual size.
+- This version has a Mac disk image again. A Mac with an older version now gets the update.
+
 ## 0.1.71 (2026-11-17)
 - Each project has a "+ Ticket" button next to Tickets, and each Overview card has one too. It opens a New ticket window without the board, with every field at once.
 - A right-click on a tickets board opens a small menu: New ticket in New or New ticket in Backlog.
