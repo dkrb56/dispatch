@@ -72,7 +72,7 @@ import { type WaitFacts, waitReason } from "./waitreason";
 import { HOLD_NOTE, holdWait } from "./holdstep";
 import { isTerminalReport, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { type AskDecision, askAbout, askBlocked, askLine } from "./discuss";
-import { chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
+import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { mergedWords, outsideLine, refusalGoes } from "./merged";
@@ -2577,6 +2577,25 @@ function approvePlans(): void {
     // flight holds the project like a running work run. A pause holds every start (ticket pause-tasks).
     // An uncommitted change holds only the task whose files it touches (ticket leftover-files-block-tasks).
     const busy = { merging: project.merging, running: workRun(tasks)?.name ?? null, leased: startHolder(project.host, project.cwd), paused: project.paused };
+    // Night mode merges a finished task when the merge check passes (ticket task-branches-blocked-work,
+    // user decision 3), so a task that needs its work goes on at night. One try per report. The merge
+    // holds the checkout: nothing else starts in this project at this poll.
+    if (night) {
+      const folder = projectKey(project.host, project.cwd);
+      const mergeKey = (task: Task) => `merge:${folder}:${task.name}:${task.info?.report?.modified ?? ""}`;
+      const name = chooseNightMerge({
+        ...busy,
+        night,
+        gate: project.gate.trim() !== "",
+        tasks: tasks.map((task) => ({ name: task.name, waits: mergeWaits(task), state: task.info?.header?.state ?? null, busy: busyTasks.has(task.name), tried: nightDone.has(mergeKey(task)) })),
+      });
+      const merge = name ? tasks.find((task) => task.name === name) : undefined;
+      if (merge) {
+        nightDone.add(mergeKey(merge));
+        void mergeTask(merge, true);
+        continue;
+      }
+    }
     // A plan that the user approved while the project was not free starts first.
     const queued = projectBusy(busy) ? undefined : nextQueued(project, tasks);
     const choice = chooseStart({
@@ -5099,7 +5118,8 @@ function repeatCard(task: Task, repeats: AnsweredQuestion[]): HTMLElement {
 /**
  * Whether the branch of a task waits for the Merge click (ticket task-branches): the branch exists and
  * is not merged, its work run ended (a report, or the task was stopped), no worker of the task runs,
- * no plan and no question waits for the user. Night mode never merges: the branch waits for the user.
+ * no plan and no question waits for the user. Night mode merges it after the merge check passed
+ * (`approvePlans`, ticket task-branches-blocked-work); a failed check waits for the user.
  */
 function mergeWaits(task: Task): boolean {
   const info = task.info;
@@ -5122,8 +5142,9 @@ function mergeRunning(task: Task): boolean {
  * Merges the branch of a task through the worker script, then queues one line for triage with the
  * merge commit. The gate can run for hours; the card says "merging" meanwhile. A refusal stays in
  * the card until the next click, or until `storeProjectTasks` takes it away (ticket merged-outside).
+ * `night`: night mode started it (ticket task-branches-blocked-work); the line for triage says so.
  */
-async function mergeTask(task: Task): Promise<void> {
+async function mergeTask(task: Task, night = false): Promise<void> {
   const branch = task.info?.branch;
   if (!branch || busyTasks.has(task.name)) return;
   busyTasks.add(task.name);
@@ -5135,7 +5156,10 @@ async function mergeTask(task: Task): Promise<void> {
     const cwd = taskCwd(task);
     const result = await call<string>(host, "task_merge", { cwd, id: task.name });
     const commit = result.split(": ").pop()?.trim() ?? "";
-    tellTriage(projectFor(host, cwd), `Branch ${branch.name} of ${task.name} merged into ${branch.base} in Dispatch (merge ${commit}). No push.`);
+    const line = night
+      ? `Night mode merged branch ${branch.name} of ${task.name} into ${branch.base} in Dispatch after the merge check passed (merge ${commit}). No push.`
+      : `Branch ${branch.name} of ${task.name} merged into ${branch.base} in Dispatch (merge ${commit}). No push.`;
+    tellTriage(projectFor(host, cwd), line);
   } catch (error) {
     actionErrors.set(task.name, String(error));
   } finally {

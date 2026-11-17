@@ -126,3 +126,37 @@ export function chooseStart(facts: StartFacts): { task: string; kind: StartKind 
   const task = facts.tasks.find((task) => task.ready && !task.hold && !task.busy && !task.blocked && task.planTime !== null && task.tried !== task.planTime && (facts.auto || facts.night || !!task.auto));
   return task ? { task: task.name, kind: facts.night ? "night" : "auto" } : null;
 }
+
+/** A task of the project as the night merge sees it (ticket task-branches-blocked-work). */
+export interface MergeCandidate {
+  name: string;
+  /** The branch of the task waits for the Merge click. */
+  waits: boolean;
+  /** The state line of the report (done, needs-decision, failed), or null. */
+  state: string | null;
+  /** A click of the task runs now. */
+  busy: boolean;
+  /** Night mode tried this merge already for the same report time. */
+  tried: boolean;
+}
+
+/** The facts of one project for the night merge. */
+export interface MergeFacts extends BusyFacts {
+  /** Night mode of the host of the project. */
+  night: boolean;
+  /** The project has a gate command: night mode merges only behind a check that passes. */
+  gate: boolean;
+  /** The tasks in the order of the task list. */
+  tasks: MergeCandidate[];
+}
+
+/**
+ * The task whose branch night mode merges at this poll, or null (ticket task-branches-blocked-work):
+ * night mode on, a gate command, the project not busy and no click of any of its tasks running, and
+ * the first task whose branch waits for Merge with a done report and no earlier try for that report.
+ * The merge runs the gate first, so a check that fails merges nothing and the branch waits for the user.
+ */
+export function chooseNightMerge(facts: MergeFacts): string | null {
+  if (!facts.night || !facts.gate || projectBusy(facts) || facts.tasks.some((task) => task.busy)) return null;
+  return facts.tasks.find((task) => task.waits && task.state === "done" && !task.tried)?.name ?? null;
+}

@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { chooseStart, projectBusy, StartLeases, type StartCandidate, type StartFacts } from "../src/workstart.ts";
+import { chooseNightMerge, chooseStart, projectBusy, StartLeases, type MergeCandidate, type MergeFacts, type StartCandidate, type StartFacts } from "../src/workstart.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -205,4 +205,58 @@ test("main.ts: approvePlans marks a task with leftovers as blocked, and the queu
   assert.match(queue.slice(0, queue.indexOf("\n}\n")), /taskLeftovers\(project, task\.info\)\.length === 0/);
   const facts = MAIN.slice(MAIN.indexOf("function waitFacts("));
   assert.match(facts.slice(0, facts.indexOf("\n}\n")), /task\.info\?\.leftovers \?\?/);
+});
+
+// Night merge (ticket task-branches-blocked-work, user decision 3): the replay is screen 2, a night in
+// which the HUD task needed the fix of t-pathids, and t-pathids waited all night for the Merge click.
+const waiting = (name: string, more: Partial<MergeCandidate> = {}): MergeCandidate => ({ name, waits: true, state: "done", busy: false, tried: false, ...more });
+const mergeNight = (tasks: MergeCandidate[], more: Partial<MergeFacts> = {}): MergeFacts => ({ merging: null, running: null, leased: null, night: true, gate: true, tasks, ...more });
+
+test("night mode merges a done task whose branch waits, then the queue goes on", () => {
+  const tried = new Set<string>();
+  let merging: string | null = null;
+  const merges: string[] = [];
+  const starts: string[] = [];
+  const tick = () => {
+    const merge = chooseNightMerge(mergeNight([waiting("t-pathids", { tried: tried.has("t-pathids") })], { merging }));
+    if (merge) {
+      tried.add(merge);
+      merging = merge;
+      merges.push(merge);
+      return;
+    }
+    const choice = chooseStart({ merging, running: null, leased: null, queued: null, auto: false, night: true, tasks: [candidate("hud-widget")] });
+    if (choice) starts.push(choice.task);
+  };
+  tick();
+  tick();
+  assert.deepEqual([merges, starts], [["t-pathids"], []], "the merge holds the project while it runs");
+  merging = null;
+  tick();
+  assert.deepEqual([merges, starts], [["t-pathids"], ["hud-widget"]], "one try per report; after the merge the HUD plan starts");
+});
+
+test("the night merge needs night mode, a gate, a free project and a done report", () => {
+  assert.equal(chooseNightMerge(mergeNight([waiting("a")])), "a");
+  assert.equal(chooseNightMerge(mergeNight([waiting("a")], { night: false })), null, "by day only the Merge click merges");
+  assert.equal(chooseNightMerge(mergeNight([waiting("a")], { gate: false })), null, "no merge check, no night merge");
+  for (const busy of [{ merging: "b" }, { running: "b" }, { leased: "b" }, { paused: true }]) {
+    assert.equal(chooseNightMerge(mergeNight([waiting("a")], busy)), null, JSON.stringify(busy));
+  }
+  assert.equal(chooseNightMerge(mergeNight([waiting("a"), { ...waiting("b"), waits: false, busy: true }])), null, "a click of another task runs");
+  for (const state of ["failed", "needs-decision", "working", null]) {
+    assert.equal(chooseNightMerge(mergeNight([waiting("a", { state })])), null, String(state));
+  }
+  assert.equal(chooseNightMerge(mergeNight([waiting("a", { tried: true })])), null, "a refused merge waits for the user");
+  assert.equal(chooseNightMerge(mergeNight([waiting("a", { waits: false }), waiting("b")])), "b");
+});
+
+test("main.ts: approvePlans merges at night before a start, and the line for triage says night mode", () => {
+  const body = MAIN.slice(MAIN.indexOf("function approvePlans("), MAIN.indexOf("function nextQueued("));
+  const merge = body.indexOf("chooseNightMerge(");
+  assert.ok(merge > body.indexOf("nightDefaults(") && merge < body.indexOf("chooseStart("), "the night merge runs after the night answers and before a start");
+  assert.match(body, /gate: project\.gate\.trim\(\) !== ""/);
+  assert.match(body, /void mergeTask\(merge, true\);\n\s*continue;/);
+  assert.match(MAIN, /`Night mode merged branch \$\{branch\.name\} of \$\{task\.name\}/);
+  assert.doesNotMatch(MAIN, /Night mode never merges/);
 });

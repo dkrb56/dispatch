@@ -173,7 +173,7 @@ fn checks_rule(reports: &str) -> String {
 /// The line of the "Background workers" section for a project with "Task branches" on.
 fn branches_rule(reports: &str, script: &str) -> String {
     format!(
-        "- Task branches is on in this project. The plan verb of the script writes the base branch (the current branch) into `{reports}/<ticket-id>.branch`. Approve makes the branch `{BRANCH_PREFIX}<ticket-id>` from that base and checks it out in the main checkout; the work run commits on that branch, switches no branch, and never merges or pushes. A work run that stops with a question or fails first commits its own files by name on the branch as `<ticket-id> WIP`; the next run adds its own commit. When the report is written, Dispatch switches the checkout back to the base and commits the task files there. Uncommitted changes outside the files of the task go along with the switch to the branch and back; a change in a file of the task holds the switch. The user merges the branch with the Merge button in the task card of Dispatch: the script merges it with `--no-ff` into the base, after the gate command of `{reports}/merge-gate.txt` passed on the merged code. Triage never runs `{script} merge`; the local settings deny it that verb.
+        "- Task branches is on in this project. The plan verb of the script writes the base branch (the current branch) into `{reports}/<ticket-id>.branch`. Approve makes the branch `{BRANCH_PREFIX}<ticket-id>` from that base and checks it out in the main checkout; the work run commits on that branch, switches no branch, and never merges or pushes. A work run that stops with a question or fails first commits its own files by name on the branch as `<ticket-id> WIP`; the next run adds its own commit. When a run forgot that commit, Dispatch makes it: the changed files of the task that are not newer than the report go onto the branch as `<ticket-id> WIP (Dispatch: files of the work run)`. At each start of a run (Approve and each reply) Dispatch brings the newer commits of the base into the branch with a merge commit; when a file outside `{reports}` changed on both sides, the branch stays as it is and the prompt of the run says so. When the report is written, Dispatch switches the checkout back to the base and commits the task files there. Uncommitted changes outside the files of the task go along with the switch to the branch and back; a change in a file of the task holds the switch. The user merges the branch with the Merge button in the task card of Dispatch, and night mode of Dispatch merges a task with a done report by itself when the project has a gate command: the script merges it with `--no-ff` into the base, after the gate command of `{reports}/merge-gate.txt` passed on the merged code. Triage never runs `{script} merge`; the local settings deny it that verb.
 "
     )
 }
@@ -1337,6 +1337,88 @@ function Task-Leftovers([switch]$Plan) {
   }
 }
 
+# The lines of Task-Leftovers that the work run wrote itself (ticket task-branches-blocked-work): the
+# newest file under the path (the new path of a rename, each file of an untracked folder) is not later
+# than the end of the run plus 2 s. The end is the report time, for a stopped task the state file time;
+# without it nothing counts. A path without a file (a deletion) never counts. The Rust rule
+# own_changes is the same.
+function Own-Changes([string[]]$Lines) {
+  $end = if ((Get-State) -eq 'stopped') { State-Path } else { Join-Path $Reports "$Id.md" }
+  if (-not (Test-Path -LiteralPath $end)) { return }
+  $limit = (Get-Item -LiteralPath $end).LastWriteTimeUtc.AddSeconds(2).Ticks
+  foreach ($line in $Lines) {
+    if (-not $line -or $line.Length -le 3) { continue }
+    $full = Join-Path $Project ((($line.Substring(3) -split ' -> ')[-1]).Trim().Trim('"'))
+    if (-not (Test-Path -LiteralPath $full)) { continue }
+    $item = Get-Item -LiteralPath $full -Force
+    $files = if ($item.PSIsContainer) { @(Get-ChildItem -LiteralPath $full -Recurse -File -Force) } else { @($item) }
+    if ($files.Count -eq 0) { continue }
+    $newest = 0
+    foreach ($file in $files) { if ($file.LastWriteTimeUtc.Ticks -gt $newest) { $newest = $file.LastWriteTimeUtc.Ticks } }
+    if ($newest -le $limit) { $line }
+  }
+}
+
+# Commits the own changes of the work run (Own-Changes) by path on the current branch as "<ticket> WIP"
+# (ticket task-branches-blocked-work). Gives the reason of a failure, or ''.
+function Commit-Own([string[]]$Lines) {
+  $paths = @($Lines | Where-Object { $_ -and $_.Length -gt 3 } | ForEach-Object { $_.Substring(3) -split ' -> ' } | ForEach-Object { $_.Trim().Trim('"') } | Where-Object { $_ })
+  if ($paths.Count -eq 0) { return '' }
+  $add = Invoke-Git (@('add', '--') + $paths)
+  if ($add.Code -ne 0) { return "git could not add the files of the work run: $($add.Text)" }
+  $commit = Invoke-Git (@('commit', '-q', '-m', "$Id WIP (Dispatch: files of the work run)", '--') + $paths)
+  if ($commit.Code -ne 0) { return "git could not commit the files of the work run: $($commit.Text)" }
+  ''
+}
+
+# Brings the newer commits of the base into the task branch in the checkout (ticket
+# task-branches-blocked-work), so a fix that reached the base after the branch started reaches the
+# task: git merge-tree of the branch and the base, the folder .dispatch as the base has it (Dispatch
+# keeps the task files current there), a merge commit with both parents, and a fast-forward of the
+# branch. A file outside .dispatch that changed on both sides stops it, and the branch stays as it
+# was. Gives the reason when the base has newer commits that did not come in, else ''.
+function Sync-Base {
+  $info = Read-BranchFile $Id
+  if ($null -eq $info -or -not $info.branch -or -not $info.base -or $info.merge) { return '' }
+  if ((Current-Branch) -ne $info.branch) { return '' }
+  if ((Invoke-Git @('rev-parse', '--verify', '--quiet', "refs/heads/$($info.base)")).Code -ne 0) { return "the branch $($info.base) does not exist" }
+  if ((Invoke-Git @('merge-base', '--is-ancestor', $info.base, $info.branch)).Code -eq 0) { return '' }
+  $merge = Invoke-Git @('merge-tree', '--write-tree', '--name-only', '--no-messages', $info.branch, $info.base)
+  $lines = @($merge.Lines | Where-Object { $_ })
+  if (($merge.Code -ne 0 -and $merge.Code -ne 1) -or $lines.Count -eq 0) { return "git merge-tree failed: $($merge.Text)" }
+  $clash = @($lines | Select-Object -Skip 1 | Where-Object { -not $_.StartsWith('.dispatch/') })
+  if ($clash.Count -gt 0) { return "these files changed on both sides: $($clash -join ', ')" }
+  # A separate index builds the tree; the index of the checkout stays as it is.
+  $index = Join-Path ([IO.Path]::GetTempPath()) "dispatch-sync-$PID.index"
+  $env:GIT_INDEX_FILE = $index
+  try {
+    $built = (Invoke-Git @('read-tree', $lines[0])).Code -eq 0
+    if ($built) { $built = (Invoke-Git @('rm', '--cached', '-r', '-q', '-f', '--ignore-unmatch', '--', '.dispatch')).Code -eq 0 }
+    if ($built -and (Invoke-Git @('rev-parse', '--verify', '--quiet', "$($info.base):.dispatch")).Code -eq 0) {
+      $built = (Invoke-Git @('read-tree', '--prefix=.dispatch/', "$($info.base):.dispatch")).Code -eq 0
+    }
+    $tree = if ($built) { Invoke-Git @('write-tree') } else { $null }
+  } finally {
+    Remove-Item Env:GIT_INDEX_FILE -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $index -Force -ErrorAction SilentlyContinue
+  }
+  if ($null -eq $tree -or $tree.Code -ne 0) { return 'git could not build the merged tree' }
+  $commit = Invoke-Git @('commit-tree', "$($tree.Lines | Select-Object -Last 1)".Trim(), '-p', $info.branch, '-p', $info.base, '-m', "Merge $($info.base) into $($info.branch) (${Id}: the newer commits of the base)")
+  if ($commit.Code -ne 0) { return "git could not make the merge commit: $($commit.Text)" }
+  $forward = Invoke-Git @('merge', '--ff-only', '-q', "$($commit.Lines | Select-Object -Last 1)".Trim())
+  if ($forward.Code -ne 0) { return "git could not move the branch: $($forward.Text)" }
+  ''
+}
+
+# The sentence for the prompt of a run when Sync-Base did not bring the newer commits of the base, else
+# ''. Quotes and line breaks go, as in a reply.
+function Sync-Note {
+  $why = "$(Sync-Base)"
+  if (-not $why) { return '' }
+  $why = (($why -replace '"', "'") -replace "`r?`n", ' ').Trim().TrimEnd('.')
+  " Dispatch could not bring the newer commits of $((Read-BranchFile $Id).base) into this branch: $why."
+}
+
 # Runs one measuring command with cmd.exe in the project folder, its output into the log. The
 # command goes into a batch file next to the log, so a redirect of its own stays its own. A command
 # that runs longer than the limit is ended with its process tree; the result is then 124.
@@ -1413,6 +1495,8 @@ switch ($Verb) {
     if (Branches-On) {
       $back = Enter-TaskBranch
       $prompt += " Task branches is on: the checkout is on the branch $((Read-BranchFile $Id).branch) of this task. Commit there; switch no branch, merge nothing, push nothing. When this run stops with a question or fails, first commit its own changed files by name on this branch with the message $Id WIP."
+      # An existing branch (a new plan after an earlier work run) takes the newer commits of the base.
+      $prompt += Sync-Note
     }
     Set-State 'approved'
     # A new session, no resume: the work run gets the brief, the plan and the decisions of the user,
@@ -1440,12 +1524,28 @@ switch ($Verb) {
     # task branch until the worker writes its report again, also while Claude Code starts.
     if ($tracked) { Set-State (Get-State) }
     # A switch onto the task branch waits for the changes in files of the task (ticket
-    # leftover-files-block-tasks); on its branch already, the run's own edits do not hold it.
+    # leftover-files-block-tasks); on its branch already, the run's own edits do not hold it. The
+    # run's own files off its branch (a forgotten WIP commit) go along and are committed on the
+    # branch (ticket task-branches-blocked-work).
+    $own = @()
     if ($tracked -and (Current-Branch) -ne $branch.branch) {
       $held = @(Task-Leftovers -Plan)
+      $own = @(Own-Changes $held)
+      $held = @($held | Where-Object { $own -notcontains $_ })
       if ($held.Count -gt 0) { Refuse "these changes in files of this task are not committed; commit, stash or undo them first:`n$($held -join "`n")" }
     }
     $back = if ($tracked) { Enter-TaskBranch } else { '' }
+    if ($own.Count -gt 0) {
+      $failed = Commit-Own $own
+      if ($failed) { [Console]::Error.WriteLine("warning: $failed; the files stay uncommitted on $($branch.branch)") }
+    }
+    # The branch takes the newer commits of the base at each start (ticket task-branches-blocked-work).
+    # Its fast-forward can write the report of the base; the state file is then written again, so it
+    # stays newer than the report and Dispatch keeps the checkout on the branch.
+    if ($tracked) {
+      $text += Sync-Note
+      Set-State (Get-State)
+    }
     $printed = Run-Claude (@($text, '--resume', $worker.sessionId, '--bg', '--name', (Run-Name $run)) + $flags) '' $back
     Save-Session $run $printed
   }
@@ -3360,6 +3460,45 @@ pub(crate) fn task_leftovers(lines: &[String], files: &[String]) -> Vec<String> 
         .collect()
 }
 
+/// The lines of `git status --porcelain` that a work run wrote itself (ticket
+/// task-branches-blocked-work): the newest file under the path (the new path of a rename, each file
+/// of an untracked folder) is not later than `end` plus 2 s. A path without a file (a deletion) never
+/// counts. The worker script reads the same rule (`Own-Changes`).
+pub(crate) fn own_changes(root: &Path, lines: &[String], end: std::time::SystemTime) -> Vec<String> {
+    let limit = end + std::time::Duration::from_secs(2);
+    lines
+        .iter()
+        .filter(|line| {
+            let Some(path) = line.get(3..).and_then(|paths| paths.split(" -> ").last()) else { return false };
+            newest_file(&root.join(path.trim().trim_matches('"'))).is_some_and(|time| time <= limit)
+        })
+        .cloned()
+        .collect()
+}
+
+/// The newest modification time of a file, or of the files in a folder and its subfolders. None
+/// without a file. A link counts as a file.
+fn newest_file(path: &Path) -> Option<std::time::SystemTime> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    if !meta.is_dir() {
+        return meta.modified().ok();
+    }
+    fs::read_dir(path).ok()?.filter_map(Result::ok).filter_map(|entry| newest_file(&entry.path())).max()
+}
+
+/// Commits the own changes of a work run (`own_changes`) by path on the current branch as
+/// `<ticket> WIP (Dispatch: files of the work run)` (ticket task-branches-blocked-work).
+fn commit_own(project: &Project, ticket: &str, lines: &[String]) -> Result<(), String> {
+    let paths: Vec<String> = lines.iter().filter_map(|line| line.get(3..)).flat_map(|paths| paths.split(" -> ")).map(|path| path.trim().trim_matches('"').to_string()).filter(|path| !path.is_empty()).collect();
+    let mut add = vec!["add", "--"];
+    add.extend(paths.iter().map(String::as_str));
+    run_git(&project.root, &add)?;
+    let message = format!("{ticket} WIP (Dispatch: files of the work run)");
+    let mut commit = vec!["commit", "-q", "-m", &message, "--"];
+    commit.extend(paths.iter().map(String::as_str));
+    run_git(&project.root, &commit).map(|_| ())
+}
+
 /// The files of a task (ticket leftover-files-block-tasks): the paths of "Files to change" of its
 /// plan, and the files that its task branch changed since the base while the branch exists and is
 /// not merged.
@@ -3383,7 +3522,9 @@ fn task_files(project: &Project, ticket: &str, branch: Option<&BranchInfo>) -> V
 /// task was stopped; a report time that the last checkout of the task branch wrote does not count,
 /// and a work run that still runs holds the checkout on the branch (ticket branch-switch-on-reply;
 /// a worker list that Dispatch cannot read holds nothing). Only while no uncommitted change touches a file of the task (ticket
-/// leftover-files-block-tasks); other changes go along with the checkout. Then the newer report of the task
+/// leftover-files-block-tasks); other changes go along with the checkout. When the run surely ended,
+/// its own changes in task files go onto the branch first as a WIP commit (`own_changes`, ticket
+/// task-branches-blocked-work). Then the newer report of the task
 /// comes from the branch (`report_from_branch`, ticket stale-report-loop), and every other task file that
 /// the task branch changed in `.dispatch` comes onto the base, all in one commit, so the files of all
 /// tasks stay readable and end on the base; the merge brings the rest. A task file that git cannot
@@ -3396,12 +3537,30 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
     let reported = (matches!((modified(&report), modified(&state_path)), (Some(report), Some(state)) if report >= state)
         || (report.is_file() && !state_path.is_file()))
         && !checkout_wrote_report(project, info, ticket, &report);
-    let ended = (state.trim() == "stopped" || reported) && work_run_runs(project, ticket) != Some(true);
+    let stopped = state.trim() == "stopped";
+    let runs = work_run_runs(project, ticket);
+    let ended = (stopped || reported) && runs != Some(true);
     if !ended {
         return Ok((false, String::new()));
     }
-    let dirty: Vec<String> = run_git(&project.root, &["status", "--porcelain", "--", ".", NOT_TASKS])?.lines().map(str::to_string).collect();
-    let leftovers = if dirty.is_empty() { Vec::new() } else { task_leftovers(&dirty, &task_files(project, ticket, Some(info))) };
+    let leftovers_now = || -> Result<Vec<String>, String> {
+        let dirty: Vec<String> = run_git(&project.root, &["status", "--porcelain", "--", ".", NOT_TASKS])?.lines().map(str::to_string).collect();
+        Ok(if dirty.is_empty() { Vec::new() } else { task_leftovers(&dirty, &task_files(project, ticket, Some(info))) })
+    };
+    let mut leftovers = leftovers_now()?;
+    // A run that surely ended and forgot its WIP commit: its own files go onto the task branch
+    // (ticket task-branches-blocked-work). An unreadable worker list commits nothing, because the
+    // worker may still run; a later change of the user still holds the checkout.
+    if !leftovers.is_empty() && (stopped || runs == Some(false)) {
+        let end = if stopped { modified(&state_path) } else { modified(&report) };
+        let own = end.map(|end| own_changes(&project.root, &leftovers, end)).unwrap_or_default();
+        if !own.is_empty() {
+            if let Err(error) = commit_own(project, ticket, &own) {
+                return Err(format!("The checkout stays on {}: Dispatch could not commit the files of the work run: {error}", info.name));
+            }
+            leftovers = leftovers_now()?;
+        }
+    }
     if !leftovers.is_empty() {
         return Err(format!(
             "The checkout stays on {}: these changes in files of this task are not committed: {}. Commit, stash or undo them; Dispatch then switches back to {}.",
@@ -7410,6 +7569,152 @@ if (args[0] === 'agents') {
         assert_eq!(list(json!([one("t-1 [work]", "done", None, here), old])), Some(false));
         assert_eq!(list(json!([])), Some(false));
         assert_eq!(worker_runs_in("not json", root, "t-1"), None);
+    }
+
+    /// The two new files that the work run of screen 1 wrote and did not commit (ticket
+    /// task-branches-blocked-work), in the order of git.
+    const SCREEN_ONE_FILES: [&str; 2] = [".claude/memory/ui.md", "scripts/editor/dump_hud_widget.py"];
+
+    /// The plan run and the work run of t-1 with a plan whose Files to change names the files of
+    /// screen 1. The checkout is then on task/t-1.
+    fn approve_with_new_files(project: &Project, fake: &Path) {
+        write_file(&project.briefs().join("t-1.md"), "# t-1: a scratch task\n").unwrap();
+        write_file(&project.reports.join("fake-name.txt"), "t-1").unwrap();
+        let (code, out) = run_script(project, fake, "done", &["plan", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        let plan = format!("# t-1: plan\n\n## Files to change\n- `{}`: the notes.\n- `{}`: the dump script.\n", SCREEN_ONE_FILES[0], SCREEN_ONE_FILES[1]);
+        write_file(&project.plans().join("t-1.md"), &plan).unwrap();
+        let (code, out) = run_script(project, fake, "done", &["approve", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(current_branch(project).as_deref(), Some("task/t-1"));
+    }
+
+    /// The work run writes the files of screen 1, commits nothing, and asks its question later.
+    fn new_files_then_question(project: &Project) {
+        for file in SCREEN_ONE_FILES {
+            write_file(&project.root.join(file), "written by the work run\n").unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        write_file(&project.reports.join("t-1.md"), GATE_QUESTION).unwrap();
+    }
+
+    /// The files outside `.dispatch` of the last commit of a branch.
+    fn last_commit_files(project: &Project, rev: &str) -> Vec<String> {
+        git_out(project, &["show", "--name-only", "--format=", rev, "--", ".", NOT_TASKS]).lines().map(str::to_string).collect()
+    }
+
+    /// The worker asks, and the read switches back to the base; then the fix of another task
+    /// reaches the base with `file` and `text`. Gives the base.
+    fn question_then_fix_on_the_base(project: &Project, fake: &Path, file: &str, text: &str) -> String {
+        plan_and_approve(project, fake, "t-1");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        write_file(&project.reports.join("t-1.md"), GATE_QUESTION).unwrap();
+        let branch = listed_branch(project, "t-1");
+        assert!(!branch.checked_out && branch.note.is_empty(), "{branch:?}");
+        let base = branch.base;
+        assert_eq!(current_branch(project).as_deref(), Some(base.as_str()));
+        write_file(&project.root.join(file), text).unwrap();
+        git_out(project, &["add", "--", file]);
+        git_out(project, &["commit", "-q", "-m", "the fix of another task"]);
+        base
+    }
+
+    #[test]
+    fn a_question_without_a_wip_commit_does_not_hold_the_checkout() {
+        let (project, fake, base) = branch_project("no-wip");
+        approve_with_new_files(&project, &fake);
+        new_files_then_question(&project);
+        set_work_run_runs(&project, false);
+        let branch = listed_branch(&project, "t-1");
+        assert!(!branch.checked_out && branch.note.is_empty(), "{branch:?}");
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()), "the forgotten files held the checkout on the task branch");
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", "task/t-1"]), "t-1 WIP (Dispatch: files of the work run)");
+        assert_eq!(last_commit_files(&project, "task/t-1"), SCREEN_ONE_FILES);
+        for file in SCREEN_ONE_FILES {
+            assert!(!project.root.join(file).exists(), "{file} stayed in the checkout of the base");
+        }
+        clean(&project);
+    }
+
+    #[test]
+    fn the_reply_takes_the_files_of_the_run_along() {
+        let (project, fake, base) = branch_project("reply-own-files");
+        approve_with_new_files(&project, &fake);
+        // Dispatch 0.1.66 switched back while the work run still ran; the run wrote its files on the base.
+        git_out(&project, &["checkout", "-q", &base]);
+        new_files_then_question(&project);
+        let (code, out) = run_script(&project, &fake, "done", &["reply", "t-1", "Answer to question 1: Run the gate now"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", "task/t-1"]), "t-1 WIP (Dispatch: files of the work run)");
+        assert_eq!(last_commit_files(&project, "task/t-1"), SCREEN_ONE_FILES);
+        assert_eq!(git_out(&project, &["status", "--porcelain", "--", ".", NOT_TASKS]), "");
+        assert_eq!(last_call(&fake)[0], "Answer to question 1: Run the gate now");
+        clean(&project);
+    }
+
+    #[test]
+    fn a_reply_brings_the_newer_commits_of_the_base() {
+        let (project, fake, _) = branch_project("reply-sync");
+        let base = question_then_fix_on_the_base(&project, &fake, "fix.txt", "the fix of another task\n");
+        let (code, out) = run_script(&project, &fake, "done", &["reply", "t-1", "Answer to question 1: Run the gate now"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        assert!(git(&project.root, &["merge-base", "--is-ancestor", &base, "task/t-1"]).is_some(), "the base commit is not in task/t-1");
+        assert_eq!(read(&project.root.join("fix.txt")), "the fix of another task\n");
+        assert!(project.root.join("work-t-1.txt").is_file());
+        assert_eq!(last_call(&fake)[0], "Answer to question 1: Run the gate now");
+        // The task files of .dispatch stay as the base has them: the branch deletes none of them.
+        assert_eq!(git_out(&project, &["diff", "--name-only", &format!("{base}...task/t-1"), "--", TASKS_DIR]), "");
+        // The worker ends; the read switches back, the base keeps its report, and the merge brings the work.
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:{TASKS_DIR}/t-1.md")]).is_some(), "the base lost the report");
+        let merged = task_merge(project.root.to_string_lossy().into_owned(), "t-1".to_string());
+        assert!(merged.is_ok(), "{merged:?}");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
+        assert_eq!(read(&project.root.join("fix.txt")), "the fix of another task\n");
+        clean(&project);
+    }
+
+    #[test]
+    fn a_clash_with_the_base_leaves_the_branch_and_tells_the_worker() {
+        let (project, fake, _) = branch_project("reply-clash");
+        let base = question_then_fix_on_the_base(&project, &fake, "work-t-1.txt", "another text of the base\n");
+        let tip = git_out(&project, &["rev-parse", "task/t-1"]);
+        let (code, out) = run_script(&project, &fake, "done", &["reply", "t-1", "Answer to question 1: Run the gate now"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        assert_eq!(git_out(&project, &["rev-parse", "task/t-1"]), tip, "the clash moved the branch");
+        assert_eq!(git_out(&project, &["status", "--porcelain", "--", ".", NOT_TASKS]), "");
+        let text = &last_call(&fake)[0];
+        assert!(text.starts_with("Answer to question 1: Run the gate now Dispatch could not bring the newer commits of "), "{text}");
+        assert!(text.contains(&format!("of {base} into this branch: ")) && text.contains("work-t-1.txt"), "{text}");
+        clean(&project);
+    }
+
+    #[test]
+    fn own_changes_are_the_task_files_not_later_than_the_end() {
+        let project = scratch("own-changes");
+        let end = UNIX_EPOCH + std::time::Duration::from_secs(1_794_675_000);
+        let file = |path: &str, after: i64| {
+            let full = project.root.join(path);
+            write_file(&full, "x\n").unwrap();
+            let time = if after >= 0 { end + std::time::Duration::from_secs(after as u64) } else { end - std::time::Duration::from_secs((-after) as u64) };
+            fs::File::options().write(true).open(&full).unwrap().set_modified(time).unwrap();
+        };
+        file("notes/ui.md", -300);
+        file("notes/deep/old.md", -3600);
+        file("tool.py", 1);
+        file("README.md", 60);
+        file("late/a.md", -60);
+        file("late/b.md", 3);
+        file("new.txt", -3600);
+        let lines: Vec<String> = ["?? notes/", " M tool.py", " M README.md", " D gone.txt", "R  old.txt -> new.txt", "?? late/"].iter().map(|line| line.to_string()).collect();
+        assert_eq!(own_changes(&project.root, &lines, end), vec!["?? notes/".to_string(), " M tool.py".to_string(), "R  old.txt -> new.txt".to_string()]);
+        assert!(own_changes(&project.root, &[], end).is_empty());
+        clean(&project);
     }
 
     /// Builds the scratch projects of the proof script of ticket task-branches when the variable
