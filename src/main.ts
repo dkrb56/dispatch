@@ -376,6 +376,8 @@ const PROMPT_WAIT_MS = 8000;
 const CHAT_START_MS = 15_000;
 
 const panesEl = document.querySelector<HTMLElement>("#panes")!;
+/** The head row above the workspace in Details: the current project, its buttons and × (ticket this-orange-border-makes-me-think-that). */
+const workspaceHeadEl = document.querySelector<HTMLElement>("#workspace-head")!;
 const chatsEl = document.querySelector<HTMLElement>("#chats")!;
 const workerAlertEl = document.querySelector<HTMLButtonElement>("#worker-alert")!;
 const staleAlertEl = document.querySelector<HTMLButtonElement>("#stale-alert")!;
@@ -1158,7 +1160,7 @@ function renderChatTabs(): void {
   }
 }
 
-/** The triage pane of the current project in Details: the one of the open group of the bar. */
+/** The triage pane of the current project in Details: the one of the head row above the workspace. */
 function currentTriagePane(): Pane | undefined {
   const workspaces = workspaceRefs();
   const workspaceKeys = workspaces.map(refKey);
@@ -1168,7 +1170,7 @@ function currentTriagePane(): Pane | undefined {
   return ref ? workspacePanes(ref).triage : undefined;
 }
 
-/** The workspace of the open group of the bar in Details: the focused one, else the one the user chose last. */
+/** The workspace of the head row above the workspace in Details: the focused one, else the one the user chose last. */
 function openWorkspaceKey(workspaceKeys: string[]): string | null {
   const pane = focusedPane();
   const at = pane ? { host: pane.host, cwd: pane.project ?? pane.cwd ?? null } : null;
@@ -9711,7 +9713,7 @@ function activate(id: string): void {
   // The tab shows: at the start, at a click on the tab, back from Focus or the Map. In Focus the
   // triage panes stand in their columns, and `moveInto` puts their chats at the end.
   if (!focusOn) for (const pane of tabPanes(id)) pane.chat?.toEnd();
-  // In Details the open group of the bar follows the focused terminal (topbar-projects).
+  // In Details the current pill and the head row above the workspace follow the focused terminal (topbar-projects).
   renderPills();
 }
 
@@ -10435,7 +10437,7 @@ const FOLDER_ICON =
 
 /**
  * The buttons of one project (topbar-projects): Tickets (ticket tickets), Chat (ticket auto-todo), Tokens (ticket token-usage), Actions (ticket project-actions), Pause, Rules, Setup, Git state (ticket add-git-state-button-to-the-project), "N old" and the folder button. They
- * stand in the open group of the bar in Details and in the head of the column in Focus. Each acts on
+ * stand in the head row above the workspace in Details and in the head of the column in Focus. Each acts on
  * this project, not on the focused terminal. "N old" is hidden while the project has no old session.
  */
 function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElement } {
@@ -10451,7 +10453,7 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
     button.textContent = text;
     button.title = title;
     button.addEventListener("click", (event) => {
-      // A click in the open group is not a click on its pill.
+      // A click on a button of the project is not a click on a pill.
       event.stopPropagation();
       setFocusCurrent(key);
       action();
@@ -11269,12 +11271,13 @@ function renderFocus(): void {
  * Fills the projects group of the bar with one pill per project, in Details, Focus and Map
  * (projects-group-tabs); the Overview hides the group by CSS (overview-no-projects-group).
  * Focus shows its projects; the other modes show the projects of the Map.
- * In Details the current project is an open group with its own buttons (topbar-projects): the
- * project of the focused terminal, else the one clicked or typed in last, else the first.
+ * In Details the current project is a pill with a blue frame (topbar-projects): the project of
+ * the focused terminal, else the one clicked or typed in last, else the first. Its buttons and ×
+ * stand in the head row above the workspace (ticket this-orange-border-makes-me-think-that).
  * A click goes to the project: its column in Focus, its graph in the Map, its workspace in
  * Details. The Overview branch stays, but no click reaches it while the group is hidden there.
  * In Details the bar has no tab strip (topbar-one-row): the focus projects and the other
- * workspaces are the pills, a project without a workspace is a dashed pill, the open group ends
+ * workspaces are the pills, a project without a workspace is a dashed pill, the head row ends
  * with a × that closes the workspace. A tab that is no workspace is a chat tab in the head of the
  * triage pane (chat-tabs-by-triage), not a pill of the bar.
  */
@@ -11291,7 +11294,7 @@ function renderPills(): void {
   const withWorkspace = new Set(details ? workspaces.map(refKey) : keys);
   let open: string | null = null;
   if (details) {
-    // The open group is the workspace that the window shows below: a project with a workspace.
+    // The current project is the workspace that the window shows below: a project with a workspace.
     open = openWorkspaceKey(keys.filter((key) => withWorkspace.has(key)));
   }
   const items = barItems(keys, withWorkspace, open);
@@ -11302,10 +11305,10 @@ function renderPills(): void {
     const state = focusState(root);
     const isOpen = item.kind === "open";
     const dashed = item.kind === "dashed";
-    const badge = isOpen ? groupCount(state) : pillCount(state);
+    const badge = pillCount(state);
     const pill = document.createElement("button");
     const signal = attentionClasses(projectSignal(key));
-    pill.className = `${isOpen ? "project-group-head" : "focus-pill"}${dashed ? " dashed" : ""}${signal}`;
+    pill.className = `focus-pill${isOpen ? " current" : ""}${dashed ? " dashed" : ""}${signal}`;
     pill.title = backends().length > 1 ? `${root.root}\non ${backendName(root.host)}` : root.root;
     const dot = document.createElement("span");
     dot.className = `focus-dot ${badge.kind}${dashed ? " empty" : ""}${signal}`;
@@ -11318,7 +11321,7 @@ function renderPills(): void {
     // The sign of waiting tickets that do not go (ticket auto-todo), after the name.
     pill.append(dot, name, ticketSign(root), count);
     pill.addEventListener("click", () => {
-      // The clicked project becomes the current one; in Details its group opens.
+      // The clicked project becomes the current one; in Details its workspace shows.
       setFocusCurrent(key);
       if (focusOn) {
         focusColumns.get(key)?.el.scrollIntoView({ behavior: "smooth", inline: "nearest" });
@@ -11343,33 +11346,54 @@ function renderPills(): void {
         renderPills();
       }
     });
-    if (!isOpen) {
-      pills.push(pill);
-      return;
-    }
-    // The open group: the head of the pill, a divider, the buttons of the project, a divider and ×.
-    const group = document.createElement("div");
-    group.className = "project-group";
-    group.dataset.project = key;
-    const close = document.createElement("button");
-    close.className = "project-close";
-    close.textContent = "×";
-    close.title = `Close the workspace of ${projectName(root)}: triage and the agent view end`;
-    close.setAttribute("aria-label", `Close the workspace of ${projectName(root)}`);
-    close.addEventListener("click", (event) => {
-      // A click on × is not a click on the pill.
-      event.stopPropagation();
-      const { triage, agents } = workspacePanes(root);
-      const tabId = (triage ?? agents)?.tabId;
-      if (tabId) void closeTab(tabId);
-    });
-    group.append(pill, barDivider(), projectTools(root).el, barDivider(), close);
-    pills.push(group);
+    pills.push(pill);
   });
   focusProjectsEl.replaceChildren(...pills);
+  renderWorkspaceHead(details ? (roots[keys.indexOf(open ?? "")] ?? null) : null);
   // The chat tabs in the head of each triage pane follow the bar (chat-tabs-by-triage).
   renderChatTabs();
   showSetupButtons();
+}
+
+/**
+ * The head row above the workspace in Details (ticket this-orange-border-makes-me-think-that): the
+ * dot, name, ticket sign and state of the current project, its buttons, a divider and × that
+ * closes the workspace, as the head of a Focus column. Hidden and empty without a current project.
+ */
+function renderWorkspaceHead(root: ProjectRef | null): void {
+  if (!root) {
+    workspaceHeadEl.hidden = true;
+    workspaceHeadEl.replaceChildren();
+    return;
+  }
+  const key = refKey(root);
+  const badge = groupCount(focusState(root));
+  const signal = attentionClasses(projectSignal(key));
+  const dot = document.createElement("span");
+  dot.className = `focus-dot ${badge.kind}${signal}`;
+  const name = document.createElement("span");
+  name.className = "focus-name";
+  name.textContent = projectName(root);
+  name.title = backends().length > 1 ? `${root.root}
+on ${backendName(root.host)}` : root.root;
+  const count = document.createElement("span");
+  count.className = `count ${badge.kind}`;
+  count.textContent = badge.text;
+  const spacer = document.createElement("span");
+  spacer.style.flex = "1";
+  const close = document.createElement("button");
+  close.className = "project-close";
+  close.textContent = "×";
+  close.title = `Close the workspace of ${projectName(root)}: triage and the agent view end`;
+  close.setAttribute("aria-label", `Close the workspace of ${projectName(root)}`);
+  close.addEventListener("click", () => {
+    const { triage, agents } = workspacePanes(root);
+    const tabId = (triage ?? agents)?.tabId;
+    if (tabId) void closeTab(tabId);
+  });
+  workspaceHeadEl.dataset.project = key;
+  workspaceHeadEl.replaceChildren(dot, name, ticketSign(root), count, spacer, projectTools(root).el, barDivider(), close);
+  workspaceHeadEl.hidden = false;
 }
 
 /** A thin divider of the bar. */

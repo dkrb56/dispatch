@@ -6130,11 +6130,6 @@ body.focus-mode #chats {
   animation: attention-dot 1.6s ease-in-out infinite;
 }
 
-#bar .focus-pill.attention,
-#bar .project-group-head.attention {
-  box-shadow: inset 0 0 0 1px var(--wait);
-}
-
 /* The Setup button of a project that misses setup steps (ticket setup-attention): a yellow ring, still
    after a click on it, with the switch Pulse off or with reduced motion; with the pulse a glow swells
    and fades around the ring in the cycle of a waiting card. */
@@ -6152,14 +6147,12 @@ body.focus-mode #chats {
   }
 }
 
-#bar .project-group .project-tool.attention,
 .focus-head .project-tool.attention,
 #bar #setup-pipeline.attention {
   box-shadow: inset 0 0 0 1px var(--wait);
   color: var(--wait);
 }
 
-#bar .project-group .project-tool.attention.pulse,
 .focus-head .project-tool.attention.pulse,
 #bar #setup-pipeline.attention.pulse {
   animation: setup-pulse 1.6s ease-in-out infinite;
@@ -6202,7 +6195,6 @@ body.focus-mode #chats {
 /* The motion of the signal stops with the system setting for reduced motion; the still mark stays. */
 @media (prefers-reduced-motion: reduce) {
   .ticket-sign.attention.pulse,
-  #bar .project-group .project-tool.attention.pulse,
   .focus-head .project-tool.attention.pulse,
   #bar #setup-pipeline.attention.pulse,
   .task.attention.pulse,
@@ -6630,65 +6622,55 @@ body {
   color: var(--text);
 }
 
-/* In Details the projects group keeps its width, so the open group and every pill stay visible. */
+/* In Details the projects group keeps its width, so every pill stays visible. */
 body:not(.focus-mode):not(.map-mode):not(.overview-mode) #bar-projects,
 body:not(.focus-mode):not(.map-mode):not(.overview-mode) #focus-projects {
   flex-shrink: 0;
 }
 
-/* The open group of the current project in Details: a frame in the accent colour, the head of the
-   pill, a divider, and the buttons Rules, Setup, N old and the folder. */
-.project-group {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 4px;
-  box-sizing: border-box;
-  height: 30px;
-  padding: 0 2px 0 0;
-  border: 1px solid var(--accent);
-  border-radius: 8px;
+/* The pill of the current project in Details: a frame in the accent colour (ticket
+   this-orange-border-makes-me-think-that). A waiting pill has no frame: its dot and "waits" show it. */
+#bar .focus-pill.current {
+  border-color: var(--accent);
   background: var(--card);
 }
 
-#bar .project-group-head {
-  gap: 8px;
-  height: 28px;
-  padding: 0 8px 0 10px;
-  border-radius: 7px;
-  color: var(--text);
-}
-
-/* The group has the surface of a hover already: a hover takes the soft accent. */
-#bar .project-group-head:hover,
-#bar .project-group .project-tool:hover {
-  background: var(--accent-bg);
-  color: var(--text);
-}
-
-.project-group-head .name {
+#bar .focus-pill.current .name {
   font-weight: 600;
 }
 
-.project-group-head .count {
+/* The head row above the workspace in Details: the current project, its buttons and ×, with the
+   look of the head of a Focus column. It shows in Details only. */
+#workspace-head {
+  height: 42px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+#workspace-head[hidden],
+body.focus-mode #workspace-head,
+body.map-mode #workspace-head,
+body.overview-mode #workspace-head {
+  display: none;
+}
+
+#workspace-head .count {
   color: var(--muted);
   font-size: calc(12.5px * var(--text-scale));
 }
 
-.project-group-head .count.working {
+#workspace-head .count.working {
   color: var(--work);
 }
 
-.project-group-head .count.waits {
+#workspace-head .count.waits {
   color: var(--wait);
 }
 
-.project-group-head .count.paused {
+#workspace-head .count.paused {
   color: var(--muted);
 }
 
 /* The Pause button of a paused project looks pressed (ticket pause-tasks). */
-#bar .project-group .project-tool[aria-pressed="true"],
 .focus-head .project-tool[aria-pressed="true"] {
   background: var(--accent-bg);
   color: var(--accent);
@@ -6713,14 +6695,27 @@ body:not(.focus-mode):not(.map-mode):not(.overview-mode) #focus-projects {
   background: none;
 }
 
-/* The × at the end of the open group closes the workspace of the project. */
-#bar .project-group .project-close {
+/* The × at the end of the head row above the workspace closes the workspace of the project. */
+#workspace-head .project-close {
+  display: flex;
+  flex: none;
+  align-items: center;
   justify-content: center;
   width: 28px;
-  height: 24px;
+  height: 28px;
   padding: 0;
+  border: 0;
   border-radius: 6px;
+  background: none;
   color: var(--muted);
+  font: inherit;
+  font-size: calc(16px * var(--text-scale));
+  cursor: pointer;
+}
+
+#workspace-head .project-close:hover {
+  background: var(--card);
+  color: var(--text);
 }
 
 /* The chat tabs in the head of a triage pane, after Chat and Terminal (chat-tabs-by-triage): a tab
@@ -6807,21 +6802,6 @@ body.overview-mode .chat-tabs {
   flex: none;
   align-items: center;
   gap: 2px;
-}
-
-#bar .project-group .project-tool {
-  height: 24px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  color: var(--text-2);
-}
-
-#bar .project-group .project-folder {
-  justify-content: center;
-  width: 28px;
-  padding: 0;
 }
 
 /* The projects and the setup buttons: framed groups, like the pane buttons. */

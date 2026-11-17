@@ -91,3 +91,13 @@ test("the page has no tab strip, and Chats stands directly before Nightmode", ()
   const ids = [...between[1].matchAll(/<(\w+) id="([^"]+)"/g)].map((m) => m[2]);
   assert.ok(ids.every((id) => id.endsWith("-alert")), `only alerts between Chats and Nightmode: ${ids.join(", ")}`);
 });
+
+test("a waiting pill has no orange frame, and the buttons of Details stand in the head above the workspace", () => {
+  const html = read("../index.html");
+  const main = read("../src/main.ts");
+  const css = read("../src/styles.css");
+  assert.match(html, /id="workspace-head"/);
+  assert.doesNotMatch(main, /className = "project-group"/);
+  const attentionRules = [...css.matchAll(/([^{}]*\.focus-pill\.attention[^{}]*)\{([^}]*)\}/g)];
+  assert.ok(attentionRules.every((rule) => !/box-shadow/.test(rule[2])), "no .focus-pill.attention rule draws a box-shadow");
+});

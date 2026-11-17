@@ -1,5 +1,6 @@
-// The projects group of the top bar (ticket topbar-projects). In Details the current project is an
-// open group with its own buttons; the other projects are closed pills. The chats stand in the head
+// The projects group of the top bar (ticket topbar-projects). In Details the current project is a
+// pill with a blue frame; its buttons and × stand in the head row above the workspace (ticket
+// this-orange-border-makes-me-think-that); the other projects are closed pills. The chats stand in the head
 // of the triage pane (src/chattabs.ts). No imports and no access to
 // the page, so a test can load this file with Node (tests/topbar.test.ts).
 
@@ -24,7 +25,7 @@ export function pillCount(state: ProjectState): { text: string; kind: CountKind 
   return { text: "", kind: "idle" };
 }
 
-/** The state text of the open group: the full text, as the pills had it before; "paused" in place of "idle". */
+/** The state text of the head row above the workspace: the full text, as the pills had it before; "paused" in place of "idle". */
 export function groupCount(state: ProjectState): { text: string; kind: CountKind } {
   if (state.waits > 0) return { text: `${state.waits} ${state.waits === 1 ? "waits" : "wait"}`, kind: "waits" };
   if (state.working > 0) return { text: state.paused ? `${state.working} working · paused` : `${state.working} working`, kind: "working" };
@@ -35,7 +36,7 @@ export function groupCount(state: ProjectState): { text: string; kind: CountKind
 /**
  * The project whose group is open: the project of the focused terminal when it has a pill, else the
  * project that the user clicked or typed in last, else the first pill. Without pills none.
- * In Details the keys are the projects with a workspace, so the open group is always a workspace.
+ * In Details the keys are the projects with a workspace, so the current project is always a workspace.
  */
 export function currentProject(keys: readonly string[], focused: string, remembered: string): string | null {
   if (keys.includes(focused)) return focused;
@@ -54,13 +55,13 @@ export function detailsProjects(focusKeys: readonly string[], workspaceKeys: rea
   return keys;
 }
 
-/** One item of the row: the open group, a full pill, or a dashed pill. */
+/** One item of the row: the current pill, a full pill, or a dashed pill. */
 export type BarItem = { kind: "open"; key: string; close: true } | { kind: "full" | "dashed"; key: string; close: false };
 
 /**
  * The row of the bar in Details: one item per project. A project with a workspace is a full pill,
- * one without is a dashed pill. The open project is the open group, with a close; it must have a
- * workspace, else no group is open. The tabs that are no workspace stand as chat tabs in the head
+ * one without is a dashed pill. The open project is the current pill; its close (×) stands in the
+ * head row above the workspace. It must have a workspace, else no project is open. The tabs that are no workspace stand as chat tabs in the head
  * of the triage pane (src/chattabs.ts, ticket chat-tabs-by-triage), not in the bar.
  */
 export function barItems(keys: readonly string[], withWorkspace: ReadonlySet<string>, open: string | null): BarItem[] {
