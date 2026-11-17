@@ -250,6 +250,12 @@ pub fn task_approve(cwd: String, id: String) -> Result<String, String> {
     pipeline::task_approve(cwd, id)
 }
 
+/// Starts the plan run of a New ticket without triage (ticket simpler-process-tickets).
+#[tauri::command(async)]
+pub fn ticket_plan(cwd: String, id: String) -> Result<String, String> {
+    pipeline::ticket_plan(cwd, id)
+}
+
 #[tauri::command(async)]
 pub fn task_decide(cwd: String, id: String, text: String) -> Result<u64, String> {
     pipeline::task_decide(cwd, id, text)

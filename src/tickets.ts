@@ -185,6 +185,37 @@ export function nextTicket<T extends Pick<Ticket, "id" | "status" | "order" | "c
   return queueOrder(tickets).find((ticket) => !sent(ticket.id)) ?? null;
 }
 
+/** The most workers of a project that run while Dispatch starts a plan from a ticket (ticket simpler-process-tickets, user decision 3). */
+export const PLAN_WORKERS_MAX = 3;
+
+/**
+ * Where a New ticket goes with the switch "Tickets start their plan" on (ticket
+ * simpler-process-tickets, user decision 1): a ticket without words (only images) or whose words end
+ * with a question mark goes to triage; every other ticket starts its plan run without triage.
+ */
+export function ticketRoute(ticket: Pick<Ticket, "summary">): "plan" | "triage" {
+  const { words } = splitImages(ticket.summary);
+  const text = words.trim();
+  return text === "" || text.endsWith("?") ? "triage" : "plan";
+}
+
+/**
+ * The ticket whose plan Dispatch starts next with the switch on: the first New ticket in the order
+ * of the queue whose route is plan and that did not go yet. None while the project is paused, while a
+ * start of the project is in flight (`starting`), or while `live` workers of the project run and
+ * that is 3 or more (user decision 3). It does not wait for triage.
+ */
+export function nextPlanTicket<T extends Pick<Ticket, "id" | "status" | "order" | "created" | "summary">>(
+  tickets: readonly T[],
+  sent: (id: string) => boolean,
+  paused: boolean,
+  live: number,
+  starting: boolean,
+): T | null {
+  if (paused || starting || live >= PLAN_WORKERS_MAX) return null;
+  return queueOrder(tickets).find((ticket) => ticketRoute(ticket) === "plan" && !sent(ticket.id)) ?? null;
+}
+
 /** The message that triage gets for a ticket: the image paths first, then the line with the id and the title, then the words. */
 export function ticketMessage(ticket: Pick<Ticket, "id" | "title" | "summary">): string {
   const { paths, words } = splitImages(ticket.summary);
@@ -212,11 +243,13 @@ export function endFailed(ticket: Pick<Ticket, "status" | "note">): boolean {
   return ticket.status === "done" && ticket.note === "failed";
 }
 
-/** What the state line of the chat says right after the box made a ticket; a paused project holds it. */
-export function addedText(ticket: Pick<Ticket, "title">, paused = false): string {
-  return paused
-    ? `Ticket "${ticket.title}" is in New: the project is paused, it waits for Resume.`
-    : `Ticket "${ticket.title}" is in New: Dispatch sends it when triage is free.`;
+/**
+ * What the state line of the chat says right after the box made a ticket; a paused project holds it.
+ * `plan`: the ticket starts its own plan (switch "Tickets start their plan", ticket simpler-process-tickets).
+ */
+export function addedText(ticket: Pick<Ticket, "title">, paused = false, plan = false): string {
+  if (paused) return `Ticket "${ticket.title}" is in New: the project is paused, it waits for Resume.`;
+  return plan ? `Ticket "${ticket.title}" is in New: Dispatch starts its plan.` : `Ticket "${ticket.title}" is in New: Dispatch sends it when triage is free.`;
 }
 
 /**

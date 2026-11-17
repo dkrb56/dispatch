@@ -51,7 +51,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextTicket, nextType, parseBoardSize, queueOrder, type Ticket, ticketCounts, ticketMatches, ticketMessage, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE } from "./tickets";
+import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, parseBoardSize, queueOrder, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { type Typed, typedAfter, typingState } from "./typing";
@@ -2264,6 +2264,8 @@ interface TaskListReply {
   startPlainPlans?: boolean;
   /** The setting of the project, with task branches on: Merge pushes the base (ticket simpler-process). Absent from an older host. */
   pushAfterMerge?: boolean;
+  /** The setting of the project: Dispatch starts the plan run of a New ticket itself (ticket simpler-process-tickets). Absent from an older host. */
+  ticketsStartPlans?: boolean;
   /** The setting of the project: Dispatch starts nothing new for it (ticket pause-tasks). Absent from an older host. */
   paused?: boolean;
   /** When the project got its Dispatch setup (the reports folder was made); null without one. */
@@ -2290,6 +2292,8 @@ interface ProjectTasks {
   startPlain: boolean;
   /** Merge pushes the base after the merge (ticket simpler-process). */
   pushAfterMerge: boolean;
+  /** Dispatch writes the brief of a New ticket and starts its plan run itself (ticket simpler-process-tickets). */
+  ticketsStartPlans: boolean;
   /** The user paused the project: no ticket goes to triage and no work run starts (ticket pause-tasks). */
   paused: boolean;
   setup: number | null;
@@ -2313,6 +2317,7 @@ function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTa
     autoApprove: reply.autoApprove,
     startPlain: reply.startPlainPlans ?? false,
     pushAfterMerge: reply.pushAfterMerge ?? false,
+    ticketsStartPlans: reply.ticketsStartPlans ?? false,
     paused: reply.paused ?? false,
     setup: reply.setup ?? null,
     tickets: reply.tickets ?? [],
@@ -3283,7 +3288,8 @@ async function addTicket(host: HostId, project: string, message: string): Promis
   const ticket = await call<Ticket>(host, "ticket_add", { cwd: project, text: message });
   await readProjectTasks(host, project).catch((error) => console.warn("task list read failed", error));
   renderChats();
-  return addedText(ticket, projectPaused(projectKey(host, project)));
+  const key = projectKey(host, project);
+  return addedText(ticket, projectPaused(key), (projectTasks.get(key)?.ticketsStartPlans ?? false) && ticketRoute(ticket) === "plan");
 }
 
 /** The host and the folder of the record of a project key, or the host and the path of the key itself. */
@@ -3386,6 +3392,79 @@ async function triageStatus(pane: Pane): Promise<string | null> {
   return info.session?.status ?? null;
 }
 
+/**
+ * The plan starts from tickets by project key (ticket simpler-process-tickets): null while the call
+ * runs, then the time it ended. A start holds the project until the next task read that began after
+ * it, because the tick before that read sees no state file yet (the rule of `StartLeases`).
+ */
+const planStarts = new Map<string, number | null>();
+/** The tickets whose plan start failed, as `<project key>\n<id>`: they go to triage. */
+const toTriage = new Set<string>();
+
+/** A plan start from a ticket of the project (by its key) runs, or no task read saw it yet. */
+function planStarting(key: string): boolean {
+  if (!planStarts.has(key)) return false;
+  const ended = planStarts.get(key) ?? null;
+  if (ended !== null && (taskReadTimes.get(key) ?? 0) > ended) {
+    planStarts.delete(key);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * The workers of a project that run (user decision 3 of simpler-process-tickets): the tasks with a
+ * worker that works or is blocked, and the tasks in the plan run whose worker the list does not show
+ * yet. Triage's own workers count too.
+ */
+function liveWorkers(record: ProjectTasks): number {
+  return projectTaskList(record).filter((task) => {
+    if (task.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) return true;
+    const info = task.info;
+    return task.workers.length === 0 && info?.state === "planning" && info.plan === null && !info.elsewhere;
+  }).length;
+}
+
+/**
+ * The plan lane of the tickets (ticket simpler-process-tickets): with "Tickets start their plan" on,
+ * the first New ticket whose route is plan gets its brief and its plan run from the host, without
+ * triage, and triage gets one line. It needs no free triage. The claim keeps a second window from a
+ * second start. A failed start goes to triage on a later tick.
+ */
+async function startTicketPlan(key: string, record: ProjectTasks): Promise<void> {
+  const sent = (id: string) => ticketSent(key, id) || toTriage.has(`${key}\n${id}`);
+  const ticket = nextPlanTicket(record.tickets, sent, record.paused, liveWorkers(record), planStarting(key));
+  if (!ticket) return;
+  const { cwd } = projectCwd(key);
+  planStarts.set(key, null);
+  let started = false;
+  try {
+    const claimed = await call<boolean>(record.host, "ticket_claim", { cwd, id: ticket.id, release: false }).catch((error) => {
+      console.warn("the claim of the ticket failed", error);
+      return null;
+    });
+    if (claimed === false) {
+      sentTickets.add(`${key}\n${ticket.id}`);
+      return;
+    }
+    sentTickets.add(`${key}\n${ticket.id}`);
+    try {
+      await call<string>(record.host, "ticket_plan", { cwd, id: ticket.id });
+      started = true;
+    } catch (error) {
+      console.warn("the plan of the ticket did not start; it goes to triage", error);
+      if (claimed) await call(record.host, "ticket_claim", { cwd, id: ticket.id, release: true }).catch(() => {});
+      sentTickets.delete(`${key}\n${ticket.id}`);
+      toTriage.add(`${key}\n${ticket.id}`);
+      return;
+    }
+    tellTriage(key, `Ticket ${ticket.id}: ${ticket.title} — Dispatch wrote the brief from the ticket and started the plan run itself; the plan will show in the task card.`);
+  } finally {
+    if (started) planStarts.set(key, Date.now());
+    else planStarts.delete(key);
+  }
+}
+
 /** A run of `dispatchTickets` is on its way. */
 let dispatching = false;
 /** `dispatchTickets` runs this often. It reads nothing for a project without New tickets and cards. */
@@ -3418,14 +3497,19 @@ async function dispatchTickets(): Promise<void> {
       // (remote-shared-state); the claim below keeps a ticket from a second window (why-are-there-two-chats).
       const pane = triagePane(key);
       if (!pane?.chat || !maySendTicket({ driver: driverOf(record.host), triage: true, sent: false })) continue;
+      // The plan lane comes first and does not wait for a ticket of triage in flight (ticket simpler-process-tickets).
+      if (record.ticketsStartPlans) await startTicketPlan(key, record);
       if (pendingCards.some((card) => card.project === key)) {
         // A card in flight: its turn of triage, also when the chat does not show.
         const status = await triageStatus(pane).catch(() => null);
         if (noteStatus(pendingCards, key, status, Date.now())) savePending();
         continue;
       }
-      // A paused project sends no ticket; a ticket in flight goes on (ticket pause-tasks).
-      const ticket = nextTicket(record.tickets, [], (id) => ticketSent(key, id), record.paused);
+      // A paused project sends no ticket; a ticket in flight goes on (ticket pause-tasks). With
+      // "Tickets start their plan" on, triage gets only the questions, the tickets with only images
+      // and the tickets whose plan start failed.
+      const queue = record.ticketsStartPlans ? record.tickets.filter((one) => ticketRoute(one) === "triage" || toTriage.has(`${key}\n${one.id}`)) : record.tickets;
+      const ticket = nextTicket(queue, [], (id) => ticketSent(key, id), record.paused);
       if (!ticket) continue;
       if (switchRuns(key) || compactRuns(key) || triageQueue.some((line) => line.project === key)) continue;
       if (!triageFree(await triageStatus(pane).catch(() => null))) continue;

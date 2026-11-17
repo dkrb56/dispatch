@@ -247,10 +247,18 @@ pub(crate) fn fold(text: &str) -> Vec<Ticket> {
 
 /// The message without the paths of the pasted images at its start, and the number of the images.
 fn without_images(text: &str) -> (String, usize) {
+    let (paths, rest) = split_images(text);
+    (rest, paths.len())
+}
+
+/// The paths of the pasted images at the start of a message, and the message after them (as
+/// `splitImages` in tickets.ts). The brief of a ticket that starts its own plan takes both (ticket
+/// simpler-process-tickets).
+pub(crate) fn split_images(text: &str) -> (Vec<String>, String) {
     const EXTENSIONS: [&str; 6] = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"];
     let is_image = |path: &str| EXTENSIONS.iter().any(|ext| path.to_ascii_lowercase().ends_with(ext));
     let mut rest = text.trim_start();
-    let mut images = 0;
+    let mut images = Vec::new();
     loop {
         let (path, after) = if let Some(quoted) = rest.strip_prefix('"') {
             let Some(end) = quoted.find('"') else { break };
@@ -262,10 +270,10 @@ fn without_images(text: &str) -> (String, usize) {
         if path.is_empty() || !is_image(path) || !(after.is_empty() || after.starts_with(char::is_whitespace)) {
             break;
         }
-        images += 1;
+        images.push(path.to_string());
         rest = after.trim_start();
     }
-    (rest.to_string(), images)
+    (images, rest.to_string())
 }
 
 /// The generated title of a message: its first sentence, one space between the words, the first
@@ -623,7 +631,7 @@ pub(crate) fn follow(project: &Project, tickets: &mut [Ticket], facts: &[TaskFac
 }
 
 /// A ticket of the file by its id.
-fn find(tickets: &[Ticket], id: &str) -> Result<Ticket, String> {
+pub(crate) fn find(tickets: &[Ticket], id: &str) -> Result<Ticket, String> {
     tickets.iter().find(|ticket| ticket.id == id).cloned().ok_or_else(|| format!("no ticket {id}"))
 }
 

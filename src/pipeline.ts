@@ -39,6 +39,8 @@ interface Options {
   checksAtGate: boolean;
   /** Merge pushes the base to its upstream branch after the merge, never with force (ticket simpler-process). Off at the start. */
   pushAfterMerge: boolean;
+  /** Dispatch writes the brief from a New ticket and starts its plan run itself; a question goes to triage (ticket simpler-process-tickets). Off at the start. */
+  ticketsStartPlans: boolean;
 }
 
 /** The reply of the `pipeline_plan`, `pipeline_apply` and `set_project_options` commands. */

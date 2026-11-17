@@ -21,6 +21,7 @@ import {
   fitBoardSize,
   goesStraight,
   movedIds,
+  nextPlanTicket,
   nextTicket,
   nextType,
   parseBoardSize,
@@ -28,6 +29,7 @@ import {
   splitImages,
   ticketMatches,
   ticketMessage,
+  ticketRoute,
   TICKETS_SIZE_KEY,
   typeName,
   USER_DONE,
@@ -298,10 +300,80 @@ test("paused: the line above the message box says that the tickets wait for Resu
 
 test("paused: the dispatcher passes the pause, and the page has the banner and the Setup switch", () => {
   const dispatch = MAIN.slice(MAIN.indexOf("async function dispatchTickets("));
-  assert.match(dispatch.slice(0, dispatch.indexOf("\n}\n")), /nextTicket\(record\.tickets, \[\], \(id\) => ticketSent\(key, id\), record\.paused\)/);
+  assert.match(dispatch.slice(0, dispatch.indexOf("\n}\n")), /nextTicket\(queue, \[\], \(id\) => ticketSent\(key, id\), record\.paused\)/);
   assert.match(HTML, /<p id="tickets-paused" hidden>/);
   assert.match(HTML, /id="tickets-resume"/);
   assert.match(HTML, /data-option="paused"/);
   assert.match(CHAT, /waitingText\(options\.waiting\?\.\(\) \?\? 0, options\.paused\?\.\(\) \?\? false\)/);
   assert.match(CSS, /#tickets-paused \{/);
+});
+
+// Ticket simpler-process-tickets: with "Tickets start their plan" on, a task ticket starts its plan
+// run without triage; a question, and a ticket with only images, still goes to triage.
+const asked = (id: string, summary: string, order: number | null = null, status: Status = "new") => ({ ...ticket(id, status, order), summary });
+
+test("tickets start their plan: the route of a ticket", () => {
+  assert.equal(ticketRoute({ summary: "Make the board faster" }), "plan");
+  assert.equal(ticketRoute({ summary: "Why is the board slow?" }), "triage", "a question");
+  assert.equal(ticketRoute({ summary: "Why is the board slow?  \n" }), "triage", "a question with spaces after it");
+  assert.equal(ticketRoute({ summary: "Is it slow? Make it faster." }), "plan", "a question mark inside the words");
+  assert.equal(ticketRoute({ summary: '"C:/pics/a shot.png" C:/pics/b.png' }), "triage", "only images");
+  assert.equal(ticketRoute({ summary: '"C:/pics/a shot.png" Fix this layout' }), "plan", "images and words");
+  assert.equal(ticketRoute({ summary: "" }), "triage", "no words");
+});
+
+test("tickets start their plan: the next plan ticket keeps the queue and the limit", () => {
+  const list = [asked("q", "Why?", 1), asked("b", "Second task", 3), asked("a", "First task", 2), asked("later", "A later task", null, "backlog")];
+  const none = () => false;
+  assert.equal(nextPlanTicket(list, none, false, 0, false)?.id, "a", "the first plan ticket in the order of the queue, not the question");
+  assert.equal(nextPlanTicket(list, (id) => id === "a", false, 0, false)?.id, "b", "a sent ticket is skipped");
+  assert.equal(nextPlanTicket(list, (id) => id !== "q", false, 0, false), null, "no Backlog ticket and no question");
+  assert.equal(nextPlanTicket(list, none, true, 0, false), null, "a paused project starts none");
+  assert.equal(nextPlanTicket(list, none, false, 0, true), null, "a start in flight holds the lane");
+  assert.equal(nextPlanTicket(list, none, false, 2, false)?.id, "a", "2 live workers: one more may start");
+  assert.equal(nextPlanTicket(list, none, false, 3, false), null, "3 live workers stop the lane");
+  assert.equal(nextPlanTicket(list, none, false, 5, false), null);
+  // The triage lane is unchanged: nextTicket on the tickets of the route triage.
+  assert.equal(nextTicket(list.filter((one) => ticketRoute(one) === "triage"), [], none, false)?.id, "q");
+});
+
+test("tickets start their plan: the line of the chat for a new ticket", () => {
+  assert.equal(addedText({ title: "Faster board" }, false, true), 'Ticket "Faster board" is in New: Dispatch starts its plan.');
+  assert.equal(addedText({ title: "Faster board" }, false, false), addedText({ title: "Faster board" }));
+  assert.equal(addedText({ title: "Faster board" }, true, true), addedText({ title: "Faster board" }, true), "paused: it waits for Resume");
+});
+
+test("tickets start their plan: the dispatcher starts plans only behind the switch", () => {
+  const dispatch = MAIN.slice(MAIN.indexOf("async function dispatchTickets("));
+  const body = dispatch.slice(0, dispatch.indexOf("\n}\n"));
+  assert.match(body, /if \(record\.ticketsStartPlans\) await startTicketPlan\(key, record\);/);
+  assert.match(body, /const queue = record\.ticketsStartPlans \? record\.tickets\.filter\(\(one\) => ticketRoute\(one\) === "triage" \|\| toTriage\.has\(`\$\{key\}\\n\$\{one\.id\}`\)\) : record\.tickets;/);
+  assert.ok(body.indexOf("startTicketPlan(") < body.indexOf("pendingCards.some("), "the plan lane does not wait for a ticket of triage in flight");
+  // ticket_plan is called only in startTicketPlan, and only the dispatcher calls that.
+  assert.equal(MAIN.split('"ticket_plan"').length - 1, 1);
+  assert.equal(MAIN.split("startTicketPlan(").length - 1, 2);
+  const lane = MAIN.slice(MAIN.indexOf("async function startTicketPlan("), MAIN.indexOf("/** A run of `dispatchTickets` is on its way. */"));
+  assert.match(lane, /nextPlanTicket\(record\.tickets, sent, record\.paused, liveWorkers\(record\), planStarting\(key\)\)/);
+  assert.match(lane, /"ticket_claim", \{ cwd, id: ticket\.id, release: false \}/);
+  assert.match(lane, /await call<string>\(record\.host, "ticket_plan", \{ cwd, id: ticket\.id \}\);/);
+  assert.match(lane, /toTriage\.add\(/);
+  assert.match(lane, /tellTriage\(key, `Ticket \$\{ticket\.id\}: \$\{ticket\.title\} — Dispatch wrote the brief from the ticket and started the plan run itself; the plan will show in the task card\.`\);/);
+  assert.match(MAIN, /ticketsStartPlans: reply\.ticketsStartPlans \?\? false,/);
+});
+
+test("tickets start their plan: the Setup switch, the Help and the README", () => {
+  assert.match(HTML, /<input type="checkbox" data-option="ticketsStartPlans" \/>\s*<span><b>Tickets start their plan\.<\/b>/);
+  assert.match(HTML, /Tickets start their plan changes the steps "Section in CLAUDE\.md" and "Triage role"\./);
+  const section = (from: string) => {
+    const start = HTML.indexOf(`<h3>${from}</h3>`);
+    return HTML.slice(start, HTML.indexOf("<h3>", start + 4));
+  };
+  const tickets = section("Tickets");
+  assert.ok(tickets.includes("With <b>Tickets start their plan</b> on in Setup pipeline"), "a visible item");
+  for (const fact of ["question mark", "fewer than 3 workers", "goes to triage", "one line into the triage chat"]) assert.ok(tickets.includes(fact), fact);
+  assert.ok(section("Project settings").includes("<li><b>Tickets start their plan.</b>"));
+  assert.ok(section("Night mode").includes("With <b>Tickets start their plan</b> on, the New tickets start their plans at night too"));
+  assert.ok(section("What Setup pipeline changes").includes("Push after the merge and Tickets start their plan adds one line to the section"));
+  const readme = read("../README.md");
+  assert.ok(readme.includes('"Tickets start their plan" starts the plan run of a New ticket without triage'));
 });

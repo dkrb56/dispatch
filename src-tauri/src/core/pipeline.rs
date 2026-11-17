@@ -148,13 +148,17 @@ pub struct Options {
     /// force (ticket simpler-process, change 4). Needs task branches. Off at the start; a settings
     /// file without the field is off.
     push_after_merge: bool,
+    /// Dispatch writes the brief from a New ticket of the tickets board and starts its plan run
+    /// itself, without triage; a question still goes to triage (ticket simpler-process-tickets,
+    /// change 1). Off at the start; a settings file without the field is off.
+    tickets_start_plans: bool,
 }
 
 // A settings file of an older version has a field for answers in the triage chat. Serde drops a
 // field it does not know, so such a file reads without an error.
 impl Default for Options {
     fn default() -> Self {
-        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, push_after_merge: false }
+        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, push_after_merge: false, tickets_start_plans: false }
     }
 }
 
@@ -196,6 +200,16 @@ fn plain_rule() -> String {
 ".to_string()
 }
 
+/// The line of the "Background workers" section for a project with "Tickets start their plan" on
+/// (ticket simpler-process-tickets). `reports` is the reports folder with `/`, `script` the command
+/// of the worker script.
+fn tickets_rule(reports: &str, script: &str) -> String {
+    format!(
+        "- Tickets start their plan is on in this project: Dispatch starts the plan run of a New ticket itself, without triage, unless the words of the ticket end with `?` or the ticket has no words. It writes the brief `{reports}/briefs/<ticket-id>.md` from the ticket (the title, the user's words and the image paths; the plan run names the constraints and the proof command), runs `{script} plan <ticket-id>`, and writes one line into the triage chat. Triage writes no brief and starts no plan run for such a ticket; it tells the user when the plan is ready, checks the result and reports, as for its own tasks. Dispatch starts no such plan run while 3 workers of the project run. A ticket whose start fails goes to triage.
+"
+    )
+}
+
 /// The line of the "Background workers" section for a project with "Checks at the gate" on, task
 /// branches on and a gate command (ticket simpler-process, change 3).
 fn gate_checks_rule(reports: &str) -> String {
@@ -234,6 +248,14 @@ fn rule_form(path: &str) -> Result<String, String> {
 /// The content of `.claude/triage.md` for the settings of a project.
 fn triage_prompt(options: Options, reports: &str) -> String {
     let script = script_command(reports);
+    // "Tickets start their plan" (ticket simpler-process-tickets): off, the line is empty and the
+    // role is the text of the version before.
+    let tickets = if options.tickets_start_plans {
+        "- Tickets start their plan is on in this project: Dispatch writes the brief of a task ticket and starts its plan run itself. A line `Ticket <id>: <title> — Dispatch wrote the brief from the ticket and started the plan run itself` means that the brief and the plan run of that ticket exist already: write no brief and start no plan run for it; tell the user when the plan is ready, check the result and report, as for your own tasks. A ticket whose words end with `?` still comes to you as a message.
+"
+    } else {
+        ""
+    };
     let mut text = format!(
         "# Triage session
 
@@ -241,7 +263,7 @@ You are the triage session of this project. The user types tasks here.
 
 - Follow the section \"Background workers\" in CLAUDE.md. You are \"triage\" in that section.
 - You do no implementation. For each task, you classify it, write a brief, start the plan run with `{script} plan <ticket-id>`, tell the user when the plan is ready, check the result and report to the user. The user approves or rejects a plan in the task card of Dispatch, never here; Dispatch writes one line into this chat when that happened. Never run `{script} approve` yourself.
-- When you need a decision from the user, ask with the tool `AskUserQuestion`: one question, 2 to 4 options, the option that you recommend first. The chat window shows the options as buttons. Use a text question only when the options are not known.
+{tickets}- When you need a decision from the user, ask with the tool `AskUserQuestion`: one question, 2 to 4 options, the option that you recommend first. The chat window shows the options as buttons. Use a text question only when the options are not known.
 - A worker has no question tool. When a report says `needs: decision` or `needs: permission`, tell the user that the task card of Dispatch shows the question with its options, or the Continue button; the user answers there, and the answer reaches the worker word for word. Never answer for the user. A permission prompt of a worker is different: tell the user to open that worker in the agent view.
 ",
     );
@@ -767,6 +789,8 @@ impl Project {
         let plain = if options.start_plain_plans { plain_rule() } else { String::new() };
         let gate_checks = if options.checks_at_gate && options.task_branches && !self.merge_gate().is_empty() { gate_checks_rule(&reports) } else { String::new() };
         let push = if options.push_after_merge && options.task_branches { push_rule() } else { String::new() };
+        // "Tickets start their plan" (ticket simpler-process-tickets): off, the line is empty.
+        let tickets = if options.tickets_start_plans { tickets_rule(&reports, &script) } else { String::new() };
         // The same for "Task files local only" (ticket ignore-tasks): off, the sentence of the version before.
         let tasks_git = if self.options().ignore_tasks {
             format!("git ignores `{reports}/`: the task files stay on this computer, and a clone has none")
@@ -777,7 +801,7 @@ impl Project {
             "- A task is two runs of one worker. The plan run reads the code and writes a plan. The work run is a new session that reads the brief and the approved plan and executes the plan. Triage starts and resumes a worker only with the script `{reports}/{SCRIPT_NAME}`, never with `claude --bg` or `claude --resume` directly. A worker works in the main checkout (`worktree.bgIsolation` is `none`).
 - Triage writes each brief to `{reports}/briefs/<ticket-id>.md`: the user's words, the constraints, and the command that proves the work. The brief says nothing about the approach; the plan run decides that.
 - A message that Dispatch sends from its tickets board starts with the line `Ticket <id>: <title>`. Triage uses that id as the ticket id of the task. Dispatch keeps the tickets file `{reports}/tickets.jsonl`; triage and the workers do not edit it.
-- `{script} plan <ticket-id>` starts the plan run on the options in `{reports}/plan-flags.txt`: without the Edit tool, without the Agent tool and without a prompt; its Write tool may write only into `{reports}/plans/`. The plan run writes the plan to `{reports}/plans/<ticket-id>.md`, changes nothing else, and ends its turn.
+{tickets}- `{script} plan <ticket-id>` starts the plan run on the options in `{reports}/plan-flags.txt`: without the Edit tool, without the Agent tool and without a prompt; its Write tool may write only into `{reports}/plans/`. The plan run writes the plan to `{reports}/plans/<ticket-id>.md`, changes nothing else, and ends its turn.
 {measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Notes for the work run (the facts from the code that the other sections do not hold, because the work run starts without the context of the plan run: how the touched code works, why an anchor was chosen, traps it saw, and the command that showed a fact; one fact per line, 15 lines maximum); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; each question, option and reason in everyday words for the user, who does not read the code: what changes for the user and what the user sees or does, not how the code does it; no file, function or command names and no terms of the code, or a short explanation of a term that must stay; the technical detail goes into Files to change, Notes for the work run or Steps; a question 20 words maximum and an option 15 words maximum, its reason not counted; for example, not `No: they follow the same rule; Setup pipeline still offers Commit to git` but `No, these files stop no task; you can still commit them in Setup pipeline`; the word HOLD stands in no other line of this section); Do not touch; Size (files). No code in a plan.
 {checks}{gate_checks}- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which starts the work run as a new session on the options in `{reports}/work-flags.txt`, with the brief, the plan and the user's decisions as its input, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when an uncommitted change outside `{reports}/` touches a file of the task (a path of the section Files to change of its plan, or a file that its task branch changed), when the worker still runs, or when the task was stopped; other uncommitted changes stay where they are and hold no task ({tasks_git}).
 {plain}- The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It commits only the files that it changed, each by name, never with `git add -A`, `git add .` or `git commit -a`, and leaves every other change as it is. It never pushes or merges. The user decides the push.
@@ -4067,6 +4091,9 @@ pub struct TaskList {
     /// The setting of the project, with task branches on: Merge pushes the base after the merge
     /// (ticket simpler-process, change 4).
     push_after_merge: bool,
+    /// The setting of the project: Dispatch starts the plan run of a New ticket itself (ticket
+    /// simpler-process-tickets).
+    tickets_start_plans: bool,
     /// The setting of the project: Dispatch starts nothing new for it (ticket pause-tasks).
     paused: bool,
     /// When the project got its Dispatch setup: the creation time of the task folder (or of its
@@ -4380,7 +4407,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     }
     let setup = setup_time(&project);
     let options = project.options();
-    Ok((TaskList { tasks, dirty, auto_approve: options.auto_approve, start_plain_plans: options.start_plain_plans, push_after_merge: options.push_after_merge && options.task_branches, paused: options.paused, setup, tickets, merging, gate: project.merge_gate(), actions }, moved))
+    Ok((TaskList { tasks, dirty, auto_approve: options.auto_approve, start_plain_plans: options.start_plain_plans, push_after_merge: options.push_after_merge && options.task_branches, tickets_start_plans: options.tickets_start_plans, paused: options.paused, setup, tickets, merging, gate: project.merge_gate(), actions }, moved))
 }
 
 /// Writes the branch file of each task that has none while its branch `task/<ticket>` exists and is
@@ -4562,6 +4589,67 @@ pub(crate) fn run_script(project: &Project, args: &[&str]) -> Result<String, Str
 pub fn task_approve(cwd: String, id: String) -> Result<String, String> {
     check_ticket(&id)?;
     run_script(&Project::find(&cwd)?, &["approve", &id])
+}
+
+/// The brief that Dispatch writes from a ticket of the tickets board (ticket simpler-process-tickets):
+/// the heading with the id and the title (the task read takes the title from it), the user's words
+/// and the paths of the pasted images. The plan run names the constraints and the proof command.
+fn ticket_brief(ticket: &crate::core::tickets::Ticket, at: u64) -> String {
+    let (paths, words) = crate::core::tickets::split_images(&ticket.summary);
+    let mut said = words.trim().to_string();
+    for path in &paths {
+        if !said.is_empty() {
+            said.push('\n');
+        }
+        said.push_str(path);
+    }
+    let date = format!("{} UTC", crate::core::tickets::iso(at)[..16].replace('T', " "));
+    format!(
+        "# {id}: {title}\n\nDispatch wrote this brief from ticket {id} of the tickets board on {date} (Tickets start their plan); the triage chat did not see the ticket.\n\n## The user's words\n{said}\n\n## Constraints\nNone given in the ticket; CLAUDE.md and the project rules hold.\n\n## The command that proves the work\nNot given; the plan run names it under Acceptance.\n",
+        id = ticket.id,
+        title = ticket.title,
+    )
+}
+
+/// Starts the plan run of a New ticket without triage (ticket simpler-process-tickets): the switch
+/// "Tickets start their plan". Writes the brief from the ticket and runs the plan verb of the script.
+/// The ticket moves to In progress at the next task read, from the state `planning`.
+pub fn ticket_plan(cwd: String, id: String) -> Result<String, String> {
+    ticket_plan_with(&Project::find(&cwd)?, &id, &|project, args| run_script(project, args))
+}
+
+/// `ticket_plan` with the start of the script as an argument; a test gives a fake.
+fn ticket_plan_with(project: &Project, id: &str, start: &dyn Fn(&Project, &[&str]) -> Result<String, String>) -> Result<String, String> {
+    check_ticket(id)?;
+    let options = project.options();
+    if !options.tickets_start_plans {
+        return Err("Tickets start their plan is off in this project".to_string());
+    }
+    if options.paused {
+        return Err("the project is paused".to_string());
+    }
+    let tickets = crate::core::tickets::list(project);
+    let ticket = crate::core::tickets::find(&tickets, id)?;
+    if ticket.status != crate::core::tickets::NEW {
+        return Err(format!("the ticket {id} is not in New"));
+    }
+    let brief = project.briefs().join(format!("{id}.md"));
+    // The files that the plan verb writes: a task with the id exists already when one is there.
+    let state = project.reports.join(format!("{id}.state"));
+    let leftovers = [state.clone(), project.branch_file(id), project.session_file(id)];
+    let plan = project.plans().join(format!("{id}.md"));
+    if brief.exists() || plan.exists() || leftovers.iter().any(|path| path.exists()) {
+        return Err(format!("a task {id} exists already"));
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
+    write_file(&brief, &ticket_brief(&ticket, now))?;
+    start(project, &["plan", id]).inspect_err(|_| {
+        // A failed start leaves no task: else the files block the ticket for good, and the state
+        // `planning` would move it to In progress although no plan run runs.
+        for path in std::iter::once(&brief).chain(leftovers.iter()) {
+            let _ = fs::remove_file(path);
+        }
+    })
 }
 
 /// Sends the plan run back with the reason of the user: the Reject button of the task card.
@@ -7268,6 +7356,183 @@ if (args[0] === 'agents') {
         for (at, file) in files.iter().enumerate() {
             assert!(fs::read(file).unwrap() == first[at], "{} changed with the switches", file.display());
         }
+        clean(&project);
+    }
+
+    /// Sets "Tickets start their plan" (ticket simpler-process-tickets) in the settings file, as the switch does.
+    fn set_tickets(project: &Project, on: bool) {
+        let options = Options { tickets_start_plans: on, ..project.options() };
+        write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
+    }
+
+    #[test]
+    fn an_old_settings_file_has_tickets_start_plans_off() {
+        let project = scratch("tickets-old");
+        apply(&project, &[0]).unwrap();
+        // The settings file of 0.1.67 with the three switches of ticket simpler-process: no field for this switch.
+        write_file(&project.options_file(), "{\n  \"shortReports\": true,\n  \"triageName\": true,\n  \"autoApprove\": false,\n  \"measureBeforePlan\": false,\n  \"taskBranches\": false,\n  \"ignoreTasks\": false,\n  \"notesInGit\": false,\n  \"paused\": false,\n  \"startPlainPlans\": false,\n  \"checksAtGate\": false,\n  \"pushAfterMerge\": false\n}\n").unwrap();
+        assert!(!project.options().tickets_start_plans);
+        let shown = serde_json::to_value(&plan(&project).unwrap().options).unwrap();
+        assert_eq!(shown["ticketsStartPlans"], json!(false));
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        assert!(!list.tickets_start_plans);
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        clean(&project);
+    }
+
+    #[test]
+    fn tickets_start_plans_changes_only_its_lines() {
+        let project = scratch("tickets-section");
+        apply(&project, &[0]).unwrap();
+        let reports = project.reports_text();
+        let script = script_command(&reports);
+        let files = [project.script(), project.plan_flags(), project.work_flags()];
+        let first: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+        // Off: the section and the role of the version before.
+        let before = project.section_body();
+        let role_before = triage_prompt(project.options(), &reports);
+        set_tickets(&project, false);
+        assert_eq!(project.section_body(), before);
+        assert_eq!(triage_prompt(project.options(), &reports), role_before);
+        assert!(!before.contains("Tickets start their plan") && !role_before.contains("Tickets start their plan"));
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+
+        // On: one line after the line of the tickets board, one bullet after the bullet of the role.
+        set_tickets(&project, true);
+        let body = project.section_body();
+        let rule = tickets_rule(&reports, &script);
+        assert!(body.contains(&format!("triage and the workers do not edit it.\n{rule}- `{script} plan <ticket-id>` starts")), "{body}");
+        assert_eq!(body.replacen(&rule, "", 1), before);
+        let role = triage_prompt(project.options(), &reports);
+        let at = role.find("Never run `").unwrap();
+        let bullet_start = role[at..].find("\n- ").unwrap() + at + 1;
+        let bullet_end = role[bullet_start..].find("\n- ").unwrap() + bullet_start + 1;
+        let bullet = &role[bullet_start..bullet_end];
+        assert!(bullet.starts_with("- Tickets start their plan is on in this project"), "{bullet}");
+        assert!(bullet.contains("Dispatch wrote the brief from the ticket and started the plan run itself"), "{bullet}");
+        assert_eq!(role.replacen(bullet, "", 1), role_before);
+        assert_eq!(open_steps(&project), vec!["Section in CLAUDE.md", "Triage role"]);
+
+        // The script and the options files are the same text with the switch on.
+        apply(&project, &[]).unwrap();
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        for (at, file) in files.iter().enumerate() {
+            assert!(fs::read(file).unwrap() == first[at], "{} changed with the switch", file.display());
+        }
+        clean(&project);
+    }
+
+    /// The start of the script with the fake worker, as `ticket_plan` gives it to `ticket_plan_with`.
+    fn fake_start(fake: &Path) -> impl Fn(&Project, &[&str]) -> Result<String, String> + '_ {
+        move |project, args| {
+            let (code, out) = run_script(project, fake, "done", args);
+            if code == 0 { Ok(out) } else { Err(out) }
+        }
+    }
+
+    /// The status of a ticket in a fresh task list of the project.
+    fn ticket_status(project: &Project, id: &str) -> String {
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        list.tickets.into_iter().find(|ticket| ticket.id == id).map(|ticket| ticket.status).unwrap()
+    }
+
+    #[test]
+    fn a_new_ticket_starts_its_plan_with_the_switch_on() {
+        let project = scratch("tickets-start");
+        apply(&project, &[0]).unwrap();
+        set_tickets(&project, true);
+        let fake = fake_claude(project.root.parent().unwrap());
+        let cwd = project.root.to_string_lossy().into_owned();
+        let ticket = crate::core::tickets::ticket_add(cwd, "\"C:/pics/a shot.png\" Make the board faster.\nIt stalls with 50 tickets.".to_string()).unwrap();
+        write_file(&project.reports.join("fake-name.txt"), &format!("{} [plan]", ticket.id)).unwrap();
+        ticket_plan_with(&project, &ticket.id, &fake_start(&fake)).unwrap();
+
+        let call = last_call(&fake);
+        assert!(call[0].starts_with(&format!("Plan ticket {}.", ticket.id)), "{call:?}");
+        let brief = read(&project.briefs().join(format!("{}.md", ticket.id)));
+        assert!(brief.starts_with(&format!("# {}: {}\n\nDispatch wrote this brief from ticket {} of the tickets board on ", ticket.id, ticket.title, ticket.id)), "{brief}");
+        assert!(brief.contains("## The user's words\nMake the board faster.\nIt stalls with 50 tickets.\nC:/pics/a shot.png\n\n## Constraints\n"), "{brief}");
+        assert!(brief.contains("## The command that proves the work\n"), "{brief}");
+        assert_eq!(parse_brief(&brief), ticket.title, "the task read takes the title of the ticket");
+        assert_eq!(read(&project.reports.join(format!("{}.state", ticket.id))), "planning\n");
+        assert_eq!(ticket_status(&project, &ticket.id), crate::core::tickets::IN_PROGRESS);
+        // A second start of the same ticket is refused: it is not in New, and its task exists.
+        assert!(ticket_plan_with(&project, &ticket.id, &fake_start(&fake)).is_err());
+        clean(&project);
+    }
+
+    #[test]
+    fn ticket_plan_refuses_with_the_switch_off() {
+        let project = scratch("tickets-off");
+        apply(&project, &[0]).unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        let ticket = crate::core::tickets::ticket_add(cwd, "Make the board faster".to_string()).unwrap();
+        let started = std::cell::Cell::new(false);
+        let start = |_: &Project, _: &[&str]| -> Result<String, String> {
+            started.set(true);
+            Ok(String::new())
+        };
+        let error = ticket_plan_with(&project, &ticket.id, &start).unwrap_err();
+        assert!(error.contains("Tickets start their plan is off"), "{error}");
+        assert!(!started.get(), "no call of the script");
+        assert!(!project.briefs().join(format!("{}.md", ticket.id)).exists(), "no brief");
+        assert_eq!(ticket_status(&project, &ticket.id), crate::core::tickets::NEW);
+        clean(&project);
+    }
+
+    #[test]
+    fn ticket_plan_refuses_a_ticket_that_is_not_new_or_has_a_task() {
+        let project = scratch("tickets-refuse");
+        apply(&project, &[0]).unwrap();
+        set_tickets(&project, true);
+        let cwd = project.root.to_string_lossy().into_owned();
+        let started = std::cell::Cell::new(0);
+        let start = |_: &Project, _: &[&str]| -> Result<String, String> {
+            started.set(started.get() + 1);
+            Ok(String::new())
+        };
+        // Backlog.
+        let waiting = crate::core::tickets::ticket_add(cwd.clone(), "A later task".to_string()).unwrap();
+        crate::core::tickets::ticket_move(cwd.clone(), waiting.id.clone(), "backlog".to_string(), Vec::new(), None).unwrap();
+        assert!(ticket_plan_with(&project, &waiting.id, &start).unwrap_err().contains("not in New"));
+        // In progress.
+        crate::core::tickets::open_in_progress(&project, "t-running", "A running task", "A running task").unwrap();
+        assert!(ticket_plan_with(&project, "t-running", &start).unwrap_err().contains("not in New"));
+        // A New ticket whose id has a brief already: the brief stays as it is.
+        let ticket = crate::core::tickets::ticket_add(cwd.clone(), "A task with a brief".to_string()).unwrap();
+        let brief = project.briefs().join(format!("{}.md", ticket.id));
+        write_file(&brief, "# by triage\n").unwrap();
+        assert!(ticket_plan_with(&project, &ticket.id, &start).unwrap_err().contains("exists already"));
+        assert_eq!(read(&brief), "# by triage\n");
+        // A paused project and an unknown ticket.
+        let other = crate::core::tickets::ticket_add(cwd.clone(), "One more task".to_string()).unwrap();
+        set_paused(cwd, true).unwrap();
+        assert!(ticket_plan_with(&project, &other.id, &start).unwrap_err().contains("paused"));
+        set_paused(project.root.to_string_lossy().into_owned(), false).unwrap();
+        assert!(ticket_plan_with(&project, "no-such-ticket", &start).is_err());
+        assert_eq!(started.get(), 0, "no call of the script");
+        assert!(!project.briefs().join(format!("{}.md", other.id)).exists());
+        clean(&project);
+    }
+
+    #[test]
+    fn a_failed_plan_start_leaves_no_brief() {
+        let project = scratch("tickets-fail");
+        apply(&project, &[0]).unwrap();
+        set_tickets(&project, true);
+        let fake = fake_claude(project.root.parent().unwrap());
+        write_file(&fake.join("fail.txt"), "3").unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        let ticket = crate::core::tickets::ticket_add(cwd, "Make the board faster".to_string()).unwrap();
+        assert!(ticket_plan_with(&project, &ticket.id, &fake_start(&fake)).is_err());
+        for path in [project.briefs().join(format!("{}.md", ticket.id)), project.reports.join(format!("{}.state", ticket.id)), project.session_file(&ticket.id)] {
+            assert!(!path.exists(), "{} stays", path.display());
+        }
+        // The ticket stays in New, so it goes to triage; a second start works.
+        assert_eq!(ticket_status(&project, &ticket.id), crate::core::tickets::NEW);
+        fs::remove_file(fake.join("fail.txt")).unwrap();
+        ticket_plan_with(&project, &ticket.id, &fake_start(&fake)).unwrap();
+        assert!(project.briefs().join(format!("{}.md", ticket.id)).exists());
         clean(&project);
     }
 

@@ -75,6 +75,7 @@ pub fn run() {
             commands::ticket_claim,
             commands::ticket_move_all,
             commands::task_approve,
+            commands::ticket_plan,
             commands::task_decide,
             commands::task_checks,
             commands::task_take_done,
