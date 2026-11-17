@@ -2323,6 +2323,128 @@ button.ticket-level {
   cursor: default;
 }
 
+/* The Title box of the window in edit mode, as the other boxes. */
+#ticket-add-title-box {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: calc(13px * var(--text-scale));
+}
+
+#ticket-add-title-box:focus {
+  border-color: var(--accent-line);
+  outline: none;
+}
+
+/* The Ticket details window: a closed ticket to read, with the files of its task. */
+#ticket-details {
+  width: min(680px, 94vw);
+  max-height: 86vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 50%);
+  color: var(--text);
+  font-size: calc(13px * var(--text-scale));
+}
+
+#ticket-details[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#ticket-details::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+#ticket-details header {
+  display: flex;
+  flex: none;
+  gap: 10px;
+  align-items: center;
+  padding: 14px 10px 12px 22px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+#ticket-details h2 {
+  flex: 1;
+  margin: 0;
+  font-size: calc(16px * var(--text-scale));
+  font-weight: 600;
+}
+
+#ticket-details-close {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: calc(18px * var(--text-scale));
+  cursor: pointer;
+}
+
+#ticket-details-close:hover {
+  background: var(--card);
+}
+
+#ticket-details-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 22px 18px;
+}
+
+.ticket-details-name {
+  margin: 0;
+  font-size: calc(15px * var(--text-scale));
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.ticket-details-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.ticket-details-meta .failed {
+  color: var(--danger);
+}
+
+.ticket-details-field,
+.ticket-details-files {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.ticket-details-label {
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  font-weight: 600;
+}
+
+.ticket-details-text {
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* The Tickets part of an Overview card: the counts and "+ Ticket" side by side. */
 .overview-tickets-line {
   display: flex;

@@ -275,6 +275,13 @@
         <button id="ticket-add-save" title="Add the ticket at the end of New (Enter in the Goal box)">Add</button>
       </footer>
     </dialog>
+    <dialog id="ticket-details" aria-labelledby="ticket-details-title">
+      <header>
+        <h2 id="ticket-details-title">Ticket details</h2>
+        <button id="ticket-details-close" title="Close (Esc)">&times;</button>
+      </header>
+      <div id="ticket-details-body"></div>
+    </dialog>
     <dialog id="actions" aria-labelledby="actions-title">
       <header>
         <h2 id="actions-title">Actions</h2>
@@ -685,7 +692,9 @@
           <li>A message that you type into triage lands in <b>New</b> with a title that Dispatch makes from your words. A question is a ticket too.</li>
           <li>New is the queue. Dispatch sends the New tickets to triage by itself, one at a time, in the order of the column. You move nothing by hand.</li>
           <li>A ticket moves to In progress, Done or Canceled by itself as its task goes on.</li>
-          <li>Click a title, or ✎, to rename it. Click the type tag to change the type.</li>
+          <li>Click a title to rename it. Click the type tag to change the type.</li>
+          <li><b>✎</b> on a ticket in Backlog or New opens the window Edit ticket: change the title, the Goal, the images, the level, the type and the optional boxes, then click <b>Save</b>. The ticket keeps its place. Dispatch does not start a New ticket while you edit it.</li>
+          <li>Click the title of a Done or Canceled ticket to open <b>Ticket details</b>: its words, images, boxes, dates and end word, with the brief, plan, report and log of its task.</li>
           <li><b>+ Ticket</b> next to Tickets in the buttons of a project, and on each Overview card, opens the window New ticket without the board. <b>New ticket</b> on the board opens the same window. The window names the project of the ticket. The Goal box comes first; Enter adds the ticket. Under it stand the level, the type and the optional boxes Why, Done when, Do not change and Context. <b>Add</b> puts the ticket at the end of New and closes the window; the board stays closed. Ctrl+V pastes an image from the clipboard into the window; × takes it out. A ticket can have only images.</li>
           <li><b>Level.</b> Each ticket has a level for its plan: Simple (Opus, effort medium), Medium (Opus, effort high) or Hard (Fable, effort high). Medium is the default. Click the level tag of a waiting ticket for the next level.</li>
           <li><b>A yellow !</b> after the name of a project says that its tickets wait and do not go: the project is paused, triage does not run, or triage has not taken a ticket for a minute. Its tooltip says which. A click opens the board.</li>
@@ -714,6 +723,7 @@
             <li><b>The chain of parts.</b> The planner fills the title, the level, the type, the Goal and the optional boxes of each part. Approve opens the parts in Backlog in their order, each linked to its parent ticket. Part 1 moves to New when the work of the plan is done (with Task branches on, after the merge); each next part moves when the part before it is done. A part makes no parts of its own. A plan without parts works as before.</li>
             <li><b>The count.</b> The parent ticket shows "2 of 4 parts done" and stays In progress until its last part is done; then it goes to Done. A failed or stopped part stops the chain: the parent shows "stopped at part N", and the other parts stay in Backlog. Remove the rest, and the parent goes to Done as failed.</li>
             <li><b>The brief of a part</b> names its parent and the parts before it, each with its end word and its commits, and the plan of the parent. A part that goes to triage carries the same lines in its message.</li>
+            <li><b>Edit ticket.</b> Esc, &times; and Cancel close the window without a save; an edit keeps no draft. A New ticket whose plan or triage already started can not change: Save shows the error. ✎ on a ticket In progress, Done or Canceled renames it.</li>
             <li><b>Change the waiting parts.</b> A part in Backlog shows "Part N of M" and its parent. ▲ and ▼ change its place in the chain, ✎ opens it in the form (title, Goal, type, level and boxes), and × moves it to Canceled: the chain skips it, and a drag back to Backlog puts it into the chain again. <b>+ Part</b> on the parent adds a part at the end of the chain.</li>
             <li>Setup pipeline shows "Section in CLAUDE.md" To do once more after this update, because the section names the parts of a plan. Click Apply there.</li>
           </ul>

@@ -1254,9 +1254,11 @@ pub fn ticket_add_part(
     Ok(ticket)
 }
 
-/// Changes a part that waits in Backlog (ticket subtickets, the button ✎): its title, its Goal, its
-/// type, its level and its fields; a key that is none stays. Refused for a ticket without a parent and
-/// for a part outside Backlog. What I see and What I expect stay only on a fix.
+/// Changes a ticket that waits in Backlog or New (ticket subtickets, the button ✎; ticket
+/// i-need-an-option-to-edit-task-which-is): its title, its Goal, its type, its level and its fields;
+/// a key that is none stays, and the column and the place in the queue stay. Refused for a ticket in
+/// another column and for a New ticket whose task started (a brief, state or plan file exists). What I
+/// see and What I expect stay only on a fix.
 pub fn ticket_edit(
     cwd: String,
     id: String,
@@ -1268,11 +1270,12 @@ pub fn ticket_edit(
 ) -> Result<Ticket, String> {
     let project = Project::find(&cwd)?;
     let ticket = find(&read(&project), &id)?;
-    if ticket.parent.is_empty() {
-        return Err(format!("the ticket {id} is no part"));
+    if ticket.status != BACKLOG && ticket.status != NEW {
+        return Err(format!("the ticket {id} is not in Backlog or New"));
     }
-    if ticket.status != BACKLOG {
-        return Err(format!("the part {id} is not in Backlog"));
+    let started = [project.briefs().join(format!("{id}.md")), project.reports.join(format!("{id}.state")), project.plans().join(format!("{id}.md"))];
+    if ticket.status == NEW && started.iter().any(|path| path.exists()) {
+        return Err(format!("the ticket {id} started; it can not change"));
     }
     let mut line = Map::new();
     if let Some(title) = title {
@@ -2294,6 +2297,36 @@ mod tests {
     }
 
     #[test]
+    fn tickets_in_backlog_and_new_can_be_edited() {
+        let (project, base) = scratch("edit-tickets");
+        let first = ticket_add(cwd(&project), "make the board faster".into(), None, None, None).unwrap();
+        let second = ticket_add(cwd(&project), "write the help".into(), None, None, None).unwrap();
+        let waiting = ticket_add(cwd(&project), "clean the logs".into(), None, None, None).unwrap();
+        ticket_move(cwd(&project), waiting.id.clone(), BACKLOG.into(), vec![], None).unwrap();
+        let first = find(&read(&project), &first.id).unwrap();
+        // A New ticket changes and keeps its column and its place in the queue.
+        let fields = TicketFields { see: "A slow board".into(), expect: "A fast board".into(), ..Default::default() };
+        let edited = ticket_edit(cwd(&project), first.id.clone(), Some("Faster board".into()), Some("Make it fast".into()), Some("fix".into()), Some("hard".into()), Some(fields.clone())).unwrap();
+        assert_eq!((edited.title.as_str(), edited.summary.as_str(), edited.kind.as_str(), edited.level.as_str(), edited.renamed), ("Faster board", "Make it fast", "fix", "hard", true));
+        assert_eq!(edited.fields, fields);
+        assert_eq!((edited.status.as_str(), edited.order), (NEW, first.order));
+        // A Backlog ticket changes and stays in Backlog.
+        let edited = ticket_edit(cwd(&project), waiting.id.clone(), None, Some("Clean the old logs".into()), Some("refactor".into()), Some("simple".into()), None).unwrap();
+        assert_eq!((edited.summary.as_str(), edited.kind.as_str(), edited.level.as_str(), edited.status.as_str()), ("Clean the old logs", "refactor", "simple", BACKLOG));
+        // A New ticket whose task started cannot change.
+        write_file(&project.briefs().join(format!("{}.md", second.id)), "# brief\n").unwrap();
+        assert!(ticket_edit(cwd(&project), second.id.clone(), Some("x".into()), None, None, None, None).is_err(), "started");
+        // In progress, Done and Canceled cannot change.
+        append(&project, &[move_event(&second.id, now(), IN_PROGRESS, "", None)]).unwrap();
+        assert!(ticket_edit(cwd(&project), second.id.clone(), Some("x".into()), None, None, None, None).is_err(), "in progress");
+        ticket_move(cwd(&project), first.id.clone(), DONE.into(), vec![], None).unwrap();
+        assert!(ticket_edit(cwd(&project), first.id.clone(), Some("x".into()), None, None, None, None).is_err(), "done");
+        ticket_move(cwd(&project), waiting.id.clone(), CANCELED.into(), vec![], None).unwrap();
+        assert!(ticket_edit(cwd(&project), waiting.id.clone(), Some("x".into()), None, None, None, None).is_err(), "canceled");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
     fn parts_in_backlog_can_be_edited_added_canceled_and_reordered() {
         let (project, base) = scratch("edit-parts");
         let (parent, parts) = chain(&project, 2);
@@ -2308,7 +2341,7 @@ mod tests {
         let lines = fs::read_to_string(project.tickets_file()).unwrap().lines().count();
         assert_eq!(ticket_edit(cwd(&project), parts[0].id.clone(), None, None, None, None, None).unwrap(), back);
         assert_eq!(fs::read_to_string(project.tickets_file()).unwrap().lines().count(), lines, "no change, no line");
-        assert!(ticket_edit(cwd(&project), parent.id.clone(), Some("x".into()), None, None, None, None).is_err(), "no part");
+        assert_eq!(ticket_edit(cwd(&project), parent.id.clone(), Some("The big thing".into()), None, None, None, None).unwrap().title, "The big thing", "a New parent can change");
         assert!(ticket_edit(cwd(&project), parts[0].id.clone(), Some(" ".into()), None, None, None, None).is_err());
         assert!(ticket_edit(cwd(&project), parts[0].id.clone(), None, None, None, Some("extreme".into()), None).is_err());
         // Add: a new part at the end of the chain.
@@ -2322,9 +2355,12 @@ mod tests {
         let after = ticket_parts(cwd(&project), parent.id.clone(), vec![added.id.clone(), parts[0].id.clone()]).unwrap();
         let order: Vec<&str> = parts_of(&after, &parent.id).into_iter().map(|t| t.id.as_str()).collect();
         assert_eq!(order, [added.id.as_str(), parts[0].id.as_str(), parts[1].id.as_str(), untitled.id.as_str()]);
-        // A part outside Backlog keeps its place and cannot be edited.
+        // A part in New can change; a part in In progress cannot. A part outside Backlog keeps its place.
         ticket_move(cwd(&project), added.id.clone(), NEW.into(), vec![added.id.clone()], None).unwrap();
+        assert_eq!(ticket_edit(cwd(&project), added.id.clone(), Some("Clean it".into()), None, None, None, None).unwrap().title, "Clean it");
+        append(&project, &[move_event(&added.id, now(), IN_PROGRESS, "", None)]).unwrap();
         assert!(ticket_edit(cwd(&project), added.id.clone(), Some("x".into()), None, None, None, None).is_err());
+        ticket_move(cwd(&project), added.id.clone(), NEW.into(), vec![added.id.clone()], None).unwrap();
         let after = ticket_parts(cwd(&project), parent.id.clone(), vec![untitled.id.clone()]).unwrap();
         let order: Vec<(&str, u32)> = parts_of(&after, &parent.id).into_iter().map(|t| (t.id.as_str(), t.part)).collect();
         assert_eq!(order, [(added.id.as_str(), 1), (untitled.id.as_str(), 2), (parts[0].id.as_str(), 3), (parts[1].id.as_str(), 4)]);

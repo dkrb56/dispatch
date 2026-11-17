@@ -51,7 +51,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, parseBoardSize, queueOrder, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText } from "./tickets";
+import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, parseBoardSize, queueOrder, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { type Typed, typedAfter, typingState } from "./typing";
@@ -59,7 +59,7 @@ import { MENU_ABOVE_LINES, menuScreen, parseMenu, parseReview, SUBMIT_QUESTION }
 import { joinRows, type MenuRecord, type ScreenRow } from "./menurecord";
 import { agentListShown, asksAgain, backKey, BACK_TITLE, LIST_TITLE } from "./agentview";
 import { getVersion } from "@tauri-apps/api/app";
-import { type FileEntry, type FileInfo, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
+import { type FileEntry, type FileInfo, imageFileUrl, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
 import { agentsText, fileRowTitle, reportChip, rowParts, runChip, type RunChip, runCostText, runTokensTitle, tokenText } from "./workerrow";
 import { commandLines, groupLabel, unverifiedText } from "./commandrows";
@@ -3576,7 +3576,8 @@ async function startTicketPlan(key: string, record: ProjectTasks): Promise<void>
     const [owner, id] = one.split("\n");
     if (owner === key && !record.tickets.some((ticket) => ticket.id === id && ticket.status === "new")) planErrors.delete(one);
   }
-  const sent = (id: string) => ticketSent(key, id) || toTriage.has(`${key}\n${id}`) || planErrors.has(`${key}\n${id}`);
+  // A New ticket in the Edit ticket window waits until the window closes (user decision 1).
+  const sent = (id: string) => ticketSent(key, id) || toTriage.has(`${key}\n${id}`) || planErrors.has(`${key}\n${id}`) || editingTicket === `${key}\n${id}`;
   // With "No triage" on, a question and a ticket with only images start their plan too (point 1).
   const ticket = nextPlanTicket(record.tickets, sent, record.paused, liveWorkers(record), planStarting(key), record.noTriage);
   if (!ticket) return;
@@ -3672,7 +3673,7 @@ async function dispatchTickets(): Promise<void> {
       // "Tickets start their plan" on, triage gets only the questions, the tickets with only images
       // and the tickets whose plan start failed.
       const queue = record.ticketsStartPlans ? record.tickets.filter((one) => ticketRoute(one) === "triage" || toTriage.has(`${key}\n${one.id}`)) : record.tickets;
-      const ticket = nextTicket(queue, [], (id) => ticketSent(key, id), record.paused);
+      const ticket = nextTicket(queue, [], (id) => ticketSent(key, id) || editingTicket === `${key}\n${id}`, record.paused);
       if (!ticket) continue;
       if (switchRuns(key) || compactRuns(key) || triageQueue.some((line) => line.project === key)) continue;
       if (!triageFree(await triageStatus(pane).catch(() => null))) continue;
@@ -6239,6 +6240,7 @@ const addTicketNoteEl = document.querySelector<HTMLElement>("#ticket-add-note")!
 const addTicketErrorEl = document.querySelector<HTMLElement>("#ticket-add-error")!;
 const addTicketBodyEl = document.querySelector<HTMLElement>("#ticket-add-body")!;
 const addTicketSaveEl = document.querySelector<HTMLButtonElement>("#ticket-add-save")!;
+const addTicketTitleEl = document.querySelector<HTMLElement>("#ticket-add-title")!;
 
 /** The project of the open window, or null. */
 let addTicketRef: ProjectRef | null = null;
@@ -6250,6 +6252,62 @@ const addTicketImages = new Map<string, { path: string; url: string }[]>();
 let addTicketError = "";
 /** An Add runs: a second Enter or click adds nothing. */
 let addTicketBusy = false;
+
+/**
+ * The edit mode of the window (ticket i-need-an-option-to-edit-task-which-is): the ticket that ✎
+ * opened, its title, its draft and its images (the old ones and the pasted ones). Null: the window
+ * adds a new ticket. An edit keeps no draft: Esc, × and Cancel drop it.
+ */
+interface TicketEdit {
+  id: string;
+  title: string;
+  draft: TicketDraft;
+  images: { path: string; url: string }[];
+}
+let addTicketEdit: TicketEdit | null = null;
+/** The New ticket in the Edit ticket window (`${key}\n${id}`), or null: Dispatch does not start it (user decision 1). */
+let editingTicket: string | null = null;
+
+/** Opens the window with a ticket of Backlog or New to change; the Goal box gets the keyboard. */
+function openEditTicket(key: string, ticket: Ticket): void {
+  endTicketEdit();
+  const { host, cwd } = projectCwd(key);
+  const { paths, words } = splitImages(ticket.summary);
+  const draft = emptyTicketDraft();
+  draft.text = words;
+  draft.kind = ticket.type;
+  draft.level = levelOf(ticket);
+  draft.fields = { ...draft.fields, ...(ticket.fields ?? {}) };
+  const edit: TicketEdit = { id: ticket.id, title: ticket.title, draft, images: paths.map((path) => ({ path, url: "" })) };
+  addTicketEdit = edit;
+  // The hold is in place before the window shows: without triage a plan starts within one tick.
+  if (ticket.status === "new") editingTicket = `${key}\n${ticket.id}`;
+  for (const image of edit.images) {
+    void imageFileUrl(host, image.path)
+      .then((url) => {
+        if (addTicketEdit !== edit || !edit.images.includes(image)) return URL.revokeObjectURL(url);
+        image.url = url;
+        const row = addTicketBodyEl.querySelector<HTMLElement>(".ticket-add-images");
+        if (row) showAddTicketImages(row, key);
+      })
+      .catch((error) => console.warn("the image of the ticket did not load", error));
+  }
+  addTicketRef = { host, root: cwd };
+  addTicketError = "";
+  if (!addTicketDialog.open) addTicketDialog.showModal();
+  renderAddTicket();
+  addTicketBodyEl.querySelector<HTMLTextAreaElement>("#ticket-add-goal")?.focus();
+}
+
+/** Ends the edit mode: frees the pictures, lets Dispatch start the ticket again and runs a tick. */
+function endTicketEdit(): void {
+  if (addTicketEdit) for (const image of addTicketEdit.images) if (image.url) URL.revokeObjectURL(image.url);
+  addTicketEdit = null;
+  if (editingTicket !== null) {
+    editingTicket = null;
+    void dispatchTickets();
+  }
+}
 
 /** The draft of a project (by its key); a new one is empty. */
 function addTicketDraft(key: string): TicketDraft {
@@ -6263,6 +6321,7 @@ function addTicketDraft(key: string): TicketDraft {
 
 /** Opens the Add ticket window for a project; the Goal box gets the keyboard. */
 function openAddTicket(ref: ProjectRef): void {
+  endTicketEdit();
   addTicketRef = ref;
   addTicketError = "";
   if (!addTicketDialog.open) addTicketDialog.showModal();
@@ -6277,6 +6336,17 @@ function renderAddTicket(): void {
   const key = refKey(ref);
   addTicketProjectEl.replaceChildren(mapElement("b", "", projectName(ref)), mapElement("span", "ticket-add-folder", ref.root));
   addTicketProjectEl.title = `The ticket goes to New of ${projectName(ref)}: ${ticketsFilePath(ref.root)}`;
+  const edit = addTicketEdit;
+  addTicketTitleEl.textContent = edit ? "Edit ticket" : "New ticket";
+  addTicketSaveEl.textContent = edit ? "Save" : "Add";
+  addTicketSaveEl.title = edit ? "Save the changes of the ticket (Enter in the Goal box)" : "Add the ticket at the end of New (Enter in the Goal box)";
+  document.querySelector<HTMLElement>("#ticket-add-close")!.title = edit ? "Close (Esc) without a save" : "Close (Esc); your text stays for the next time";
+  if (edit) {
+    addTicketNoteEl.textContent = "Save changes the ticket; it keeps its place.";
+    showAddTicketError();
+    addTicketBodyEl.replaceChildren(addTicketForm(edit.draft, edit));
+    return;
+  }
   addTicketNoteEl.textContent = projectPaused(key)
     ? "The ticket goes to the end of New. The project is paused: the ticket waits for Resume."
     : projectNoTriage(key)
@@ -6293,18 +6363,21 @@ function showAddTicketError(): void {
 
 /** Draws the pasted images of a project key into its row: a picture with × each, as in the chat view. */
 function showAddTicketImages(row: HTMLElement, key: string): void {
-  const images = addTicketImages.get(key) ?? [];
+  // The edit mode shows the images of the edited ticket: the old ones load from their files.
+  const edit = addTicketEdit;
+  const images = edit ? edit.images : (addTicketImages.get(key) ?? []);
   row.replaceChildren(
     ...images.map((image) => {
       const chip = mapElement("span", "chat-image");
       const picture = new Image();
-      picture.src = image.url;
+      if (image.url) picture.src = image.url;
       const remove = mapElement("button", "", "×");
       remove.type = "button";
       remove.title = "Remove the image";
       remove.addEventListener("click", () => {
-        URL.revokeObjectURL(image.url);
-        addTicketImages.set(key, (addTicketImages.get(key) ?? []).filter((other) => other !== image));
+        if (image.url) URL.revokeObjectURL(image.url);
+        if (edit) edit.images = edit.images.filter((other) => other !== image);
+        else addTicketImages.set(key, (addTicketImages.get(key) ?? []).filter((other) => other !== image));
         showAddTicketImages(row, key);
       });
       chip.title = image.path;
@@ -6331,7 +6404,7 @@ function quoteImagePath(path: string): string {
  * boxes of a fix show only for the type Fix. All optional boxes show at once (user decision 3).
  * Each change goes into the draft at once, so the form does not draw again.
  */
-function addTicketForm(draft: TicketDraft): HTMLElement {
+function addTicketForm(draft: TicketDraft, edit: TicketEdit | null = null): HTMLElement {
   const form = mapElement("div", "ticket-add-form");
   const labelled = (text: string, control: HTMLElement, id: string, className = "ticket-add-field"): HTMLElement => {
     const field = mapElement("div", className);
@@ -6344,7 +6417,7 @@ function addTicketForm(draft: TicketDraft): HTMLElement {
   const goal = mapElement("textarea");
   goal.rows = 6;
   goal.value = draft.text;
-  goal.placeholder = "What is the ticket about? Enter adds it to New. Shift+Enter makes a new line.";
+  goal.placeholder = edit ? "What is the ticket about? Enter saves. Shift+Enter makes a new line." : "What is the ticket about? Enter adds it to New. Shift+Enter makes a new line.";
   goal.addEventListener("input", () => (draft.text = goal.value));
   goal.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -6399,6 +6472,19 @@ function addTicketForm(draft: TicketDraft): HTMLElement {
   if (addTicketRef) showAddTicketImages(images, refKey(addTicketRef));
   else images.hidden = true;
   form.append(images, goalField, row, ...extra);
+  // The edit mode has a Title box above the images and the Goal box.
+  if (edit) {
+    const title = mapElement("input");
+    title.value = edit.title;
+    title.addEventListener("input", () => (edit.title = title.value));
+    title.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.isComposing) {
+        event.preventDefault();
+        void saveAddTicket();
+      }
+    });
+    form.prepend(labelled("Title", title, "ticket-add-title-box"));
+  }
   return form;
 }
 
@@ -6411,8 +6497,9 @@ function addTicketForm(draft: TicketDraft): HTMLElement {
 async function saveAddTicket(): Promise<void> {
   if (!addTicketRef || addTicketBusy) return;
   const key = refKey(addTicketRef);
-  const draft = addTicketDraft(key);
-  const paths = (addTicketImages.get(key) ?? []).map((image) => quoteImagePath(image.path));
+  const edit = addTicketEdit;
+  const draft = edit ? edit.draft : addTicketDraft(key);
+  const paths = (edit ? edit.images : (addTicketImages.get(key) ?? [])).map((image) => quoteImagePath(image.path));
   const text = [...paths, draft.text.trim()].filter(Boolean).join(" ");
   if (text === "") {
     addTicketBodyEl.querySelector<HTMLTextAreaElement>("#ticket-add-goal")?.focus();
@@ -6424,6 +6511,21 @@ async function saveAddTicket(): Promise<void> {
   const filled = Object.values(fields).some((value) => value !== "");
   addTicketBusy = true;
   addTicketSaveEl.disabled = true;
+  if (edit) {
+    // The edit keeps the column and the place of the ticket; a failed save keeps the window and shows the error.
+    const title = edit.title.trim();
+    const saved = await ticketAction(key, "ticket_edit", { id: edit.id, title: title || null, summary: text, kind: draft.kind || null, level: draft.level, fields });
+    addTicketBusy = false;
+    addTicketSaveEl.disabled = false;
+    if (!saved) {
+      addTicketError = `The ticket could not be changed: ${ticketError}`;
+      showAddTicketError();
+      return;
+    }
+    if (addTicketDialog.open && addTicketEdit === edit) addTicketDialog.close();
+    renderTickets();
+    return;
+  }
   const added = await ticketAction(key, "ticket_add", { text, kind: draft.kind || null, level: draft.level, fields: filled ? fields : null });
   addTicketBusy = false;
   addTicketSaveEl.disabled = false;
@@ -6443,7 +6545,8 @@ function initAddTicket(): void {
   document.querySelector("#ticket-add-close")!.addEventListener("click", () => addTicketDialog.close());
   addTicketSaveEl.addEventListener("click", () => void saveAddTicket());
   document.querySelector("#ticket-add-cancel")!.addEventListener("click", () => {
-    if (addTicketRef) {
+    // An edit keeps no draft, and the drafts of Add stay as they are.
+    if (addTicketRef && !addTicketEdit) {
       addTicketDrafts.delete(refKey(addTicketRef));
       clearAddTicketImages(refKey(addTicketRef));
     }
@@ -6462,11 +6565,16 @@ function initAddTicket(): void {
     event.preventDefault();
     const ref = addTicketRef;
     const key = refKey(ref);
+    // In edit mode the image belongs to that edit; an edit that closed before the save drops it.
+    const edit = addTicketEdit;
     void image
       .arrayBuffer()
       .then((bytes) => call<string>(ref.host, "image_save", new Uint8Array(bytes)))
       .then((path) => {
-        addTicketImages.set(key, [...(addTicketImages.get(key) ?? []), { path, url: URL.createObjectURL(image) }]);
+        if (edit) {
+          if (addTicketEdit !== edit) return;
+          edit.images = [...edit.images, { path, url: URL.createObjectURL(image) }];
+        } else addTicketImages.set(key, [...(addTicketImages.get(key) ?? []), { path, url: URL.createObjectURL(image) }]);
         const row = addTicketBodyEl.querySelector<HTMLElement>(".ticket-add-images");
         if (row && addTicketRef && refKey(addTicketRef) === key) showAddTicketImages(row, key);
       })
@@ -6479,8 +6587,105 @@ function initAddTicket(): void {
   addTicketDialog.addEventListener("close", () => {
     addTicketRef = null;
     addTicketError = "";
+    endTicketEdit();
     if (ticketsDialog.open) document.querySelector<HTMLElement>("#tickets-new")?.focus();
     else focusedPane()?.term.focus();
+  });
+}
+
+// ---- The Ticket details window (ticket i-need-an-option-to-edit-task-which-is) -------------------
+// A click on the title of a Done or Canceled ticket opens all of it, to read: the words, the images,
+// the boxes, the dates, the end word, and one row per file of its task (brief, plan, report, log).
+
+const ticketDetailsDialog = document.querySelector<HTMLDialogElement>("#ticket-details")!;
+const ticketDetailsBodyEl = document.querySelector<HTMLElement>("#ticket-details-body")!;
+/** The project key and the ticket of the open window, or null. */
+let ticketDetails: { key: string; ticket: Ticket } | null = null;
+/** The pictures of the open window; the close frees them. */
+let ticketDetailsUrls: string[] = [];
+
+/** Opens the Ticket details window of a ticket of a project (by its key). */
+function openTicketDetails(key: string, ticket: Ticket): void {
+  freeTicketDetailsUrls();
+  ticketDetails = { key, ticket };
+  if (!ticketDetailsDialog.open) ticketDetailsDialog.showModal();
+  renderTicketDetails();
+}
+
+function freeTicketDetailsUrls(): void {
+  for (const url of ticketDetailsUrls) URL.revokeObjectURL(url);
+  ticketDetailsUrls = [];
+}
+
+/** Draws the details of the open ticket. The images load from their files on the host of the project. */
+function renderTicketDetails(): void {
+  if (!ticketDetails) return;
+  const { key, ticket } = ticketDetails;
+  const record = projectTasks.get(key);
+  const tickets = record?.tickets ?? [];
+  const shown = ticketDetails;
+  const body: HTMLElement[] = [mapElement("h3", "ticket-details-name", ticket.title)];
+  const column = COLUMNS.find((one) => one.status === ticket.status)?.name ?? ticket.status;
+  const meta = mapElement("div", "ticket-details-meta");
+  const end = mapElement("span", endFailed(ticket) ? "failed" : "", endWord(ticket) ? `${column} · ${endWord(ticket)}` : column);
+  meta.append(mapElement("span", "", ticket.id), mapElement("span", "", typeName(ticket.type)), mapElement("span", "", levelLabel(levelOf(ticket))), end);
+  body.push(meta, mapElement("div", "ticket-details-meta", `Created ${chatTime(ticket.created)} · Last change ${chatTime(ticket.updated)}`));
+  const place = partPlace(ticket, tickets);
+  if (place) {
+    const parentTicket = tickets.find((one) => one.id === ticket.parent);
+    body.push(mapElement("div", "ticket-details-meta", `Part ${place.at} of ${place.of} · ${parentTicket?.title ?? ticket.parent}`));
+  }
+  const field = (label: string, text: string): HTMLElement => {
+    const one = mapElement("div", "ticket-details-field");
+    one.append(mapElement("div", "ticket-details-label", label), mapElement("div", "ticket-details-text", text));
+    return one;
+  };
+  const { paths, words } = splitImages(ticket.summary);
+  if (words) body.push(field("Goal", words));
+  if (paths.length > 0) {
+    const images = mapElement("div", "chat-images ticket-details-images");
+    const host = record?.host ?? projectCwd(key).host;
+    for (const path of paths) {
+      const chip = mapElement("span", "chat-image");
+      chip.title = path;
+      const picture = new Image();
+      picture.alt = path;
+      chip.append(picture);
+      images.append(chip);
+      void imageFileUrl(host, path)
+        .then((url) => {
+          if (ticketDetails !== shown) return URL.revokeObjectURL(url);
+          ticketDetailsUrls.push(url);
+          picture.src = url;
+        })
+        .catch((error) => console.warn("the image of the ticket did not load", error));
+    }
+    body.push(images);
+  }
+  for (const one of FIELDS) {
+    const text = ticket.fields?.[one.key] ?? "";
+    if (text !== "") body.push(field(one.label, text));
+  }
+  // The files of the task of the ticket: Brief, Plan, Report, Log.
+  const task = record ? projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id)) : undefined;
+  const info = task?.info;
+  const files = info ? ([["Brief", info.brief], ["Plan", info.plan], ["Report", info.report], ["Log", info.log]] as const) : [];
+  const rows = files.filter(([, file]) => file).map(([label, file]) => fileRow(label, file!, null, null));
+  const list = mapElement("div", "ticket-details-files");
+  list.append(mapElement("div", "ticket-details-label", "Task files"), ...(rows.length > 0 ? rows : [mapElement("div", "ticket-details-text", "No task files.")]));
+  body.push(list);
+  ticketDetailsBodyEl.replaceChildren(...body);
+}
+
+/** Connects the close of the Ticket details window: ×, Esc and a click beside it. */
+function initTicketDetails(): void {
+  document.querySelector("#ticket-details-close")!.addEventListener("click", () => ticketDetailsDialog.close());
+  ticketDetailsDialog.addEventListener("click", (event) => {
+    if (event.target === ticketDetailsDialog) ticketDetailsDialog.close();
+  });
+  ticketDetailsDialog.addEventListener("close", () => {
+    ticketDetails = null;
+    freeTicketDetailsUrls();
   });
 }
 
@@ -7706,8 +7911,10 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   } else {
     const title = mapElement("button", "ticket-title", ticket.title);
     title.type = "button";
-    title.title = `${ticket.title}\n${ticket.id}\nLevel: ${levelLabel(levelOf(ticket))}\n\n${ticket.summary}\n\nClick to rename.`;
-    title.addEventListener("click", rename);
+    // A closed ticket opens its details; every other ticket renames (user decisions 2 and 3).
+    const closed = ticket.status === "done" || ticket.status === "canceled";
+    title.title = `${ticket.title}\n${ticket.id}\nLevel: ${levelLabel(levelOf(ticket))}\n\n${ticket.summary}\n\n${closed ? "Click for the details." : "Click to rename."}`;
+    title.addEventListener("click", closed ? () => openTicketDetails(project, ticket) : rename);
     top.append(title);
   }
   const meta = mapElement("div", "ticket-meta");
@@ -7777,7 +7984,15 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
       }),
     );
   }
-  tools.append(waitingPart ? ticketButton("✎", "Edit the part: title, goal, type, level and fields", () => openPartForm("edit", ticket)) : ticketButton("✎", "Rename the ticket", rename));
+  // A waiting part keeps its form on the board (user decision 4); another waiting ticket opens the Edit ticket window.
+  const editable = !waitingPart && !inFlight && (ticket.status === "backlog" || ticket.status === "new");
+  tools.append(
+    waitingPart
+      ? ticketButton("✎", "Edit the part: title, goal, type, level and fields", () => openPartForm("edit", ticket))
+      : editable
+        ? ticketButton("✎", "Edit the ticket: title, goal, images, type, level and fields", () => openEditTicket(project, ticket))
+        : ticketButton("✎", "Rename the ticket", rename),
+  );
   card.append(top, meta);
   if (chainLine) card.append(chainLine);
   if (planError !== undefined) card.append(mapElement("div", "ticket-error", `The plan did not start: ${planError}`));
@@ -11602,6 +11817,7 @@ async function start(): Promise<void> {
   initRemoveProject();
   initTickets();
   initAddTicket();
+  initTicketDetails();
   initTokens();
   initActions();
   void pollSide();

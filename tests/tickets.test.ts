@@ -312,7 +312,7 @@ test("paused: the line above the message box says that the tickets wait for Resu
 
 test("paused: the dispatcher passes the pause, and the page has the banner and the Setup switch", () => {
   const dispatch = MAIN.slice(MAIN.indexOf("async function dispatchTickets("));
-  assert.match(dispatch.slice(0, dispatch.indexOf("\n}\n")), /nextTicket\(queue, \[\], \(id\) => ticketSent\(key, id\), record\.paused\)/);
+  assert.match(dispatch.slice(0, dispatch.indexOf("\n}\n")), /nextTicket\(queue, \[\], \(id\) => ticketSent\(key, id\) \|\| editingTicket === `\$\{key\}\\n\$\{id\}`, record\.paused\)/);
   assert.match(HTML, /<p id="tickets-paused" hidden>/);
   assert.match(HTML, /id="tickets-resume"/);
   assert.match(HTML, /data-option="paused"/);
@@ -466,7 +466,7 @@ test("no triage: a failed plan start stays in New with its error and a Retry but
   const failure = lane.slice(lane.indexOf("} catch (error) {"));
   assert.match(failure, /if \(record\.noTriage\) \{[\s\S]*?planErrors\.set\(`\$\{key\}\\n\$\{ticket\.id\}`, String\(error\)\);[\s\S]*?return;\s*\}/);
   assert.ok(failure.indexOf("planErrors.set(") < failure.indexOf("toTriage.add("), "a No triage ticket never goes to triage");
-  assert.match(lane, /\|\| planErrors\.has\(`\$\{key\}\\n\$\{id\}`\);/, "a ticket with an error does not start again by itself");
+  assert.match(lane, /\|\| planErrors\.has\(`\$\{key\}\\n\$\{id\}`\) \|\|/, "a ticket with an error does not start again by itself");
   const card = MAIN.slice(MAIN.indexOf("function ticketCard("), MAIN.indexOf("function startTicketDrag("));
   assert.match(card, /planErrors\.get\(`\$\{project\}\\n\$\{ticket\.id\}`\)/);
   assert.match(card, /ticketButton\("Retry", "Start the plan of this ticket again", \(\) => \{\s*planErrors\.delete\(`\$\{project\}\\n\$\{ticket\.id\}`\);\s*renderTickets\(\);\s*void dispatchTickets\(\);/);
@@ -648,6 +648,39 @@ test("the Add ticket window takes pasted images", () => {
   assert.match(CSS, /\.ticket-add-images \{/);
   assert.ok(HTML.includes("Ctrl+V pastes an image from the clipboard into the window; × takes it out. A ticket can have only images."));
   assert.ok(read("../README.md").includes("and Ctrl+V pastes an image into it"));
+});
+
+test("edit and details: ✎ edits a waiting ticket in the ticket window, a closed ticket opens its details", () => {
+  const board = MAIN.slice(MAIN.indexOf("function ticketCard("), MAIN.indexOf("function startTicketDrag("));
+  // ✎ opens the window for a waiting ticket that is no part (user decision 4); the title of a closed ticket opens its details (decisions 2 and 3).
+  assert.match(board, /const editable = !waitingPart && !inFlight && \(ticket\.status === "backlog" \|\| ticket\.status === "new"\);/);
+  assert.match(board, /openEditTicket\(project, ticket\)/);
+  assert.match(board, /closed \? \(\) => openTicketDetails\(project, ticket\) : rename/);
+  assert.match(board, /const closed = ticket\.status === "done" \|\| ticket\.status === "canceled";/);
+  const window = MAIN.slice(MAIN.indexOf("// ---- The Add ticket window"), MAIN.indexOf("// ---- The Ticket details window"));
+  assert.match(window, /"ticket_edit", \{ id: edit\.id, title: title \|\| null, summary: text, kind: draft\.kind \|\| null, level: draft\.level, fields \}/);
+  assert.match(window, /const \{ paths, words \} = splitImages\(ticket\.summary\);/);
+  assert.match(window, /imageFileUrl\(host, image\.path\)/);
+  assert.match(window, /labelled\("Title", title, "ticket-add-title-box"\)/);
+  // The hold (user decision 1): set before the window shows, released at the close with a new tick.
+  assert.ok(window.indexOf("editingTicket = `${key}\\n${ticket.id}`") < window.indexOf("addTicketDialog.showModal()", window.indexOf("function openEditTicket(")));
+  assert.match(window, /editingTicket = null;\n    void dispatchTickets\(\);/);
+  const plan = MAIN.slice(MAIN.indexOf("async function startTicketPlan("), MAIN.indexOf("/** A run of `dispatchTickets` is on its way. */"));
+  assert.match(plan, /\|\| editingTicket === `\$\{key\}\\n\$\{id\}`;/);
+  const triage = MAIN.slice(MAIN.indexOf("async function dispatchTickets("), MAIN.indexOf("async function dispatchTickets(") + 6000);
+  assert.match(triage, /nextTicket\(queue, \[\], \(id\) => ticketSent\(key, id\) \|\| editingTicket === `\$\{key\}\\n\$\{id\}`, record\.paused\)/);
+  const details = MAIN.slice(MAIN.indexOf("// ---- The Ticket details window"), MAIN.indexOf("// ---- The Actions panel"));
+  assert.match(details, /\["Brief", info\.brief\], \["Plan", info\.plan\], \["Report", info\.report\], \["Log", info\.log\]/);
+  assert.match(details, /fileRow\(label, file!, null, null\)/);
+  assert.ok(details.includes('"No task files."'));
+  assert.match(MAIN, /initAddTicket\(\);\n  initTicketDetails\(\);/);
+  for (const id of ["ticket-details", "ticket-details-title", "ticket-details-close", "ticket-details-body"]) assert.ok(HTML.includes(`id="${id}"`), id);
+  assert.match(CSS, /#ticket-details \{/);
+  assert.match(CSS, /#ticket-add-title-box \{/);
+  assert.ok(HTML.includes("<li><b>✎</b> on a ticket in Backlog or New opens the window Edit ticket"));
+  assert.ok(HTML.includes("Dispatch does not start a New ticket while you edit it."));
+  assert.ok(HTML.includes("Click the title of a Done or Canceled ticket to open <b>Ticket details</b>"));
+  assert.ok(read("../README.md").includes("✎ on a Backlog or New ticket opens it in the same window to change it, and a click on the title of a Done or Canceled ticket shows its details with its brief, plan, report and log."));
 });
 
 // Ticket subtickets: the parts of a plan as a chain of tickets.
