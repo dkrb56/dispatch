@@ -30,3 +30,12 @@ export function withoutTriage<N extends { role?: string } | SplitShape<N>>(layou
 export function triagePanesToClose(panes: { id: string; role?: string; key: string }[], key: string): string[] {
   return panes.filter((pane) => pane.role === "triage" && pane.key === key).map((pane) => pane.id);
 }
+
+/**
+ * The Triage card of the left panel (ticket why-is-there-triage-section-on-top-of): a project with
+ * No triage shows no Triage heading and no card. `chatId` is the remembered triage chat, which the
+ * Chats list leaves out in both cases (user decision 1: the old chat stays hidden).
+ */
+export function triageCard(remembered: string | null, noTriage: boolean): { show: boolean; chatId: string | null } {
+  return { show: !noTriage, chatId: remembered };
+}

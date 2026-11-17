@@ -4,7 +4,7 @@
 // Run: node --test tests/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { triagePanesToClose, withoutTriage } from "../src/notriage.ts";
+import { triageCard, triagePanesToClose, withoutTriage } from "../src/notriage.ts";
 
 type Node = { id?: string; role?: string; size?: number } | { dir: string; children: Node[]; size?: number };
 
@@ -50,4 +50,16 @@ test("the triage panes of the project with the switch on close, no pane of anoth
   ];
   assert.deepEqual(triagePanesToClose(open, "local|D:/p"), ["t1"]);
   assert.deepEqual(triagePanesToClose(open, "local|D:/r"), []);
+});
+
+test("a No triage project shows no Triage card and keeps its old triage chat out of the Chats list", () => {
+  assert.deepEqual(triageCard("c1", true), { show: false, chatId: "c1" });
+});
+
+test("a project with triage shows the Triage card with its remembered chat", () => {
+  assert.deepEqual(triageCard("c1", false), { show: true, chatId: "c1" });
+});
+
+test("a project with triage and no remembered chat still shows the Triage card", () => {
+  assert.deepEqual(triageCard(null, false), { show: true, chatId: null });
 });

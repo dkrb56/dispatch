@@ -71,7 +71,7 @@ import { autoSwitch, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine }
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { HOLD_NOTE, holdWait } from "./holdstep";
-import { triagePanesToClose, withoutTriage } from "./notriage";
+import { triageCard, triagePanesToClose, withoutTriage } from "./notriage";
 import { isTerminalReport, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { type AskDecision, askAbout, askBlocked, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
 import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
@@ -8914,7 +8914,8 @@ function renderChats(): void {
   } catch {
     // The chat is then in the list of the chats.
   }
-  if (triage) items.push(heading("Triage"), chatRow(triage));
+  // A project with No triage shows no Triage heading; its old triage chat stays out of the Chats list.
+  if (triage && !projectNoTriage(project)) items.push(heading("Triage"), chatRow(triage));
   // The tasks are for one folder. After a change of the terminal, read them again.
   if (tasksFolder !== folder) {
     refreshTasks().catch((error) => console.error("task list refresh failed", error));
@@ -10569,34 +10570,38 @@ function renderFocus(): void {
     } catch {
       // Without the storage the triage row shows without a time.
     }
-    const chat = chatList.find((chat) => chat.id === remembered && chat.host === column.host);
-    const triageRow = document.createElement("button");
-    triageRow.className = "chat focus-triage-row";
-    triageRow.title = "The triage chat of this project";
-    const triageName = document.createElement("span");
-    triageName.className = "name";
-    triageName.textContent = "Triage";
-    const triageWhen = document.createElement("span");
-    triageWhen.className = "when";
-    triageWhen.textContent = chat ? chatTime(chat.modified) : triage ? "starting" : "not running";
-    triageRow.append(triageName, triageWhen);
-    // How full the triage chat is, and whether a new chat is due.
-    const contextLine = triage ? triageContextLine(key) : null;
-    if (contextLine) triageRow.append(contextLine);
-    else if (triage) {
-      // Without a context line the row shows the trace of the checks (triage-compact-trace-2).
-      const rowTips = () => ["The triage chat of this project", ...triageTraceTips(key)].join("\n");
-      triageRow.title = rowTips();
-      triageRow.addEventListener("pointerenter", () => {
+    // A project with No triage shows no Triage card (ticket why-is-there-triage-section-on-top-of).
+    const card = triageCard(remembered, projectNoTriage(key));
+    if (card.show) {
+      const chat = chatList.find((chat) => chat.id === remembered && chat.host === column.host);
+      const triageRow = document.createElement("button");
+      triageRow.className = "chat focus-triage-row";
+      triageRow.title = "The triage chat of this project";
+      const triageName = document.createElement("span");
+      triageName.className = "name";
+      triageName.textContent = "Triage";
+      const triageWhen = document.createElement("span");
+      triageWhen.className = "when";
+      triageWhen.textContent = chat ? chatTime(chat.modified) : triage ? "starting" : "not running";
+      triageRow.append(triageName, triageWhen);
+      // How full the triage chat is, and whether a new chat is due.
+      const contextLine = triage ? triageContextLine(key) : null;
+      if (contextLine) triageRow.append(contextLine);
+      else if (triage) {
+        // Without a context line the row shows the trace of the checks (triage-compact-trace-2).
+        const rowTips = () => ["The triage chat of this project", ...triageTraceTips(key)].join("\n");
         triageRow.title = rowTips();
+        triageRow.addEventListener("pointerenter", () => {
+          triageRow.title = rowTips();
+        });
+      }
+      triageRow.addEventListener("click", () => {
+        setFocusCurrent(key);
+        triage?.term.focus();
+        if (triage?.chat?.visible()) triage.chat.focus();
       });
+      items.push(heading("Triage"), triageRow);
     }
-    triageRow.addEventListener("click", () => {
-      setFocusCurrent(key);
-      triage?.term.focus();
-      if (triage?.chat?.visible()) triage.chat.focus();
-    });
-    items.push(heading("Triage"), triageRow);
     // The Tasks and Chats sections (focus-tickets-chats): a fold heading, the 5 newest items and an
     // Older group. Each fold is a part of the record `focus-folds` of the project.
     const fold = (part: FoldPart, text: string, count: number, section: boolean, waits = 0) => {
@@ -10637,7 +10642,7 @@ function renderFocus(): void {
     const split = splitNewest(tasks, runs);
     if (fold("tasks", "Tasks", tasks.length, true, tasks.filter(waits).length)) {
       const taskItems = withPending(split.shown, split.shown.map((task) => taskElement(task)), key);
-      if (taskItems.length === 0) note("No tasks yet. Give triage a task in its chat.");
+      if (taskItems.length === 0) note(card.show ? "No tasks yet. Give triage a task in its chat." : "No tasks yet. Add a ticket on the board.");
       items.push(...taskItems);
       if (split.older.length > 0 && fold("older-tasks", "Older tasks", split.older.length, false)) {
         items.push(...split.older.map((task) => taskElement(task)));
@@ -10646,7 +10651,7 @@ function renderFocus(): void {
     // The chats of the project, newest first, without the workers and the triage chat of the Triage card.
     const workerChats = new Set(workerList.map((worker) => `${worker.host}|${worker.sessionId}`));
     const chats = chatList
-      .filter((chat) => inProject(chat, key) && !workerChats.has(`${chat.host}|${chat.id}`) && chat.id !== remembered)
+      .filter((chat) => inProject(chat, key) && !workerChats.has(`${chat.host}|${chat.id}`) && chat.id !== card.chatId)
       .sort((a, b) => b.modified - a.modified);
     const chatSplit = splitNewest(chats);
     if (fold("chats", "Chats", chats.length, true)) {
