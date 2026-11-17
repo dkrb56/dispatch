@@ -2063,6 +2063,229 @@ button.ticket-level {
   font-size: calc(13px * var(--text-scale));
 }
 
+/* The Add ticket window (ticket give-the-app-an-add-ticket-button-that-i): the frame of the tickets
+   board, a project line under the title, one label above each control, the Goal box first, and Add
+   as the accent button in the footer. The body scrolls; the header and the footer stay. */
+#ticket-add {
+  width: min(680px, 94vw);
+  max-height: 86vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 50%);
+  color: var(--text);
+  font-size: calc(13px * var(--text-scale));
+}
+
+#ticket-add[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#ticket-add::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+#ticket-add header {
+  display: flex;
+  flex: none;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 14px 10px 12px 22px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+#ticket-add-head {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+#ticket-add h2 {
+  margin: 0;
+  font-size: calc(16px * var(--text-scale));
+  font-weight: 600;
+}
+
+#ticket-add-project {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+  min-width: 0;
+  color: var(--text-2);
+}
+
+#ticket-add-project .ticket-add-folder {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(11px * var(--text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#ticket-add-close {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: calc(18px * var(--text-scale));
+  cursor: pointer;
+}
+
+#ticket-add-close:hover {
+  background: var(--card);
+}
+
+#ticket-add-note,
+#ticket-add-error {
+  flex: none;
+  margin: 12px 22px 0;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+#ticket-add-error {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+#ticket-add-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 22px 18px;
+}
+
+.ticket-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ticket-add-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+}
+
+.ticket-add-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.ticket-add-field[hidden] {
+  display: none;
+}
+
+.ticket-add-field label {
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  font-weight: 600;
+}
+
+.ticket-add-field textarea,
+.ticket-add-field select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: calc(13px * var(--text-scale));
+}
+
+.ticket-add-field textarea {
+  resize: vertical;
+  line-height: 1.45;
+}
+
+.ticket-add-field textarea:focus,
+.ticket-add-field select:focus {
+  border-color: var(--accent-line);
+  outline: none;
+}
+
+.ticket-add-hint {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
+#ticket-add-footer {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  justify-content: flex-end;
+  padding: 12px 22px 14px;
+  border-top: 1px solid var(--hairline);
+}
+
+#ticket-add-footer button {
+  padding: 6px 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+#ticket-add-footer button:hover {
+  background: var(--card);
+}
+
+#ticket-add-footer #ticket-add-save {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+#ticket-add-save:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The Tickets part of an Overview card: the counts and "+ Ticket" side by side. */
+.overview-tickets-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.overview-add-ticket {
+  margin: 0 0 6px;
+  padding: 7px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  font-size: calc(13px * var(--text-scale));
+  cursor: pointer;
+}
+
+.overview-add-ticket:hover {
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+
 /* The Actions panel (ticket project-actions): the frame of the tickets board, one card per action,
    the last run with a state chip in the colours of ok, wait and fail, and the editor. */
 #actions {

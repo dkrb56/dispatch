@@ -232,6 +232,22 @@
       <div id="tickets-columns"></div>
       <div id="tickets-resize" title="Drag to resize the window; double-click for the usual size"></div>
     </dialog>
+    <dialog id="ticket-add" aria-labelledby="ticket-add-title">
+      <header>
+        <div id="ticket-add-head">
+          <h2 id="ticket-add-title">New ticket</h2>
+          <div id="ticket-add-project"></div>
+        </div>
+        <button id="ticket-add-close" title="Close (Esc); your text stays for the next time">&times;</button>
+      </header>
+      <p id="ticket-add-note"></p>
+      <p id="ticket-add-error" hidden></p>
+      <div id="ticket-add-body"></div>
+      <footer id="ticket-add-footer">
+        <button id="ticket-add-cancel" title="Close the window and empty the form">Cancel</button>
+        <button id="ticket-add-save" title="Add the ticket at the end of New (Enter in the Goal box)">Add</button>
+      </footer>
+    </dialog>
     <dialog id="actions" aria-labelledby="actions-title">
       <header>
         <h2 id="actions-title">Actions</h2>
@@ -641,7 +657,7 @@
           <li>New is the queue. Dispatch sends the New tickets to triage by itself, one at a time, in the order of the column. You move nothing by hand.</li>
           <li>A ticket moves to In progress, Done or Canceled by itself as its task goes on.</li>
           <li>Click a title, or ✎, to rename it. Click the type tag to change the type.</li>
-          <li><b>New ticket</b> opens a form. The box is the Goal; Enter adds the ticket. <b>More</b> opens the optional boxes Why, Done when, Do not change and Context.</li>
+          <li><b>+ Ticket</b> next to Tickets in the buttons of a project, and on each Overview card, opens the window New ticket without the board. <b>New ticket</b> on the board opens the same window. The window names the project of the ticket. The Goal box comes first; Enter adds the ticket. Under it stand the level, the type and the optional boxes Why, Done when, Do not change and Context. <b>Add</b> puts the ticket at the end of New and closes the window; the board stays closed.</li>
           <li><b>Level.</b> Each ticket has a level for its plan: Simple (Opus, effort medium), Medium (Opus, effort high) or Hard (Fable, effort high). Medium is the default. Click the level tag of a waiting ticket for the next level.</li>
           <li><b>A yellow !</b> after the name of a project says that its tickets wait and do not go: the project is paused, triage does not run, or triage has not taken a ticket for a minute. Its tooltip says which. A click opens the board.</li>
           <li>With <b>Tickets start their plan</b> on in Setup pipeline, Dispatch starts the plan of a New ticket itself. A question still goes to triage.</li>
@@ -657,7 +673,7 @@
             <li>The line above the message box says how many tickets wait. The ticket in flight shows "Sent to triage", then "Triage reads", and its dashed card stands under In work until its task comes.</li>
             <li><b>Following the task.</b> When the plan run starts, the ticket goes to In progress and takes the title of the brief, unless you renamed it. A report that says done or failed moves it to Done ("failed" in red). A done report whose commands the transcripts do not show keeps it in In progress (see Tasks). A stopped task moves it to Canceled. When triage answers without a task, the ticket goes to Canceled with that note; <b>→ New</b> on its card puts it back at the end of the queue.</li>
             <li>In New, ▲ and ▼ change the order, and × cancels a ticket, so Dispatch does not send it. <b>New ticket</b> adds a ticket in your words at the end of the queue. The search box finds a ticket by its title, words, id or type.</li>
-            <li><b>The form.</b> The hint under the Goal box follows the level: for Fable "Say the result, do not list steps", for Opus "Name the screen or the button". The type button starts at Auto, which guesses the type from your words; Fix also shows What I see and What I expect under More. An empty box adds nothing. In a brief, Do not change goes into the constraints and Done when into the proof; the other boxes get their own section. The message to triage has each filled box as a line with its name. A message that you type into triage gets Medium and no extra boxes.</li>
+            <li><b>The form.</b> The hint under the Goal box follows the level: for Fable "Say the result, do not list steps", for Opus "Name the screen or the button". The type starts at Auto, which guesses the type from your words; Fix also shows What I see and What I expect. An empty Goal adds nothing. Esc, &times; or a click beside the window closes it and keeps your text for the next time, one draft per project; <b>Cancel</b> empties the form. In a brief, Do not change goes into the constraints and Done when into the proof; the other boxes get their own section. The message to triage has each filled box as a line with its name. A message that you type into triage gets Medium and no extra boxes.</li>
             <li><b>The level.</b> Dispatch writes the model and the effort of the level into <code>.dispatch/&lt;id&gt;.models</code> before the plan starts, and before it sends the ticket to triage. A ticket of an older version is Medium. A task that triage names with another id plans on the list above Workers.</li>
             <li><b>Move many tickets.</b> <b>All → Backlog</b> in the head of New moves the shown New tickets to Backlog. <b>All → New</b> in the head of Backlog moves the shown Backlog tickets to the end of the queue. The search box narrows the set. A ticket sent to triage stays.</li>
             <li><b>Drag a card.</b> A card with the grip ⠿ drags by its whole body: drop it at another place in New to change the order, or on Backlog, New, Done or Canceled to change its status. A plain click on the title or the type works as before. A ticket that is In progress or sent to triage does not drag, because its task moves it. A ticket that you put on Done shows "done by hand" and stays there.</li>

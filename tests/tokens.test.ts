@@ -343,7 +343,7 @@ test("the window is wired: the Tokens button after Tickets and Chat, the dialog,
     assert.ok(html.includes(`id="${id}"`), id);
   }
   // Chat (ticket auto-todo) stands between Tickets and Tokens.
-  assert.match(main, /el\.append\(tickets, chat, tokensButton, actions, pause,/);
+  assert.match(main, /el\.append\(tickets, addTicket, chat, tokensButton, actions, pause,/);
   assert.match(main, /"token_report"/);
   assert.match(main, /"usage_history"/);
 });

@@ -570,7 +570,7 @@ test("the message to triage has each filled field once, in order, and nothing fo
 });
 
 test("the form keeps its draft outside, sends the level, the type and the fields, and the card has a level tag", () => {
-  assert.match(MAIN, /let newTicketDraft: TicketDraft = emptyTicketDraft\(\);/);
+  assert.match(MAIN, /const addTicketDrafts = new Map<string, TicketDraft>\(\);/);
   assert.match(MAIN, /"ticket_add", \{ text, kind: draft\.kind \|\| null, level: draft\.level, fields: filled \? fields : null \}/);
   assert.match(MAIN, /goalHint\(draft\.level\)/);
   assert.match(MAIN, /ticket-level level-\$\{level\}/);
@@ -581,6 +581,32 @@ test("the form keeps its draft outside, sends the level, the type and the fields
   assert.ok(HTML.includes("<b>Level.</b> Each ticket has a level for its plan: Simple (Opus, effort medium), Medium (Opus, effort high) or Hard (Fable, effort high)."));
   assert.ok(HTML.includes("<b>Work run.</b> The Plan ready card shows the model and the effort that the plan advises for the work run"));
   assert.ok(read("../README.md").includes("Each ticket has a level for its plan run: Simple (Opus, effort medium)"));
+});
+
+test("the Add ticket window adds to New without the board", () => {
+  for (const id of ["ticket-add", "ticket-add-title", "ticket-add-project", "ticket-add-close", "ticket-add-note", "ticket-add-error", "ticket-add-body", "ticket-add-save", "ticket-add-cancel"]) {
+    assert.ok(HTML.includes(`id="${id}"`), id);
+  }
+  const tools = MAIN.slice(MAIN.indexOf("function projectTools("), MAIN.indexOf("showOldButton(oldEl, key);"));
+  assert.match(tools, /tool\("\+ Ticket", `Add a ticket to New of \$\{name\}; the board stays closed`, \(\) => openAddTicket\(ref\)\)/);
+  assert.match(tools, /addTicket\.classList\.add\("project-add-ticket"\)/);
+  assert.match(tools, /el\.append\(tickets, addTicket, /);
+  const line = MAIN.slice(MAIN.indexOf("function ticketsLine("), MAIN.indexOf("/** Shows or hides the Overview."));
+  assert.match(line, /openAddTicket\(\{ host, root \}\)/);
+  const window = MAIN.slice(MAIN.indexOf("// ---- The Add ticket window"), MAIN.indexOf("// ---- The Actions panel"));
+  assert.match(window, /"ticket_add", \{ text, kind: draft\.kind \|\| null, level: draft\.level, fields: filled \? fields : null \}/);
+  assert.ok(!window.includes("openTickets("), "the window opens no board");
+  assert.ok(!window.includes("ticketsDialog.showModal"), "the window opens no board");
+  assert.match(window, /for \(const field of FIELDS\) if \(!field\.fix \|\| fix\)/);
+  // Esc keeps the draft (user decision 2); Cancel and a good Add clear it.
+  assert.equal(window.split("addTicketDrafts.delete(").length - 1, 2);
+  const board = MAIN.slice(MAIN.indexOf("function initTickets("), MAIN.indexOf("// ---- The Add ticket window"));
+  assert.match(board, /if \(ticketsRef\) openAddTicket\(ticketsRef\);/);
+  assert.match(MAIN, /initTickets\(\);\n  initAddTicket\(\);/);
+  assert.match(CSS, /#ticket-add \{/);
+  assert.match(CSS, /#ticket-add::backdrop/);
+  assert.ok(HTML.includes("<li><b>+ Ticket</b> next to Tickets in the buttons of a project, and on each Overview card, opens the window New ticket without the board."));
+  assert.ok(read("../README.md").includes('The button "+ Ticket" next to Tickets, and on each Overview card, opens the window New ticket without the board'));
 });
 
 // Ticket subtickets: the parts of a plan as a chain of tickets.

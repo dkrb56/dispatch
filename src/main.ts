@@ -6032,8 +6032,7 @@ let ticketsRef: ProjectRef | null = null;
 let ticketDragging = false;
 /** The ticket whose title the user edits now, or null. */
 let renamingTicket: string | null = null;
-/** The form for a new ticket stands at the top of New; `focusNew` gives it the keyboard once. */
-let newTicketOpen = false;
+/** `focusNew` gives the form of a part in Backlog the keyboard once. */
 let focusNew = false;
 
 /** The draft of the new ticket form (ticket ticket-form-optional-fields-on-a-new): Goal, type (empty: Auto), level, More open, optional fields. */
@@ -6048,12 +6047,6 @@ interface TicketDraft {
 function emptyTicketDraft(): TicketDraft {
   return { text: "", kind: "", level: "medium", more: false, fields: { why: "", done: "", keep: "", context: "", see: "", expect: "" } };
 }
-
-/**
- * The draft stays outside the form: a click on the level, the type or More moves the focus, and the
- * next render builds the form again. Add and Cancel clear it.
- */
-let newTicketDraft: TicketDraft = emptyTicketDraft();
 
 /**
  * The form in Backlog for a part (ticket subtickets): `edit` changes the part `id` that waits there,
@@ -6087,7 +6080,6 @@ function openTickets(ref: ProjectRef): void {
   ticketsRef = ref;
   ticketError = "";
   renamingTicket = null;
-  newTicketOpen = false;
   ticketsSearchEl.value = "";
   applyTicketsSize();
   if (!ticketsDialog.open) ticketsDialog.showModal();
@@ -6169,10 +6161,9 @@ function initTickets(): void {
     }
   });
   document.querySelector("#tickets-close")!.addEventListener("click", () => ticketsDialog.close());
+  // New ticket opens the Add ticket window over the board (ticket give-the-app-an-add-ticket-button-that-i, user decision 4).
   document.querySelector("#tickets-new")!.addEventListener("click", () => {
-    newTicketOpen = true;
-    focusNew = true;
-    renderTickets();
+    if (ticketsRef) openAddTicket(ticketsRef);
   });
   ticketsSearchEl.addEventListener("input", renderTickets);
   document.querySelector("#tickets-resume")!.addEventListener("click", () => {
@@ -6184,8 +6175,195 @@ function initTickets(): void {
   ticketsDialog.addEventListener("close", () => {
     ticketsRef = null;
     renamingTicket = null;
-    newTicketOpen = false;
     focusedPane()?.term.focus();
+  });
+}
+
+// ---- The Add ticket window (ticket give-the-app-an-add-ticket-button-that-i) ----------------------
+// A window for one new ticket of one project, without the board: the Goal, the level, the type and
+// the optional fields, each with its label. Add puts the ticket at the end of New and closes the
+// window; the board stays as it is. Esc, × and a click beside the window keep the draft of the
+// project (user decision 2); Cancel and a good Add clear it. The "+ Ticket" button of a project, the
+// Tickets part of an Overview card and New ticket on the board open it.
+
+const addTicketDialog = document.querySelector<HTMLDialogElement>("#ticket-add")!;
+const addTicketProjectEl = document.querySelector<HTMLElement>("#ticket-add-project")!;
+const addTicketNoteEl = document.querySelector<HTMLElement>("#ticket-add-note")!;
+const addTicketErrorEl = document.querySelector<HTMLElement>("#ticket-add-error")!;
+const addTicketBodyEl = document.querySelector<HTMLElement>("#ticket-add-body")!;
+const addTicketSaveEl = document.querySelector<HTMLButtonElement>("#ticket-add-save")!;
+
+/** The project of the open window, or null. */
+let addTicketRef: ProjectRef | null = null;
+/** One draft per project key: Esc keeps it for the next open of the window. */
+const addTicketDrafts = new Map<string, TicketDraft>();
+/** The error of the last Add; it shows in the window until the next Add. */
+let addTicketError = "";
+/** An Add runs: a second Enter or click adds nothing. */
+let addTicketBusy = false;
+
+/** The draft of a project (by its key); a new one is empty. */
+function addTicketDraft(key: string): TicketDraft {
+  let draft = addTicketDrafts.get(key);
+  if (!draft) {
+    draft = emptyTicketDraft();
+    addTicketDrafts.set(key, draft);
+  }
+  return draft;
+}
+
+/** Opens the Add ticket window for a project; the Goal box gets the keyboard. */
+function openAddTicket(ref: ProjectRef): void {
+  addTicketRef = ref;
+  addTicketError = "";
+  if (!addTicketDialog.open) addTicketDialog.showModal();
+  renderAddTicket();
+  addTicketBodyEl.querySelector<HTMLTextAreaElement>("#ticket-add-goal")?.focus();
+}
+
+/** Draws the window of the open project: the project line, the note, the error and the form. */
+function renderAddTicket(): void {
+  if (!addTicketRef || !addTicketDialog.open) return;
+  const ref = addTicketRef;
+  const key = refKey(ref);
+  addTicketProjectEl.replaceChildren(mapElement("b", "", projectName(ref)), mapElement("span", "ticket-add-folder", ref.root));
+  addTicketProjectEl.title = `The ticket goes to New of ${projectName(ref)}: ${ticketsFilePath(ref.root)}`;
+  addTicketNoteEl.textContent = projectPaused(key)
+    ? "The ticket goes to the end of New. The project is paused: the ticket waits for Resume."
+    : projectNoTriage(key)
+      ? "The ticket goes to the end of New. Dispatch starts its plan."
+      : "The ticket goes to the end of New. Dispatch sends it when triage is free.";
+  showAddTicketError();
+  addTicketBodyEl.replaceChildren(addTicketForm(addTicketDraft(key)));
+}
+
+function showAddTicketError(): void {
+  addTicketErrorEl.textContent = addTicketError;
+  addTicketErrorEl.hidden = addTicketError === "";
+}
+
+/**
+ * The form of the window: each control with its label above it. The type is a list from Auto; the
+ * boxes of a fix show only for the type Fix. All optional boxes show at once (user decision 3).
+ * Each change goes into the draft at once, so the form does not draw again.
+ */
+function addTicketForm(draft: TicketDraft): HTMLElement {
+  const form = mapElement("div", "ticket-add-form");
+  const labelled = (text: string, control: HTMLElement, id: string, className = "ticket-add-field"): HTMLElement => {
+    const field = mapElement("div", className);
+    const label = mapElement("label", "", text);
+    label.htmlFor = id;
+    control.id = id;
+    field.append(label, control);
+    return field;
+  };
+  const goal = mapElement("textarea");
+  goal.rows = 6;
+  goal.value = draft.text;
+  goal.placeholder = "What is the ticket about? Enter adds it to New. Shift+Enter makes a new line.";
+  goal.addEventListener("input", () => (draft.text = goal.value));
+  goal.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      void saveAddTicket();
+    }
+  });
+  const goalField = labelled("Goal", goal, "ticket-add-goal", "ticket-add-field ticket-add-goal");
+  const hint = mapElement("div", "ticket-add-hint", goalHint(draft.level));
+  goalField.append(hint);
+  const level = mapElement("select");
+  level.title = "The level of the ticket: the model and the effort of its plan run";
+  for (const one of LEVELS) {
+    const option = mapElement("option", "", levelLabel(one.level));
+    option.value = one.level;
+    level.append(option);
+  }
+  level.value = draft.level;
+  level.addEventListener("change", () => {
+    draft.level = level.value;
+    hint.textContent = goalHint(draft.level);
+  });
+  const kind = mapElement("select");
+  kind.title = "The type of the ticket. Auto guesses it from the words. Fix also shows What I see and What I expect.";
+  for (const type of FORM_TYPES) {
+    const option = mapElement("option", "", type ? typeName(type) : "Auto");
+    option.value = type;
+    kind.append(option);
+  }
+  kind.value = draft.kind;
+  const row = mapElement("div", "ticket-add-row");
+  row.append(labelled("Level", level, "ticket-add-level"), labelled("Type", kind, "ticket-add-type"));
+  const fixFields: HTMLElement[] = [];
+  const extra = FIELDS.map((field) => {
+    const area = mapElement("textarea");
+    area.rows = 3;
+    area.value = draft.fields[field.key];
+    area.addEventListener("input", () => (draft.fields[field.key] = area.value));
+    const one = labelled(`${field.label} (optional)`, area, `ticket-add-${field.key}`);
+    if (field.fix) {
+      one.hidden = draft.kind !== "fix";
+      fixFields.push(one);
+    }
+    return one;
+  });
+  kind.addEventListener("change", () => {
+    draft.kind = kind.value;
+    for (const one of fixFields) one.hidden = draft.kind !== "fix";
+  });
+  form.append(goalField, row, ...extra);
+  return form;
+}
+
+/**
+ * Adds the ticket of the open window at the end of New, with the field rule of the board: each box
+ * trimmed, a box of a fix only for the type Fix, no fields when no box is filled. An empty Goal adds
+ * nothing and gives the Goal box the keyboard. A failed Add keeps the window, the draft and the error.
+ */
+async function saveAddTicket(): Promise<void> {
+  if (!addTicketRef || addTicketBusy) return;
+  const key = refKey(addTicketRef);
+  const draft = addTicketDraft(key);
+  const text = draft.text.trim();
+  if (text === "") {
+    addTicketBodyEl.querySelector<HTMLTextAreaElement>("#ticket-add-goal")?.focus();
+    return;
+  }
+  const fix = draft.kind === "fix";
+  const fields = { why: "", done: "", keep: "", context: "", see: "", expect: "" };
+  for (const field of FIELDS) if (!field.fix || fix) fields[field.key] = draft.fields[field.key].trim();
+  const filled = Object.values(fields).some((value) => value !== "");
+  addTicketBusy = true;
+  addTicketSaveEl.disabled = true;
+  const added = await ticketAction(key, "ticket_add", { text, kind: draft.kind || null, level: draft.level, fields: filled ? fields : null });
+  addTicketBusy = false;
+  addTicketSaveEl.disabled = false;
+  if (!added) {
+    addTicketError = `The ticket could not be added: ${ticketError}`;
+    showAddTicketError();
+    return;
+  }
+  addTicketDrafts.delete(key);
+  if (addTicketDialog.open) addTicketDialog.close();
+  renderTickets();
+}
+
+/** Connects the buttons of the Add ticket window. */
+function initAddTicket(): void {
+  document.querySelector("#ticket-add-close")!.addEventListener("click", () => addTicketDialog.close());
+  addTicketSaveEl.addEventListener("click", () => void saveAddTicket());
+  document.querySelector("#ticket-add-cancel")!.addEventListener("click", () => {
+    if (addTicketRef) addTicketDrafts.delete(refKey(addTicketRef));
+    addTicketDialog.close();
+  });
+  addTicketDialog.addEventListener("click", (event) => {
+    if (event.target === addTicketDialog) addTicketDialog.close();
+  });
+  // Esc closes the window by itself and keeps the draft (user decision 2).
+  addTicketDialog.addEventListener("close", () => {
+    addTicketRef = null;
+    addTicketError = "";
+    if (ticketsDialog.open) document.querySelector<HTMLElement>("#tickets-new")?.focus();
+    else focusedPane()?.term.focus();
   });
 }
 
@@ -7162,11 +7340,10 @@ function renderTickets(): void {
       head.append(ticketButton(to === "backlog" ? "All → Backlog" : "All → New", title, () => void moveAllTickets(key, ids, to), ids.length === 0));
     }
     const list = mapElement("div", "tickets-list");
-    if (status === "new" && newTicketOpen) list.append(newTicketForm(key));
     // The form of a part stands in Backlog (ticket subtickets).
     if (status === "backlog" && partForm) list.append(newTicketForm(key, partForm));
     list.append(...items.map((ticket) => ticketCard(key, ticket, queueIds, record)));
-    if (items.length === 0 && !(status === "new" && newTicketOpen) && !(status === "backlog" && partForm)) {
+    if (items.length === 0 && !(status === "backlog" && partForm)) {
       const none = paused ? PAUSED_NEW_EMPTY : "No tickets. A message to triage lands here, and Dispatch sends it when triage is free.";
       const backlog = "No tickets. Dispatch never sends a Backlog ticket: drag it to New when it should go.";
       list.append(mapElement("p", "tickets-none", status === "new" ? none : status === "backlog" ? backlog : "No tickets"));
@@ -7187,31 +7364,26 @@ function renderTickets(): void {
 const FORM_TYPES = ["", ...TYPES.map((one) => one.type)];
 
 /**
- * The form at the top of New: a new ticket in the words of the user, at the end of the queue. The box
- * is the Goal, and Enter adds the ticket. The level selects the model of the plan run, the hint under
- * the box follows it, the type button starts at Auto, and More opens the optional fields (ticket
- * ticket-form-optional-fields-on-a-new); the fields of a fix show only for the type Fix.
+ * The form of a part in Backlog (ticket subtickets): the edit of a waiting part, or a new part at the
+ * end of a chain. The box is the Goal, and Enter saves. The level selects the model of the plan run,
+ * the hint under the box follows it, the type button starts at Auto, and More opens the optional
+ * fields (ticket ticket-form-optional-fields-on-a-new); the fields of a fix show only for the type Fix.
+ * A new ticket has its own window, the Add ticket window (`renderAddTicket`).
  */
-function newTicketForm(project: string, part: PartForm | null = null): HTMLElement {
-  const draft = part ? part.draft : newTicketDraft;
+function newTicketForm(project: string, part: PartForm): HTMLElement {
+  const draft = part.draft;
   const form = mapElement("div", "ticket-new");
   const box = mapElement("textarea");
   box.rows = 3;
   box.value = draft.text;
-  box.placeholder = part
-    ? "The goal of the part. Enter saves it in Backlog; it starts in its turn of the chain. Shift+Enter makes a new line."
-    : "What is the ticket about? Enter adds it to New; Dispatch sends it when triage is free. Shift+Enter makes a new line.";
+  box.placeholder = "The goal of the part. Enter saves it in Backlog; it starts in its turn of the chain. Shift+Enter makes a new line.";
   box.setAttribute("aria-label", "Goal");
   box.addEventListener("input", () => (draft.text = box.value));
   const hint = mapElement("div", "ticket-hint", goalHint(draft.level));
   const add = mapElement("button", "", "Add");
   const cancel = mapElement("button", "", "Cancel");
   const close = () => {
-    if (part) partForm = null;
-    else {
-      newTicketOpen = false;
-      newTicketDraft = emptyTicketDraft();
-    }
+    partForm = null;
     (document.activeElement as HTMLElement | null)?.blur();
     renderTickets();
   };
@@ -7222,19 +7394,12 @@ function newTicketForm(project: string, part: PartForm | null = null): HTMLEleme
     const fields = { why: "", done: "", keep: "", context: "", see: "", expect: "" };
     for (const field of FIELDS) if (!field.fix || fix) fields[field.key] = draft.fields[field.key].trim();
     const filled = Object.values(fields).some((value) => value !== "");
-    if (part) {
-      // A part: the edit of a waiting part, or a new part at the end of its chain (ticket subtickets).
-      partForm = null;
-      (document.activeElement as HTMLElement | null)?.blur();
-      const title = part.title.trim();
-      if (part.mode === "edit") void ticketAction(project, "ticket_edit", { id: part.id, title: title || null, summary: text, kind: draft.kind || null, level: draft.level, fields });
-      else void ticketAction(project, "ticket_add_part", { parent: part.id, text, title: title || null, kind: draft.kind || null, level: draft.level, fields: filled ? fields : null });
-      return;
-    }
-    newTicketOpen = false;
-    newTicketDraft = emptyTicketDraft();
+    // The edit of a waiting part, or a new part at the end of its chain (ticket subtickets).
+    partForm = null;
     (document.activeElement as HTMLElement | null)?.blur();
-    void ticketAction(project, "ticket_add", { text, kind: draft.kind || null, level: draft.level, fields: filled ? fields : null });
+    const title = part.title.trim();
+    if (part.mode === "edit") void ticketAction(project, "ticket_edit", { id: part.id, title: title || null, summary: text, kind: draft.kind || null, level: draft.level, fields });
+    else void ticketAction(project, "ticket_add_part", { parent: part.id, text, title: title || null, kind: draft.kind || null, level: draft.level, fields: filled ? fields : null });
   };
   // Escape closes the form from each box; Enter adds the ticket from the Goal box, Shift+Enter makes a new line.
   const keys = (goal: boolean) => (event: KeyboardEvent) => {
@@ -7272,16 +7437,14 @@ function newTicketForm(project: string, part: PartForm | null = null): HTMLEleme
     renderTickets();
   });
   options.append(level, kind, more);
-  if (part) {
-    const title = mapElement("input", "ticket-part-title");
-    title.value = part.title;
-    title.placeholder = part.mode === "edit" ? "Title" : "Title (empty: from the goal)";
-    title.setAttribute("aria-label", "Title");
-    title.addEventListener("input", () => (part.title = title.value));
-    title.addEventListener("keydown", keys(false));
-    const head = mapElement("div", "ticket-part-head", part.mode === "edit" ? "Edit the part" : "A new part at the end of the chain");
-    form.append(head, title);
-  }
+  const title = mapElement("input", "ticket-part-title");
+  title.value = part.title;
+  title.placeholder = part.mode === "edit" ? "Title" : "Title (empty: from the goal)";
+  title.setAttribute("aria-label", "Title");
+  title.addEventListener("input", () => (part.title = title.value));
+  title.addEventListener("keydown", keys(false));
+  const head = mapElement("div", "ticket-part-head", part.mode === "edit" ? "Edit the part" : "A new part at the end of the chain");
+  form.append(head, title);
   form.append(box, hint, options);
   if (draft.more) {
     for (const field of FIELDS) {
@@ -7296,7 +7459,7 @@ function newTicketForm(project: string, part: PartForm | null = null): HTMLEleme
       form.append(label);
     }
   }
-  if (part) add.textContent = part.mode === "edit" ? "Save" : "Add part";
+  add.textContent = part.mode === "edit" ? "Save" : "Add part";
   add.addEventListener("click", save);
   cancel.addEventListener("click", close);
   const buttons = mapElement("div", "ticket-tools");
@@ -9260,6 +9423,9 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   const tickets = tool("Tickets", `The tickets board of ${name}`, () => openTickets(ref));
   tickets.classList.add("project-tickets");
   tickets.dataset.project = key;
+  // A new ticket in its own window, without the board (ticket give-the-app-an-add-ticket-button-that-i).
+  const addTicket = tool("+ Ticket", `Add a ticket to New of ${name}; the board stays closed`, () => openAddTicket(ref));
+  addTicket.classList.add("project-add-ticket");
   // A plain Claude Code chat in the project folder, for a question without a ticket (ticket auto-todo).
   const chat = tool("Chat", `Open a new Claude Code chat in the folder of ${name}, outside the pipeline: ask a question without a ticket`, () => {
     openProjectChat(ref).catch((error) => console.error("project chat failed", error));
@@ -9293,7 +9459,7 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   folder.classList.add("project-folder");
   folder.setAttribute("aria-label", `Open the workspace of ${name}`);
   folder.innerHTML = FOLDER_ICON;
-  el.append(tickets, chat, tokensButton, actions, pause, rules, setup, oldEl, folder);
+  el.append(tickets, addTicket, chat, tokensButton, actions, pause, rules, setup, oldEl, folder);
   showOldButton(oldEl, key);
   showTicketButtons();
   markSetupButton(setup, key, name);
@@ -10959,12 +11125,25 @@ function renderOverview(): void {
   placeCards(cards);
 }
 
-/** The line of the Tickets part of an Overview card: the counts as a button that opens the board. */
+/**
+ * The line of the Tickets part of an Overview card: the counts as a button that opens the board, and
+ * "+ Ticket", which opens the Add ticket window (ticket give-the-app-an-add-ticket-button-that-i).
+ */
 function ticketsLine(host: HostId, root: string, tickets: readonly Ticket[]): HTMLElement {
+  const line = mapElement("div", "overview-tickets-line");
   const button = mapElement("button", "overview-tickets", pausedCountText(countText(tickets), projectPaused(projectKey(host, root))));
   button.title = "Open the tickets board of this project";
   button.addEventListener("click", () => openTickets({ host, root }));
-  return button;
+  const add = mapElement("button", "overview-add-ticket", "+ Ticket");
+  add.title = "Add a ticket to New of this project; the board stays closed";
+  // A press on the button is no drag of the Overview card.
+  add.addEventListener("pointerdown", (event) => event.stopPropagation());
+  add.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openAddTicket({ host, root });
+  });
+  line.append(button, add);
+  return line;
 }
 
 /** Shows or hides the Overview. Hiding it puts each Chat view back into its pane. */
@@ -11218,6 +11397,7 @@ async function start(): Promise<void> {
   initStale();
   initRemoveProject();
   initTickets();
+  initAddTicket();
   initTokens();
   initActions();
   void pollSide();
