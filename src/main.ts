@@ -10102,7 +10102,8 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
   // A pane that is hidden now (a project added in the Overview or the Map) cannot be fitted, and xterm
   // would start the shell at 80 x 24: Claude Code then draws a question menu taller than the screen
   // (ticket chat-question-unseen). The first fit in Focus or Details gives the real size. No `pty_resize`
-  // goes out here: the resize handler below comes later, and `pty_spawn` takes this size.
+  // goes out here: the resize handler below comes later, and `pty_spawn` takes this size (a re-attach
+  // to a running host terminal compares it in `matchHostSize`).
   if (pane.termEl.clientWidth < MIN_FIT_PX || pane.termEl.clientHeight < MIN_FIT_PX) term.resize(HIDDEN_COLS, HIDDEN_ROWS);
   term.textarea?.addEventListener("focus", () => {
     focusPane(pane);
@@ -10227,10 +10228,32 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
   if (start?.note) term.write(`\x1b[0;2m${start.note}\x1b[0m\r\n`);
   pane.spawnArgs = { id, shell, cwd: pane.cwd, ...start };
   try {
-    await call(pane.host, "pty_spawn", { id, shell, cwd: pane.cwd, cols: term.cols, rows: term.rows, ...start });
+    const reply = await call<HostSize | null>(pane.host, "pty_spawn", { id, shell, cwd: pane.cwd, cols: term.cols, rows: term.rows, ...start });
+    matchHostSize(pane, reply);
   } catch (error) {
     term.write(`\r\n\x1b[31mCould not start ${shell}: ${error}\x1b[0m\r\n`);
   }
+}
+
+/** The size of a host terminal: the reply of `pty_spawn` when the pane re-attaches to a running terminal. */
+type HostSize = { cols: number; rows: number };
+
+/**
+ * A pane that re-attached to a running terminal of a host (a restart or a reconnect) gets the size
+ * that the terminal kept. When its pane has another size now, the terminal takes the size of the
+ * pane: with a wrong size the agent view stacks its frames (ticket something-is-wrong). The Workers
+ * pane is wiped first, so its next frame draws on an empty pane; a chat pane keeps its text.
+ * A new terminal, the local app and an older host reply nothing.
+ */
+function matchHostSize(pane: Pane, reply: HostSize | null | undefined): void {
+  if (!reply || pane.joined) return;
+  const { term } = pane;
+  if (reply.cols === term.cols && reply.rows === term.rows) return;
+  if (pane.role === "agents") {
+    term.clear();
+    term.write("\x1b[H\x1b[2J");
+  }
+  void call(pane.host, "pty_resize", { id: pane.id, cols: term.cols, rows: term.rows });
 }
 
 /**
@@ -10250,7 +10273,8 @@ function reattach(host: HostId, alive: string[], restartAfterMs: number): void {
       return;
     }
     try {
-      await call(pane.host, "pty_spawn", { ...pane.spawnArgs, cwd: pane.cwd, cols: pane.term.cols, rows: pane.term.rows });
+      const reply = await call<HostSize | null>(pane.host, "pty_spawn", { ...pane.spawnArgs, cwd: pane.cwd, cols: pane.term.cols, rows: pane.term.rows });
+      matchHostSize(pane, reply);
     } catch (error) {
       pane.term.write(`\r\n\x1b[31mCould not start ${pane.shell}: ${error}\x1b[0m\r\n`);
     }

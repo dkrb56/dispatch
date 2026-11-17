@@ -267,6 +267,12 @@ impl Clients {
         }
     }
 
+    /// The size that the terminal `id` has now: `None` when the host does not know the terminal or
+    /// its size. A re-attach gives it to the page, which resizes when its pane has another size.
+    pub fn size_of(&self, id: &str) -> Option<(u16, u16)> {
+        self.lock().terminals.get(id).map(|terminal| terminal.size).filter(|&size| size != (0, 0))
+    }
+
     /// The size of the terminal `id` at its start or after a `pty_resize` of its owner. The windows
     /// that joined it get the new size as `pty-size`.
     pub fn sized(&self, id: &str, cols: u16, rows: u16) {
@@ -456,6 +462,23 @@ mod tests {
         let replay = texts(&mut rx);
         assert_eq!(replay.len(), 1);
         assert!(replay[0].contains("kept-1 kept-2 before-attach"), "{replay:?}");
+    }
+
+    #[test]
+    fn a_reattach_knows_the_size_that_the_terminal_kept() {
+        let clients = Clients::new("k".into());
+        let (tx, _rx) = unbounded_channel();
+        let serial = clients.register("w-1", tx, "0.0.0");
+        assert_eq!(clients.spawn("w-1", "t-1"), Ok(Spawn::New));
+        assert_eq!(clients.size_of("t-1"), None, "a new terminal has no size before `sized`");
+        clients.sized("t-1", 46, 34);
+        clients.unregister("w-1", serial);
+
+        let (tx, _rx) = unbounded_channel();
+        clients.register("w-1", tx, "0.0.0");
+        assert_eq!(clients.spawn("w-1", "t-1"), Ok(Spawn::Attached));
+        assert_eq!(clients.size_of("t-1"), Some((46, 34)), "the page compares this size with its pane");
+        assert_eq!(clients.size_of("t-2"), None);
     }
 
     #[test]

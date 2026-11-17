@@ -60,7 +60,9 @@ pub fn run(
             let id: String = a.req("id")?;
             let label: Option<String> = a.opt("label")?;
             if clients.spawn(window, &id)? == Spawn::Attached {
-                return json(());
+                // The terminal keeps the size of its last pane, and the pane of the page can have
+                // another size now (a restart or a reconnect): the page compares and resizes.
+                return json(clients.size_of(&id).map(|(cols, rows)| serde_json::json!({ "cols": cols, "rows": rows })));
             }
             let (cols, rows): (u16, u16) = (a.req("cols")?, a.req("rows")?);
             let started = pty::pty_spawn(

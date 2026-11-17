@@ -100,3 +100,20 @@ test("the Help names the button in the item of the Workers pane, and the style h
   assert.match(CSS, /\.pane-bar \.workers-back \{/);
   assert.match(CSS, /\.pane-bar \.workers-back:disabled \{/);
 });
+
+// Ticket something-is-wrong: a pane that re-attaches to a running host terminal (a restart or a
+// reconnect) gives the terminal the size of the pane; the agent view stacked its frames otherwise.
+test("main.ts: a re-attach compares the size of the host terminal with the pane and resizes it", () => {
+  const start = MAIN.slice(MAIN.indexOf("async function startPane"), MAIN.indexOf("/** The size of a host terminal"));
+  assert.match(start, /const reply = await call<HostSize \| null>\(pane\.host, "pty_spawn", \{ id, shell, cwd: pane\.cwd, cols: term\.cols, rows: term\.rows, \.\.\.start \}\);\n\s*matchHostSize\(pane, reply\);/);
+  const again = MAIN.slice(MAIN.indexOf("function reattach("), MAIN.indexOf("async function joinTerminal"));
+  assert.match(again, /const reply = await call<HostSize \| null>\(pane\.host, "pty_spawn", \{ \.\.\.pane\.spawnArgs, [^}]*\}\);\n\s*matchHostSize\(pane, reply\);/);
+  const helper = MAIN.slice(MAIN.indexOf("function matchHostSize"), MAIN.indexOf("function reattach("));
+  assert.match(helper, /if \(!reply \|\| pane\.joined\) return;/);
+  assert.match(helper, /if \(reply\.cols === term\.cols && reply\.rows === term\.rows\) return;/);
+  // Only the Workers pane is wiped; a chat pane keeps its text.
+  assert.match(helper, /if \(pane\.role === "agents"\) \{\n\s*term\.clear\(\);\n\s*term\.write\("\\x1b\[H\\x1b\[2J"\);\n\s*\}/);
+  // The wipe comes before the resize, so the next frame of the agent view lands on an empty pane.
+  assert.ok(helper.indexOf("term.clear()") < helper.indexOf('"pty_resize"'));
+  assert.match(helper, /call\(pane\.host, "pty_resize", \{ id: pane\.id, cols: term\.cols, rows: term\.rows \}\)/);
+});
