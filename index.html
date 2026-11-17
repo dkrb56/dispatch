@@ -250,6 +250,31 @@
         <button id="commit-send" class="primary" title="Commit these files with this message on the current branch. Dispatch makes no push">Commit</button>
       </footer>
     </dialog>
+    <dialog id="git-state" aria-labelledby="git-state-title">
+      <header>
+        <h2 id="git-state-title">Git state</h2>
+        <span id="git-state-head"></span>
+        <button id="git-state-refresh" title="Read the git state again">Refresh</button>
+        <button id="git-state-close" title="Close (Esc)">&times;</button>
+      </header>
+      <div id="git-state-body">
+        <div id="git-state-left">
+          <section id="git-state-history-box">
+            <div class="git-state-label">History</div>
+            <ul id="git-state-history"></ul>
+          </section>
+          <section id="git-state-files-box">
+            <div class="git-state-label" id="git-state-files-label">Changes</div>
+            <ul id="git-state-files"></ul>
+          </section>
+        </div>
+        <section id="git-state-diff-box">
+          <div id="git-state-diff-name"></div>
+          <div id="git-state-diff"></div>
+        </section>
+      </div>
+      <footer id="git-state-note"></footer>
+    </dialog>
     <dialog id="questions">
       <header>
         <h2 id="questions-title">Questions</h2>
@@ -720,6 +745,7 @@
           <li>With <b>Tickets start their plan</b> on in Setup pipeline, Dispatch starts the plan of a New ticket itself. A question still goes to triage.</li>
           <li>With <b>No triage</b> on in Setup pipeline, Dispatch starts the plan of every New ticket itself, a question too. A ticket whose start fails stays in New with the error and a <b>Retry</b> button. Ask your questions in <b>Chat</b>.</li>
           <li><b>Chat</b> among the buttons of a project opens a plain Claude Code chat in the project folder; it shows as a chat tab in the head of the triage pane. Ask a question there without a ticket; it is no triage chat and starts no task.</li>
+          <li><b>Git state</b> among the buttons of a project opens a window with the commits of all branches as a tree, the branch with its commits ahead and behind its remote, and the files that are not committed yet. Click a file to see its changes on the right. <b>Refresh</b> reads git again. The window only shows; it does not commit, pull or push.</li>
           <li><b>Parts.</b> A plan for a large task can list parts that follow it. The plan card shows them before you approve. Approve puts one ticket per part in Backlog, and they run one after the other.</li>
         </ul>
         <details class="help-more">

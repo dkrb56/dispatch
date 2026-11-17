@@ -168,6 +168,195 @@ fn git_info(cwd: &Path) -> Option<GitInfo> {
     Some(GitInfo { branch, insertions: count("insertion"), deletions: count("deletion"), untracked })
 }
 
+/// The commits that the Git state window shows (ticket add-git-state-button-to-the-project).
+const GIT_STATE_COMMITS: usize = 100;
+/// The largest part of an untracked file that the Git state window shows.
+const GIT_STATE_FILE_BYTES: usize = 200 * 1024;
+/// The fields of one commit line of `git log`: a record mark, then the fields with unit marks.
+const GIT_STATE_FORMAT: &str = "--format=%x1e%H%x1f%h%x1f%D%x1f%s%x1f%an%x1f%ct";
+
+/// The git state of a project for the Git state window: the branch, the history and the
+/// uncommitted files. Only read commands make it; it changes nothing in git.
+#[derive(Serialize, Default, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitState {
+    /// False when the folder is not in a git work tree; the other fields are then empty.
+    in_git: bool,
+    /// The current branch; `None` for a detached HEAD.
+    branch: Option<String>,
+    /// The remote branch of the current branch, as `origin/main`.
+    upstream: Option<String>,
+    ahead: u32,
+    behind: u32,
+    /// The lines of `git log --graph --all`, newest first.
+    rows: Vec<GitRow>,
+    files: Vec<GitFile>,
+    /// True when the history has more commits than the rows show.
+    more: bool,
+}
+
+/// One line of the history. A line that only joins branches has no commit: its hash is empty.
+#[derive(Serialize, Default, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitRow {
+    /// The graph text in front of the commit, as `* ` or `| * `.
+    graph: String,
+    hash: String,
+    short: String,
+    /// The full names that point at the commit, as `HEAD -> refs/heads/main, refs/remotes/origin/main, tag: refs/tags/v1`.
+    refs: String,
+    subject: String,
+    author: String,
+    /// The commit time in seconds since the Unix epoch.
+    time: i64,
+}
+
+/// One uncommitted file, from `git status --porcelain=v1 -z`.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GitFile {
+    /// The two status letters, as ` M`, `A `, `R ` or `??`.
+    status: String,
+    /// The path from the top folder of the repository, with `/`.
+    path: String,
+    /// The old path of a renamed or copied file.
+    old: Option<String>,
+    untracked: bool,
+}
+
+/// Reads the branch, the remote branch and the ahead and behind counts of `git status --porcelain=v2 --branch`.
+fn parse_git_branch(text: &str, state: &mut GitState) {
+    for line in text.lines() {
+        if let Some(head) = line.strip_prefix("# branch.head ") {
+            state.branch = (head != "(detached)").then(|| head.to_string());
+        } else if let Some(upstream) = line.strip_prefix("# branch.upstream ") {
+            state.upstream = Some(upstream.to_string());
+        } else if let Some(counts) = line.strip_prefix("# branch.ab ") {
+            for part in counts.split_whitespace() {
+                if let Some(ahead) = part.strip_prefix('+') {
+                    state.ahead = ahead.parse().unwrap_or(0);
+                } else if let Some(behind) = part.strip_prefix('-') {
+                    state.behind = behind.parse().unwrap_or(0);
+                }
+            }
+        }
+    }
+}
+
+/// Reads `git status --porcelain=v1 -z`. A rename or a copy has a second entry with the old path.
+fn parse_git_status_z(text: &str) -> Vec<GitFile> {
+    let mut files = Vec::new();
+    let mut entries = text.split('\0');
+    while let Some(entry) = entries.next() {
+        if entry.len() < 4 || !entry.is_char_boundary(2) || !entry.is_char_boundary(3) {
+            continue;
+        }
+        let status = &entry[..2];
+        if status == "!!" {
+            continue;
+        }
+        let old = if status.contains('R') || status.contains('C') { entries.next().map(str::to_string) } else { None };
+        files.push(GitFile { status: status.to_string(), path: entry[3..].to_string(), old, untracked: status == "??" });
+    }
+    files
+}
+
+/// Reads `git log --graph` with `GIT_STATE_FORMAT`: at most `limit` commits, with the lines that only
+/// join branches. The flag says that the log has more commits.
+fn parse_git_log(text: &str, limit: usize) -> (Vec<GitRow>, bool) {
+    let mut rows = Vec::new();
+    let mut commits = 0;
+    let mut more = false;
+    for line in text.lines() {
+        let Some((graph, fields)) = line.split_once('\u{1e}') else {
+            rows.push(GitRow { graph: line.trim_end().to_string(), ..GitRow::default() });
+            continue;
+        };
+        commits += 1;
+        if commits > limit {
+            more = true;
+            break;
+        }
+        let mut field = fields.split('\u{1f}');
+        let mut next = || field.next().unwrap_or_default().to_string();
+        let (hash, short, refs, subject, author) = (next(), next(), next(), next(), next());
+        let time = next().trim().parse().unwrap_or(0);
+        rows.push(GitRow { graph: graph.trim_end().to_string(), hash, short, refs, subject, author, time });
+    }
+    while rows.last().is_some_and(|row| row.hash.is_empty()) {
+        rows.pop();
+    }
+    (rows, more)
+}
+
+/// The git state of the folder `cwd` for the Git state window: read commands only.
+pub fn git_state(cwd: String) -> Result<GitState, String> {
+    let dir = Path::new(&cwd);
+    if !dir.is_dir() {
+        return Err(format!("The folder {cwd} does not exist."));
+    }
+    if git(dir, &["rev-parse", "--is-inside-work-tree"]).is_none_or(|out| out.trim() != "true") {
+        return Ok(GitState::default());
+    }
+    let mut state = GitState { in_git: true, ..GitState::default() };
+    let header = git(dir, &["status", "--porcelain=v2", "--branch", "--untracked-files=no"]).ok_or("git status failed.")?;
+    parse_git_branch(&header, &mut state);
+    let status = git(dir, &["status", "--porcelain=v1", "-z", "--untracked-files=all"]).ok_or("git status failed.")?;
+    state.files = parse_git_status_z(&status);
+    // A repository without commits has no log: git exits with an error, and the history stays empty.
+    let count = (GIT_STATE_COMMITS + 1).to_string();
+    let log = git(dir, &["log", "--all", "--graph", "--date-order", "--decorate=full", "--no-color", "-n", &count, GIT_STATE_FORMAT]).unwrap_or_default();
+    (state.rows, state.more) = parse_git_log(&log, GIT_STATE_COMMITS);
+    Ok(state)
+}
+
+/// The uncommitted change of one file for the Git state window, as unified diff text. `path` is
+/// relative to the top folder of the repository. An untracked file shows each line as added.
+pub fn git_file_diff(cwd: String, path: String, untracked: bool) -> Result<String, String> {
+    let relative = Path::new(&path);
+    let unsafe_part = relative.components().any(|part| !matches!(part, std::path::Component::Normal(_)));
+    if path.is_empty() || unsafe_part {
+        return Err(format!("The path {path} is not a path inside the project."));
+    }
+    let top = git(Path::new(&cwd), &["rev-parse", "--show-toplevel"]).ok_or("This project is not a git repository.")?;
+    let top = PathBuf::from(top.trim().replace('/', std::path::MAIN_SEPARATOR_STR));
+    if untracked {
+        return untracked_diff(&top.join(relative));
+    }
+    let head = git(&top, &["rev-parse", "--verify", "-q", "HEAD"]).is_some();
+    let base: &[&str] = if head { &["HEAD"] } else { &["--cached"] };
+    let args: Vec<&str> = ["diff", "--no-color", "--no-ext-diff"].iter().chain(base).chain(&["--", path.as_str()]).copied().collect();
+    git(&top, &args).ok_or_else(|| format!("git diff of {path} failed."))
+}
+
+/// An untracked file as diff text: each line added. A file with a NUL byte is binary and shows no text.
+fn untracked_diff(file: &Path) -> Result<String, String> {
+    let mut bytes = Vec::new();
+    fs::File::open(file)
+        .and_then(|handle| handle.take(GIT_STATE_FILE_BYTES as u64 + 1).read_to_end(&mut bytes))
+        .map_err(|e| format!("{} cannot be read: {e}", file.display()))?;
+    if bytes.contains(&0) {
+        return Ok("Binary file, not shown.".to_string());
+    }
+    let cut = bytes.len() > GIT_STATE_FILE_BYTES;
+    bytes.truncate(GIT_STATE_FILE_BYTES);
+    let text = String::from_utf8_lossy(&bytes);
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return Ok("Empty file.".to_string());
+    }
+    let mut diff = format!("@@ -0,0 +1,{} @@\n", lines.len());
+    for line in &lines {
+        diff.push('+');
+        diff.push_str(line);
+        diff.push('\n');
+    }
+    if cut {
+        diff.push_str("File cut at 200 KB.\n");
+    }
+    Ok(diff)
+}
+
 /// The git state of each folder. Many terminals can be in one folder, and each one has a
 /// side panel. One git call then gives the data for all of them.
 #[derive(Default)]
@@ -824,6 +1013,123 @@ mod tests {
             assert!(list.roots.contains(&temp), "the drive of the temp folder {temp} in {:?}", list.roots);
         }
         assert!(list_dir(&root.join("missing")).is_err());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn git_state_reads_the_branch_header() {
+        let mut state = GitState::default();
+        parse_git_branch("# branch.oid abc\n# branch.head main\n# branch.upstream origin/main\n# branch.ab +2 -1\n", &mut state);
+        assert_eq!(state.branch.as_deref(), Some("main"));
+        assert_eq!(state.upstream.as_deref(), Some("origin/main"));
+        assert_eq!((state.ahead, state.behind), (2, 1));
+        let mut detached = GitState::default();
+        parse_git_branch("# branch.oid abc\n# branch.head (detached)\n", &mut detached);
+        assert_eq!(detached.branch, None, "detached HEAD");
+        assert_eq!(detached.upstream, None, "no remote branch");
+        assert_eq!((detached.ahead, detached.behind), (0, 0));
+    }
+
+    #[test]
+    fn git_state_reads_the_status_entries() {
+        let files = parse_git_status_z(" M src/a.ts\0R  new name.txt\0old name.txt\0?? run-dev.bat\0!! ignored\0A  b.rs\0");
+        let file = |status: &str, path: &str, old: Option<&str>, untracked: bool| GitFile {
+            status: status.to_string(),
+            path: path.to_string(),
+            old: old.map(str::to_string),
+            untracked,
+        };
+        assert_eq!(
+            files,
+            [
+                file(" M", "src/a.ts", None, false),
+                file("R ", "new name.txt", Some("old name.txt"), false),
+                file("??", "run-dev.bat", None, true),
+                file("A ", "b.rs", None, false),
+            ]
+        );
+        assert!(parse_git_status_z("").is_empty());
+    }
+
+    #[test]
+    fn git_state_reads_the_log_with_join_lines() {
+        let line = |graph: &str, hash: &str, refs: &str, subject: &str, time: &str| {
+            format!("{graph}\u{1e}{hash}\u{1f}{}\u{1f}{refs}\u{1f}{subject}\u{1f}Ann\u{1f}{time}", &hash[..2])
+        };
+        let text = [
+            line("* ", "aa11", "HEAD -> main, origin/main", "two", "1700000100"),
+            "|\\  ".to_string(),
+            line("| * ", "bb22", "task", "side", "1700000050"),
+            line("* | ", "cc33", "", "one", "1700000000"),
+            "|/  ".to_string(),
+            line("* ", "dd44", "", "root", "1699999999"),
+        ]
+        .join("\n");
+        let (rows, more) = parse_git_log(&text, 10);
+        assert!(!more);
+        assert_eq!(rows.len(), 6);
+        assert_eq!(rows[0].graph, "*");
+        assert_eq!((rows[0].hash.as_str(), rows[0].short.as_str()), ("aa11", "aa"));
+        assert_eq!(rows[0].refs, "HEAD -> main, origin/main");
+        assert_eq!((rows[0].subject.as_str(), rows[0].author.as_str(), rows[0].time), ("two", "Ann", 1_700_000_100));
+        assert_eq!(rows[1], GitRow { graph: "|\\".to_string(), ..GitRow::default() }, "a join line has no commit");
+        assert_eq!(rows[2].graph, "| *");
+        let (cut, more) = parse_git_log(&text, 3);
+        assert!(more, "a fourth commit exists");
+        assert_eq!(cut.iter().filter(|row| !row.hash.is_empty()).count(), 3);
+        assert!(!cut.last().unwrap().hash.is_empty(), "no join line at the end");
+    }
+
+    #[test]
+    fn git_state_of_a_repository_and_its_file_diffs() {
+        let project = crate::core::pipeline::tests::git_scratch("git-state");
+        let root = project.root.clone();
+        let run = |args: &[&str]| git(&root, args).unwrap_or_else(|| panic!("git {args:?} failed"));
+        let cwd = root.to_string_lossy().into_owned();
+        // A repository without commits: no history, no error.
+        fs::write(root.join("a.txt"), "one\n").unwrap();
+        let empty = git_state(cwd.clone()).unwrap();
+        assert!(empty.in_git);
+        assert!(empty.rows.is_empty());
+        assert!(git_file_diff(cwd.clone(), "a.txt".to_string(), true).unwrap().contains("+one"));
+        run(&["add", "a.txt"]);
+        run(&["commit", "-q", "-m", "first"]);
+        fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
+        run(&["commit", "-q", "-am", "second"]);
+        fs::write(root.join("a.txt"), "one\nthree\n").unwrap();
+        fs::write(root.join("new.txt"), "x\ny\n").unwrap();
+        let state = git_state(cwd.clone()).unwrap();
+        assert!(state.in_git);
+        assert!(state.branch.is_some());
+        assert_eq!(state.upstream, None, "no remote branch");
+        assert!(!state.more);
+        let subjects: Vec<&str> = state.rows.iter().map(|row| row.subject.as_str()).collect();
+        assert_eq!(subjects, ["second", "first"]);
+        assert!(state.rows[0].refs.starts_with("HEAD -> refs/heads/"), "{}", state.rows[0].refs);
+        assert!(state.rows[0].time > 0);
+        let paths: Vec<(&str, &str, bool)> = state.files.iter().map(|f| (f.status.as_str(), f.path.as_str(), f.untracked)).collect();
+        assert_eq!(paths, [(" M", "a.txt", false), ("??", "new.txt", true)]);
+        let tracked = git_file_diff(cwd.clone(), "a.txt".to_string(), false).unwrap();
+        assert!(tracked.contains("-two") && tracked.contains("+three"), "{tracked}");
+        assert_eq!(git_file_diff(cwd.clone(), "new.txt".to_string(), true).unwrap(), "@@ -0,0 +1,2 @@\n+x\n+y\n");
+        fs::write(root.join("bin.dat"), [1u8, 0, 2]).unwrap();
+        assert_eq!(git_file_diff(cwd.clone(), "bin.dat".to_string(), true).unwrap(), "Binary file, not shown.");
+        for bad in ["../outside.txt", "a/../../b", "", "/etc/passwd"] {
+            assert!(git_file_diff(cwd.clone(), bad.to_string(), true).is_err(), "{bad}");
+        }
+        #[cfg(windows)]
+        assert!(git_file_diff(cwd.clone(), "C:\\Windows\\win.ini".to_string(), true).is_err());
+        fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn git_state_of_a_folder_outside_git() {
+        let root = std::env::temp_dir().join(format!("dispatch-git-state-none-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let state = git_state(root.to_string_lossy().into_owned()).unwrap();
+        assert!(!state.in_git);
+        assert!(state.rows.is_empty() && state.files.is_empty());
+        assert!(git_state(root.join("missing").to_string_lossy().into_owned()).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 }

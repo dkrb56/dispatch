@@ -64,6 +64,8 @@ pub fn run() {
             commands::pipeline_apply,
             commands::pipeline_commit,
             commands::task_commit_preview,
+            commands::git_state,
+            commands::git_file_diff,
             commands::task_commit_message,
             commands::task_commit,
             commands::set_project_options,

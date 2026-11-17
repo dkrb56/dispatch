@@ -14,7 +14,7 @@ use crate::core::builds::{self, BuildFolders, CleanResult};
 use crate::core::chats::{self, Chat, ChatView, Worker};
 use crate::core::context::{self, ContextUsage};
 use crate::core::flow::{self, FlowFile};
-use crate::core::info::{self, DirList, FileEntry, PaneInfo};
+use crate::core::info::{self, DirList, FileEntry, GitState, PaneInfo};
 use crate::core::pipeline::{self, Choice, Options, Plan, ProjectRoot, TaskCommitPreview, TaskList, WorkerFlags};
 use crate::core::rules::{self, Rules};
 use crate::core::rules_check::{self, RulesCheck};
@@ -193,6 +193,16 @@ pub fn pipeline_commit(cwd: String) -> Result<String, String> {
 #[tauri::command(async)]
 pub fn task_commit_preview(cwd: String, id: String) -> Result<TaskCommitPreview, String> {
     pipeline::task_commit_preview(cwd, id)
+}
+
+#[tauri::command(async)]
+pub fn git_state(cwd: String) -> Result<GitState, String> {
+    info::git_state(cwd)
+}
+
+#[tauri::command(async)]
+pub fn git_file_diff(cwd: String, path: String, untracked: bool) -> Result<String, String> {
+    info::git_file_diff(cwd, path, untracked)
 }
 
 #[tauri::command(async)]

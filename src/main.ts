@@ -92,6 +92,7 @@ import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./atten
 import { alertOptions, compactOn, initOptions, ownHostRuns, pulseOn, useOwnHost } from "./options";
 import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
+import { ageText, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "./gitstate";
 import { initRules, openRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
 import { terminalTheme, themeName, themeTokens } from "./theme";
@@ -5438,6 +5439,176 @@ function initCommit(): void {
   });
 }
 
+/** One line of the history in the Git state window; a line that only joins branches has an empty hash. */
+interface GitRow {
+  graph: string;
+  hash: string;
+  short: string;
+  refs: string;
+  subject: string;
+  author: string;
+  time: number;
+}
+
+/** One uncommitted file in the Git state window. */
+interface GitFile {
+  status: string;
+  path: string;
+  old: string | null;
+  untracked: boolean;
+}
+
+/** What the command git_state gives: the branch, the history and the uncommitted files. */
+interface GitState {
+  inGit: boolean;
+  branch: string | null;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  rows: GitRow[];
+  files: GitFile[];
+  more: boolean;
+}
+
+const gitStateDialog = document.querySelector<HTMLDialogElement>("#git-state")!;
+/** The project whose git state the window shows. */
+let gitStateRef: ProjectRef | null = null;
+/** The path of the file whose changes the window shows. */
+let gitStatePath = "";
+/** Counts the reads, refreshes and closes of the window, so a late answer of an older read changes nothing. */
+let gitStateOpening = 0;
+/** Counts the reads of a file diff, so a late diff of another file changes nothing. */
+let gitStateDiffRead = 0;
+
+/**
+ * Opens the Git state window of a project (ticket add-git-state-button-to-the-project): the history of
+ * all branches as a tree, the branch line and the uncommitted files with their changes. It only reads git.
+ */
+function openGitState(ref: ProjectRef): void {
+  gitStateRef = ref;
+  gitStatePath = "";
+  document.querySelector("#git-state-title")!.textContent = `Git state of ${projectName(ref)}`;
+  document.querySelector("#git-state-head")!.textContent = "";
+  document.querySelector("#git-state-history")!.replaceChildren();
+  document.querySelector("#git-state-files")!.replaceChildren();
+  document.querySelector("#git-state-diff-name")!.textContent = "";
+  document.querySelector("#git-state-diff")!.replaceChildren();
+  if (!gitStateDialog.open) gitStateDialog.showModal();
+  readGitState();
+}
+
+/** Reads the git state of the project of the window and draws it. */
+function readGitState(): void {
+  const ref = gitStateRef;
+  if (!ref) return;
+  const opening = ++gitStateOpening;
+  const note = document.querySelector<HTMLElement>("#git-state-note")!;
+  note.className = "";
+  note.textContent = "Reading git…";
+  call<GitState>(ref.host, "git_state", { cwd: ref.root })
+    .then((state) => {
+      if (opening !== gitStateOpening || !gitStateDialog.open) return;
+      note.textContent = state.inGit ? "" : "This project is not a git repository.";
+      drawGitState(ref, state);
+    })
+    .catch((reason) => {
+      if (opening !== gitStateOpening || !gitStateDialog.open) return;
+      note.className = "error";
+      note.textContent = String(reason);
+    });
+}
+
+function drawGitState(ref: ProjectRef, state: GitState): void {
+  document.querySelector("#git-state-head")!.textContent = state.inGit ? headLine(state) : "";
+  const now = Date.now();
+  const history: HTMLElement[] = [];
+  if (state.files.length > 0) history.push(mapElement("li", "git-state-uncommitted", uncommittedText(state.files.length)));
+  for (const row of state.rows) {
+    const item = mapElement("li", row.hash ? "git-state-commit" : "git-state-join");
+    item.append(mapElement("span", "git-state-graph", row.graph));
+    if (row.hash) {
+      const chips = refChips(row.refs).map((chip) => mapElement("span", `git-state-chip ${chip.kind}`, chip.text));
+      item.append(...chips, mapElement("span", "git-state-subject", row.subject), mapElement("span", "git-state-age", ageText(row.time, now)));
+      item.title = `${row.hash}\n${row.author} · ${new Date(row.time * 1000).toLocaleString()}\n${row.subject}`;
+    }
+    history.push(item);
+  }
+  if (state.more) history.push(mapElement("li", "git-state-more", "Only the newest 100 commits show."));
+  if (state.inGit && state.rows.length === 0) history.push(mapElement("li", "git-state-more", "No commits yet."));
+  document.querySelector("#git-state-history")!.replaceChildren(...history);
+  document.querySelector("#git-state-files-label")!.textContent = `Changes · ${state.files.length}`;
+  const list = document.querySelector<HTMLUListElement>("#git-state-files")!;
+  const items = state.files.map((file) => {
+    const item = mapElement("li", "git-state-file");
+    item.tabIndex = 0;
+    item.dataset.path = file.path;
+    item.title = file.old ? `${statusWord(file.status)}: ${file.old} → ${file.path}` : `${statusWord(file.status)}: ${file.path}`;
+    item.append(mapElement("span", `git-state-status ${statusWord(file.status)}`, statusLetter(file.status)), mapElement("span", "git-state-path", file.old ? `${file.old} → ${file.path}` : file.path));
+    const pick = (): void => showGitDiff(ref, file);
+    item.addEventListener("click", pick);
+    item.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        pick();
+      }
+    });
+    return item;
+  });
+  list.replaceChildren(...items);
+  if (state.inGit && state.files.length === 0) list.append(mapElement("li", "git-state-clean", "No uncommitted changes."));
+  // The file of the last read stays selected; else the first file.
+  const selected = state.files.find((file) => file.path === gitStatePath) ?? state.files[0];
+  if (selected) {
+    showGitDiff(ref, selected);
+  } else {
+    gitStatePath = "";
+    document.querySelector("#git-state-diff-name")!.textContent = "";
+    const diff = document.querySelector("#git-state-diff")!;
+    diff.replaceChildren();
+    if (state.inGit) diff.append(mapElement("div", "git-state-diff-note", "No uncommitted changes."));
+  }
+}
+
+/** Reads the changes of one file and shows them on the right. */
+function showGitDiff(ref: ProjectRef, file: GitFile): void {
+  gitStatePath = file.path;
+  for (const item of document.querySelectorAll<HTMLElement>("#git-state-files .git-state-file")) {
+    item.classList.toggle("selected", item.dataset.path === file.path);
+  }
+  document.querySelector("#git-state-diff-name")!.textContent = file.path;
+  const pane = document.querySelector<HTMLElement>("#git-state-diff")!;
+  pane.replaceChildren(mapElement("div", "git-state-diff-note", "Reading the changes…"));
+  const read = ++gitStateDiffRead;
+  const opening = gitStateOpening;
+  const current = (): boolean => read === gitStateDiffRead && opening === gitStateOpening && gitStateDialog.open;
+  call<string>(ref.host, "git_file_diff", { cwd: ref.root, path: file.path, untracked: file.untracked })
+    .then((text) => {
+      if (!current()) return;
+      const rows = diffRows(text);
+      if (rows.length === 0) {
+        pane.replaceChildren(mapElement("div", "git-state-diff-note", "No changes in the text of this file."));
+        return;
+      }
+      pane.replaceChildren(...rows.map((row) => mapElement("div", `git-state-line ${row.cls}`, row.text)));
+      pane.scrollTop = 0;
+    })
+    .catch((reason) => {
+      if (current()) pane.replaceChildren(mapElement("div", "git-state-diff-note error", String(reason)));
+    });
+}
+
+function initGitState(): void {
+  document.querySelector("#git-state-close")!.addEventListener("click", () => gitStateDialog.close());
+  document.querySelector("#git-state-refresh")!.addEventListener("click", () => readGitState());
+  gitStateDialog.addEventListener("click", (event) => {
+    if (event.target === gitStateDialog) gitStateDialog.close();
+  });
+  gitStateDialog.addEventListener("close", () => {
+    gitStateOpening++;
+    gitStateRef = null;
+  });
+}
+
 function initDecisions(): void {
   document.querySelector("#decisions-close")!.addEventListener("click", () => decisionsDialog.close());
   decisionsDialog.addEventListener("close", () => {
@@ -10211,7 +10382,7 @@ const FOLDER_ICON =
   '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" /></svg>';
 
 /**
- * The buttons of one project (topbar-projects): Tickets (ticket tickets), Chat (ticket auto-todo), Tokens (ticket token-usage), Actions (ticket project-actions), Pause, Rules, Setup, "N old" and the folder button. They
+ * The buttons of one project (topbar-projects): Tickets (ticket tickets), Chat (ticket auto-todo), Tokens (ticket token-usage), Actions (ticket project-actions), Pause, Rules, Setup, Git state (ticket add-git-state-button-to-the-project), "N old" and the folder button. They
  * stand in the open group of the bar in Details and in the head of the column in Focus. Each acts on
  * this project, not on the focused terminal. "N old" is hidden while the project has no old session.
  */
@@ -10274,7 +10445,10 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   folder.classList.add("project-folder");
   folder.setAttribute("aria-label", `Open the workspace of ${name}`);
   folder.innerHTML = FOLDER_ICON;
-  el.append(tickets, addTicket, chat, tokensButton, actions, pause, rules, setup, oldEl, folder);
+  // The Git state window (ticket add-git-state-button-to-the-project): history, branch and uncommitted files; it changes nothing.
+  const gitState = tool("Git state", `See the commit history and the uncommitted files of ${name}; the window changes nothing`, () => openGitState(ref));
+  gitState.classList.add("project-git-state");
+  el.append(tickets, addTicket, chat, tokensButton, actions, pause, rules, setup, gitState, oldEl, folder);
   showOldButton(oldEl, key);
   showTicketButtons();
   markSetupButton(setup, key, name);
@@ -12315,6 +12489,7 @@ async function start(): Promise<void> {
   initStatusBar(() => focusedPane()?.host ?? firstBackend());
   initDecisions();
   initCommit();
+  initGitState();
   initQuestions();
   initStale();
   initRemoveProject();

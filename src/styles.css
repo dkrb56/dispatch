@@ -5612,6 +5612,309 @@ button.ticket-level {
   cursor: progress;
 }
 
+/* The Git state window of a project (ticket add-git-state-button-to-the-project): the history as a
+   tree and the changes on the left, the diff of the selected file on the right. It only shows. */
+#git-state {
+  width: 90vw;
+  height: 85vh;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 24px 64px rgb(0 0 0 / 50%);
+  color: var(--text);
+  font-size: calc(13px * var(--text-scale));
+}
+
+#git-state[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#git-state::backdrop {
+  background: rgb(0 0 0 / 60%);
+}
+
+#git-state header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  padding-left: 20px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+#git-state h2 {
+  margin: 0;
+  font-size: calc(16px * var(--text-scale));
+  font-weight: 600;
+}
+
+#git-state-head {
+  flex: 1;
+  color: var(--text-2);
+}
+
+#git-state-refresh {
+  padding: 4px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+#git-state-close {
+  width: 32px;
+  height: 32px;
+  margin: 8px 8px 8px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: calc(18px * var(--text-scale));
+  cursor: pointer;
+}
+
+#git-state-close:hover,
+#git-state-refresh:hover {
+  background: var(--card);
+}
+
+#git-state-body {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  min-height: 0;
+  padding: 12px;
+}
+
+#git-state-left {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+#git-state-history-box,
+#git-state-files-box,
+#git-state-diff-box {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+#git-state-history-box {
+  flex: 3;
+}
+
+#git-state-files-box {
+  flex: 1;
+}
+
+#git-state .git-state-label {
+  flex: none;
+  padding: 8px 12px 4px;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+#git-state-history,
+#git-state-files {
+  flex: 1;
+  margin: 0;
+  padding: 0 6px 6px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+#git-state-history li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  white-space: nowrap;
+}
+
+#git-state-history .git-state-commit {
+  min-height: 26px;
+}
+
+#git-state-history .git-state-commit:hover {
+  background: var(--card);
+}
+
+#git-state-history .git-state-join {
+  min-height: 0;
+  line-height: 1.1;
+}
+
+#git-state .git-state-graph {
+  flex: none;
+  color: var(--accent);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  white-space: pre;
+}
+
+#git-state .git-state-uncommitted {
+  min-height: 26px;
+  margin-bottom: 2px;
+  border-radius: 6px;
+  background: var(--wait-bg);
+  color: var(--wait);
+  font-style: italic;
+}
+
+#git-state .git-state-chip {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: calc(11px * var(--text-scale));
+  line-height: 1.6;
+}
+
+#git-state .git-state-chip.head {
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+#git-state .git-state-chip.branch {
+  background: var(--card);
+  color: var(--text);
+}
+
+#git-state .git-state-chip.remote,
+#git-state .git-state-chip.other {
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+#git-state .git-state-chip.tag {
+  background: var(--wait-bg);
+  color: var(--wait);
+}
+
+#git-state .git-state-subject {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#git-state .git-state-age {
+  flex: none;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
+#git-state .git-state-more,
+#git-state .git-state-clean,
+#git-state .git-state-diff-note {
+  padding: 6px;
+  color: var(--muted);
+}
+
+#git-state .git-state-file {
+  display: flex;
+  gap: 8px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+  cursor: pointer;
+}
+
+#git-state .git-state-file:hover {
+  background: var(--card);
+}
+
+#git-state .git-state-file.selected {
+  background: var(--wait-bg);
+}
+
+#git-state .git-state-status {
+  flex: none;
+  width: 2ch;
+  color: var(--wait);
+}
+
+#git-state .git-state-status.added,
+#git-state .git-state-status.untracked {
+  color: var(--work);
+}
+
+#git-state .git-state-status.deleted,
+#git-state .git-state-status.conflict {
+  color: var(--danger);
+}
+
+#git-state .git-state-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#git-state-diff-name {
+  flex: none;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--hairline);
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+#git-state-diff {
+  flex: 1;
+  overflow: auto;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+  line-height: 1.5;
+}
+
+#git-state .git-state-line {
+  min-width: max-content;
+  padding: 0 12px;
+  white-space: pre;
+}
+
+#git-state .git-state-line.added {
+  background: var(--work-bg);
+  color: var(--work);
+}
+
+#git-state .git-state-line.removed {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+#git-state .git-state-line.hunk {
+  color: var(--muted);
+}
+
+#git-state-note {
+  flex: none;
+  padding: 0 20px 10px;
+  color: var(--muted);
+}
+
+#git-state-note:empty {
+  display: none;
+}
+
+#git-state-note.error,
+#git-state .git-state-diff-note.error {
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+
 /* The Commit files button under the wait reason of a plan card. */
 .task-card .card-reason .card-commit {
   display: block;

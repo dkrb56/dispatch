@@ -144,6 +144,8 @@ pub fn run(
         "pipeline_apply" => json(pipeline::pipeline_apply(a.req("cwd")?, a.req("rules")?)?),
         "pipeline_commit" => json(pipeline::pipeline_commit(a.req("cwd")?)?),
         "task_commit_preview" => json(pipeline::task_commit_preview(a.req("cwd")?, a.req("id")?)?),
+        "git_state" => json(info::git_state(a.req("cwd")?)?),
+        "git_file_diff" => json(info::git_file_diff(a.req("cwd")?, a.req("path")?, a.req("untracked")?)?),
         "task_commit_message" => json(pipeline::task_commit_message(a.req("cwd")?, a.req("id")?, a.req("files")?)?),
         "task_commit" => json(pipeline::task_commit(a.req("cwd")?, a.req("id")?, a.req("message")?, a.req("files")?)?),
         "set_project_options" => json(pipeline::set_project_options(a.req("cwd")?, a.req("options")?)?),
