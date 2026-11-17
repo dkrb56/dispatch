@@ -1,5 +1,6 @@
 import { call, type HostId } from "./backend";
 import { type BuildFolders, cleanable, type CleanResult, cleanText, rowText } from "./builds";
+import { initDialogTabs } from "./dialogtabs";
 import { openViewer, statFile } from "./files";
 import { checkText, type Finding, findingElement, optionsText, type RulesCheck, removeAllButton, savedOptions, tick } from "./rulecheck";
 
@@ -62,6 +63,8 @@ interface Plan {
 }
 
 const dialog = document.querySelector<HTMLDialogElement>("#setup")!;
+/** The tabs of the dialog: Steps, then the four groups of switches. Each open shows Steps. */
+const tabs = initDialogTabs(dialog);
 const projectEl = document.querySelector<HTMLElement>("#setup-project")!;
 const stepsEl = document.querySelector<HTMLElement>("#setup-steps")!;
 const messageEl = document.querySelector<HTMLElement>("#setup-message")!;
@@ -356,6 +359,7 @@ function open(host: HostId, target: string | null): void {
   buildsStateEl.textContent = "";
   buildsListEl.replaceChildren();
   cleanBuildsEl.disabled = true;
+  tabs.show();
   dialog.showModal();
   if (folder) {
     void run("pipeline_plan");

@@ -5,6 +5,7 @@ import { ALERT_OPTIONS_KEY, type AlertOptions, parseAlertOptions } from "./alert
 import { parsePulse, PULSE_KEY } from "./attention";
 import { COMPACT_KEY, parseCompact } from "./compact";
 import { cleanAddress, DEFAULT_PORT, type HostEntry, hostSettings, setHostSettings, windowCall } from "./backend";
+import { initDialogTabs } from "./dialogtabs";
 
 const dialog = document.querySelector<HTMLDialogElement>("#options")!;
 const listEl = document.querySelector<HTMLElement>("#host-list")!;
@@ -256,6 +257,8 @@ function save(): void {
  * `onHostChange` after each change of the section "Where the work runs".
  */
 export function initOptions(onClose: () => void, onHostChange: () => unknown): void {
+  // The tabs of the window, one per section; each open shows the first tab.
+  const tabs = initDialogTabs(dialog);
   showHostSettings(onHostChange);
   initHostRun(onHostChange);
   for (const radio of dialog.querySelectorAll<HTMLInputElement>('input[name="work-mode"]')) {
@@ -318,6 +321,7 @@ export function initOptions(onClose: () => void, onHostChange: () => unknown): v
   document.querySelector("#show-options")!.addEventListener("click", () => {
     showHostSettings(onHostChange);
     void showHostRun();
+    tabs.show();
     dialog.showModal();
   });
   document.querySelector("#options-close")!.addEventListener("click", () => dialog.close());

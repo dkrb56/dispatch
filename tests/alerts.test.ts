@@ -1,7 +1,7 @@
 // Tests of the alerts when a task waits for the user (src/alerts.ts, ticket alerts-options): the
 // rule that decides when an alert fires, the three switches, the chime data, the Options screen in
-// index.html and the Help text; and the rule that makes the Options dialog as high as its content
-// (src/styles.css, ticket options-dialog-fit). Run: node --test tests/
+// index.html and the Help text; the fixed size of the Options dialog (src/styles.css, ticket
+// options-dialog-fit) and its tabs (src/dialogtabs.ts, ticket change-options-and-setup-windows). Run: node --test tests/
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -20,6 +20,7 @@ import {
   waitsForUser,
   type WorkerEnd,
 } from "../src/alerts.ts";
+import { pickTab } from "../src/dialogtabs.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const CSS = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -200,7 +201,7 @@ function rules(css: string): Rule[] {
   return found;
 }
 
-test("the Options dialog is as high as its content", () => {
+test("the Options dialog has one fixed size and its body scrolls", () => {
   const all = rules(CSS).filter((rule) => rule.condition === "");
   // The last value of a property for a selector, as the cascade gives it for rules of the same weight.
   const get = (selector: string, property: string) =>
@@ -208,16 +209,66 @@ test("the Options dialog is as high as its content", () => {
       .filter((rule) => rule.selectors.includes(selector))
       .flatMap((rule) => rule.declarations.filter(([name]) => name === property).map(([, value]) => value))
       .pop();
-  // A modal dialog has top and bottom at 0: "auto" fills the window, "fit-content" takes the content
-  // height, and the auto margins then put the dialog in the middle.
-  assert.equal(get("#options", "height"), "fit-content");
-  assert.equal(get("#options", "max-height"), "calc(100vh - 32px)");
-  assert.equal(get("#options", "width"), "calc(100vw - 32px)", "the window takes the width of the app window less a margin");
+  // One height on every tab, so the tabs stay in place; at most 760 px wide (change-options-and-setup-windows).
+  assert.equal(get("#options", "height"), "min(86vh, 640px)");
+  assert.equal(get("#options", "width"), "min(92vw, 760px)");
+  assert.equal(get("#options", "max-height"), undefined, "no max-height of the wide layout");
   assert.equal(get("#options-body", "overflow-y"), "auto", "the body scrolls in a small window");
   // The shared frame still gives Rules and Help their height.
   const frame = all.find((rule) => ["#rules", "#help", "#options"].every((one) => rule.selectors.includes(one)));
   assert.ok(frame, "the shared frame rule of the three dialogs");
   assert.deepEqual(frame.declarations.find(([name]) => name === "height"), ["height", "86vh"]);
+});
+
+// ---- The tabs of the Options dialog (ticket change-options-and-setup-windows) ---------------------
+
+/** The panels `[data-tab-panel]` of a piece of HTML, each with the offsets of its open and close tag. */
+function tabPanels(html: string): { name: string; start: number; end: number }[] {
+  return [...html.matchAll(/<(\w+)\b[^>]*\bdata-tab-panel="([^"]+)"/g)].map((match) => {
+    const tag = new RegExp(`<(/?)${match[1]}\\b[^>]*>`, "g");
+    tag.lastIndex = match.index;
+    let depth = 0;
+    let end = -1;
+    for (let found = tag.exec(html); found; found = tag.exec(html)) {
+      depth += found[1] ? -1 : 1;
+      if (depth === 0) {
+        end = found.index + found[0].length;
+        break;
+      }
+    }
+    return { name: match[2], start: match.index, end };
+  });
+}
+
+test("the Options dialog has five tabs, one panel each, and every switch and list lies in a panel", () => {
+  const start = HTML.indexOf('<dialog id="options">');
+  const dialog = HTML.slice(start, HTML.indexOf("</dialog>", start));
+  const tabs = [...dialog.matchAll(/<button type="button" role="tab" data-tab="([^"]+)">([^<]+)<\/button>/g)];
+  assert.deepEqual(
+    tabs.map((tab) => tab[2]),
+    ["Where the work runs", "Host on this PC", "Alerts", "Triage chat", "Look"],
+  );
+  const panels = tabPanels(dialog);
+  for (const [, name] of tabs) assert.equal(panels.filter((panel) => panel.name === name).length, 1, `one panel for ${name}`);
+  assert.equal(panels.length, 5, "no panel without a tab");
+  const inside = (needle: string) => {
+    const at = dialog.indexOf(needle);
+    return at >= 0 && panels.some((panel) => at > panel.start && at < panel.end);
+  };
+  for (const name of ["notify", "chime", "blink"]) assert.ok(inside(`data-alert="${name}"`), name);
+  for (const needle of ['data-attention="pulse"', 'data-compact="triage"', 'id="theme"', 'id="text-size"', 'name="work-mode"', 'id="host-run-start"']) {
+    assert.ok(inside(needle), needle);
+  }
+  assert.ok(!inside('id="options-close"'), "the close button stays outside the panels");
+});
+
+test("pickTab: the wanted tab when the list has it, else the first", () => {
+  const names = ["work", "host", "alerts"];
+  assert.equal(pickTab(names, "alerts"), "alerts");
+  assert.equal(pickTab(names, "nothing"), "work");
+  assert.equal(pickTab(names, null), "work");
+  assert.equal(pickTab(names), "work");
+  assert.equal(pickTab([], "work"), "");
 });
 
 // Ticket no-triage-a-project-switch-no-triage-in: with "No triage" on, a done or failed task alerts.

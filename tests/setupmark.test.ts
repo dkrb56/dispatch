@@ -1,6 +1,7 @@
 // Tests of the mark of the Setup button (src/setupmark.ts, ticket setup-attention): the stamp of the
 // steps To do, the look with the click, the switch and reduced motion, the tooltip and the period of
-// the check. The last test checks that the styles and main.ts use the module. Run: node --test tests/
+// the check. A test checks that the styles and main.ts use the module. The last test checks the tabs of
+// the Setup pipeline window (ticket change-options-and-setup-windows). Run: node --test tests/
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
@@ -57,4 +58,40 @@ test("the styles and main.ts use the mark", () => {
   assert.match(css, /#bar #setup-pipeline\.attention\.pulse/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)[^}]*\.project-tool\.attention\.pulse/);
   assert.match(main, /from "\.\/setupmark(\.ts)?"/);
+});
+
+test("the Setup pipeline window has five tabs, one panel each, and every setting lies in a panel", () => {
+  const html = read("../index.html");
+  const start = html.indexOf('<dialog id="setup">');
+  const dialog = html.slice(start, html.indexOf("</dialog>", start));
+  const tabs = [...dialog.matchAll(/<button type="button" role="tab" data-tab="([^"]+)">([^<]+)<\/button>/g)];
+  assert.deepEqual(
+    tabs.map((tab) => tab[2]),
+    ["Steps", "Triage", "Plans and work runs", "Branches and checks", "Files in git"],
+  );
+  // Each panel with the offsets of its open and close tag.
+  const panels = [...dialog.matchAll(/<(\w+)\b[^>]*\bdata-tab-panel="([^"]+)"/g)].map((match) => {
+    const tag = new RegExp(`<(/?)${match[1]}\\b[^>]*>`, "g");
+    tag.lastIndex = match.index;
+    let depth = 0;
+    let end = -1;
+    for (let found = tag.exec(dialog); found; found = tag.exec(dialog)) {
+      depth += found[1] ? -1 : 1;
+      if (depth === 0) {
+        end = found.index + found[0].length;
+        break;
+      }
+    }
+    return { name: match[2], start: match.index, end };
+  });
+  for (const [, name] of tabs) assert.equal(panels.filter((panel) => panel.name === name).length, 1, `one panel for ${name}`);
+  assert.equal(panels.length, 5, "no panel without a tab");
+  const inside = (at: number) => at >= 0 && panels.some((panel) => at > panel.start && at < panel.end);
+  const options = [...dialog.matchAll(/<input type="checkbox" data-option="[^"]+"/g)];
+  assert.equal(options.length, 13, "the 13 switches");
+  for (const option of options) assert.ok(inside(option.index), option[0]);
+  for (const id of ["setup-measure-commands", "setup-merge-gate", "setup-checks", "setup-steps", "setup-rules-check", "setup-builds"]) {
+    assert.ok(inside(dialog.indexOf(`id="${id}"`)), id);
+  }
+  assert.ok(!inside(dialog.indexOf('id="setup-buttons"')), "Apply, Commit to git and Close stay outside the panels");
 });
