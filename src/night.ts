@@ -39,3 +39,26 @@ export function nightSyncLines(switchOn: boolean, file: boolean | null): string[
   if (!switchOn && file === null) return [];
   return nightLines(switchOn);
 }
+
+/**
+ * The look of the one switch of the top bar from every backend that does the work: the reachable
+ * ones, or all of them when none is reachable (a host that is gone keeps its switch and is left out).
+ * On when all are on, off when all are off or with no backend, else mixed.
+ */
+export function nightLookOf(entries: readonly { on: boolean; reachable: boolean }[]): "on" | "off" | "mixed" {
+  const reached = entries.filter((entry) => entry.reachable);
+  const shown = reached.length > 0 ? reached : entries;
+  if (shown.length === 0) return "off";
+  if (shown.every((entry) => entry.on)) return "on";
+  if (shown.every((entry) => !entry.on)) return "off";
+  return "mixed";
+}
+
+/**
+ * The night state of a backend after a read of its shared file (ticket
+ * title-nightmode-switch-shows-on-but-this): the saved value when the read gave one, else the
+ * known value. Another Dispatch program with the same data folder can change the file of this PC.
+ */
+export function nightAfterRead(known: boolean, saved: boolean | null): boolean {
+  return saved ?? known;
+}

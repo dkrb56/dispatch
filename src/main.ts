@@ -17,7 +17,7 @@ import {
 } from "./backend";
 import { chooseFolder } from "./folderchooser";
 import { initHostMode, initOwnHostBar, reachable, titleBase } from "./hostmode";
-import { keyHost, keyPath, mergeLists, nightSwitch, pathKey, projectKey, projectLabel, type ProjectRef } from "./hosts";
+import { keyHost, keyPath, mergeLists, pathKey, projectKey, projectLabel, type ProjectRef } from "./hosts";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -96,7 +96,7 @@ import { GIT_STATE_SIZE_KEY, ageText, diffRows, headLine, refChips, statusLetter
 import { initRules, openRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
 import { terminalTheme, themeName, themeTokens } from "./theme";
-import { nightAtStart, nightLines, nightSyncLines } from "./night";
+import { nightAfterRead, nightAtStart, nightLines, nightLookOf, nightSyncLines } from "./night";
 import { KEY_DOWN, KEY_ENTER, KEY_ESC, rcCommand, rcMenuFocus, rcSettled, rcView, type RcView, type RcWish } from "./remotecontrol";
 import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
 import { answeredLine, chosenCount, questionWaitToOpen, replyText, windowChoices, windowTitle } from "./answers";
@@ -2939,9 +2939,9 @@ function nightHosts(): HostId[] {
   return shown.length > 0 ? shown : backends();
 }
 
-/** The look of the one switch: on, off, or mixed when the hosts differ. */
+/** The look of the one switch: on, off, or mixed when the backends differ (the rule of nightLookOf in src/night.ts). */
 function nightLook(): "on" | "off" | "mixed" {
-  return nightSwitch(nightHosts().map(nightOf));
+  return nightLookOf(backends().map((host) => ({ on: nightOf(host), reachable: reachable(host) })));
 }
 
 /** Night mode is on for at least one backend. */
@@ -3007,6 +3007,8 @@ function showNight(): void {
   const button = document.querySelector<HTMLButtonElement>("#night-mode")!;
   const look = nightLook();
   button.setAttribute("aria-checked", look === "mixed" ? "mixed" : String(look === "on"));
+  // The word says mixed too: the knob in the middle alone was read as on (title-nightmode-switch-shows-on-but-this).
+  button.querySelector("span")!.textContent = look === "mixed" ? "Nightmode: mixed" : "Nightmode";
   if (look === "mixed") {
     const shown = nightHosts();
     const on = shown.filter(nightOf).map(backendName);
@@ -4085,10 +4087,27 @@ function applyShared(host: HostId, state: SharedState): void {
   takeTriageRecords(host, state.triage);
 }
 
-/** In the mode "Use hosts", at each worker poll: reads the shared state of every host, then reports for its lease. */
+/**
+ * At each worker poll: reads the night field of this PC when it does work, and in the mode "Use
+ * hosts" the shared state of every host, then reports for its lease.
+ */
 async function pollShared(): Promise<void> {
+  // The night field of this PC is read at each poll too: another Dispatch program with the same data
+  // folder (the dev build, a test copy) can change it (title-nightmode-switch-shows-on-but-this).
+  // Only the night field: the triage records of this PC stay those of this window.
+  if (localWorks()) {
+    try {
+      const night = nightAfterRead(nightOf(LOCAL), parseShared(await call(LOCAL, "shared_load")).night);
+      if (night !== nightOf(LOCAL)) {
+        nightStates.set(LOCAL, night);
+        showNight();
+        if (night) approvePlans();
+      }
+    } catch (error) {
+      console.warn("shared state read failed", backendName(LOCAL), error);
+    }
+  }
   if (!usesHosts()) return;
-  // The shared file of this PC is read at the start only: this window is its only one.
   await Promise.all(
     leaseHosts().map(async (host) => {
       try {
