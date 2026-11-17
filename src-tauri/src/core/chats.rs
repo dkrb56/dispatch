@@ -147,6 +147,12 @@ pub struct Worker {
     /// The agents that wrote to their transcript a short time ago. It is an estimate.
     #[serde(skip_deserializing)]
     agents_active: u32,
+    /// For a `done` run of the pipeline (`<ticket> [plan]` or `<ticket> [work]`): true when this
+    /// run wrote its result, the plan or the report; false when not (ticket early-done-line). A
+    /// turn can end while the background commands of the session still run, and the session goes
+    /// on by itself later. None for every other worker. The window tells triage the end only then.
+    #[serde(skip_deserializing)]
+    result: Option<bool>,
 }
 
 impl Worker {
@@ -223,6 +229,41 @@ fn worker_end(claude: &Path, id: &str) -> Option<(String, Option<String>)> {
     timeline_end(&fs::read_to_string(claude.join("jobs").join(id).join("timeline.jsonl")).ok()?)
 }
 
+/// The ticket of a run of the pipeline and whether it is the plan run, from the name that
+/// worker.ps1 gives it. None for a bare ticket id of the older script and for any other name.
+fn run_of(name: &str) -> Option<(&str, bool)> {
+    let (ticket, plan) = match name.strip_suffix(" [plan]") {
+        Some(ticket) => (ticket, true),
+        None => (name.strip_suffix(" [work]")?, false),
+    };
+    crate::core::pipeline::check_ticket(ticket).ok()?;
+    Some((ticket, plan))
+}
+
+/// A result file is from a run when it changed at or after the start of the run and before the
+/// start of the next job with the same name in the same folder: a later reply job must not make an
+/// older job look finished. Approve writes the decisions into the plan after the plan run; that is
+/// before the next plan job, so it still counts. Milliseconds since the Unix epoch.
+fn from_run(modified: Option<u64>, start: u64, next_start: Option<u64>) -> bool {
+    modified.is_some_and(|modified| modified >= start && next_start.is_none_or(|next| modified < next))
+}
+
+/// The `result` of a worker: `modified` gives the time of the result file of a ticket's run
+/// (true for the plan run), or None without that file.
+fn run_result(
+    state: Option<&str>,
+    name: Option<&str>,
+    started_at: Option<u64>,
+    next_start: Option<u64>,
+    modified: impl FnOnce(&str, bool) -> Option<u64>,
+) -> Option<bool> {
+    if state != Some("done") {
+        return None;
+    }
+    let ((ticket, plan), start) = (run_of(name?)?, started_at?);
+    Some(from_run(modified(ticket, plan), start, next_start))
+}
+
 /// The background sessions of Claude Code on this computer, also the ones that ended.
 pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
     let output = claude_command()
@@ -271,6 +312,27 @@ pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
             worker.agents_active = 0;
         }
     }
+    // The result of each done run. `Project::find` runs git: once per folder.
+    let starts: Vec<(Option<String>, Option<String>, Option<u64>)> =
+        workers.iter().map(|worker| (worker.name.clone(), worker.cwd.clone(), worker.started_at)).collect();
+    let mut found: HashMap<String, Option<crate::core::pipeline::Project>> = HashMap::new();
+    for worker in &mut workers {
+        let Some(cwd) = worker.cwd.clone() else { continue };
+        let next_start = worker.started_at.and_then(|start| {
+            starts
+                .iter()
+                .filter(|(name, folder, _)| *name == worker.name && folder.as_deref() == Some(cwd.as_str()))
+                .filter_map(|(_, _, other)| other.filter(|other| *other > start))
+                .min()
+        });
+        let modified = |ticket: &str, plan: bool| {
+            let project = found.entry(cwd.clone()).or_insert_with(|| crate::core::pipeline::Project::find(&cwd).ok()).as_ref()?;
+            let file = if plan { project.plans().join(format!("{ticket}.md")) } else { project.reports.join(format!("{ticket}.md")) };
+            let time = fs::metadata(file).ok()?.modified().ok()?;
+            Some(time.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64)
+        };
+        worker.result = run_result(worker.state.as_deref(), worker.name.as_deref(), worker.started_at, next_start, modified);
+    }
     Ok(workers)
 }
 
@@ -311,7 +373,7 @@ pub fn end_session(id: String) -> Result<String, String> {
 
 #[cfg(test)]
 mod worker_tests {
-    use super::{check_session_id, end_session, timeline_end, Worker};
+    use super::{check_session_id, end_session, run_result, timeline_end, Worker};
 
     #[test]
     fn the_end_of_a_worker_is_the_last_line_of_its_timeline() {
@@ -335,6 +397,34 @@ mod worker_tests {
         // Nothing to read: no end.
         assert_eq!(timeline_end(""), None);
         assert_eq!(timeline_end("{\"state\":\"done\"}\n{\"at\":5}\n"), None);
+    }
+
+    #[test]
+    fn a_done_run_has_its_result_only_when_the_file_is_from_that_run() {
+        // Ticket early-done-line: t-netflakes [work] ended its turn without its report while its
+        // background test runs went on. The run starts at 1000; the next job of the name at 5000.
+        let result = |state: &str, name: &str, file: Option<u64>, next: Option<u64>| {
+            run_result(Some(state), Some(name), Some(1000), next, |ticket, plan| {
+                assert_eq!(ticket, "t-netflakes");
+                assert_eq!(plan, name.ends_with("[plan]"));
+                file
+            })
+        };
+        let work = "t-netflakes [work]";
+        assert_eq!(result("done", work, Some(999), None), Some(false), "report of an earlier run");
+        assert_eq!(result("done", work, Some(1000), None), Some(true));
+        assert_eq!(result("done", work, Some(4999), Some(5000)), Some(true));
+        assert_eq!(result("done", work, Some(5000), Some(5000)), Some(false), "report of the next job");
+        assert_eq!(result("done", work, None, None), Some(false), "no report");
+        assert_eq!(result("done", "t-netflakes [plan]", Some(2000), None), Some(true));
+        // A bare ticket id of the older script, a state that is not done, a name that is no ticket.
+        assert_eq!(result("done", "t-netflakes", Some(2000), None), None);
+        for state in ["working", "blocked", "failed", "stopped"] {
+            assert_eq!(result(state, work, Some(2000), None), None, "{state}");
+        }
+        assert_eq!(run_result(Some("done"), Some("a/b [work]"), Some(1000), None, |_, _| Some(2000)), None);
+        assert_eq!(run_result(Some("done"), None, Some(1000), None, |_, _| Some(2000)), None);
+        assert_eq!(run_result(Some("done"), Some(work), None, None, |_, _| Some(2000)), None);
     }
 
     /// A worker as `claude agents --json --all` gives it, after the late-crash step.

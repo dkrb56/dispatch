@@ -296,6 +296,11 @@ interface Worker {
   held?: boolean;
   /** The host that runs the worker; the window adds it to the reply (remote-multi-host). */
   host: HostId;
+  /**
+   * For a `done` run of the pipeline: true when this run wrote its plan or report, false when not
+   * (ticket early-done-line). Null for any other worker; absent from an older host.
+   */
+  result?: boolean | null;
 }
 
 /** The Claude Code command with which the shell of a new terminal starts. */
@@ -4040,11 +4045,14 @@ let lastWorkerStates: Map<string, string | null> | null = loadWorkerStates();
 let workerStatesFromLastRun = lastWorkerStates !== null;
 /** The jobs whose end triage heard about, also saved: the end of a job is told once (done-line-repeats). */
 const WORKER_ENDS_KEY = "worker-ends-told";
-let toldWorkerEnds: Set<string> = loadWorkerEnds();
+let toldWorkerEnds: Set<string> = loadWorkerEnds(WORKER_ENDS_KEY);
+/** The jobs whose stop without their plan or report triage heard about, also saved (early-done-line). */
+const WORKER_EARLY_KEY = "worker-early-told";
+let toldWorkerEarly: Set<string> = loadWorkerEnds(WORKER_EARLY_KEY);
 
-function loadWorkerEnds(): Set<string> {
+function loadWorkerEnds(storageKey: string): Set<string> {
   try {
-    return parseEnded(localStorage.getItem(WORKER_ENDS_KEY));
+    return parseEnded(localStorage.getItem(storageKey));
   } catch {
     return new Set();
   }
@@ -4059,10 +4067,11 @@ function loadWorkerStates(): Map<string, string | null> | null {
   }
 }
 
-function saveWorkerStates(states: Map<string, string | null>, ends: Set<string>): void {
+function saveWorkerStates(states: Map<string, string | null>, ends: Set<string>, early: Set<string>): void {
   try {
     localStorage.setItem(WORKER_STATES_KEY, JSON.stringify(Object.fromEntries(states)));
     localStorage.setItem(WORKER_ENDS_KEY, serializeEnded(ends));
+    localStorage.setItem(WORKER_EARLY_KEY, serializeEnded(early));
   } catch (error) {
     console.warn("worker states not saved", error);
   }
@@ -4074,15 +4083,26 @@ function announceWorkerChanges(workers: Worker[]): void {
   workerStatesFromLastRun = false;
   // Every window records the states; only the window that drives a host tells triage (remote-shared-state).
   // An old session that the user ended in the list of old sessions is quiet too: its task ended long ago.
-  // The rule is in src/announce.ts: the end of a job is told once, a prompt each time.
+  // The rule is in src/announce.ts: the end of a job is told once, a prompt each time, and a run
+  // that is done without its plan or report is no end yet (early-done-line).
   const polled = workers.map((worker) => ({
     key: workerKey(worker),
     state: worker.state,
     quiet: !driverOf(worker.host) || endingSessions.has(workerKey(worker)),
+    result: worker.result,
     worker,
   }));
-  const { told, states, ended } = announcements(lastWorkerStates, polled, toldWorkerEnds);
+  const { told, states, ended, early, earlyTold } = announcements(lastWorkerStates, polled, toldWorkerEnds, toldWorkerEarly);
   const lines = new Map<string, string[]>();
+  // A run that stopped without its result can go on by itself, for example when its background commands end.
+  for (const { worker } of early) {
+    const name = worker.name ?? worker.id;
+    const file = RUN_NAME.exec(name)?.[2] === "plan" ? "plan" : "report";
+    const when = whileClosed ? " (this happened while Dispatch was closed)" : "";
+    const project = projectFor(worker.host, worker.cwd);
+    if (!lines.has(project)) lines.set(project, []);
+    lines.get(project)!.push(`Worker ${name} paused without its ${file}${when}; Dispatch tells its end when the ${file} is there.`);
+  }
   for (const { worker } of told) {
     const now = worker.state;
     const name = worker.name ?? worker.id;
@@ -4101,7 +4121,8 @@ function announceWorkerChanges(workers: Worker[]): void {
   }
   lastWorkerStates = states;
   toldWorkerEnds = ended;
-  saveWorkerStates(states, ended);
+  toldWorkerEarly = earlyTold;
+  saveWorkerStates(states, ended, earlyTold);
 }
 
 /** The workers that wait for the user are first, then the workers that run, then the others. */

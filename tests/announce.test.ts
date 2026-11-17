@@ -8,21 +8,25 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { announcements, parseEnded, type PolledWorker, serializeEnded } from "../src/announce.ts";
 
-type Poll = [key: string, state: string | null][];
+type Poll = [key: string, state: string | null, result?: boolean | null][];
 
 /** Runs the polls in order and gives each told worker as `key state`, with the last states and ends. */
 function replay(polls: Poll[], before: Map<string, string | null> | null = new Map(), ended: Set<string> = new Set()) {
   const lines: string[] = [];
   let states = before;
   let ends = ended;
+  let early = new Set<string>();
   for (const poll of polls) {
-    const workers: PolledWorker[] = poll.map(([key, state]) => ({ key, state }));
-    const result = announcements(states, workers, ends);
+    const workers: PolledWorker[] = poll.map(([key, state, result]) => (result === undefined ? { key, state } : { key, state, result }));
+    const result = announcements(states, workers, ends, early);
+    // An early stop (ticket early-done-line) is the line `key early`.
+    lines.push(...(result.early ?? []).map((worker) => `${worker.key} early`));
     lines.push(...result.told.map((worker) => `${worker.key} ${worker.state}`));
     states = result.states;
     ends = result.ended;
+    early = result.earlyTold ?? early;
   }
-  return { lines, states, ended: ends };
+  return { lines, states, ended: ends, early };
 }
 
 test("job afe0099f: the end of its plan run is told once, its later chat turns are not", () => {
@@ -87,4 +91,51 @@ test("a missing or broken stored value gives an empty set", () => {
     assert.deepEqual([...parseEnded(stored)], [], String(stored));
   }
   assert.deepEqual([...parseEnded("[1,\"x\",null]")], ["x"]);
+});
+
+// Ticket early-done-line: Starminer, 2026-11-17. The work run of t-netflakes ended its turn while two
+// of its own test runs still ran in the background, without its report. Triage got "Worker
+// t-netflakes [work] is done." then, and nothing when the session went on and ended for real.
+test("t-netflakes: a stop without the report is an early line, and the real end is told", () => {
+  const job = "t-netflakes [work]";
+  const polls: Poll[] = [[[job, "working"]], [[job, "done", false]], [[job, "working"]], [[job, "done", true]]];
+  assert.deepEqual(replay(polls).lines, [`${job} early`, `${job} done`]);
+});
+
+test("the report that appears after the stop gives the end, also without a working poll between", () => {
+  const polls: Poll[] = [[["w", "working"]], [["w", "done", false]], [["w", "done", true]]];
+  assert.deepEqual(replay(polls).lines, ["w early", "w done"]);
+  // A chat turn after the real end gives no second line.
+  const chat: Poll[] = [...polls, [["w", "working"]], [["w", "done", true]]];
+  assert.deepEqual(replay(chat).lines, ["w early", "w done"]);
+});
+
+test("a saved done state of the version before gives no early line", () => {
+  // The session ended before the update; its run wrote no report, so the host now gives false.
+  const { lines } = replay([[["old", "done", false]], [["old", "done", false]]], new Map([["old", "done"]]), new Set(["old"]));
+  assert.deepEqual(lines, []);
+});
+
+test("an early stop that then stops is told as stopped", () => {
+  const polls: Poll[] = [[["s", "working"]], [["s", "done", false]], [["s", "stopped"]]];
+  assert.deepEqual(replay(polls).lines, ["s early", "s stopped"]);
+});
+
+test("a second early stop of one job is not told again", () => {
+  const polls: Poll[] = [
+    [["e", "working"]],
+    [["e", "done", false]],
+    [["e", "working"]],
+    [["e", "done", false]],
+    [["e", "working"]],
+    [["e", "done", true]],
+  ];
+  const run = replay(polls);
+  assert.deepEqual(run.lines, ["e early", "e done"]);
+  // The told early stops leave the set with the job.
+  const gone = announcements(run.states, [], run.ended, run.early);
+  assert.deepEqual([...gone.earlyTold], []);
+  // A quiet worker gives no early line, but its early stop counts as told.
+  const quiet = announcements(new Map([["q", "working"]]), [{ key: "q", state: "done", result: false, quiet: true }], new Set(), new Set());
+  assert.deepEqual([quiet.early, [...quiet.earlyTold], [...quiet.ended]], [[], ["q"], []]);
 });
