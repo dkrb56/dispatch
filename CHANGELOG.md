@@ -14,6 +14,14 @@ What each update of Dispatch brought, in plain words. The newest version comes f
 - Setup pipeline and Options show one section at a time behind a row of tabs.
 - A worker no longer has to copy its commands into its report. The task card lists each command of the work run, and a click shows its exit code and its last lines. A done report stays open only when the work run ran no command or skipped a chosen check.
 - A screenshot that you paste into a chat tab inside the triage pane now goes to that chat, not to triage.
+- A project with No triage no longer shows a Triage heading or card in Focus mode or in the Details list. Its old triage chat stays hidden, and the empty Tasks note tells you to add a ticket on the board.
+- The New ticket window shows a spinner in Add (Saving… in Edit) and locks its fields while the ticket saves. A failed save unlocks them and keeps your text.
+- A stopped ticket that you move back to New or Backlog stays there and starts its plan again.
+- The level list in the New ticket window now says "Plan level", so it is clear that the level is for the plan.
+- The Decisions window (Approve, Revise) and the Questions window (Send the answers) lock and show a spinner in the clicked button while they send. A failed send unlocks them and keeps your choices.
+- The button on the tickets board is now Open terminal. It sits at the left side, has a frame, and each project has one terminal.
+- In Focus mode, Open terminal keeps Focus mode and shows the terminal between the task list and the tickets board. Drag its right edge to change its width; a double-click resets it. The × above it closes it and ends its session.
+- While the project terminal is open, the board button says Terminal open and is disabled.
 - The rules of the workers changed for the report check, so each project needs Setup pipeline → Apply.
 
 ## 0.1.70 (2026-11-17)
