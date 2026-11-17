@@ -67,7 +67,7 @@ import { announcements, parseEnded, serializeEnded } from "./announce";
 import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, type FailedEnds, oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
 import { barItems, currentProject, detailsProjects, groupCount, pillCount } from "./topbar";
 import { type ChatTab, headState, isChatTab, pasteSkipsPane } from "./chattabs";
-import { PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
+import { autoSwitch, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { HOLD_NOTE, holdWait } from "./holdstep";
@@ -6070,8 +6070,7 @@ const ticketsCountEl = document.querySelector<HTMLElement>("#tickets-count")!;
 const ticketsPathEl = document.querySelector<HTMLElement>("#tickets-path")!;
 const ticketsErrorEl = document.querySelector<HTMLElement>("#tickets-error")!;
 /** The banner of a paused project on the board, and its text (ticket pause-tasks). */
-const ticketsPausedEl = document.querySelector<HTMLElement>("#tickets-paused")!;
-const ticketsPausedTextEl = document.querySelector<HTMLElement>("#tickets-paused-text")!;
+const ticketsAutoEl = document.querySelector<HTMLElement>("#tickets-auto")!;
 const ticketsSearchEl = document.querySelector<HTMLInputElement>("#tickets-search")!;
 
 /** The project of the open board, or null. */
@@ -6214,8 +6213,8 @@ function initTickets(): void {
     if (ticketsRef) openAddTicket(ticketsRef);
   });
   ticketsSearchEl.addEventListener("input", renderTickets);
-  document.querySelector("#tickets-resume")!.addEventListener("click", () => {
-    if (ticketsRef) void setPaused(ticketsRef, false);
+  document.querySelector("#tickets-auto .auto-switch-button")!.addEventListener("click", () => {
+    if (ticketsRef) void setPaused(ticketsRef, !projectPaused(refKey(ticketsRef)));
   });
   ticketsDialog.addEventListener("click", (event) => {
     if (event.target === ticketsDialog) ticketsDialog.close();
@@ -7508,6 +7507,18 @@ function showPauseButtons(): void {
     button.title = look.title;
     button.setAttribute("aria-pressed", String(paused));
   }
+  for (const el of document.querySelectorAll<HTMLElement>(".auto-switch")) {
+    const paused = projectPaused(el.dataset.project ?? "");
+    const look = autoSwitch(paused);
+    el.classList.toggle("on", look.kind === "on");
+    el.classList.toggle("paused", look.kind === "paused");
+    el.querySelector(".auto-switch-state")!.textContent = look.state;
+    el.querySelector(".auto-switch-detail")!.textContent = look.detail;
+    const button = el.querySelector<HTMLButtonElement>(".auto-switch-button")!;
+    button.textContent = look.button;
+    button.title = look.title;
+    button.setAttribute("aria-pressed", String(paused));
+  }
 }
 
 /** Gives a Setup button the mark of its project (ticket setup-attention): its classes and its tooltip. */
@@ -7652,10 +7663,8 @@ function renderTickets(): void {
   ticketsPathEl.textContent = ticketsFilePath(ticketsRef.root);
   ticketsErrorEl.textContent = ticketError;
   ticketsErrorEl.hidden = ticketError === "";
-  // The banner of a paused project, with Resume (ticket pause-tasks).
-  const paused = record?.paused ?? false;
-  ticketsPausedEl.hidden = !paused;
-  ticketsPausedTextEl.textContent = PAUSE_BANNER;
+  // The strip above the board: showPauseButtons draws it (ticket i-need-more-prominent-button-for).
+  ticketsAutoEl.dataset.project = key;
   fillTicketColumns(ticketsColumnsEl, key, ticketsSearchEl.value);
   focusTicketBox(ticketsColumnsEl);
   focusNew = false;
@@ -10238,8 +10247,14 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   chat.title = "A plain chat of this project for a question; it starts no task";
   chat.addEventListener("click", () => void openProjectChat(ref));
   boardHead.append(mapElement("span", "", NO_TRIAGE_NOTE), boardCountEl, chat);
+  // The large auto-start switch above the board (ticket i-need-more-prominent-button-for).
+  const autoEl = mapElement("div", "auto-switch");
+  autoEl.dataset.project = key;
+  const autoButton = mapElement("button", "auto-switch-button");
+  autoButton.addEventListener("click", () => void setPaused(ref, !projectPaused(key)));
+  autoEl.append(mapElement("span", "auto-switch-state"), mapElement("span", "auto-switch-detail"), autoButton);
   const boardColumnsEl = mapElement("div", "tickets-columns");
-  boardEl.append(boardHead, boardColumnsEl);
+  boardEl.append(boardHead, autoEl, boardColumnsEl);
   // Drag handles: the left panel against the chat, and this column against the next one.
   const sideHandle = resizeHandle("side-resize", "Drag to make the panel of tasks wider or narrower; double-click for the usual width");
   body.append(sideEl, sideHandle, main);
@@ -10403,6 +10418,7 @@ function renderFocus(): void {
       // Chat button (ticket in-focus-mode-i-want-to-se-ticket-board). The board stays in its slot.
       if (column.boardEl.parentElement !== column.triageEl) column.triageEl.replaceChildren(column.boardEl);
       renderFocusBoard(column, !ticketsDialog.open);
+      showPauseButtons();
     } else {
       const start = document.createElement("button");
       start.className = "focus-start";

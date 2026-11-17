@@ -17,6 +17,19 @@ export function pauseButton(paused: boolean): { text: string; title: string } {
       };
 }
 
+/** The large switch above the tickets board (ticket i-need-more-prominent-button-for): state, detail, button. */
+export function autoSwitch(paused: boolean): { state: string; detail: string; button: string; title: string; kind: "on" | "paused" } {
+  return paused
+    ? { state: "Paused", detail: PAUSE_BANNER, button: "Resume", title: pauseButton(true).title, kind: "paused" }
+    : {
+        state: "Auto-start on",
+        detail: "Dispatch takes the New tickets one by one and starts approved plans.",
+        button: "Pause",
+        title: pauseButton(false).title,
+        kind: "on",
+      };
+}
+
 /** The banner at the top of the tickets board of a paused project. */
 export const PAUSE_BANNER = "This project is paused. Dispatch sends no ticket to triage and starts no work run until you resume. A worker that runs finishes.";
 

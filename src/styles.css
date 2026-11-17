@@ -1199,8 +1199,7 @@ button.task-head:hover {
   font: inherit;
 }
 
-#tickets-new,
-#tickets-resume {
+#tickets-new {
   padding: 5px 12px;
   border: 0;
   border-radius: 6px;
@@ -1735,21 +1734,73 @@ button.task-head:hover {
   color: var(--danger);
 }
 
-/* The banner of a paused project (ticket pause-tasks). */
-#tickets-paused {
+/* The large auto-start switch above the tickets board (ticket i-need-more-prominent-button-for):
+   green while tickets start by themselves, yellow while the project is paused. */
+.auto-switch {
   display: flex;
   flex: none;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
   margin: 0;
-  padding: 8px 20px;
-  border-bottom: 1px solid var(--hairline);
-  background: var(--accent-bg);
+  padding: 10px 20px;
+  border: 1px solid var(--hairline);
+  border-width: 0 0 1px;
   color: var(--text);
 }
 
-#tickets-paused[hidden] {
-  display: none;
+.focus-board .auto-switch {
+  padding: 8px 12px;
+  border-width: 1px;
+  border-radius: 6px;
+}
+
+.auto-switch.on {
+  border-color: var(--work-line);
+  background: var(--work-bg);
+}
+
+.auto-switch.paused {
+  border-color: var(--wait-line);
+  background: var(--wait-bg);
+}
+
+.auto-switch-state {
+  flex: none;
+  font-size: calc(15px * var(--text-scale));
+  font-weight: 700;
+}
+
+.auto-switch.on .auto-switch-state {
+  color: var(--work);
+}
+
+.auto-switch.paused .auto-switch-state {
+  color: var(--wait);
+}
+
+.auto-switch-detail {
+  flex: 1;
+  min-width: 0;
+  color: var(--muted);
+}
+
+.auto-switch-button {
+  flex: none;
+  padding: 6px 16px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--on-accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.auto-switch.on .auto-switch-button {
+  background: var(--wait);
+}
+
+.auto-switch.paused .auto-switch-button {
+  background: var(--work);
 }
 
 #tickets-columns,

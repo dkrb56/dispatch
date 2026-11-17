@@ -313,11 +313,11 @@ test("paused: the line above the message box says that the tickets wait for Resu
 test("paused: the dispatcher passes the pause, and the page has the banner and the Setup switch", () => {
   const dispatch = MAIN.slice(MAIN.indexOf("async function dispatchTickets("));
   assert.match(dispatch.slice(0, dispatch.indexOf("\n}\n")), /nextTicket\(queue, \[\], \(id\) => ticketSent\(key, id\) \|\| editingTicket === `\$\{key\}\\n\$\{id\}`, record\.paused\)/);
-  assert.match(HTML, /<p id="tickets-paused" hidden>/);
-  assert.match(HTML, /id="tickets-resume"/);
+  assert.match(HTML, /id="tickets-auto" class="auto-switch"/);
+  assert.match(MAIN, /autoSwitch\(/);
   assert.match(HTML, /data-option="paused"/);
   assert.match(CHAT, /waitingText\(options\.waiting\?\.\(\) \?\? 0, options\.paused\?\.\(\) \?\? false\)/);
-  assert.match(CSS, /#tickets-paused \{/);
+  assert.match(CSS, /\.auto-switch \{/);
 });
 
 // Ticket simpler-process-tickets: with "Tickets start their plan" on, a task ticket starts its plan

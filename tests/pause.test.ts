@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, PAUSED_WORD, pausedCountText, pauseLine } from "../src/pause.ts";
+import { autoSwitch, PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, PAUSED_WORD, pausedCountText, pauseLine } from "../src/pause.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = read("../src/main.ts");
@@ -46,4 +46,19 @@ test("main.ts: setPaused writes the setting, tells triage, and at Resume starts 
   assert.match(MAIN, /setAttribute\("aria-pressed", String\(paused\)\)/);
   assert.match(CSS, /\.project-tool\[aria-pressed="true"\]/);
   assert.match(PIPELINE, /paused: boolean;/);
+});
+
+test("the strip above the board shows the state and the action (ticket i-need-more-prominent-button-for)", () => {
+  const on = autoSwitch(false);
+  assert.equal(on.kind, "on");
+  assert.equal(on.state, "Auto-start on");
+  assert.equal(on.detail, "Dispatch takes the New tickets one by one and starts approved plans.");
+  assert.equal(on.button, "Pause");
+  assert.equal(on.title, pauseButton(false).title);
+  const paused = autoSwitch(true);
+  assert.equal(paused.kind, "paused");
+  assert.equal(paused.state, "Paused");
+  assert.equal(paused.detail, PAUSE_BANNER);
+  assert.equal(paused.button, "Resume");
+  assert.equal(paused.title, pauseButton(true).title);
 });
