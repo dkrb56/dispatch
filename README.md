@@ -50,6 +50,8 @@ Dispatch looks for a new release once an hour (**?** → **Check for update** ch
 
 ## Work on another computer
 
+Options is the wrench at the right of the top bar. Options and Setup pipeline use the width of the window and show their settings in groups side by side.
+
 Options → **Where the work runs** has three modes. **This PC does the work** is the default: everything runs in this window, and nothing listens on the network. **Use hosts**: one or more computers run `dispatch-host`, and this window shows and controls them over Tailscale. **This PC and hosts**: this window does the work of this computer itself and shows and controls the hosts of the list too.
 
 1. On the computer that does the work: Options → **Run the host on this PC** → **Start the host**. The Key box shows its key. That window switches to **Use hosts** with the row `127.0.0.1`.

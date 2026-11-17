@@ -111,7 +111,7 @@ test("the chime is short and quiet", () => {
 
 test("the Options dialog holds the three switches and both lists; the top bar holds neither list", () => {
   const bar = HTML.slice(HTML.indexOf('<header id="bar">'), HTML.indexOf("</header>"));
-  assert.ok(bar.includes('id="show-options"'), "the gear button is in the top bar");
+  assert.ok(bar.includes('id="show-options"'), "the wrench button is in the top bar");
   assert.ok(!bar.includes('id="theme"'), "no theme list in the top bar");
   assert.ok(!bar.includes('id="text-size"'), "no text size list in the top bar");
   const start = HTML.indexOf('<dialog id="options">');
@@ -211,7 +211,8 @@ test("the Options dialog is as high as its content", () => {
   // A modal dialog has top and bottom at 0: "auto" fills the window, "fit-content" takes the content
   // height, and the auto margins then put the dialog in the middle.
   assert.equal(get("#options", "height"), "fit-content");
-  assert.equal(get("#options", "max-height"), "86vh");
+  assert.equal(get("#options", "max-height"), "calc(100vh - 32px)");
+  assert.equal(get("#options", "width"), "calc(100vw - 32px)", "the window takes the width of the app window less a margin");
   assert.equal(get("#options-body", "overflow-y"), "auto", "the body scrolls in a small window");
   // The shared frame still gives Rules and Help their height.
   const frame = all.find((rule) => ["#rules", "#help", "#options"].every((one) => rule.selectors.includes(one)));

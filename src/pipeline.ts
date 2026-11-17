@@ -71,7 +71,7 @@ const commitEl = document.querySelector<HTMLButtonElement>("#setup-commit")!;
 /** The title of the commit button in a git repository. */
 const commitTitle = commitEl.title;
 /** The checkboxes of the settings. `data-option` gives the name of the setting. */
-const optionEls = [...dialog.querySelectorAll<HTMLInputElement>("#setup-options input")];
+const optionEls = [...dialog.querySelectorAll<HTMLInputElement>("#setup input[data-option]")];
 /** The box with the measuring commands, under the switch "Measure before the plan". */
 const measureEl = document.querySelector<HTMLTextAreaElement>("#setup-measure-commands")!;
 /** The box with the gate command of the merge step, under the switch "Task branches". */

@@ -50,7 +50,7 @@
         <button id="setup-pipeline" title="Prepare the project of the focused terminal for triage and workers">Setup pipeline</button>
       </div>
       <button id="show-options" title="Options: where the work runs, alerts when a task waits for you, triage compaction, colour theme, text size" aria-label="Options">
-        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2" /><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" /></svg>
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.8 4.2a.67.67 0 0 0 0 .93l1.07 1.07a.67.67 0 0 0 .93 0l2.51-2.51a4 4 0 0 1-5.29 5.29l-4.61 4.61a1.41 1.41 0 0 1-2-2l4.61-4.61a4 4 0 0 1 5.29-5.29l-2.51 2.51z" /></svg>
       </button>
       <button id="show-help" title="Help: how to set up a project" aria-label="Help">?</button>
     </header>
@@ -78,87 +78,107 @@
       <span id="status-dispatch">…</span>
     </footer>
     <dialog id="setup">
-      <h2>Setup pipeline</h2>
-      <p id="setup-project"></p>
-      <fieldset id="setup-options">
-        <legend>Project settings</legend>
-        <label>
-          <input type="checkbox" data-option="shortReports" />
-          <span><b>Short reports.</b> Triage tells you the result and your decisions in a few lines. It gives details when you ask.</span>
-        </label>
-        <label>
-          <input type="checkbox" data-option="triageName" />
-          <span><b>Fixed title.</b> A new triage chat has the name "Triage" in the chat list.</span>
-        </label>
-        <label>
-          <input type="checkbox" data-option="autoApprove" />
-          <span><b>Approve plans automatically.</b> Dispatch starts the work run as soon as a plan is ready, no file of the task has uncommitted changes and no other work run runs. A plan with a <code>HOLD:</code> decision waits for your click.</span>
-        </label>
-        <label>
-          <input type="checkbox" data-option="startPlainPlans" />
-          <span><b>Start plans without decisions.</b> A plan that asks you nothing starts its work run by itself, with the recommended checks. A plan with a decision waits for your click.</span>
-        </label>
-        <label>
-          <input type="checkbox" data-option="ticketsStartPlans" />
-          <span><b>Tickets start their plan.</b> Dispatch writes the brief from a New ticket and starts its plan itself, without triage. A ticket that ends with a question mark, or has only images, still goes to triage.</span>
-        </label>
-        <label>
-          <input type="checkbox" data-option="noTriage" />
-          <span><b>No triage.</b> Every New ticket starts its own plan, a question too. Dispatch writes nothing to a triage chat: the task cards and the alerts tell you, and your questions go to a plain Chat.</span>
-        </label>
-        <label>
-          <input type="checkbox" data-option="paused" />
-          <span><b>Pause tasks.</b> Dispatch sends no ticket to triage and starts no work run for this project. A worker that runs finishes. Resume starts the queue where it stopped. The Pause button with the buttons of the project does the same.</span>
-        </label>
-        <label>
-          <input type="checkbox" data-option="measureBeforePlan" />
-          <span><b>Measure before the plan.</b> The plan run may run the commands below first, one at a time, and the plan gets a section "Measured" with what they showed. It can run no other command.</span>
-        </label>
-        <textarea id="setup-measure-commands" rows="3" spellcheck="false" placeholder="One command per line, for example: npm test&#10;{measure} stands for the scratch folder of the task&#10;# limit 600 as the first line sets the time limit in seconds" title="The commands that the plan run may run, one per line. Each runs with cmd.exe in the project folder. The box saves when you leave it"></textarea>
-        <label>
-          <input type="checkbox" data-option="taskBranches" />
-          <span><b>Task branches.</b> Each task works on its own branch <code>task/&lt;task&gt;</code>. When the worker is done, the task card shows <b>Merge</b>: Dispatch merges the branch after the gate command below passed. The push stays with you.</span>
-        </label>
-        <textarea id="setup-merge-gate" rows="2" spellcheck="false" placeholder="The gate command, for example: node scripts/merge-check.mjs&#10;# limit 14400 as the first line sets the time limit in seconds" title="The command that must pass on the merged code before the merge commit. It runs with cmd.exe in the project folder. Empty: no gate. The box saves when you leave it"></textarea>
-        <label>
-          <input type="checkbox" data-option="checksAtGate" />
-          <span><b>Checks at the gate.</b> The checks that you tick on the task card run once, at the merge, through the gate command above. The worker does not run them. Needs Task branches and a gate command.</span>
-        </label>
-        <label>
-          <input type="checkbox" data-option="pushAfterMerge" />
-          <span><b>Push after the merge.</b> Merge also pushes your branch to its upstream branch, never with force. A failed push leaves the merge on this computer and shows on the task card. Needs Task branches.</span>
-        </label>
-        <label>
-          <input type="checkbox" data-option="ignoreTasks" />
-          <span><b>Task files local only.</b> Git ignores the folder <code>.dispatch</code>: tickets, briefs, plans, reports and logs stay on this computer, and a clone has none. Off, git tracks the folder and Dispatch commits it.</span>
-        </label>
-        <label>
-          <input type="checkbox" data-option="notesInGit" />
-          <span><b>Project notes in git.</b> Git tracks the notes of Claude for this project in <code>.claude</code> (memory.md, mistakes.md, agents-override.md, triage.md, settings.json), so a clone has them, and Dispatch commits the notes with the task files. The rest of <code>.claude</code> stays on this computer. Off, a folder <code>.claude</code> that git ignores stays on this computer.</span>
-        </label>
-        <label for="setup-checks" class="setup-checks-label">
-          <span><b>Checks.</b> The tests and gates that a task can run, one per line. The plan recommends some, and you tick them on the task card before Approve. Empty: no checks.</span>
-        </label>
-        <textarea id="setup-checks" rows="3" spellcheck="false" placeholder="name | command, one per line, for example: unit | npm test&#10;| always after the command: always recommended&#10;# a comment line" title="The checks that a task of this project can run, one per line: name | command, and | always for a check that is always recommended. The box saves when you leave it"></textarea>
-        <p>Short reports changes the step "Triage role". Measure before the plan changes the steps "Task files", "Section in CLAUDE.md" and "Measure before the plan". Task branches changes the steps "Allow rules", "Section in CLAUDE.md" and "Task branches". Task files local only changes the steps "Task files", "Section in CLAUDE.md" and "Task files in git". Project notes in git changes the step "Project notes in git". Start plans without decisions, Checks at the gate and Push after the merge change the step "Section in CLAUDE.md". Tickets start their plan changes the steps "Section in CLAUDE.md" and "Triage role". No triage changes the step "Section in CLAUDE.md". The first check in the list, and the last one out, changes the step "Section in CLAUDE.md". After Apply, the next start of the workspace opens a new triage chat. The other settings apply at once.</p>
-      </fieldset>
-      <section id="setup-rules-check">
-        <h3>Rules that conflict with the pipeline</h3>
-        <p id="setup-rules-state" class="findings-state"></p>
-        <div id="setup-rules-list"></div>
-      </section>
-      <section id="setup-builds" hidden>
-        <h3>Build folders</h3>
-        <p id="setup-builds-state" class="findings-state"></p>
-        <ul id="setup-builds-list"></ul>
-        <button id="setup-clean-builds" title="Delete the proof builds and the incremental cache; the main build (debug, release) and a folder in use stay" disabled>Clean build folders</button>
-      </section>
-      <div id="setup-steps"></div>
-      <p id="setup-message"></p>
-      <div id="setup-buttons">
-        <button id="setup-apply" title="Do the steps that are To do; Commit to git then commits the files">Apply</button>
-        <button id="setup-commit" title="Commit the setup files of the project on the current branch; other changes stay out, and Dispatch makes no push" disabled>Commit to git</button>
-        <button id="setup-close" title="Close the window (Esc)">Close</button>
+      <header id="setup-head">
+        <h2>Setup pipeline</h2>
+        <p id="setup-project"></p>
+      </header>
+      <div id="setup-body">
+        <div id="setup-settings">
+          <fieldset class="setup-group">
+            <legend>Triage</legend>
+            <label>
+              <input type="checkbox" data-option="shortReports" />
+              <span><b>Short reports.</b> Triage tells you the result and your decisions in a few lines. It gives details when you ask.</span>
+            </label>
+            <label>
+              <input type="checkbox" data-option="triageName" />
+              <span><b>Fixed title.</b> A new triage chat has the name "Triage" in the chat list.</span>
+            </label>
+            <label>
+              <input type="checkbox" data-option="ticketsStartPlans" />
+              <span><b>Tickets start their plan.</b> Dispatch writes the brief from a New ticket and starts its plan itself, without triage. A ticket that ends with a question mark, or has only images, still goes to triage.</span>
+            </label>
+            <label>
+              <input type="checkbox" data-option="noTriage" />
+              <span><b>No triage.</b> Every New ticket starts its own plan, a question too. Dispatch writes nothing to a triage chat: the task cards and the alerts tell you, and your questions go to a plain Chat.</span>
+            </label>
+          </fieldset>
+          <fieldset class="setup-group">
+            <legend>Plans and work runs</legend>
+            <label>
+              <input type="checkbox" data-option="autoApprove" />
+              <span><b>Approve plans automatically.</b> Dispatch starts the work run as soon as a plan is ready, no file of the task has uncommitted changes and no other work run runs. A plan with a <code>HOLD:</code> decision waits for your click.</span>
+            </label>
+            <label>
+              <input type="checkbox" data-option="startPlainPlans" />
+              <span><b>Start plans without decisions.</b> A plan that asks you nothing starts its work run by itself, with the recommended checks. A plan with a decision waits for your click.</span>
+            </label>
+            <label>
+              <input type="checkbox" data-option="paused" />
+              <span><b>Pause tasks.</b> Dispatch sends no ticket to triage and starts no work run for this project. A worker that runs finishes. Resume starts the queue where it stopped. The Pause button with the buttons of the project does the same.</span>
+            </label>
+            <label>
+              <input type="checkbox" data-option="measureBeforePlan" />
+              <span><b>Measure before the plan.</b> The plan run may run the commands below first, one at a time, and the plan gets a section "Measured" with what they showed. It can run no other command.</span>
+            </label>
+            <textarea id="setup-measure-commands" rows="3" spellcheck="false" placeholder="One command per line, for example: npm test&#10;{measure} stands for the scratch folder of the task&#10;# limit 600 as the first line sets the time limit in seconds" title="The commands that the plan run may run, one per line. Each runs with cmd.exe in the project folder. The box saves when you leave it"></textarea>
+          </fieldset>
+          <fieldset class="setup-group">
+            <legend>Branches and checks</legend>
+            <label>
+              <input type="checkbox" data-option="taskBranches" />
+              <span><b>Task branches.</b> Each task works on its own branch <code>task/&lt;task&gt;</code>. When the worker is done, the task card shows <b>Merge</b>: Dispatch merges the branch after the gate command below passed. The push stays with you.</span>
+            </label>
+            <textarea id="setup-merge-gate" rows="2" spellcheck="false" placeholder="The gate command, for example: node scripts/merge-check.mjs&#10;# limit 14400 as the first line sets the time limit in seconds" title="The command that must pass on the merged code before the merge commit. It runs with cmd.exe in the project folder. Empty: no gate. The box saves when you leave it"></textarea>
+            <label>
+              <input type="checkbox" data-option="checksAtGate" />
+              <span><b>Checks at the gate.</b> The checks that you tick on the task card run once, at the merge, through the gate command above. The worker does not run them. Needs Task branches and a gate command.</span>
+            </label>
+            <label>
+              <input type="checkbox" data-option="pushAfterMerge" />
+              <span><b>Push after the merge.</b> Merge also pushes your branch to its upstream branch, never with force. A failed push leaves the merge on this computer and shows on the task card. Needs Task branches.</span>
+            </label>
+            <label for="setup-checks" class="setup-checks-label">
+              <span><b>Checks.</b> The tests and gates that a task can run, one per line. The plan recommends some, and you tick them on the task card before Approve. Empty: no checks.</span>
+            </label>
+            <textarea id="setup-checks" rows="3" spellcheck="false" placeholder="name | command, one per line, for example: unit | npm test&#10;| always after the command: always recommended&#10;# a comment line" title="The checks that a task of this project can run, one per line: name | command, and | always for a check that is always recommended. The box saves when you leave it"></textarea>
+          </fieldset>
+          <fieldset class="setup-group">
+            <legend>Files in git</legend>
+            <label>
+              <input type="checkbox" data-option="ignoreTasks" />
+              <span><b>Task files local only.</b> Git ignores the folder <code>.dispatch</code>: tickets, briefs, plans, reports and logs stay on this computer, and a clone has none. Off, git tracks the folder and Dispatch commits it.</span>
+            </label>
+            <label>
+              <input type="checkbox" data-option="notesInGit" />
+              <span><b>Project notes in git.</b> Git tracks the notes of Claude for this project in <code>.claude</code> (memory.md, mistakes.md, agents-override.md, triage.md, settings.json), so a clone has them, and Dispatch commits the notes with the task files. The rest of <code>.claude</code> stays on this computer. Off, a folder <code>.claude</code> that git ignores stays on this computer.</span>
+            </label>
+          </fieldset>
+        </div>
+        <section id="setup-rules-check">
+          <h3>Rules that conflict with the pipeline</h3>
+          <p id="setup-rules-state" class="findings-state"></p>
+          <div id="setup-rules-list"></div>
+        </section>
+        <section id="setup-builds" hidden>
+          <h3>Build folders</h3>
+          <p id="setup-builds-state" class="findings-state"></p>
+          <ul id="setup-builds-list"></ul>
+          <button id="setup-clean-builds" title="Delete the proof builds and the incremental cache; the main build (debug, release) and a folder in use stay" disabled>Clean build folders</button>
+        </section>
+        <fieldset class="setup-group" id="setup-steps-group">
+          <legend>Steps</legend>
+          <p>Short reports changes the step "Triage role". Measure before the plan changes the steps "Task files", "Section in CLAUDE.md" and "Measure before the plan". Task branches changes the steps "Allow rules", "Section in CLAUDE.md" and "Task branches". Task files local only changes the steps "Task files", "Section in CLAUDE.md" and "Task files in git". Project notes in git changes the step "Project notes in git". Start plans without decisions, Checks at the gate and Push after the merge change the step "Section in CLAUDE.md". Tickets start their plan changes the steps "Section in CLAUDE.md" and "Triage role". No triage changes the step "Section in CLAUDE.md". The first check in the list, and the last one out, changes the step "Section in CLAUDE.md". After Apply, the next start of the workspace opens a new triage chat. The other settings apply at once.</p>
+          <div id="setup-steps"></div>
+        </fieldset>
+      </div>
+      <div id="setup-footer">
+        <p id="setup-message"></p>
+        <div id="setup-buttons">
+          <button id="setup-apply" title="Do the steps that are To do; Commit to git then commits the files">Apply</button>
+          <button id="setup-commit" title="Commit the setup files of the project on the current branch; other changes stay out, and Dispatch makes no push" disabled>Commit to git</button>
+          <button id="setup-close" title="Close the window (Esc)">Close</button>
+        </div>
       </div>
     </dialog>
     <dialog id="rules">
@@ -401,8 +421,9 @@
           <ul>
             <li>In the modes Use hosts and This PC and hosts, the folder chooser of Dispatch opens. With several computers, it asks for the computer too (see Where the work runs).</li>
             <li>A project that is set up skips the window and opens its workspace: go to step 6.</li>
+            <li>The window uses the width of the Dispatch window. The switches stand in four groups (Triage, Plans and work runs, Branches and checks, Files in git) next to the steps. <b>Apply</b>, <b>Commit to git</b> and <b>Close</b> stay at the bottom.</li>
             <li>Click a step to see its file and the text that it adds.</li>
-            <li>Under the steps, the window lists the rules of the project that conflict with the pipeline, each with its file as a link. A click opens the file in the viewer, also for a rule outside the project. <b>Open in editor</b> there lets you change the rule yourself.</li>
+            <li>In a group of its own, the window lists the rules of the project that conflict with the pipeline, each with its file as a link. A click opens the file in the viewer, also for a rule outside the project. <b>Open in editor</b> there lets you change the rule yourself.</li>
             <li>Apply makes no commit, so you can look at the changes in git first. When all steps are done, <b>Commit to git</b> becomes available.</li>
             <li><b>Commit to git</b> commits on the current branch: <code>CLAUDE.md</code>, two files in <code>.claude</code> (<code>settings.json</code> and <code>triage.md</code>; the allow rules in <code>settings.local.json</code> stay on this computer), and the script, the two options files, the measure commands and the gate command in <code>.dispatch</code>. With Task files local only on, it commits <code>.gitignore</code> instead of the files in <code>.dispatch</code>. With Project notes in git on, it also commits <code>.gitignore</code> and the notes of Claude in <code>.claude</code>. Your other changes stay out of the commit. Dispatch makes no push.</li>
             <li>The window shows the commit, or the reason for no commit: no git repository, nothing to commit, or the error of git.</li>
@@ -847,7 +868,7 @@
           <li><b>A pulsing Setup button</b> means that the project misses setup steps. Its tooltip names them. A click calms the pulse to a still mark; Apply in the Setup pipeline window makes the mark go.</li>
           <li><b>Rules</b> shows all the rules that Claude Code gets in the project. <b>Analyse rules</b> finds old or bad rules.</li>
           <li><b>Update to …</b> shows when a new version is ready. Click it to install the update.</li>
-          <li><b>Options</b> (the gear) holds the mode, the alerts, the triage compaction, the colour theme and the size of the text.</li>
+          <li><b>Options</b> (the wrench) holds the mode, the alerts, the triage compaction, the colour theme and the size of the text.</li>
           <li><b>Alerts.</b> Dispatch tells you when a task waits: a <b>notification</b>, a <b>chime</b>, and a taskbar button that <b>blinks</b>.</li>
           <li><b>The bar at the bottom</b> shows your Claude account, its weekly usage and the versions.</li>
           <li><b>What's new</b> next to Check for update lists what each version brought.</li>
@@ -865,7 +886,7 @@
             <li>The update saves your tabs, downloads the installer and installs: Dispatch closes, a progress bar runs, and the new version opens with your tabs. The check reads the public releases on GitHub and needs no login.</li>
             <li>On a Mac the click downloads the disk image and opens it, and Dispatch closes. Drag Dispatch to Applications. The app is not signed, so run <code>xattr -cr /Applications/Dispatch.app</code> in Terminal once before the next start.</li>
             <li>The line below the title of this window shows the version and the result of the check. Dispatch checks once an hour; <b>Check for update</b> checks now, and installs a new version that it found.</li>
-            <li>The Options window holds where the work runs (see Where the work runs), the alerts, the switch <b>Compact triage after each task</b>, the colour theme of the window and the terminals (Slate, or Graphite with a blue, indigo, teal or amber accent) and the size of the text (90 to 150 percent). A change applies at once, and Dispatch keeps the choices on this computer.</li>
+            <li>The Options window holds where the work runs (see Where the work runs), the alerts, the switch <b>Compact triage after each task</b>, the colour theme of the window and the terminals (Slate, or Graphite with a blue, indigo, teal or amber accent) and the size of the text (90 to 150 percent). A change applies at once, and Dispatch keeps the choices on this computer. The window uses the width of the Dispatch window and shows its sections side by side.</li>
             <li>An alert comes one time when a plan is ready, a report has a question or needs a permission, or a worker waits at a prompt. Each alert has its own switch in Options. The notification names the task and what it waits for. The button blinks until you open the window.</li>
             <li>The tasks that already wait when Dispatch starts give no alert. The chime plays only after your first key or click in Dispatch, because the window may play sound only then. In night mode only a plan with a HOLD decision, a permission and a prompt alert. A test build that runs with <code>npm run tauri dev</code> shows the notification as from PowerShell.</li>
             <li>The bar at the bottom shows "Claude account:" with the email of the account that Claude Code uses on the computer that does the work. Then come the weekly usage for all models and for Fable, the version of Claude Code and the version of Dispatch. The email stays on this computer.</li>
@@ -885,7 +906,7 @@
         <button id="options-close" title="Close (Esc)">&times;</button>
       </header>
       <div id="options-body">
-        <fieldset>
+        <fieldset class="options-wide">
           <legend>Where the work runs</legend>
           <label>
             <input type="radio" name="work-mode" value="local" />

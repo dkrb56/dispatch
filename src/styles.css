@@ -3524,11 +3524,14 @@ button.ticket-level {
   cursor: pointer;
 }
 
-/* The dialog of the Setup pipeline button. */
+/* The dialog of the Setup pipeline button: the width of the window less a margin, as high as its content.
+   A header, a body with the groups side by side that scrolls, and a footer with the buttons. */
 #setup {
-  width: min(90vw, 760px);
-  max-height: 85vh;
-  padding: 16px 20px;
+  width: calc(100vw - 32px);
+  max-width: none;
+  height: fit-content;
+  max-height: calc(100vh - 32px);
+  padding: 0;
   box-sizing: border-box;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -3537,8 +3540,64 @@ button.ticket-level {
   color: var(--text);
 }
 
+#setup[open] {
+  display: flex;
+  flex-direction: column;
+}
+
 #setup::backdrop {
   background: rgb(0 0 0 / 60%);
+}
+
+#setup-head {
+  flex: none;
+  padding: 14px 20px 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+#setup-body {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr));
+  gap: 12px;
+  align-items: start;
+  min-height: 0;
+  padding: 12px 20px;
+  overflow-y: auto;
+}
+
+/* The four groups of switches are cells of the body grid. */
+#setup-settings {
+  display: contents;
+}
+
+#setup-footer {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--hairline);
+}
+
+#setup-footer #setup-message {
+  flex: 1;
+  margin: 0;
+  word-break: normal;
+}
+
+/* The steps: two columns of steps inside a group of two columns, from a width of 1100 px. */
+@media (min-width: 1100px) {
+  #setup-steps-group {
+    grid-column: span 2;
+  }
+
+  #setup-steps {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0 8px;
+    align-items: start;
+  }
 }
 
 #setup h2 {
@@ -3553,16 +3612,17 @@ button.ticket-level {
   word-break: break-all;
 }
 
-/* The settings of the project, above the steps. */
-#setup-options,
+/* The groups of the settings of the project and of the Options window: cells of a grid. */
+#setup .setup-group,
 #options fieldset {
-  margin: 10px 0 0;
+  min-width: 0;
+  margin: 0;
   padding: 6px 12px 8px;
   border: 1px solid var(--hairline);
   border-radius: 8px;
 }
 
-#setup-options legend,
+#setup .setup-group legend,
 #options legend {
   padding: 0 6px;
   color: var(--muted);
@@ -3570,7 +3630,7 @@ button.ticket-level {
   font-weight: 600;
 }
 
-#setup-options label,
+#setup .setup-group label,
 #options label {
   display: flex;
   align-items: baseline;
@@ -3580,13 +3640,13 @@ button.ticket-level {
   cursor: pointer;
 }
 
-#setup-options input,
+#setup .setup-group input,
 #options input {
   flex: none;
   accent-color: var(--accent);
 }
 
-#setup-options p,
+#setup .setup-group > p,
 #options p {
   margin-top: 8px;
   word-break: normal;
@@ -3616,21 +3676,33 @@ button.ticket-level {
   opacity: 0.5;
 }
 
-/* The Options window: the frame of the Help window, as high as its content. */
+/* The Options window: the frame of the Help window, the width of the window less a margin, as high as its content. */
 #options {
-  width: min(92vw, 560px);
+  width: calc(100vw - 32px);
+  max-width: none;
   height: fit-content;
-  max-height: 86vh;
+  max-height: calc(100vh - 32px);
 }
 
 #options header {
   border-bottom: 1px solid var(--hairline);
 }
 
+/* The sections of the Options window side by side; "Where the work runs" takes two columns from 1100 px. */
 #options-body {
-  padding: 4px 20px 20px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
+  gap: 12px;
+  align-items: start;
+  padding: 12px 20px 20px;
   overflow-y: auto;
   font-size: calc(13px * var(--text-scale));
+}
+
+@media (min-width: 1100px) {
+  #options .options-wide {
+    grid-column: span 2;
+  }
 }
 
 #options label.options-list {
@@ -3923,8 +3995,8 @@ button.ticket-level {
 }
 
 #setup details {
-  margin-top: 8px;
-  padding: 8px 12px;
+  margin-top: 6px;
+  padding: 6px 10px;
   border: 1px solid var(--hairline);
   border-radius: 8px;
   background: var(--bg);
@@ -3963,9 +4035,9 @@ button.ticket-level {
   white-space: pre-wrap;
 }
 
-/* The conflicts of the rules with the pipeline, above the steps. */
+/* The conflicts of the rules with the pipeline, a cell of the body grid. */
 #setup-rules-check {
-  margin-top: 10px;
+  min-width: 0;
   padding: 6px 12px 8px;
   border: 1px solid var(--hairline);
   border-radius: 8px;
@@ -3984,7 +4056,7 @@ button.ticket-level {
 
 /* The build folders of a cargo project with the button Clean build folders (ticket proof-target-cleanup). */
 #setup-builds {
-  margin-top: 10px;
+  min-width: 0;
   padding: 6px 12px 8px;
   border: 1px solid var(--hairline);
   border-radius: 8px;
@@ -4013,9 +4085,9 @@ button.ticket-level {
 
 #setup-buttons {
   display: flex;
+  flex: none;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 12px;
 }
 
 #setup-buttons button {
