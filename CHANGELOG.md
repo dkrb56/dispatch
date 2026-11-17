@@ -2,6 +2,20 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.71 (2026-11-17)
+- Each project has a "+ Ticket" button next to Tickets, and each Overview card has one too. It opens a New ticket window without the board, with every field at once.
+- A right-click on a tickets board opens a small menu: New ticket in New or New ticket in Backlog.
+- You can paste an image into the New ticket window with Ctrl+V. A ticket with only images is allowed.
+- The ✎ button on a Backlog or New ticket opens it for editing. While you edit a New ticket, Dispatch does not start its plan. A click on the title of a Done or Canceled ticket shows its details, with its brief, plan, report and log.
+- A coloured strip above the tickets board always shows whether auto-start is on or paused, with one large Pause or Resume button.
+- An approved task shows a blue "✓ Approved" mark until its work run starts, on the task, on the plan card and on its ticket.
+- In Focus mode, a project with No triage shows its tickets board where the triage chat would be.
+- With No triage on, a project opens without its triage pane, and an open triage pane of the project closes.
+- Setup pipeline and Options show one section at a time behind a row of tabs.
+- A worker no longer has to copy its commands into its report. The task card lists each command of the work run, and a click shows its exit code and its last lines. A done report stays open only when the work run ran no command or skipped a chosen check.
+- A screenshot that you paste into a chat tab inside the triage pane now goes to that chat, not to triage.
+- The rules of the workers changed for the report check, so each project needs Setup pipeline → Apply.
+
 ## 0.1.70 (2026-11-17)
 - The triage chat now hears that a worker is done only when the worker wrote its plan or its report in that run. A worker that stops early gives one line about it, once.
 - Setup pipeline has the new switch No triage, off by default. With it on, Dispatch starts the plan of every New ticket itself, also a question or a ticket with only images, and writes nothing into a triage chat. The task card and the alerts tell you when a plan is ready, when a worker asks, and when a task is done or failed. A failed plan start stays in New with its error and a Retry button. The project opens without a triage chat and with a Chat button, and Ask about this plan in a Chat opens a plain Chat.
