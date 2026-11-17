@@ -1026,6 +1026,62 @@ button.task-head:hover {
   color: var(--muted);
 }
 
+/* The commands of the work run under the report (ticket the-report-check-uses-the-commands-of):
+   one row with their count; a click opens each command with its exit code and its last lines. */
+.task-commands .task-commands-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 8px;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: calc(12px * var(--text-scale));
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-commands .when {
+  color: var(--muted);
+}
+
+.task-commands .task-command {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 8px 0 16px;
+  font-size: calc(12px * var(--text-scale));
+}
+
+.task-commands .task-command-text {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Mono", Consolas, monospace;
+}
+
+.task-commands .exit {
+  color: var(--muted);
+}
+
+.task-commands .exit.failed {
+  color: var(--danger);
+}
+
+.task-commands .task-command-tail {
+  margin: 0 8px 4px 16px;
+  color: var(--muted);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(11px * var(--text-scale));
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 .task-stop .task-stop-text {
   flex-basis: 100%;
   color: var(--muted);

@@ -62,6 +62,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, type FileInfo, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
 import { agentsText, fileRowTitle, reportChip, rowParts, runChip, type RunChip, runCostText, runTokensTitle, tokenText } from "./workerrow";
+import { commandLines, groupLabel, unverifiedText } from "./commandrows";
 import { announcements, parseEnded, serializeEnded } from "./announce";
 import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, type FailedEnds, oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
 import { barItems, currentProject, detailsProjects, groupCount, pillCount } from "./topbar";
@@ -2190,19 +2191,21 @@ interface TaskInfo {
   runTokens?: RunUsage[];
   /**
    * The Bash commands of the plan run and the work run from the transcripts (ticket task-evidence).
-   * Absent from an older host. The card no longer shows them (ticket card-run-rows); the task log,
-   * the report check and the hand-off of the host use them.
+   * Absent from an older host. The card shows the commands of the work run under the report
+   * (ticket the-report-check-uses-the-commands-of); the task log, the report check and the hand-off
+   * of the host use them all.
    */
   evidence?: Evidence[];
   /**
-   * The Verification claims of a done report that no Bash command of the evidence matches (ticket
-   * report-check). Such a report has the header state `working`, and `did` gives the reason. Absent from an older host.
+   * The result of the report check of a done report (ticket the-report-check-uses-the-commands-of):
+   * the commands of the chosen checks that did not run in the work run; empty with the reason in
+   * `did` when the work run ran no command. Such a report has the header state `working`. Absent from an older host.
    */
   unverified?: string[];
   /**
    * The user took the task as done although the report check sent it back (ticket take-as-done):
    * the time in milliseconds and the reason of the check. The header then says `done` and
-   * `unverified` keeps the claims. Null or absent else, and absent from an older host.
+   * `unverified` keeps the commands of the checks that did not run. Null or absent else, and absent from an older host.
    */
   taken?: { at: number; reason: string } | null;
   /** The log of the task in `.dispatch/logs` (ticket task-log); null or absent without one. */
@@ -5492,9 +5495,59 @@ function permissionCard(task: Task): HTMLElement {
   return card;
 }
 
+/** The task keys whose list of the commands of the work run is open: a re-render keeps it. */
+const commandsOpen = new Set<string>();
+
+/**
+ * The commands of the work run under the report (ticket the-report-check-uses-the-commands-of, user
+ * decision 1): one row with their count; a click opens the list, each command with its exit code
+ * and its last lines. Null when the work run ran no command that this computer sees.
+ */
+function commandsRow(key: string, evidence: Evidence[] | undefined): HTMLElement | null {
+  const lines = commandLines(evidence);
+  if (lines.length === 0) return null;
+  const open = commandsOpen.has(key);
+  const made = document.createElement("div");
+  made.className = `task-commands${open ? " open" : ""}`;
+  const row = document.createElement("button");
+  row.className = "task-commands-row";
+  row.setAttribute("aria-expanded", String(open));
+  row.title = `${open ? "Hide" : "Show"} the commands. They come from the transcript of the work run, not from the report. An exit code behind a pipe can be 0 for a failed run: the last lines show the result.`;
+  const name = document.createElement("span");
+  name.textContent = groupLabel(lines.length);
+  const when = document.createElement("span");
+  when.className = "when";
+  when.textContent = open ? "▾" : "▸";
+  row.append(name, when);
+  row.addEventListener("click", () => {
+    if (open) commandsOpen.delete(key);
+    else commandsOpen.add(key);
+    renderChats();
+  });
+  made.append(row);
+  if (open) {
+    for (const line of lines) {
+      const head = document.createElement("div");
+      head.className = "task-command";
+      const command = document.createElement("span");
+      command.className = "task-command-text";
+      command.textContent = line.head;
+      const exit = document.createElement("span");
+      exit.className = `exit${line.failed ? " failed" : ""}`;
+      exit.textContent = line.exit;
+      head.append(command, exit);
+      const tail = document.createElement("pre");
+      tail.className = "task-command-tail";
+      tail.textContent = line.tail;
+      made.append(head, tail);
+    }
+  }
+  return made;
+}
+
 /**
  * The card of a done report that the report check sent back (ticket take-as-done): the reason, the
- * claims, and one button that closes the task by hand (user decision 1: one click).
+ * checks that did not run, and one button that closes the task by hand (user decision 1: one click).
  */
 function takeDoneCard(task: Task): HTMLElement {
   const card = document.createElement("div");
@@ -5504,7 +5557,7 @@ function takeDoneCard(task: Task): HTMLElement {
   title.textContent = "Report not verified";
   const text = document.createElement("div");
   text.className = "card-question";
-  text.textContent = [task.info?.did ?? "", ...(task.info?.unverified ?? []).map((claim) => `No command: ${claim}`)].filter(Boolean).join("\n");
+  text.textContent = [task.info?.did ?? "", ...(task.info?.unverified ?? []).map((command) => `Did not run: ${command}`)].filter(Boolean).join("\n");
   const actions = document.createElement("div");
   actions.className = "actions";
   const button = document.createElement("button");
@@ -5513,7 +5566,7 @@ function takeDoneCard(task: Task): HTMLElement {
   button.title = "Close the task by hand: it shows as done and its ticket goes to Done. The report and the worker stay as they are.";
   button.disabled = busyTasks.has(task.name);
   button.addEventListener("click", () => {
-    const line = `Task ${task.name} taken as done in Dispatch; its report check found claims without a command.`;
+    const line = `Task ${task.name} taken as done in Dispatch; its report check found no command, or a chosen check that did not run.`;
     void taskAction(task, "task_take_done", { id: task.name }, line);
   });
   actions.append(button);
@@ -5911,12 +5964,6 @@ function toggleAttention(el: Element, signal: boolean): void {
  */
 function reportUnverified(task: Task): boolean {
   return Boolean(task.info?.report) && task.info?.header?.state === "working";
-}
-
-/** The count of the unverified claims in words, for the chip of the report row or for the status line. */
-function unverifiedText(claims: string[], place: "chip" | "status"): string {
-  if (claims.length === 0) return place === "chip" ? "no Verification" : "no command in its Verification";
-  return place === "chip" ? `${claims.length} unverified` : `${claims.length} claim${claims.length === 1 ? "" : "s"} without evidence`;
 }
 
 /** The run of a worker that works or waits now: from its name, else from the state of the script. */
@@ -7850,17 +7897,19 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
       const live = task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
       const chip = reportChip(info.header?.state ?? null, info.header?.needs ?? null, answered, live);
       const report = fileRow("Report", info.report, chip?.text ?? null, null, chip?.title ?? "");
-      // A done report without evidence for its claims gets a second chip with their count (ticket report-check).
+      // A done report whose work run ran no command, or no chosen check, gets a second chip (ticket the-report-check-uses-the-commands-of).
       if (reportUnverified(task)) {
-        const claims = info.unverified ?? [];
-        addUnverifiedChip(report, unverifiedText(claims, "chip"), [info.did, ...claims.map((claim) => `No command: ${claim}`)].join("\n"));
+        const missing = info.unverified ?? [];
+        addUnverifiedChip(report, unverifiedText(missing, "chip"), [info.did, ...missing.map((command) => `Did not run: ${command}`)].join("\n"));
       } else if (info.taken) {
-        // The user took the task as done (ticket take-as-done): the chip keeps the count and says so.
-        const claims = info.unverified ?? [];
-        const title = [`You took the task as done on ${chatTime(info.taken.at)}.`, info.taken.reason, ...claims.map((claim) => `No command: ${claim}`)];
-        addUnverifiedChip(report, `${unverifiedText(claims, "chip")} · taken as done`, title.join("\n"));
+        // The user took the task as done (ticket take-as-done): the chip keeps the result and says so.
+        const missing = info.unverified ?? [];
+        const title = [`You took the task as done on ${chatTime(info.taken.at)}.`, info.taken.reason, ...missing.map((command) => `Did not run: ${command}`)];
+        addUnverifiedChip(report, `${unverifiedText(missing, "chip")} · taken as done`, title.join("\n"));
       }
       body.append(report);
+      const commands = commandsRow(key, info.evidence);
+      if (commands) body.append(commands);
     }
     // The log of the task: the plan, each command with its output, the report (ticket task-log).
     if (info?.log) body.append(fileRow("Log", info.log, null, null));
