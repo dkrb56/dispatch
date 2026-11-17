@@ -34,7 +34,7 @@ const DISPATCH_LINES = [
   `\\bPlan (${ID})(?: approved\\b| rejected\\b| sent back\\b|, approved earlier\\b|: the user took back\\b)`,
   `\\bQuestion \\d+ of (${ID}) answered in Dispatch`,
   `\\bPermission for (${ID}) changed in Dispatch`,
-  `\\bTask (${ID}) stopped in Dispatch`,
+  `\\bTask (${ID}) (?:stopped|resumed) in Dispatch`,
   `\\bDispatch answered (${ID}) with`,
   `\\bNight mode: the plan of (${ID}) has`,
   `\\bNight mode: (${ID}) needs a permission`,

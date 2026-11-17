@@ -31,8 +31,12 @@ test("an answered question names its task", () => {
 });
 
 test("a stop line names its task", () => {
-  const line = "Task release-0.1.42 stopped in Dispatch: the user stopped its plan run. The task is ended; the rest needs a new task.";
+  const line = "Task release-0.1.42 stopped in Dispatch: the user stopped its plan run. The task is ended until the user clicks Resume.";
   assert.deepEqual(ids("user", line), ["release-0.1.42"]);
+});
+
+test("a resume line names its task", () => {
+  assert.deepEqual(ids("user", "Task t-1 resumed in Dispatch: the user resumed its work run."), ["t-1"]);
 });
 
 test("a late line with two workers names both, in order", () => {

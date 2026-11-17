@@ -381,6 +381,11 @@ pub fn task_stop(cwd: String, id: String) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
+pub fn task_resume(cwd: String, id: String) -> Result<String, String> {
+    pipeline::task_resume(cwd, id)
+}
+
+#[tauri::command(async)]
 pub fn task_merge(cwd: String, id: String) -> Result<String, String> {
     pipeline::task_merge(cwd, id)
 }

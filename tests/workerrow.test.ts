@@ -301,3 +301,16 @@ test("report chip: main.ts uses the rule for the report row, and the Help names 
   assert.match(MAIN, /reportChip\(info\.header\?\.state/);
   assert.match(HTML, /the report row shows Answered until the worker writes its new report/);
 });
+
+// Ticket i-need-an-option-here-to-resume-stopped: a stopped task shows Resume in its card.
+
+test("a stopped task shows Resume: main.ts calls task_resume for the stopped state; Stop no longer says it cannot be resumed", () => {
+  const start = MAIN.indexOf("function resumeRow(");
+  assert.ok(start >= 0, "resumeRow exists");
+  const resume = MAIN.slice(start, MAIN.indexOf("\n}\n", start));
+  assert.match(resume, /"task_resume"/);
+  assert.match(resume, /state !== "stopped"/);
+  const stopStart = MAIN.indexOf("function stopRow(");
+  const stop = MAIN.slice(stopStart, MAIN.indexOf("\n}\n", stopStart));
+  assert.doesNotMatch(stop, /cannot be resumed/);
+});

@@ -6130,10 +6130,10 @@ function stopRow(task: Task): HTMLElement | null {
   }
   const text = document.createElement("span");
   text.className = "task-stop-text";
-  text.textContent = `Stop the ${run} of ${task.name}? The task ends and cannot be resumed.`;
+  text.textContent = `Stop the ${run} of ${task.name}? The task ends. Resume in its card starts it again.`;
   const stop = button("Stop now", `End the ${run} now`, () => {
     stopArmed.delete(task.name);
-    const line = `Task ${task.name} stopped in Dispatch: the user stopped its ${run}. The task is ended; the rest needs a new task.`;
+    const line = `Task ${task.name} stopped in Dispatch: the user stopped its ${run}. The task is ended until the user clicks Resume.`;
     void taskAction(task, "task_stop", { id: task.name }, line);
   });
   stop.className = "danger";
@@ -6142,6 +6142,33 @@ function stopRow(task: Task): HTMLElement | null {
     renderChats();
   });
   row.append(text, stop, keep);
+  if (error) row.append(error);
+  return row;
+}
+
+/**
+ * The Resume row of a task that the user stopped, or null (ticket i-need-an-option-here-to-resume-stopped).
+ * One click starts the stopped run again in its session through the script; no worker of the task
+ * may run, and the task needs a worker on its host, the one that the script resumes.
+ */
+function resumeRow(task: Task): HTMLElement | null {
+  if (task.info?.state !== "stopped" || task.workers.length === 0) return null;
+  if (task.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) return null;
+  const newest = task.workers.reduce<Worker | null>((best, worker) => (!best || (worker.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity) ? worker : best), null);
+  const run = newest && workerRun(task, newest) === "work" ? "work run" : "plan run";
+  const row = document.createElement("div");
+  row.className = "task-stop";
+  const button = document.createElement("button");
+  button.textContent = "Resume";
+  button.title = `Start the stopped ${run} of ${task.name} again where it stopped`;
+  button.disabled = busyTasks.has(task.name);
+  button.addEventListener("click", () => {
+    const line = `Task ${task.name} resumed in Dispatch: the user resumed its ${run}.`;
+    void taskAction(task, "task_resume", { id: task.name }, line);
+  });
+  row.append(button);
+  // A refused resume shows its reason under the row until the next click.
+  const error = actionError(task);
   if (error) row.append(error);
   return row;
 }
@@ -8638,6 +8665,9 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     // Stop stands under the runs that it stops.
     const stop = stopRow(task);
     if (stop) body.append(stop);
+    // A stopped task has no Stop row, so its Resume row takes that place.
+    const resume = resumeRow(task);
+    if (resume) body.append(resume);
     if (body.childElementCount > 0) made.append(body);
   }
   if (planReady(task) || awayPlan(task)) made.append(planCard(task));

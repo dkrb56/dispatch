@@ -995,6 +995,7 @@ Dispatch worker script. Triage starts and resumes a worker only through this fil
   reply <ticket-id> <message>   send the user's words to the worker; the state picks the options
   status                        the tasks with their state and the state of their worker
   stop <ticket-id>              stop the worker of a task; state: stopped
+  resume <ticket-id>            start the stopped run of a task again in its session; state: planning or working
   measure <ticket-id> <n>       run command n of measure-commands.txt for the plan run (Measure before the plan)
   merge <ticket-id>             merge the task branch into its base after the gate command (Task branches; Dispatch only);
                                 with Push after the merge, then push the base to its upstream branch, never with force
@@ -1009,7 +1010,7 @@ project, so a clone on another path or computer needs no change.
 #>
 param(
   [Parameter(Mandatory = $true, Position = 0)]
-  [ValidateSet('plan', 'approve', 'reply', 'status', 'stop', 'measure', 'merge')]
+  [ValidateSet('plan', 'approve', 'reply', 'status', 'stop', 'resume', 'measure', 'merge')]
   [string]$Verb,
   [Parameter(Position = 1)]
   [string]$Id,
@@ -1669,6 +1670,46 @@ function Run-Measured([string]$Command, [string]$Log, [int]$Limit) {
   124
 }
 
+# Resumes the session of $Worker for $Run with $Text: the start of reply and of resume. $State, when
+# given, is written before the branch switch; without it a tracked branch rewrites the current state.
+# The own changes of a stopped run are found while the state still says stopped: the state file time
+# is the end of that run. A failed claude writes $StateOnFailure back when one is given.
+function Resume-Run([string]$Run, $Worker, [string]$Text, [string]$State, [string]$StateOnFailure) {
+  $flags = Run-Flags $Run
+  # Task branches: a work run goes on on the branch of its task, also after Dispatch switched back.
+  $branch = if ($Run -eq 'work' -and (Branches-On)) { Read-BranchFile $Id } else { $null }
+  $tracked = $null -ne $branch -and -not $branch.merge
+  # The state file is newer than the report before the checkout: Dispatch keeps the checkout on the
+  # task branch until the worker writes its report again, also while Claude Code starts.
+  if ($tracked -and -not $State) { Set-State (Get-State) }
+  # A switch onto the task branch waits for the changes in files of the task (ticket
+  # leftover-files-block-tasks); on its branch already, the run's own edits do not hold it. The
+  # run's own files off its branch (a forgotten WIP commit) go along and are committed on the
+  # branch (ticket task-branches-blocked-work).
+  $own = @()
+  if ($tracked -and (Current-Branch) -ne $branch.branch) {
+    $held = @(Task-Leftovers -Plan)
+    $own = @(Own-Changes $held)
+    $held = @($held | Where-Object { $own -notcontains $_ })
+    if ($held.Count -gt 0) { Refuse "these changes in files of this task are not committed; commit, stash or undo them first:`n$($held -join "`n")" }
+  }
+  if ($State) { Set-State $State }
+  $back = if ($tracked) { Enter-TaskBranch } else { '' }
+  if ($own.Count -gt 0) {
+    $failed = Commit-Own $own
+    if ($failed) { [Console]::Error.WriteLine("warning: $failed; the files stay uncommitted on $($branch.branch)") }
+  }
+  # The branch takes the newer commits of the base at each start (ticket task-branches-blocked-work).
+  # Its fast-forward can write the report of the base; the state file is then written again, so it
+  # stays newer than the report and Dispatch keeps the checkout on the branch.
+  if ($tracked) {
+    $Text += Sync-Note
+    Set-State (Get-State)
+  }
+  $printed = Run-Claude (@($Text, '--resume', $Worker.sessionId, '--bg', '--name', (Run-Name $Run)) + $flags) $StateOnFailure $back
+  Save-Session $Run $printed
+}
+
 switch ($Verb) {
   'plan' {
     Need-Id
@@ -1747,38 +1788,7 @@ switch ($Verb) {
     if (-not $text) { Refuse 'reply needs a message' }
     $run = if ((Get-State) -eq 'planning') { 'plan' } else { 'work' }
     $worker = Resume-Target $run
-    $flags = Run-Flags $run
-    # Task branches: a work run goes on on the branch of its task, also after Dispatch switched back.
-    $branch = if ($run -eq 'work' -and (Branches-On)) { Read-BranchFile $Id } else { $null }
-    $tracked = $null -ne $branch -and -not $branch.merge
-    # The state file is newer than the report before the checkout: Dispatch keeps the checkout on the
-    # task branch until the worker writes its report again, also while Claude Code starts.
-    if ($tracked) { Set-State (Get-State) }
-    # A switch onto the task branch waits for the changes in files of the task (ticket
-    # leftover-files-block-tasks); on its branch already, the run's own edits do not hold it. The
-    # run's own files off its branch (a forgotten WIP commit) go along and are committed on the
-    # branch (ticket task-branches-blocked-work).
-    $own = @()
-    if ($tracked -and (Current-Branch) -ne $branch.branch) {
-      $held = @(Task-Leftovers -Plan)
-      $own = @(Own-Changes $held)
-      $held = @($held | Where-Object { $own -notcontains $_ })
-      if ($held.Count -gt 0) { Refuse "these changes in files of this task are not committed; commit, stash or undo them first:`n$($held -join "`n")" }
-    }
-    $back = if ($tracked) { Enter-TaskBranch } else { '' }
-    if ($own.Count -gt 0) {
-      $failed = Commit-Own $own
-      if ($failed) { [Console]::Error.WriteLine("warning: $failed; the files stay uncommitted on $($branch.branch)") }
-    }
-    # The branch takes the newer commits of the base at each start (ticket task-branches-blocked-work).
-    # Its fast-forward can write the report of the base; the state file is then written again, so it
-    # stays newer than the report and Dispatch keeps the checkout on the branch.
-    if ($tracked) {
-      $text += Sync-Note
-      Set-State (Get-State)
-    }
-    $printed = Run-Claude (@($text, '--resume', $worker.sessionId, '--bg', '--name', (Run-Name $run)) + $flags) '' $back
-    Save-Session $run $printed
+    Resume-Run $run $worker $text '' ''
   }
   'status' {
     $workers = Get-Workers
@@ -1881,6 +1891,26 @@ switch ($Verb) {
     & claude stop $worker.id
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     Set-State 'stopped'
+  }
+  'resume' {
+    Need-Id
+    # Only a stopped task is resumed; the newest worker of the ticket is the one that stop stopped.
+    if ((Get-State) -ne 'stopped') { Refuse "the task $Id is not stopped; only a stopped task is resumed" }
+    $worker = Find-Worker (Get-Workers) $Id
+    if ($null -eq $worker) { Refuse "no worker named $Id on this computer. A run that started on another computer cannot be resumed here: start the task again, or resume it on the computer where it ran" }
+    $state = Worker-State $worker
+    if ($state -eq 'working' -or $state -eq 'blocked') {
+      Refuse "the worker $Id still runs ($state); a resume now would start a copy. A permission prompt is answered in the agent view: claude attach $($worker.id)"
+    }
+    if (-not $worker.sessionId) { Refuse "the worker $Id has no session id" }
+    # The name gives the run; a worker of an older script has the bare id: a plan file means the work run.
+    $run = if ($worker.name -eq "$Id [plan]") { 'plan' }
+      elseif ($worker.name -eq "$Id [work]") { 'work' }
+      elseif (Test-Path -LiteralPath (Join-Path $Reports "plans\$Id.md")) { 'work' }
+      else { 'plan' }
+    $text = 'The user stopped this run in Dispatch and now resumes it. Go on where you stopped.'
+    $next = if ($run -eq 'plan') { 'planning' } else { 'working' }
+    Resume-Run $run $worker $text $next 'stopped'
   }
 }
 "##;
@@ -5031,10 +5061,22 @@ pub fn task_reply(cwd: String, id: String, text: String) -> Result<String, Strin
 }
 
 /// Stops the worker of a task: the Stop button of the task card. The script stops the newest
-/// worker of the task and writes the state `stopped`; a stopped task cannot be resumed.
+/// worker of the task and writes the state `stopped`; Resume in its card starts it again.
 pub fn task_stop(cwd: String, id: String) -> Result<String, String> {
     check_ticket(&id)?;
     run_script(&Project::find(&cwd)?, &["stop", &id])
+}
+
+/// Starts the stopped run of a task again in its session: the Resume button of the task card. The
+/// script picks the run from the name of the stopped worker and writes `planning` or `working`. A
+/// script older than Dispatch lacks the verb, so Dispatch says that in plain words first.
+pub fn task_resume(cwd: String, id: String) -> Result<String, String> {
+    check_ticket(&id)?;
+    let project = Project::find(&cwd)?;
+    if !fs::read_to_string(project.script()).is_ok_and(|text| text.replace("\r\n", "\n") == WORKER_SCRIPT) {
+        return Err("The worker script of this project is older than Dispatch: Setup pipeline > Apply updates it.".to_string());
+    }
+    run_script(&project, &["resume", &id])
 }
 
 /// Gives the steps of the setup for the project of a folder. It changes nothing.
@@ -7216,6 +7258,52 @@ if (args[0] === 'agents') {
         assert_eq!(code, 2, "{out}");
         assert!(out.contains("was stopped"), "{out}");
         assert_eq!(read(&fake.join("args.txt")), calls_before, "a stopped task starts no claude command");
+
+        // resume (ticket i-need-an-option-here-to-resume-stopped): the stopped work run goes on in its
+        // session with the work options, state working.
+        write_file(&project.reports.join("fake-name.txt"), "t-1 [work]").unwrap();
+        let (code, out) = run_script(&project, &fake, "stopped", &["resume", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(read(&project.reports.join("t-1.state")), "working\n");
+        assert_eq!(
+            last_call(&fake),
+            [
+                "The user stopped this run in Dispatch and now resumes it. Go on where you stopped.", "--resume", "sess-1", "--bg", "--name", "t-1 [work]",
+                "--model", "opus", "--effort", "xhigh", "--permission-mode", "auto", "--tools", "default", "--disallowedTools", "AskUserQuestion,SendMessage"
+            ]
+        );
+        // A task that is not stopped is not resumed.
+        let calls_before = read(&fake.join("args.txt"));
+        let (code, out) = run_script(&project, &fake, "done", &["resume", "t-1"]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("is not stopped"), "{out}");
+        assert_eq!(read(&fake.join("args.txt")), calls_before, "a refused resume starts no claude command");
+        // The stopped plan run goes on with the plan options, state planning.
+        write_file(&project.reports.join("fake-name.txt"), "t-1 [plan]").unwrap();
+        write_file(&project.reports.join("t-1.state"), "stopped\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "stopped", &["resume", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(read(&project.reports.join("t-1.state")), "planning\n");
+        let plan = last_call(&fake);
+        assert_eq!(&plan[1..8], ["--resume", "sess-1", "--bg", "--name", "t-1 [plan]", "--model", "fable"]);
+        assert_eq!(plan.last().unwrap(), &format!("Bash(git status*),Bash(git log *),Bash(git diff *),Write({}/plans/**)", project.rule_path()));
+        // A claude that fails writes stopped back, so the card shows Resume again.
+        write_file(&project.reports.join("t-1.state"), "stopped\n").unwrap();
+        write_file(&fake.join("fail.txt"), "3").unwrap();
+        let (code, out) = run_script(&project, &fake, "stopped", &["resume", "t-1"]);
+        assert_eq!(code, 3, "{out}");
+        assert_eq!(read(&project.reports.join("t-1.state")), "stopped\n");
+        fs::remove_file(fake.join("fail.txt")).unwrap();
+        // A worker that still runs is not resumed: that would start a copy.
+        let (code, out) = run_script(&project, &fake, "working", &["resume", "t-1"]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("still runs (working)"), "{out}");
+        // Reply and approve still refuse a stopped task.
+        let (code, out) = run_script(&project, &fake, "stopped", &["reply", "t-1", "go on"]);
+        assert!(code == 2 && out.contains("was stopped"), "{out}");
+        let (code, out) = run_script(&project, &fake, "stopped", &["approve", "t-1"]);
+        assert!(code == 2 && out.contains("was stopped"), "{out}");
+        fs::remove_file(project.reports.join("fake-name.txt")).unwrap();
         clean(&project);
     }
 

@@ -110,7 +110,7 @@ export function repeatLine(task: string, action: RepeatAction): string {
     case "again":
       return `${kept} The user sent the same answer again in Dispatch.`;
     case "stop":
-      return `Task ${task} stopped in Dispatch: the worker left the answered question in its report and the user stopped the task. The task is ended; the rest needs a new task.`;
+      return `Task ${task} stopped in Dispatch: the worker left the answered question in its report and the user stopped the task. The task is ended until the user clicks Resume.`;
   }
 }
 
