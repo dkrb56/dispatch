@@ -2406,6 +2406,29 @@ button.ticket-level {
   opacity: 0.5;
   cursor: default;
 }
+.ticket-add-spinner {
+  display: inline-block;
+  width: 0.9em;
+  height: 0.9em;
+  margin-right: 0.5em;
+  vertical-align: -0.1em;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: ticket-add-spin 0.8s linear infinite;
+}
+@keyframes ticket-add-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+#ticket-add.busy {
+  cursor: progress;
+}
+#ticket-add.busy #ticket-add-save:disabled {
+  opacity: 0.75;
+  cursor: progress;
+}
 
 /* The Title box of the window in edit mode, as the other boxes. */
 #ticket-add-title-box {

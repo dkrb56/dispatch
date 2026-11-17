@@ -636,7 +636,7 @@ test("the Add ticket window takes pasted images", () => {
   const window = MAIN.slice(MAIN.indexOf("// ---- The Add ticket window"), MAIN.indexOf("// ---- The Actions panel"));
   // The paste listener sits on the dialog (user decision 1) and leaves a paste with text to the box.
   assert.match(window, /addTicketDialog\.addEventListener\("paste"/);
-  assert.match(window, /if \(!image \|\| data\?\.getData\("text\/plain"\) \|\| !addTicketRef\) return;/);
+  assert.match(window, /if \(!image \|\| data\?\.getData\("text\/plain"\) \|\| !addTicketRef \|\| addTicketBusy\) return;/);
   assert.match(window, /call<string>\(ref\.host, "image_save", new Uint8Array\(bytes\)\)/);
   assert.ok(window.includes("Could not save the image: "));
   // The image paths come first in the text; only images is a ticket too (user decision 2).
@@ -648,6 +648,18 @@ test("the Add ticket window takes pasted images", () => {
   assert.match(CSS, /\.ticket-add-images \{/);
   assert.ok(HTML.includes("Ctrl+V pastes an image from the clipboard into the window; × takes it out. A ticket can have only images."));
   assert.ok(read("../README.md").includes("and Ctrl+V pastes an image into it"));
+});
+
+test("the ticket window locks and shows a spinner while it adds", () => {
+  const window = MAIN.slice(MAIN.indexOf("// ---- The Add ticket window"), MAIN.indexOf("// ---- The Actions panel"));
+  assert.ok(window.includes("function setAddTicketBusy("));
+  assert.ok(window.includes("Adding…") && window.includes("Saving…"));
+  assert.ok(window.includes("ticket-add-spinner"));
+  assert.match(window, /addTicketDialog\.addEventListener\("cancel"[\s\S]*?addTicketBusy/);
+  assert.ok(window.includes("remove.disabled = addTicketBusy"));
+  assert.match(CSS, /\.ticket-add-spinner \{/);
+  assert.ok(CSS.includes("@keyframes ticket-add-spin"));
+  assert.ok(HTML.includes("While Dispatch adds the ticket, the Add button shows a spinner and the window is locked."));
 });
 
 test("edit and details: ✎ edits a waiting ticket in the ticket window, a closed ticket opens its details", () => {

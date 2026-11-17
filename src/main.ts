@@ -6382,6 +6382,23 @@ function showAddTicketError(): void {
   addTicketErrorEl.hidden = addTicketError === "";
 }
 
+/** Locks the window and shows a spinner in the Add (or Save) button while an Add runs, or undoes it. */
+function setAddTicketBusy(on: boolean): void {
+  addTicketBusy = on;
+  addTicketDialog.classList.toggle("busy", on);
+  const controls = [
+    addTicketSaveEl,
+    ...document.querySelectorAll<HTMLButtonElement>("#ticket-add-cancel, #ticket-add-close"),
+    ...addTicketBodyEl.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement>("input, textarea, select, button"),
+  ];
+  for (const control of controls) control.disabled = on;
+  const label = addTicketEdit ? "Save" : "Add";
+  if (on) {
+    const spinner = mapElement("span", "ticket-add-spinner");
+    addTicketSaveEl.replaceChildren(spinner, document.createTextNode(addTicketEdit ? "Saving…" : "Adding…"));
+  } else addTicketSaveEl.textContent = label;
+}
+
 /** Draws the pasted images of a project key into its row: a picture with × each, as in the chat view. */
 function showAddTicketImages(row: HTMLElement, key: string): void {
   // The edit mode shows the images of the edited ticket: the old ones load from their files.
@@ -6395,6 +6412,7 @@ function showAddTicketImages(row: HTMLElement, key: string): void {
       const remove = mapElement("button", "", "×");
       remove.type = "button";
       remove.title = "Remove the image";
+      remove.disabled = addTicketBusy;
       remove.addEventListener("click", () => {
         if (image.url) URL.revokeObjectURL(image.url);
         if (edit) edit.images = edit.images.filter((other) => other !== image);
@@ -6530,17 +6548,16 @@ async function saveAddTicket(): Promise<void> {
   const fields = { why: "", done: "", keep: "", context: "", see: "", expect: "" };
   for (const field of FIELDS) if (!field.fix || fix) fields[field.key] = draft.fields[field.key].trim();
   const filled = Object.values(fields).some((value) => value !== "");
-  addTicketBusy = true;
-  addTicketSaveEl.disabled = true;
+  setAddTicketBusy(true);
   if (edit) {
     // The edit keeps the column and the place of the ticket; a failed save keeps the window and shows the error.
     const title = edit.title.trim();
     const saved = await ticketAction(key, "ticket_edit", { id: edit.id, title: title || null, summary: text, kind: draft.kind || null, level: draft.level, fields });
-    addTicketBusy = false;
-    addTicketSaveEl.disabled = false;
+    setAddTicketBusy(false);
     if (!saved) {
       addTicketError = `The ticket could not be changed: ${ticketError}`;
       showAddTicketError();
+      addTicketBodyEl.querySelector<HTMLTextAreaElement>("#ticket-add-goal")?.focus();
       return;
     }
     if (addTicketDialog.open && addTicketEdit === edit) addTicketDialog.close();
@@ -6548,11 +6565,11 @@ async function saveAddTicket(): Promise<void> {
     return;
   }
   const added = await ticketAction(key, "ticket_add", { text, kind: draft.kind || null, level: draft.level, fields: filled ? fields : null, column: addTicketColumn });
-  addTicketBusy = false;
-  addTicketSaveEl.disabled = false;
+  setAddTicketBusy(false);
   if (!added) {
     addTicketError = `The ticket could not be added: ${ticketError}`;
     showAddTicketError();
+    addTicketBodyEl.querySelector<HTMLTextAreaElement>("#ticket-add-goal")?.focus();
     return;
   }
   addTicketDrafts.delete(key);
@@ -6574,7 +6591,11 @@ function initAddTicket(): void {
     addTicketDialog.close();
   });
   addTicketDialog.addEventListener("click", (event) => {
-    if (event.target === addTicketDialog) addTicketDialog.close();
+    if (event.target === addTicketDialog && !addTicketBusy) addTicketDialog.close();
+  });
+  // Esc waits while an Add runs (user decision 1).
+  addTicketDialog.addEventListener("cancel", (event) => {
+    if (addTicketBusy) event.preventDefault();
   });
   // An image in the clipboard goes to a file on the computer of the project, in any box of the
   // window (user decision 1). A paste with text stays text. The image belongs to the project of the
@@ -6582,7 +6603,7 @@ function initAddTicket(): void {
   addTicketDialog.addEventListener("paste", (event) => {
     const data = event.clipboardData;
     const image = [...(data?.files ?? [])].find((file) => file.type.startsWith("image/"));
-    if (!image || data?.getData("text/plain") || !addTicketRef) return;
+    if (!image || data?.getData("text/plain") || !addTicketRef || addTicketBusy) return;
     event.preventDefault();
     const ref = addTicketRef;
     const key = refKey(ref);
