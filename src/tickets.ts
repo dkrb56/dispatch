@@ -70,10 +70,10 @@ function capital(word: string): string {
   return word.charAt(0).toUpperCase() + word.slice(1);
 }
 
-/** The label of a level with its model and effort, for example `Medium (Opus, effort high)`. */
+/** The label of a level with its model and effort, for example `Medium (plan: Opus, effort high)`. */
 export function levelLabel(level: string): string {
   const entry = levelEntry(level);
-  return `${entry.name} (${capital(entry.model)}, effort ${entry.effort})`;
+  return `${entry.name} (plan: ${capital(entry.model)}, effort ${entry.effort})`;
 }
 
 /** The level after this one on a click of the level tag: Simple, Medium, Hard, then Simple again. */

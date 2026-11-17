@@ -6480,7 +6480,7 @@ function addTicketForm(draft: TicketDraft, edit: TicketEdit | null = null): HTML
   const hint = mapElement("div", "ticket-add-hint", goalHint(draft.level));
   goalField.append(hint);
   const level = mapElement("select");
-  level.title = "The level of the ticket: the model and the effort of its plan run";
+  level.title = "The plan level: the model and the effort of the plan run of the ticket. The work run takes its own model at Approve.";
   for (const one of LEVELS) {
     const option = mapElement("option", "", levelLabel(one.level));
     option.value = one.level;
@@ -6500,7 +6500,7 @@ function addTicketForm(draft: TicketDraft, edit: TicketEdit | null = null): HTML
   }
   kind.value = draft.kind;
   const row = mapElement("div", "ticket-add-row");
-  row.append(labelled("Level", level, "ticket-add-level"), labelled("Type", kind, "ticket-add-type"));
+  row.append(labelled("Plan level", level, "ticket-add-level"), labelled("Type", kind, "ticket-add-type"));
   const fixFields: HTMLElement[] = [];
   const extra = FIELDS.map((field) => {
     const area = mapElement("textarea");
@@ -7917,8 +7917,8 @@ function newTicketForm(project: string, part: PartForm): HTMLElement {
   box.addEventListener("keydown", keys(true));
   const options = mapElement("div", "ticket-options");
   const level = mapElement("select", "ticket-level-select");
-  level.title = "The level of the ticket: the model and the effort of its plan run";
-  level.setAttribute("aria-label", "Level");
+  level.title = "The plan level: the model and the effort of the plan run of the ticket. The work run takes its own model at Approve.";
+  level.setAttribute("aria-label", "Plan level");
   for (const one of LEVELS) {
     const option = mapElement("option", "", levelLabel(one.level));
     option.value = one.level;
@@ -8058,7 +8058,7 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
     title.type = "button";
     // A closed ticket opens its details; every other ticket renames (user decisions 2 and 3).
     const closed = ticket.status === "done" || ticket.status === "canceled";
-    title.title = `${ticket.title}\n${ticket.id}\nLevel: ${levelLabel(levelOf(ticket))}\n\n${ticket.summary}\n\n${closed ? "Click for the details." : "Click to rename."}`;
+    title.title = `${ticket.title}\n${ticket.id}\nPlan level: ${levelLabel(levelOf(ticket))}\n\n${ticket.summary}\n\n${closed ? "Click for the details." : "Click to rename."}`;
     title.addEventListener("click", closed ? () => openTicketDetails(project, ticket) : rename);
     top.append(title);
   }
@@ -8072,7 +8072,7 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   const level = levelOf(ticket);
   const waiting = (ticket.status === "new" && !inFlight) || ticket.status === "backlog";
   const levelTag = mapElement(waiting ? "button" : "span", `ticket-level level-${level}`, LEVELS.find((one) => one.level === level)?.name ?? "Medium");
-  levelTag.title = waiting ? `The level: ${levelLabel(level)} for the plan run. Click for the next level.` : `The level: ${levelLabel(level)} for the plan run.`;
+  levelTag.title = waiting ? `The plan level: ${levelLabel(level)}. Click for the next level.` : `The plan level: ${levelLabel(level)}.`;
   if (levelTag instanceof HTMLButtonElement) {
     levelTag.type = "button";
     levelTag.addEventListener("click", () => void updateTicket(project, ticket.id, { level: nextLevel(level) }));

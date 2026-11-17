@@ -566,7 +566,7 @@ test("an old ticket has the level Medium; each level has its label, its next lev
   assert.equal(levelOf({ level: "Hard" }), "hard");
   assert.deepEqual(
     LEVELS.map((one) => levelLabel(one.level)),
-    ["Simple (Opus, effort medium)", "Medium (Opus, effort high)", "Hard (Fable, effort high)"],
+    ["Simple (plan: Opus, effort medium)", "Medium (plan: Opus, effort high)", "Hard (plan: Fable, effort high)"],
   );
   assert.deepEqual([nextLevel("simple"), nextLevel("medium"), nextLevel("hard")], ["medium", "hard", "simple"]);
   assert.equal(goalHint("hard"), "Say the result, do not list steps.");
@@ -597,6 +597,7 @@ test("the form keeps its draft outside, sends the level, the type and the fields
   assert.match(MAIN, /const addTicketDrafts = new Map<string, TicketDraft>\(\);/);
   assert.match(MAIN, /"ticket_add", \{ text, kind: draft\.kind \|\| null, level: draft\.level, fields: filled \? fields : null, column: addTicketColumn \}/);
   assert.match(MAIN, /goalHint\(draft\.level\)/);
+  assert.match(MAIN, /labelled\("Plan level", level, "ticket-add-level"\)/);
   assert.match(MAIN, /ticket-level level-\$\{level\}/);
   assert.match(MAIN, /updateTicket\(project, ticket\.id, \{ level: nextLevel\(level\) \}\)/);
   assert.match(MAIN, /"ticket_level_file", \{ cwd, id: ticket\.id \}/);
