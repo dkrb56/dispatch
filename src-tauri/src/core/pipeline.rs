@@ -4886,6 +4886,7 @@ fn chain_section(chain: &[String]) -> String {
 }
 
 /// The commits of the current branch whose subject names a ticket id as a whole word, as `<hash> <subject>`.
+/// The automatic commits of Dispatch (subject starts with `Dispatch: `) name tasks too, so they are skipped.
 fn ticket_commits(project: &Project, id: &str) -> Vec<String> {
     let log = git(&project.root, &["log", "--format=%h %s", "-F", &format!("--grep={id}")]).unwrap_or_default();
     let word = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
@@ -4893,7 +4894,8 @@ fn ticket_commits(project: &Project, id: &str) -> Vec<String> {
         .map(str::trim)
         .filter(|line| {
             let subject = line.split_once(' ').map_or("", |(_, subject)| subject);
-            subject.match_indices(id).any(|(at, _)| {
+            !subject.starts_with("Dispatch: ")
+                && subject.match_indices(id).any(|(at, _)| {
                 let before = subject[..at].chars().next_back();
                 let after = subject[at + id.len()..].chars().next();
                 !before.is_some_and(word) && !after.is_some_and(word)
@@ -5326,6 +5328,83 @@ fn repair_conflicts(project: &Project) -> Vec<String> {
     notes
 }
 
+/// The subject of the automatic commit of the task files (ticket these-commits-descriptions-are-an-issue):
+/// what changed and for which task, for example `Dispatch: plan of overview-dot-grid`. `paths` are the
+/// changed task paths of `git status --porcelain` (a rename reads `old -> new`), `notes` the number of
+/// changed project notes.
+fn tasks_message(paths: &[&str], notes: usize) -> String {
+    use std::collections::BTreeMap;
+    // brief, plan, report, log changed
+    let mut by_task: BTreeMap<String, [bool; 4]> = BTreeMap::new();
+    let (mut tickets, mut settings, mut other) = (false, false, false);
+    let folder = format!("{TASKS_DIR}/");
+    for path in paths {
+        let path = path.rsplit(" -> ").next().unwrap_or(path).trim().trim_matches('"');
+        let Some(rest) = path.strip_prefix(&folder) else {
+            other = true;
+            continue;
+        };
+        let mut mark = |task: &str, slot: usize| {
+            by_task.entry(task.to_string()).or_default()[slot] = true;
+        };
+        if let Some((dir, name)) = rest.split_once('/') {
+            if dir == "backlog" {
+                tickets = true;
+            } else if let (Some(task), true) = (name.strip_suffix(".md"), !name.contains('/')) {
+                match dir {
+                    "briefs" => mark(task, 0),
+                    "plans" => mark(task, 1),
+                    "logs" => mark(task, 3),
+                    _ => other = true,
+                }
+            } else {
+                other = true;
+            }
+        } else if rest == "tickets.jsonl" {
+            tickets = true;
+        } else if let Some(task) = rest.strip_suffix(".md") {
+            mark(task, 2);
+        } else if let Some((task, kind)) = rest.rsplit_once('.').filter(|(task, kind)| !task.is_empty() && TASK_FILE_KINDS.contains(kind)) {
+            by_task.entry(task.to_string()).or_default();
+        } else {
+            settings = true;
+        }
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for (task, [brief, plan, report, log]) in by_task.iter().take(3) {
+        let mut words: Vec<&str> = Vec::new();
+        for (on, word) in [(*brief, "brief"), (*plan, "plan"), (*report, "report")] {
+            if on {
+                words.push(word);
+            }
+        }
+        if words.is_empty() {
+            words.push(if *log { "log" } else { "status" });
+        }
+        let joined = match words.as_slice() {
+            [one] => one.to_string(),
+            [init @ .., last] => format!("{} and {last}", init.join(", ")),
+            [] => String::new(),
+        };
+        parts.push(format!("{joined} of {task}"));
+    }
+    if by_task.len() > 3 {
+        let more = by_task.len() - 3;
+        parts.push(format!("{more} more {}", if more == 1 { "task" } else { "tasks" }));
+    }
+    for (on, word) in [(tickets, "tickets"), (settings, "settings"), (other, "other files")] {
+        if on {
+            parts.push(word.to_string());
+        }
+    }
+    let mut message = parts.join("; ");
+    if notes > 0 {
+        let note = format!("{notes} {}", if notes == 1 { "note" } else { "notes" });
+        message = if message.is_empty() { note } else { format!("{message} and {note}") };
+    }
+    format!("Dispatch: {message}")
+}
+
 /// Commits the changes of the task files in `.dispatch` (briefs, plans, reports, state files,
 /// the script, the options files and the tickets file), and no other file. Other staged changes
 /// of the user stay staged.
@@ -5362,10 +5441,8 @@ fn keep_tasks_committed(project: &Project) -> Result<usize, String> {
     let mut add = vec!["add", "--all", "--"];
     add.extend(&pathspec);
     run_git(&project.root, &add)?;
-    let mut message = format!("Dispatch: {tasks} task {}", if tasks == 1 { "file" } else { "files" });
-    if !notes.is_empty() {
-        message.push_str(&format!(" and {} {}", notes.len(), if notes.len() == 1 { "note" } else { "notes" }));
-    }
+    let task_paths: Vec<&str> = paths.iter().copied().filter(|path| !notes.contains(path)).collect();
+    let message = tasks_message(&task_paths, notes.len());
     // A commit with paths takes only these paths.
     let mut commit = vec!["commit", "-m", &message, "--"];
     commit.extend(&pathspec);
@@ -7481,7 +7558,7 @@ if (args[0] === 'agents') {
         let subjects: Vec<&str> = subjects.lines().collect();
         // Newest first: the task files with the script, the options files and the tickets file.
         assert_eq!(subjects.len(), 2, "{subjects:?}");
-        assert!(subjects[0].starts_with("Dispatch: ") && subjects[0].ends_with(" task files"), "{subjects:?}");
+        assert!(subjects[0].starts_with("Dispatch: brief and plan of t-1"), "{subjects:?}");
         let files = git(&["show", "--name-only", "--format=", "HEAD"]);
         let files: Vec<&str> = files.lines().filter(|line| !line.is_empty()).collect();
         assert!(files.iter().all(|file| file.starts_with(".dispatch/")), "{files:?}");
@@ -7500,7 +7577,7 @@ if (args[0] === 'agents') {
         // The report is there: the next read writes the log again and commits (ticket task-log).
         write_file(&project.reports.join("t-1.md"), "state: done\nneeds: nothing\n\ndone\n").unwrap();
         task_list(cwd.clone()).unwrap();
-        assert_eq!(git(&["log", "-1", "--format=%s"]).trim(), "Dispatch: 3 task files");
+        assert_eq!(git(&["log", "-1", "--format=%s"]).trim(), "Dispatch: report of t-1");
         assert!(git(&["show", "--name-only", "--format=", "HEAD"]).lines().any(|file| file == ".dispatch/logs/t-1.md"));
         assert_eq!(git(&["status", "--porcelain", "--", ".dispatch"]), "");
         // Nothing changed: no empty commit.
@@ -7522,7 +7599,7 @@ if (args[0] === 'agents') {
         set_ignore(&project, false);
         apply(&project, &[]).unwrap();
         let subject = git(&["log", "-1", "--format=%s"]);
-        assert!(subject.starts_with("Dispatch: ") && subject.trim().ends_with(" task files"), "{subject}");
+        assert!(subject.starts_with("Dispatch: ") && subject.contains("brief of t-2"), "{subject}");
         assert!(git(&["show", "--name-only", "--format=", "HEAD"]).lines().any(|file| file == ".dispatch/briefs/t-2.md"));
         assert_eq!(git(&["status", "--porcelain", "--", ".dispatch"]), "");
         assert!(git(&["status", "--porcelain"]).contains("A  staged.txt"));
@@ -7681,7 +7758,7 @@ if (args[0] === 'agents') {
         assert_eq!(read(&root.join(".gitignore")), format!("node_modules\n{local}"));
         assert_eq!(git(&["ls-files", "--", ".dispatch"]).lines().count(), tracked + 2, "the new brief and the settings file");
         let subject = git(&["log", "-1", "--format=%s"]);
-        assert!(subject.starts_with("Dispatch: ") && subject.trim().ends_with(" task files"), "{subject}");
+        assert!(subject.starts_with("Dispatch: ") && subject.contains("brief of t-2"), "{subject}");
         assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
         assert!(!read(&project.instructions()).contains("git ignores `"));
         assert!(git(&["status", "--porcelain"]).contains("A  staged.txt"));
@@ -7738,7 +7815,7 @@ if (args[0] === 'agents') {
         // A later change of a note goes into the commit of Dispatch with the task files.
         write_file(&root.join(".claude/memory.md"), "memory two\n").unwrap();
         assert_eq!(keep_tasks_committed(&project), Ok(2), "the settings file of the switch and the note");
-        assert_eq!(git(&["log", "-1", "--format=%s"]).trim(), "Dispatch: 1 task file and 1 note");
+        assert_eq!(git(&["log", "-1", "--format=%s"]).trim(), "Dispatch: settings and 1 note");
         let shown = git(&["show", "--name-only", "--format=", "HEAD"]);
         assert!(shown.lines().any(|line| line == ".claude/memory.md"), "{shown}");
         assert_eq!(git(&["status", "--porcelain"]), "");
@@ -8831,7 +8908,7 @@ if (args[0] === 'agents') {
         let refused = task_merge(cwd.clone(), "t-1".to_string()).unwrap_err();
         assert!(refused.contains("the gate command failed with exit code 1, so nothing was merged") && refused.contains("the gate runs"), "{refused}");
         // The task files of the gate change are committed; the code of the base did not move.
-        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", &base]), "Dispatch: 1 task file");
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", &base]), "Dispatch: settings");
         assert_eq!(git_out(&project, &["rev-parse", &format!("{base}~1")]), head);
         assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_none());
         assert!(project.merge_dir().join("t-1.log").is_file());
@@ -10074,10 +10151,33 @@ if (args[0] === 'agents') {
     }
 
     #[test]
+    fn tasks_message_names_the_work_of_each_task() {
+        assert_eq!(tasks_message(&[".dispatch/plans/overview-dot-grid.md", ".dispatch/overview-dot-grid.state"], 0), "Dispatch: plan of overview-dot-grid");
+        assert_eq!(tasks_message(&[".dispatch/briefs/release-macos-ci.md", ".dispatch/release-macos-ci.state"], 0), "Dispatch: brief of release-macos-ci");
+        assert_eq!(tasks_message(&[".dispatch/options-dialog-fit.md", ".dispatch/options-dialog-fit.state", ".dispatch/logs/options-dialog-fit.md"], 0), "Dispatch: report of options-dialog-fit");
+        assert_eq!(tasks_message(&[".dispatch/t-1.state"], 0), "Dispatch: status of t-1");
+        assert_eq!(tasks_message(&[".dispatch/logs/t-1.md", ".dispatch/t-1.state"], 0), "Dispatch: log of t-1");
+        assert_eq!(tasks_message(&[".dispatch/briefs/a.md", ".dispatch/plans/a.md", ".dispatch/b.md"], 0), "Dispatch: brief and plan of a; report of b");
+        assert_eq!(tasks_message(&[".dispatch/briefs/a.md", ".dispatch/plans/a.md", ".dispatch/a.md"], 0), "Dispatch: brief, plan and report of a");
+        let mut many: Vec<String> = vec![".dispatch/briefs/a.md".into(), ".dispatch/plans/b.md".into(), ".dispatch/c.md".into(), ".dispatch/tickets.jsonl".into(), ".dispatch/options.json".into()];
+        for n in 0..12 {
+            many.push(format!(".dispatch/briefs/x{n:02}.md"));
+        }
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        assert_eq!(tasks_message(&refs, 0), "Dispatch: brief of a; plan of b; report of c; 12 more tasks; tickets; settings");
+        assert_eq!(tasks_message(&[".dispatch/briefs/a.md", ".dispatch/briefs/b.md", ".dispatch/briefs/c.md", ".dispatch/briefs/d.md"], 0), "Dispatch: brief of a; brief of b; brief of c; 1 more task");
+        assert_eq!(tasks_message(&[".dispatch/options.json"], 1), "Dispatch: settings and 1 note");
+        assert_eq!(tasks_message(&[], 1), "Dispatch: 1 note");
+        assert_eq!(tasks_message(&[".dispatch/release-0.1.46.state"], 0), "Dispatch: status of release-0.1.46");
+        assert_eq!(tasks_message(&[".dispatch/old/t-1-20260101/t-1.md"], 0), "Dispatch: other files");
+        assert_eq!(tasks_message(&[".dispatch/briefs/old.md -> .dispatch/briefs/new.md"], 0), "Dispatch: brief of new");
+    }
+
+    #[test]
     fn the_brief_of_a_part_names_the_parent_and_the_earlier_parts_with_their_commits() {
         let project = git_scratch("parts-brief");
         let root = project.root.clone();
-        for message in ["t-1: the work of the parent", "t-10: another ticket", "t-1-a: the first part", "t-1-ab: not the first part", "Fix for t-1-a after it"] {
+        for message in ["t-1: the work of the parent", "t-10: another ticket", "t-1-a: the first part", "t-1-ab: not the first part", "Fix for t-1-a after it", "Dispatch: plan of t-1"] {
             run_git(&root, &["commit", "--allow-empty", "-q", "-m", message]).unwrap();
         }
         let lines = [
