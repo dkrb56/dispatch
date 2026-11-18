@@ -427,6 +427,12 @@ function fitPane(pane: Pane): void {
   if (pane.joined) {
     const size = pane.ptySize;
     if (size && size.cols > 0 && size.rows > 0 && (pane.term.cols !== size.cols || pane.term.rows !== size.rows)) pane.term.resize(size.cols, size.rows);
+    // That size can be larger than this panel: the panel scrolls, and opens at the newest row.
+    pane.el.classList.add("joined-term");
+    requestAnimationFrame(() => {
+      const element = pane.term.element;
+      if (element) element.scrollTop = element.scrollHeight;
+    });
     return;
   }
   if (pane.termEl.clientWidth < MIN_FIT_PX || pane.termEl.clientHeight < MIN_FIT_PX) return;

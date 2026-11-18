@@ -4766,6 +4766,14 @@ button.ticket-level {
   padding: 6px 0 0 10px;
 }
 
+/* A terminal that another window owns keeps the size of that window: it scrolls inside this panel.
+   The xterm element scrolls, because the chat view next to it stays in place. */
+.joined-term .term > .xterm {
+  position: absolute;
+  inset: 6px 0 0 10px;
+  overflow: auto;
+}
+
 /* The switch between the chat view and the terminal of a triage pane. */
 .view-switch {
   display: flex;
