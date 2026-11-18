@@ -55,6 +55,32 @@ export function detailsProjects(focusKeys: readonly string[], workspaceKeys: rea
   return keys;
 }
 
+/** The parent folder of a project path with `/` as separator, and the last name in it; empty at a drive root. */
+function parentOf(path: string): { full: string; name: string } {
+  const clean = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const at = clean.lastIndexOf("/");
+  const full = at > 0 ? clean.slice(0, at) : "";
+  return { full, name: full.slice(full.lastIndexOf("/") + 1) };
+}
+
+/**
+ * The text of each pill (ticket didnt-we-worked-on-these-buttons). Pills with one label and different
+ * parent folders get the folder above the project in front: its name, or its whole path when the
+ * names are equal too (`D:\work\app` and `E:\work\app`). Case does not count. Other labels stay.
+ */
+export function pillLabels(items: readonly { label: string; path: string }[]): string[] {
+  const same = (label: string) => items.filter((item) => item.label === label).map((item) => parentOf(item.path)).filter((parent) => parent.full !== "");
+  return items.map(({ label, path }) => {
+    const parent = parentOf(path);
+    if (parent.full === "") return label;
+    const parents = same(label);
+    const count = new Set(parents.map((one) => one.full.toLowerCase())).size;
+    if (count < 2) return label;
+    const names = new Set(parents.map((one) => one.name.toLowerCase())).size;
+    return `${names === count ? parent.name : parent.full}/${label}`;
+  });
+}
+
 /** One item of the row: the current pill, a full pill, or a dashed pill. */
 export type BarItem = { kind: "open"; key: string; close: true } | { kind: "full" | "dashed"; key: string; close: false };
 

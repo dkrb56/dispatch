@@ -65,7 +65,7 @@ import { agentsText, fileRowTitle, reportChip, rowParts, runChip, type RunChip, 
 import { commandLines, groupLabel, unverifiedText } from "./commandrows";
 import { announcements, parseEnded, serializeEnded } from "./announce";
 import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, type FailedEnds, oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
-import { barItems, currentProject, detailsProjects, groupCount, pillCount } from "./topbar";
+import { barItems, currentProject, detailsProjects, groupCount, pillCount, pillLabels } from "./topbar";
 import { type ChatTab, headState, isChatTab, pasteSkipsPane } from "./chattabs";
 import { autoSwitch, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
@@ -842,9 +842,9 @@ async function openChat(chat: Chat): Promise<void> {
 }
 
 /**
- * The Chat button of a project (ticket auto-todo, user decision 4): a new tab with a plain Claude
- * Code chat in the project folder, on the host of the project, without the triage role and outside
- * the pipeline, for a question without a ticket. The tab shows as a chat tab in the head of the
+ * A new tab with a plain Claude Code chat in the project folder, on the host of the project, without
+ * the triage role and outside the pipeline: for an Ask outside Focus, for Open terminal and for the
+ * button of the Overview card of a project with "No triage". The tab shows as a chat tab in the head of the
  * triage pane in Details (chat-tabs-by-triage), so the view goes there.
  */
 async function openProjectChat(ref: ProjectRef, keepFocus = false, terminal?: { label: string } | { join: string }): Promise<string> {
@@ -917,6 +917,27 @@ async function openProjectTerminal(ref: ProjectRef): Promise<void> {
   } finally {
     projectTerminalPending.delete(key);
   }
+}
+
+/**
+ * The terminal for an Ask in Focus (ticket didnt-we-worked-on-these-buttons): the terminal of Open
+ * terminal in the column of the project, so the window stays in Focus. A minimized column comes back
+ * first, because a strip hides its terminal. Gives the pane id, or nothing outside Focus, without a
+ * column, or when the terminal did not open.
+ */
+async function askTerminal(ref: ProjectRef): Promise<string | undefined> {
+  const key = refKey(ref);
+  const column = focusColumns.get(key);
+  if (!focusOn || !column) return undefined;
+  if (columnStates(focusProjects.map(refKey), focusChoices())[key] === "min") setColumnSize(key, "restore");
+  await openProjectTerminal(ref);
+  const pane = projectTerminalPane(ref);
+  if (!pane) return undefined;
+  renderFocus();
+  setFocusCurrent(key);
+  column.el.scrollIntoView({ behavior: "smooth", inline: "nearest" });
+  pane.term.focus();
+  return pane.id;
 }
 
 /** The key under which the app remembers the triage chat of a project (its project key, with the host). */
@@ -5360,16 +5381,17 @@ function sendPlanQuestion(task: Task): void {
 const CHAT_READY_MS = 60_000;
 
 /**
- * Opens a new plain Chat of the project of a task and sends the question there (user decision 3):
- * a paste once its session is idle, then Enter. A Chat that does not start in time gets nothing; the
- * question goes back into the Ask box with a note.
+ * Sends the question to the terminal of Open terminal in Focus, else to a new plain Chat of the
+ * project of a task (user decision 3): a paste once its session is idle, then Enter. A terminal that
+ * is not ready in time gets nothing; the question goes back into the Ask box with a note.
  */
 async function askInChat(task: Task, text: string): Promise<void> {
   const question = decisionsAskText().value;
   decisionsAskText().value = "";
   askDecision = undefined;
   decisionsDialog.close();
-  const id = await openProjectChat({ host: taskHost(task), root: taskCwd(task) });
+  const ref: ProjectRef = { host: taskHost(task), root: taskCwd(task) };
+  const id = (await askTerminal(ref)) ?? (await openProjectChat(ref));
   const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   for (const until = Date.now() + CHAT_READY_MS; Date.now() < until; await pause(1000)) {
     const pane = panes.get(id);
@@ -5382,7 +5404,7 @@ async function askInChat(task: Task, text: string): Promise<void> {
     return;
   }
   if (decisionsAskText().value === "") decisionsAskText().value = question;
-  actionErrors.set(task.name, "The Chat did not start in time. Your question is still in the Ask box.");
+  actionErrors.set(task.name, "The terminal was not ready in time. Your question is still in the Ask box.");
   if (decisionsTask === task) updateDecisionsFooter();
 }
 
@@ -10751,7 +10773,7 @@ const FOLDER_ICON =
   '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" /></svg>';
 
 /**
- * The buttons of one project (topbar-projects): Tickets (ticket tickets), Chat (ticket auto-todo), Tokens (ticket token-usage), Actions (ticket project-actions), Pause, Rules, Setup, Git state (ticket add-git-state-button-to-the-project), "N old" and the folder button. They
+ * The buttons of one project (topbar-projects): Tickets (ticket tickets), Tokens (ticket token-usage), Actions (ticket project-actions), Pause, Rules, Setup, Git state (ticket add-git-state-button-to-the-project), "N old" and the folder button. They
  * stand in the head row above the workspace in Details and in the head of the column in Focus. Each acts on
  * this project, not on the focused terminal. "N old" is hidden while the project has no old session.
  */
@@ -10781,11 +10803,6 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   // A new ticket in its own window, without the board (ticket give-the-app-an-add-ticket-button-that-i).
   const addTicket = tool("+ Ticket", `Add a ticket to New of ${name}; the board stays closed`, () => openAddTicket(ref));
   addTicket.classList.add("project-add-ticket");
-  // A plain Claude Code chat in the project folder, for a question without a ticket (ticket auto-todo).
-  const chat = tool("Chat", `Open a new Claude Code chat in the folder of ${name}, outside the pipeline: ask a question without a ticket`, () => {
-    openProjectChat(ref).catch((error) => console.error("project chat failed", error));
-  });
-  chat.classList.add("project-chat");
   // The window Token usage (ticket token-usage) of this project.
   const tokensButton = tool("Tokens", `How many tokens ${name} used, when and by whom: the window Token usage`, () => openTokens(ref));
   tokensButton.classList.add("project-tokens");
@@ -10817,7 +10834,7 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   // The Git state window (ticket add-git-state-button-to-the-project): history, branch and uncommitted files; it changes nothing.
   const gitState = tool("Git state", `See the commit history and the uncommitted files of ${name}; the window changes nothing`, () => openGitState(ref));
   gitState.classList.add("project-git-state");
-  el.append(tickets, addTicket, chat, tokensButton, actions, pause, rules, setup, gitState, oldEl, folder);
+  el.append(tickets, addTicket, tokensButton, actions, pause, rules, setup, gitState, oldEl, folder);
   showOldButton(oldEl, key);
   showTicketButtons();
   markSetupButton(setup, key, name);
@@ -11486,7 +11503,7 @@ function renderFocus(): void {
     if (triage) moveInto(triage, column.triageEl);
     else if (projectNoTriage(key)) {
       // "No triage": the tickets board of the project where triage would stand, under the note and the
-      // Chat button (ticket in-focus-mode-i-want-to-se-ticket-board). The board stays in its slot.
+      // button Open terminal (ticket in-focus-mode-i-want-to-se-ticket-board). The board stays in its slot.
       if (column.boardEl.parentElement !== column.triageEl) column.triageEl.replaceChildren(column.boardEl);
       renderFocusBoard(column, !ticketsDialog.open);
       showPauseButtons();
@@ -11671,6 +11688,8 @@ function renderPills(): void {
     open = openWorkspaceKey(keys.filter((key) => withWorkspace.has(key)));
   }
   const items = barItems(keys, withWorkspace, open);
+  // Two projects with one name show the folder above the project (ticket didnt-we-worked-on-these-buttons).
+  const labels = pillLabels(roots.map((root) => ({ label: projectName(root), path: root.root })));
   const pills: HTMLElement[] = [];
   items.forEach((item, index) => {
     const root = roots[index];
@@ -11687,7 +11706,7 @@ function renderPills(): void {
     dot.className = `focus-dot ${badge.kind}${dashed ? " empty" : ""}${signal}`;
     const name = document.createElement("span");
     name.className = "name";
-    name.textContent = projectName(root);
+    name.textContent = labels[index];
     const count = document.createElement("span");
     count.className = `count ${badge.kind}`;
     count.textContent = badge.text;

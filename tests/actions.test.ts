@@ -145,7 +145,7 @@ test("the example Release: a release task approved by itself, then the tag and t
 test("main.ts: the button, the panel, the driver and the approval of an action", () => {
   assert.equal(MAIN.match(/tool\("Actions"/g)?.length, 1);
   assert.match(MAIN, /actions\.classList\.add\("project-actions"\)/);
-  assert.match(MAIN, /el\.append\(tickets, addTicket, chat, tokensButton, actions, pause, rules, setup, gitState, oldEl, folder\)/);
+  assert.match(MAIN, /el\.append\(tickets, addTicket, tokensButton, actions, pause, rules, setup, gitState, oldEl, folder\)/);
   assert.match(MAIN, /initActions\(\);/);
   assert.match(MAIN, /showActionButtons\(\);/);
   for (const command of ["action_save", "action_delete", "action_run"]) assert.match(MAIN, new RegExp(`actionCall\\(key, "${command}"`));

@@ -335,15 +335,14 @@ test("the Table view has every number of the window as a row", () => {
   );
 });
 
-test("the window is wired: the Tokens button after Tickets and Chat, the dialog, the two calls", () => {
+test("the window is wired: the Tokens button after Tickets, the dialog, the two calls", () => {
   const html = read("../index.html");
   const main = read("../src/main.ts");
   assert.match(html, /<dialog id="tokens"[ >]/);
   for (const id of ["tokens-range", "tokens-projects", "tokens-table-button", "tokens-close", "tokens-tiles", "tokens-bars", "tokens-line", "tokens-who", "tokens-models", "tokens-table"]) {
     assert.ok(html.includes(`id="${id}"`), id);
   }
-  // Chat (ticket auto-todo) stands between Tickets and Tokens.
-  assert.match(main, /el\.append\(tickets, addTicket, chat, tokensButton, actions, pause,/);
+  assert.match(main, /el\.append\(tickets, addTicket, tokensButton, actions, pause,/);
   assert.match(main, /"token_report"/);
   assert.match(main, /"usage_history"/);
 });

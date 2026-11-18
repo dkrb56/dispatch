@@ -27,7 +27,7 @@ export const FOOTER_HINTS = {
 
 /** The Ask button and its hint in a project with "No triage" on (ticket no-triage-a-project-switch-no-triage-in, user decision 4). */
 export const CHAT_ASK_LABEL = "Ask about this plan in a Chat";
-export const CHAT_ASK_HINT = "A new Chat opens with your question. Nothing changes.";
+export const CHAT_ASK_HINT = "Your question goes to a terminal of this project. Nothing changes.";
 
 /** The question when the user typed none. */
 function defaultQuestion(decision?: AskDecision): string {

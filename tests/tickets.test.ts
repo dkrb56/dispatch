@@ -278,9 +278,9 @@ test("the tickets meet the page: the commands, the board, the dispatcher, the bo
   assert.ok(MAIN.includes("TICKETS_SIZE_KEY"), "the size is kept");
   assert.match(MAIN, /canDrag\(ticket, inFlight\)/);
   assert.match(MAIN, /drop\.status === "done" \? USER_DONE/);
-  // The Help names the board, its columns, the queue, the sign and Chat, and no longer Todo or Ask triage.
+  // The Help names the board, its columns, the queue, the sign and Open terminal, and no longer Todo or Ask triage.
   const help = HTML.slice(HTML.indexOf("<h3>Tickets</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
-  for (const name of ["Backlog", "New", "In progress", "Done", "Canceled", "five columns", "All → Backlog", "All → New", "yellow !", "<b>Chat</b>", "tickets.jsonl", "Ticket &lt;id&gt;: &lt;title&gt;"]) assert.ok(help.includes(name), name);
+  for (const name of ["Backlog", "New", "In progress", "Done", "Canceled", "five columns", "All → Backlog", "All → New", "yellow !", "<b>Open terminal</b>", "tickets.jsonl", "Ticket &lt;id&gt;: &lt;title&gt;"]) assert.ok(help.includes(name), name);
   for (const name of ["<b>Drag a card.</b>", "on Backlog, New, Done or Canceled", "done by hand", "does not drag", "bottom-right corner", "keeps the size", "double-click"]) assert.ok(help.includes(name), name);
   for (const gone of ["<b>Todo</b>", "→ Todo", "<b>Ask triage</b>", "Questions go at once"]) assert.ok(!HTML.includes(gone), gone);
   assert.doesNotMatch(HTML, /<b>Planned/);
@@ -567,7 +567,7 @@ test("no triage: the Setup switch, the Help and the README", () => {
   };
   const tickets = section("Tickets");
   assert.ok(tickets.includes("With <b>No triage</b> on in Setup pipeline"), "a visible item");
-  for (const fact of ["a question too", "<b>Retry</b>", "<b>Chat</b>"]) assert.ok(tickets.includes(fact), fact);
+  for (const fact of ["a question too", "<b>Retry</b>", "<b>Open terminal</b>"]) assert.ok(tickets.includes(fact), fact);
   const settings = section("Project settings");
   assert.ok(settings.includes("<li><b>No triage.</b>"));
   assert.ok(settings.includes("<li><b>No triage</b> is off at the start."));

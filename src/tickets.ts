@@ -229,8 +229,7 @@ export function splitImages(message: string): { paths: string[]; words: string }
 
 /**
  * A message that goes to triage at once and is no ticket: a command of Claude Code (`/clear`,
- * `/model`). Every other message is a ticket, a question too (ticket auto-todo); a question
- * without a ticket goes to a plain chat of the project (the Chat button).
+ * `/model`). Every other message is a ticket, a question too (ticket auto-todo).
  */
 export function goesStraight(text: string): boolean {
   return /^\s*\//.test(text);

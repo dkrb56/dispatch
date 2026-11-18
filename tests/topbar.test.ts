@@ -5,9 +5,29 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { barItems, currentProject, detailsProjects, groupCount, pillCount } from "../src/topbar.ts";
+import { barItems, currentProject, detailsProjects, groupCount, pillCount, pillLabels } from "../src/topbar.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+
+test("pill labels: different labels stay", () => {
+  assert.deepEqual(pillLabels([{ label: "app", path: "D:\\work\\app" }, { label: "site", path: "D:\\work\\site" }]), ["app", "site"]);
+});
+
+test("pill labels: one label with two parents shows both parents", () => {
+  assert.deepEqual(pillLabels([{ label: "app · Host 1", path: "D:\\one\\app" }, { label: "app · Host 1", path: "D:\\two\\app" }]), ["one/app · Host 1", "two/app · Host 1"]);
+});
+
+test("pill labels: parents with one name on two drives show the whole parent path", () => {
+  assert.deepEqual(pillLabels([{ label: "dispatch · Host 1", path: "D:\\dev\\dispatch" }, { label: "dispatch · Host 1", path: "E:\\dev\\dispatch" }]), ["D:/dev/dispatch · Host 1", "E:/dev/dispatch · Host 1"]);
+});
+
+test("pill labels: one label with one parent stays, also with another case or separator", () => {
+  assert.deepEqual(pillLabels([{ label: "app", path: "D:\\Work\\app" }, { label: "app", path: "d:/work/app/" }]), ["app", "app"]);
+});
+
+test("pill labels: a project at a drive root keeps its label", () => {
+  assert.deepEqual(pillLabels([{ label: "D:", path: "D:\\" }, { label: "D:", path: "E:\\old\\D:" }, { label: "D:", path: "E:\\new\\D:" }]), ["D:", "old/D:", "new/D:"]);
+});
 
 test("a closed pill: waits, the number of working workers, or nothing", () => {
   assert.deepEqual(pillCount({ waits: 2, working: 1 }), { text: "waits", kind: "waits" });

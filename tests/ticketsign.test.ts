@@ -47,12 +47,12 @@ test("the tooltip names the count and the reason", () => {
   assert.equal(signTitle("app", 2, null), "");
 });
 
-test("the styles and main.ts use the sign; the project buttons have Chat", () => {
+test("the styles and main.ts use the sign; the project buttons have no Chat", () => {
   const css = read("../src/styles.css");
   const main = read("../src/main.ts");
   assert.match(css, /\.ticket-sign\.attention\.pulse/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)[^}]*\.ticket-sign\.attention\.pulse/);
   assert.match(main, /from "\.\/ticketsign(\.ts)?"/);
-  assert.match(main, /project-chat/);
+  assert.doesNotMatch(main, /project-chat/);
   assert.match(main, /async function openProjectChat\(/);
 });
