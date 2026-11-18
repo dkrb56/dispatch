@@ -143,17 +143,28 @@ summary:focus-visible {
 #bar #toggle-chats,
 #bar #show-rules,
 #bar #setup-pipeline,
+#bar #focus-split,
 #bar #show-options,
 #bar #show-help {
   border: 1px solid var(--hairline);
   color: var(--text);
 }
 
+#bar #focus-split,
 #bar #show-options,
 #bar #show-help {
   justify-content: center;
   width: 30px;
   padding: 0;
+}
+
+/* The layout button of Focus mode: it means nothing in the other views. */
+#bar #focus-split {
+  display: none;
+}
+
+body.focus-mode #bar #focus-split {
+  display: flex;
 }
 
 /* A toggle button is raised while its panel shows. */
@@ -7132,6 +7143,80 @@ body:not(.map-mode):not(.overview-mode) #stale-alert {
   margin-top: auto;
 }
 
+/* The stacked layout of Focus mode: each project is a full-width row, and the view scrolls up and
+   down when the rows do not fit. The id makes these rules beat `.focus-col` and `.focus-col.min`. */
+#focus.rows {
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+#focus.rows > .focus-col {
+  min-width: 0;
+  min-height: calc(260px * var(--text-scale));
+  border-top: 1px solid var(--hairline);
+  border-left: 0;
+}
+
+#focus.rows > .focus-col:first-child {
+  border-top: 0;
+}
+
+/* Open panels need room: the agent view leaves copies of itself in a short terminal, and a column
+   does not clip, so a panel in a short row would paint over the next row. */
+#focus.rows > .focus-col:not(.min):has(.focus-commands:not([hidden])) {
+  min-height: calc(420px * var(--text-scale));
+}
+
+#focus.rows > .focus-col:not(.min):has(.focus-agents:not([hidden])) {
+  min-height: calc(660px * var(--text-scale));
+}
+
+#focus.rows > .focus-col:not(.min):has(.focus-commands:not([hidden])):has(.focus-agents:not([hidden])) {
+  min-height: calc(820px * var(--text-scale));
+}
+
+/* The drag handle lies on the lower edge of a row. */
+#focus.rows > .focus-col > .col-resize {
+  top: auto;
+  right: 0;
+  bottom: -4px;
+  left: 0;
+  width: auto;
+  height: 7px;
+  cursor: row-resize;
+}
+
+body.resizing:has(#focus.rows .col-resize.dragging) {
+  cursor: row-resize;
+}
+
+/* A minimized row: a thin bar with the name and the state in normal writing. The maximum holds also
+   when a double-click on a handle gives every column a share. */
+#focus.rows > .focus-col.min {
+  flex: 0 0 44px;
+  box-sizing: border-box;
+  width: auto;
+  min-height: 44px;
+  max-width: none;
+  max-height: 44px;
+}
+
+#focus.rows > .focus-col.min > .focus-head {
+  flex-direction: row;
+  padding: 0 8px 0 14px;
+}
+
+#focus.rows > .focus-col.min > .focus-head > .focus-name,
+#focus.rows > .focus-col.min > .focus-head > .focus-state {
+  writing-mode: horizontal-tb;
+}
+
+#focus.rows > .focus-col.min > .focus-head > .focus-restore {
+  margin-top: 0;
+  margin-left: auto;
+}
+
 .focus-side {
   gap: 4px;
   padding: 2px 14px 20px 20px;
@@ -7297,6 +7382,7 @@ body:not(.map-mode):not(.overview-mode) #stale-alert {
 #bar #toggle-chats,
 #bar #show-rules,
 #bar #setup-pipeline,
+#bar #focus-split,
 #bar #show-options,
 #bar #show-help {
   border: 0;
@@ -7306,9 +7392,15 @@ body:not(.map-mode):not(.overview-mode) #stale-alert {
 #bar #toggle-chats:hover,
 #bar #show-rules:hover,
 #bar #setup-pipeline:hover,
+#bar #focus-split:hover,
 #bar #show-options:hover,
 #bar #show-help:hover {
   color: var(--text);
+}
+
+#bar #focus-split[aria-pressed="true"] {
+  background: var(--accent-bg);
+  color: var(--accent);
 }
 
 /* The setup buttons inside their frame take the size of the pane buttons. */

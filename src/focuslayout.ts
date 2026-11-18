@@ -20,6 +20,37 @@ export function parseChoice(value: unknown): ColumnChoice | undefined {
   return value === "min" || value === "max" ? value : undefined;
 }
 
+/** How Focus mode arranges its projects: side by side, or as full-width rows one above the other. */
+export type FocusSplit = "columns" | "rows";
+
+/** The layout in a stored value: only `rows` stacks; every other value is side by side. */
+export function parseSplit(value: unknown): FocusSplit {
+  return value === "rows" ? "rows" : "columns";
+}
+
+/** The other layout: what a click on the button of the bar gives. */
+export function toggleSplit(split: FocusSplit): FocusSplit {
+  return split === "rows" ? "columns" : "rows";
+}
+
+/** The field of `focus-sizes` with the share of a project: widths and heights stay apart. */
+export function shareField(split: FocusSplit): "grow" | "rowGrow" {
+  return split === "rows" ? "rowGrow" : "grow";
+}
+
+/**
+ * Scales the shares so that the smallest is at least 1; their proportions stay. Flex items whose
+ * shares add up to less than 1 leave the rest of the room empty, so a row that stays alone beside
+ * bars would not fill the view with a share such as 0.8.
+ */
+export function liftShares(shares: Readonly<Record<string, number>>): Record<string, number> {
+  const least = Math.min(...Object.values(shares));
+  const factor = least > 0 && least < 1 ? 1 / least : 1;
+  const lifted: Record<string, number> = {};
+  for (const [key, share] of Object.entries(shares)) lifted[key] = Number((share * factor).toFixed(4));
+  return lifted;
+}
+
 /** The states without the rule that one column always shows its contents. */
 function rawStates(keys: readonly string[], choices: ColumnChoices): Record<string, ColumnState> {
   const maximized = keys.find((key) => choices[key] === "max");

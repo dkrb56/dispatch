@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { applyAction, type ColumnChoices, columnStates, dragPartner, mayMinimize, parseChoice } from "../src/focuslayout.ts";
+import { applyAction, type ColumnChoices, columnStates, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, shareField, toggleSplit } from "../src/focuslayout.ts";
 
 const KEYS = ["a", "b", "c"];
 
@@ -89,6 +89,29 @@ test("a stored value other than min or max counts as normal", () => {
   assert.deepEqual(changed, ["c"]);
 });
 
+test("the layout value: only a stored rows stacks, every other value is side by side", () => {
+  assert.equal(parseSplit("rows"), "rows");
+  for (const value of [undefined, null, "", "ROWS", "columns", 1, {}]) assert.equal(parseSplit(value), "columns");
+});
+
+test("the layout button switches between the two layouts", () => {
+  assert.equal(toggleSplit("columns"), "rows");
+  assert.equal(toggleSplit("rows"), "columns");
+});
+
+test("the share field: widths and heights are stored apart", () => {
+  assert.equal(shareField("columns"), "grow");
+  assert.equal(shareField("rows"), "rowGrow");
+});
+
+test("row shares: the smallest becomes 1 and the proportions stay, so one row alone fills the view", () => {
+  const lifted = liftShares({ a: 1.2, b: 0.8, c: 1 });
+  assert.deepEqual(lifted, { a: 1.5, b: 1, c: 1.25 });
+  assert.ok(Object.values(lifted).every((share) => share >= 1));
+  // Shares that are already large enough stay as they are.
+  assert.deepEqual(liftShares({ a: 1, b: 2.5 }), { a: 1, b: 2.5 });
+});
+
 // ---- The page ---------------------------------------------------------------------------------
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -107,4 +130,25 @@ test("the page: a strip hides the body, main.ts uses the rule, the Help names bo
   const html = read("../index.html");
   assert.match(html, /<b>–<\/b>[^<]*narrow strip/);
   assert.match(html, /<b>⤢<\/b>[^<]*whole width/);
+});
+
+test("the page: the stacked layout has its rules, its button and its Help item", () => {
+  const css = read("../src/styles.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.match(css, /#focus\.rows\s*\{[^}]*flex-direction:\s*column[^}]*overflow-y:\s*auto/);
+  assert.match(css, /#focus\.rows > \.focus-col\s*\{[^}]*min-width:\s*0[^}]*min-height:\s*calc\(260px \* var\(--text-scale\)\)/);
+  assert.match(css, /#focus\.rows > \.focus-col > \.col-resize\s*\{[^}]*cursor:\s*row-resize/);
+  // A double-click writes a share on every column, also on a bar: its maximum keeps it thin.
+  assert.match(css, /#focus\.rows > \.focus-col\.min\s*\{[^}]*min-height:\s*44px[^}]*max-height:\s*44px/);
+  // The button shows only in Focus.
+  assert.match(css, /#bar #focus-split\s*\{[^}]*display:\s*none/);
+  assert.match(css, /body\.focus-mode #bar #focus-split\s*\{[^}]*display:\s*flex/);
+  const html = read("../index.html");
+  const viewMode = html.slice(html.indexOf('<div id="view-mode"'), html.indexOf('<div id="bar-projects"'));
+  assert.doesNotMatch(viewMode, /focus-split/);
+  assert.match(html, /<button id="focus-split"[^>]*aria-pressed="false"/);
+  assert.match(html, /<li>[^\n]*one above the other[^\n]*lower edge[^\n]*thin bar[^\n]*whole height[^\n]*<\/li>/);
+  const main = read("../src/main.ts");
+  assert.match(main, /size\[shareField\(focusSplit\)\]/);
+  assert.match(main, /liftShares\(shares\)/);
+  assert.match(main, /localStorage\.getItem\(FOCUS_SPLIT_KEY\)/);
 });

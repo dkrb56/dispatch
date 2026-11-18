@@ -29,7 +29,7 @@ import { Terminal } from "@xterm/xterm";
 import { onReturn } from "./chatend";
 import { barHost, markedProject, showMark, watchArea } from "./focusmark";
 import { removeAnswer, removeTexts } from "./removeproject";
-import { type ColumnAction, type ColumnChoice, applyAction, columnStates, dragPartner, mayMinimize, parseChoice } from "./focuslayout";
+import { type ColumnAction, type ColumnChoice, type FocusSplit, applyAction, columnStates, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, shareField, toggleSplit } from "./focuslayout";
 import { type FoldPart, type Folds, foldOpen, parseFolds, setFold, splitNewest } from "./focuslists";
 import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode } from "./overview";
 import {
@@ -10584,6 +10584,10 @@ let focusOn = false;
 let focusProjects: ProjectRef[] = [];
 /** The project of the column that the user worked in last: Setup and Rules act on it. */
 let focusCurrent = "";
+const focusSplitEl = document.querySelector<HTMLButtonElement>("#focus-split")!;
+/** The layout of focus mode: side by side, or stacked as rows. In localStorage `focus-split`. */
+let focusSplit: FocusSplit = "columns";
+const FOCUS_SPLIT_KEY = "focus-split";
 
 /**
  * Remembers the project that the user clicked or typed in last, and puts the frame of focus mode
@@ -10653,7 +10657,9 @@ interface FocusColumn {
   /** The buttons – (minimize) and ⤢ (maximize) in the head of the column (focus-column-size). */
   minEl: HTMLButtonElement;
   maxEl: HTMLButtonElement;
-  /** The drag handle on the right edge of the column. Hidden without a drag partner. */
+  /** The button of a strip or a bar that brings the project back. */
+  restoreEl: HTMLButtonElement;
+  /** The drag handle on the right edge of the column, or the lower edge of a row. Hidden without a drag partner. */
   colHandle: HTMLElement;
 }
 const focusColumns = new Map<string, FocusColumn>();
@@ -10810,6 +10816,8 @@ function moveBack(pane: Pane): void {
  */
 interface FocusSize {
   grow?: number;
+  /** The share of the height in the stacked layout (1 is an even share). */
+  rowGrow?: number;
   side?: number;
   /** The width of the terminal of Open terminal in pixels (ticket when-terminal-is-open-in-focus-mode-it). */
   term?: number;
@@ -10855,7 +10863,7 @@ function saveFocusSize(key: string, size: FocusSize): void {
 /** Sets the saved share of a column and the width of its left panel. */
 function applyFocusSizes(key: string, el: HTMLElement, sideEl: HTMLElement, termEl: HTMLElement): void {
   const size = focusSizes()[key] ?? {};
-  el.style.flexGrow = String(size.grow ?? 1);
+  el.style.flexGrow = String(size[shareField(focusSplit)] ?? 1);
   sideEl.style.width = size.side ? `${size.side}px` : "";
   termEl.style.width = size.term ? `${size.term}px` : "";
 }
@@ -10877,6 +10885,9 @@ function applyFocusLayout(): void {
   const keys = focusProjects.map(refKey);
   const choices = focusChoices();
   const states = columnStates(keys, choices);
+  const stacked = focusSplit === "rows";
+  const place = stacked ? "row" : "column";
+  const thin = stacked ? "thin bar" : "narrow strip";
   for (const key of keys) {
     const column = focusColumns.get(key);
     if (!column) continue;
@@ -10886,17 +10897,44 @@ function applyFocusLayout(): void {
     column.el.classList.toggle("min", state === "min");
     column.el.classList.toggle("max", state === "max");
     if (state === "min") column.el.style.flexGrow = "0";
-    else if (wasMin) column.el.style.flexGrow = String(focusSizes()[key]?.grow ?? 1);
-    column.el.title = state === "min" ? `Click to bring back the column of ${name}` : "";
+    else if (wasMin) column.el.style.flexGrow = String(focusSizes()[key]?.[shareField(focusSplit)] ?? 1);
+    column.el.title = state === "min" ? `Click to bring back the ${place} of ${name}` : "";
     column.colHandle.hidden = dragPartner(keys, states, key) === null;
     const maximized = state === "max";
     column.maxEl.classList.toggle("open", maximized);
     column.maxEl.setAttribute("aria-pressed", String(maximized));
-    column.maxEl.title = maximized ? "Give the layout of focus mode back" : `Give ${name} the whole width; the other projects become narrow strips`;
+    column.maxEl.title = maximized ? "Give the layout of focus mode back" : `Give ${name} the whole ${stacked ? "height" : "width"}; the other projects become ${thin}s`;
     const may = mayMinimize(keys, choices, key);
     column.minEl.disabled = !may;
-    column.minEl.title = may ? `Make ${name} a narrow strip with its name and state` : "One column always shows its contents";
+    column.minEl.title = may ? `Make ${name} a ${thin} with its name and state` : `One ${place} always shows its contents`;
+    column.restoreEl.textContent = stacked ? "↕" : "↔";
+    column.restoreEl.title = `Bring back the ${place} of ${name}`;
   }
+}
+
+/** Draws the layout of focus mode: the class of the view, and the state of the button in the bar. */
+function showFocusSplit(): void {
+  const stacked = focusSplit === "rows";
+  focusEl.classList.toggle("rows", stacked);
+  focusSplitEl.setAttribute("aria-pressed", String(stacked));
+  focusSplitEl.title = stacked ? "Put the projects side by side" : "Stack the projects, one above the other";
+}
+
+/** Saves the layout and draws it. Each column takes its share of the new layout; the terminals follow their slots. */
+function setFocusSplit(split: FocusSplit): void {
+  focusSplit = split;
+  try {
+    localStorage.setItem(FOCUS_SPLIT_KEY, split);
+  } catch {
+    // The choice then applies until the app closes.
+  }
+  showFocusSplit();
+  const sizes = focusSizes();
+  for (const key of focusProjects.map(refKey)) {
+    const column = focusColumns.get(key);
+    if (column) column.el.style.flexGrow = String(sizes[key]?.[shareField(split)] ?? 1);
+  }
+  applyFocusLayout();
 }
 
 /** Applies a click on the – or ⤢ button or on a strip, saves the changed choices and draws the layout. */
@@ -10916,8 +10954,8 @@ function resizeHandle(className: string, title: string): HTMLElement {
   return handle;
 }
 
-/** Calls `move` with the distance from where the drag started, until the button goes up. */
-function dragFrom(handle: HTMLElement, start: () => void, move: (dx: number) => void, end: () => void): void {
+/** Calls `move` with the distances from where the drag started, until the button goes up. */
+function dragFrom(handle: HTMLElement, start: () => void, move: (dx: number, dy: number) => void, end: () => void): void {
   handle.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
     event.preventDefault();
@@ -10925,8 +10963,9 @@ function dragFrom(handle: HTMLElement, start: () => void, move: (dx: number) => 
     handle.classList.add("dragging");
     document.body.classList.add("resizing");
     const x = event.clientX;
+    const y = event.clientY;
     start();
-    const onMove = (moved: PointerEvent) => move(moved.clientX - x);
+    const onMove = (moved: PointerEvent) => move(moved.clientX - x, moved.clientY - y);
     const onUp = () => {
       handle.removeEventListener("pointermove", onMove);
       handle.classList.remove("dragging");
@@ -11017,35 +11056,60 @@ function dragChats(handle: HTMLElement): void {
 }
 
 /**
- * The handle on the right edge of a column: it moves the border to the next column. The two keep
- * their sum of shares, so the other columns keep their width.
+ * The handle on the right edge of a column, or on the lower edge of a row: it moves the border to the
+ * next one. The two keep their sum of shares, so the others keep their size.
  */
 function dragColumns(handle: HTMLElement, key: string, el: HTMLElement): void {
   let next: HTMLElement | null = null;
-  let widths = [0, 0];
+  let sizes = [0, 0];
+  let mins = [FOCUS_COL_MIN, FOCUS_COL_MIN];
   let total = 0;
+  let split: FocusSplit = "columns";
   dragFrom(
     handle,
     () => {
+      split = focusSplit;
+      const stacked = split === "rows";
       // The next column that shows its contents; a strip between them keeps its width (focus-column-size).
       const keys = focusProjects.map(refKey);
       const partner = dragPartner(keys, columnStates(keys, focusChoices()), key);
       next = partner ? (focusColumns.get(partner)?.el ?? null) : null;
-      widths = [el.getBoundingClientRect().width, next?.getBoundingClientRect().width ?? 0];
+      const size = (box: HTMLElement | null) => {
+        const rect = box?.getBoundingClientRect();
+        return (stacked ? rect?.height : rect?.width) ?? 0;
+      };
+      sizes = [size(el), size(next)];
+      // The lowest height of a row depends on the text size and on its open panels: the styles hold it.
+      const least = (box: HTMLElement | null) => (stacked ? (box ? parseFloat(getComputedStyle(box).minHeight) || 0 : 0) : FOCUS_COL_MIN);
+      mins = [least(el), least(next)];
       total = Number(el.style.flexGrow || 1) + Number(next?.style.flexGrow || 1);
     },
-    (dx) => {
+    (dx, dy) => {
       if (!next) return;
-      const sum = widths[0] + widths[1];
-      const left = Math.min(sum - FOCUS_COL_MIN, Math.max(FOCUS_COL_MIN, widths[0] + dx));
-      const grow = (total * left) / sum;
+      const sum = sizes[0] + sizes[1];
+      const first = Math.min(sum - mins[1], Math.max(mins[0], sizes[0] + (split === "rows" ? dy : dx)));
+      const grow = (total * first) / sum;
       el.style.flexGrow = grow.toFixed(4);
       next.style.flexGrow = (total - grow).toFixed(4);
     },
     () => {
       if (!next) return;
+      const keys = focusProjects.map(refKey);
+      const nextKey = keys.find((known) => focusColumns.get(known)?.el === next);
+      if (split === "rows") {
+        // Every row keeps a share of at least 1, so a row alone beside bars still fills the view.
+        const saved = focusSizes();
+        const nextShare = Number(next.style.flexGrow);
+        const shares = Object.fromEntries(keys.map((known) => [known, known === key ? Number(el.style.flexGrow) : known === nextKey ? nextShare : (saved[known]?.rowGrow ?? 1)]));
+        const lifted = liftShares(shares);
+        for (const known of keys) {
+          saveFocusSize(known, { rowGrow: lifted[known] });
+          const column = focusColumns.get(known);
+          if (column && !column.el.classList.contains("min")) column.el.style.flexGrow = String(lifted[known]);
+        }
+        return;
+      }
       saveFocusSize(key, { grow: Number(el.style.flexGrow) });
-      const nextKey = focusProjects.map(refKey).find((known) => focusColumns.get(known)?.el === next);
       if (nextKey) saveFocusSize(nextKey, { grow: Number(next.style.flexGrow) });
     },
   );
@@ -11053,7 +11117,7 @@ function dragColumns(handle: HTMLElement, key: string, el: HTMLElement): void {
     for (const known of focusProjects.map(refKey)) {
       const column = focusColumns.get(known);
       if (column) column.el.style.flexGrow = "1";
-      saveFocusSize(known, { grow: undefined });
+      saveFocusSize(known, { [shareField(focusSplit)]: undefined });
     }
   });
 }
@@ -11188,7 +11252,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   dragSide(sideHandle, key, sideEl);
   dragTerm(termHandle, key, termEl, body, sideEl);
   dragColumns(colHandle, key, el);
-  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, boardEl, boardCountEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, colHandle };
+  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, boardEl, boardCountEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, restoreEl, colHandle };
   // A click anywhere on a strip brings the column back; a button or a drag edge keeps its own action.
   el.addEventListener("click", (event) => {
     if (!el.classList.contains("min")) return;
@@ -12967,6 +13031,7 @@ async function start(): Promise<void> {
     button.addEventListener("click", () => void setView(savedView(button.dataset.mode)));
   }
   focusAddEl.addEventListener("click", () => void addFocusProject().catch((error) => console.error("focus project failed", error)));
+  focusSplitEl.addEventListener("click", () => setFocusSplit(toggleSplit(focusSplit)));
   // Night mode: the click of the switch (its state came from state.json above).
   loadQueued();
   // A click on "on" turns every host off; on "off" or on the mixed look it turns every host on (remote-multi-host).
@@ -12974,10 +13039,13 @@ async function start(): Promise<void> {
   let mode = "tabs";
   try {
     mode = localStorage.getItem("view-mode") ?? "tabs";
+    focusSplit = parseSplit(localStorage.getItem(FOCUS_SPLIT_KEY));
     focusProjects = parseFocusProjects(JSON.parse(localStorage.getItem("focus-projects") ?? "[]"));
   } catch {
     focusProjects = [];
   }
+  // Before the first columns, so they already take the shares of this layout.
+  showFocusSplit();
   await setView(savedView(mode));
   showFirstHelp();
   // After an update: the changes since the last run, once. The close records this version.
