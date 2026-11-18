@@ -3,8 +3,8 @@
 // refused the window, and the window title with the hosts, and with "This PC" in the mode "This PC
 // and hosts". In the mode "This PC does the work" the title is "Dispatch", and the bar shows only the
 // row of the host of this PC when that host runs (ticket why-are-there-two-chats, decision 4).
-import { backendName, backends, connectionOf, type HostId, hostInfo, LOCAL, localWorks, onConnection, retryHost, usesHosts } from "./backend";
-import { windowTitle } from "./hosts";
+import { backendName, backends, connectionOf, type HostId, hostInfo, hostSettings, LOCAL, localWorks, onConnection, retryHost, usesHosts } from "./backend";
+import { type FolderItem, windowTitle } from "./hosts";
 
 /** The wait before a pane that the host does not list gets a new shell: the `pty-exit` of a terminal that ended while the window was away comes right after the hello reply. */
 const RESTART_WAIT_MS = 500;
@@ -85,9 +85,11 @@ export const OWN_HOST_TEXT =
  * Decision 4 of ticket why-are-there-two-chats: a window that does the work of this PC itself (the
  * modes "This PC does the work" and "This PC and hosts") while the host of this PC runs gets a row
  * in the bar with a button that switches it to the host. Only through the host can two windows
- * share one terminal. The check runs at the start.
+ * share one terminal. The check runs at the start. In the mode "This PC and hosts" the row also has
+ * Stop the host (ticket this-pc-runs-twice, decision 2); `stop` gives false when Dispatch does not
+ * start again, and the row then goes away.
  */
-export function initOwnHostBar(running: () => Promise<boolean>, useHost: () => Promise<void>): void {
+export function initOwnHostBar(running: () => Promise<boolean>, useHost: () => Promise<void>, stop: () => Promise<boolean>): void {
   if (!localWorks()) return;
   void running().then((on) => {
     if (!on) return;
@@ -108,9 +110,69 @@ export function initOwnHostBar(running: () => Promise<boolean>, useHost: () => P
       });
     });
     made.append(text, use);
+    if (hostSettings().mode === "mixed") {
+      const end = document.createElement("button");
+      end.textContent = "Stop the host";
+      end.title = "End the host of this PC and its terminals; another computer that uses this host loses them too";
+      end.addEventListener("click", () => {
+        end.disabled = true;
+        stop()
+          .then((restarts) => {
+            if (!restarts) removeBarRow(made);
+          })
+          .catch((error) => {
+            end.disabled = false;
+            text.textContent = `${OWN_HOST_TEXT} The stop failed: ${error}`;
+          });
+      });
+      made.append(end);
+    }
     bar.prepend(made);
     bar.hidden = false;
   });
+}
+
+/** Takes a row out of the bar; a bar without a row that shows hides. */
+function removeBarRow(row: HTMLElement): void {
+  const bar = row.parentElement;
+  row.remove();
+  if (bar) bar.hidden = ![...bar.children].some((other) => !(other as HTMLElement).hidden);
+}
+
+/**
+ * The row of the tabs on a host whose folder is on this PC (ticket this-pc-runs-twice, decision 3).
+ * It has the class of the row above, so that `initHostMode` keeps it. `move` starts Dispatch again.
+ */
+export function showStrayBar(items: readonly FolderItem[], move: () => Promise<void>, keep: () => void): void {
+  const bar = document.querySelector<HTMLElement>("#host-bar")!;
+  const names = [...new Set(items.map((item) => backendName(item.host)))].join(", ");
+  const summary = `${items.length} ${items.length === 1 ? "folder" : "folders"} open on ${names} also ${items.length === 1 ? "exists" : "exist"} on this PC. Do these tabs belong here?`;
+  const made = document.createElement("div");
+  made.className = "host-bar-row own-host";
+  const text = document.createElement("span");
+  text.className = "host-bar-text";
+  text.textContent = summary;
+  text.title = items.map((item) => `${item.path} on ${backendName(item.host)}`).join("\n");
+  const moveEl = document.createElement("button");
+  moveEl.textContent = "Move to This PC";
+  moveEl.title = `Open these tabs on this PC. Their terminals on ${names} end, also a chat that runs there. Dispatch starts again.`;
+  moveEl.addEventListener("click", () => {
+    moveEl.disabled = true;
+    move().catch((error) => {
+      moveEl.disabled = false;
+      text.textContent = `${summary} The move failed: ${error}`;
+    });
+  });
+  const keepEl = document.createElement("button");
+  keepEl.textContent = "Keep where they are";
+  keepEl.title = "Leave these tabs on the host and do not ask again";
+  keepEl.addEventListener("click", () => {
+    keep();
+    removeBarRow(made);
+  });
+  made.append(text, moveEl, keepEl);
+  bar.prepend(made);
+  bar.hidden = false;
 }
 
 /** The hosts that are reachable now: the Nightmode switch leaves the others out of its look. */

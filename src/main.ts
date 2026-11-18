@@ -16,8 +16,8 @@ import {
   windowCall,
 } from "./backend";
 import { chooseFolder } from "./folderchooser";
-import { initHostMode, initOwnHostBar, reachable, titleBase } from "./hostmode";
-import { keyHost, keyPath, mergeLists, pathKey, projectKey, projectLabel, type ProjectRef, readDue } from "./hosts";
+import { initHostMode, initOwnHostBar, reachable, showStrayBar, titleBase } from "./hostmode";
+import { type FolderItem, keyHost, keyPath, keysOfHost, mergeLists, pathKey, projectKey, projectLabel, type ProjectRef, readDue, strayItems } from "./hosts";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -90,7 +90,7 @@ import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersio
 import { lastRunVersion, newEntries } from "./changelog";
 import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, type Wait, type WorkerEnd } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
-import { alertOptions, compactOn, initOptions, ownHostRuns, pulseOn, useOwnHost } from "./options";
+import { alertOptions, compactOn, initOptions, ownHostRuns, pulseOn, stopOwnHost, useOwnHost } from "./options";
 import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
 import { GIT_STATE_SIZE_KEY, ageText, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "./gitstate";
@@ -1201,23 +1201,35 @@ function currentTriagePane(): Pane | undefined {
   return ref ? workspacePanes(ref).triage : undefined;
 }
 
-/** The workspace of the head row above the workspace in Details: the focused one, else the one the user chose last. */
+/**
+ * The workspace of the head row above the workspace in Details: the focused one, else the one the
+ * user chose last. With a focused terminal only the workspaces of its computer count, so the head
+ * row never names another computer (ticket this-pc-runs-twice).
+ */
 function openWorkspaceKey(workspaceKeys: string[]): string | null {
   const pane = focusedPane();
+  const keys = pane ? keysOfHost(workspaceKeys, pane.host, firstBackend()) : workspaceKeys;
   const at = pane ? { host: pane.host, cwd: pane.project ?? pane.cwd ?? null } : null;
-  const focusedKey = at ? (workspaceKeys.find((key) => inProject(at, key)) ?? "") : "";
-  return currentProject(workspaceKeys, focusedKey, focusCurrent);
+  const focusedKey = at ? (keys.find((key) => inProject(at, key)) ?? "") : "";
+  return currentProject(keys, focusedKey, focusCurrent);
 }
 
 /**
- * Shows a chat tab (chat-tabs-by-triage): in Details with a workspace inside the triage pane of the
- * current project, else (Focus, Map, Overview, or no workspace) as a tab that fills the window.
+ * Shows a chat tab (chat-tabs-by-triage): in Details with a workspace of the same computer inside
+ * the triage pane of the current project (ticket this-pc-runs-twice), else (Focus, Map, Overview,
+ * another computer, or no workspace) as a tab that fills the window.
  */
 function openChatTab(tabId: string): void {
   const details = !focusOn && !mapOn && !overviewOn;
   const triage = details ? currentTriagePane() : undefined;
-  if (triage && triage.tabId !== tabId) showChatTab(triage, tabId);
-  else activate(tabId);
+  if (triage && triage.tabId !== tabId && panes.get(tabs.get(tabId)?.focus ?? "")?.host === triage.host) {
+    showChatTab(triage, tabId);
+    return;
+  }
+  const shownIn = shownChat?.tabId === tabId ? panes.get(shownChat.triage) : undefined;
+  if (shownIn) hideChatTab(shownIn);
+  // `activate` also draws the head row again.
+  activate(tabId);
 }
 
 /** Runs when the user selects a view of a triage pane. A new triage pane starts with the last choice. */
@@ -12906,6 +12918,76 @@ function migrateStoredKeys(): void {
   overviewSizes = readSizes();
 }
 
+/** The browser value with the project keys that the user keeps on their host (ticket this-pc-runs-twice, decision 3). */
+const STRAY_KEPT_KEY = "stray-tabs-kept";
+
+function strayKept(): Set<string> {
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(STRAY_KEPT_KEY) ?? "[]");
+    return new Set(Array.isArray(saved) ? saved.filter((key): key is string => typeof key === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+/** The button "Keep where they are": the bar does not ask again for these projects. */
+function keepStrayTabs(items: readonly FolderItem[]): void {
+  const kept = strayKept();
+  for (const item of items) kept.add(projectKey(item.host, item.path));
+  try {
+    localStorage.setItem(STRAY_KEPT_KEY, JSON.stringify([...kept]));
+  } catch {
+    // The bar then asks again at the next start.
+  }
+}
+
+/** The button "Move to This PC": the tabs and projects of `items` go to this PC, their terminals on the host end, and Dispatch starts again. */
+async function moveStrayTabs(items: readonly FolderItem[]): Promise<void> {
+  const keys = new Set(items.map((item) => projectKey(item.host, item.path)));
+  const ends: Promise<unknown>[] = [];
+  for (const pane of panes.values()) {
+    const { host, joined } = pane;
+    if (!keys.has(projectKey(host, pane.project ?? pane.cwd))) continue;
+    // Before the terminal ends: its `pty-exit` closes only a pane that is still on that host.
+    pane.host = LOCAL;
+    pane.joined = false;
+    ends.push(call(host, joined ? "pty_leave" : "pty_kill", { id: pane.id }).catch((error) => console.warn("the terminal on the host did not end", error)));
+  }
+  await Promise.all(ends);
+  const moved = new Map<string, ProjectRef>();
+  for (const ref of focusProjects) {
+    const next = keys.has(refKey(ref)) ? { host: LOCAL, root: ref.root } : ref;
+    if (!moved.has(refKey(next))) moved.set(refKey(next), next);
+  }
+  focusProjects = [...moved.values()];
+  saveFocus();
+  await saveState();
+  await windowCall("app_restart");
+}
+
+/**
+ * The bar of the tabs on a host whose folder is on this PC (ticket this-pc-runs-twice, decision 3).
+ * Only in the mode "This PC and hosts"; a folder can exist on both computers, so the user decides.
+ */
+async function offerStrayTabs(): Promise<void> {
+  if (hostSettings().mode !== "mixed") return;
+  const items: FolderItem[] = [
+    ...[...panes.values()].flatMap((pane) => {
+      const path = pane.project ?? pane.cwd;
+      return path ? [{ host: pane.host, path }] : [];
+    }),
+    ...focusProjects.map((ref) => ({ host: ref.host, path: ref.root })),
+  ].filter((item) => item.host !== LOCAL && reachable(item.host));
+  const paths = new Map(items.map((item) => [pathKey(item.path), item.path]));
+  const here = new Set<string>();
+  for (const [key, path] of paths) {
+    // A folder that this PC cannot list is not a folder of this PC.
+    if (await call(LOCAL, "dir_list", { path }).then(() => true, () => false)) here.add(key);
+  }
+  const stray = strayItems(items, here, strayKept());
+  if (stray.length > 0) showStrayBar(stray, () => moveStrayTabs(stray), () => keepStrayTabs(stray));
+}
+
 async function start(): Promise<void> {
   // The mode comes first: in the mode "Use hosts" every call after this names its host.
   await initBackend();
@@ -13035,7 +13117,7 @@ async function start(): Promise<void> {
     () => saveState().catch((error) => console.error("host settings save failed", error)),
   );
   initHostMode(reattach);
-  initOwnHostBar(ownHostRuns, () => useOwnHost(() => saveState()));
+  initOwnHostBar(ownHostRuns, () => useOwnHost(() => saveState()), () => stopOwnHost(() => saveState()));
   // After a lost connection the host may have a newer switch and newer triage chats (remote-shared-state).
   // A host that goes or comes changes the look of the switch (remote-multi-host).
   onConnection((host, connection) => {
@@ -13217,6 +13299,7 @@ async function start(): Promise<void> {
   }
   // The title names the host from the start, before the first worker read.
   updateWorkerAlert();
+  void offerStrayTabs().catch((error) => console.warn("the check of the tabs on the hosts failed", error));
 }
 
 void start();

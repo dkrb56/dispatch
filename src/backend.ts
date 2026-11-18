@@ -9,7 +9,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { cleanAddress, completeHosts, type HostEntry, type HostId, type HostSettings, LOCAL, parseHostSettings, workBackends } from "./hosts";
+import { cleanAddress, completeHosts, type HostEntry, type HostId, type HostSettings, isLoopback, LOCAL, parseHostSettings, workBackends } from "./hosts";
 
 export { cleanAddress, LOCAL, type HostEntry, type HostId, type HostSettings };
 
@@ -95,6 +95,17 @@ function setConnection(link: Link, next: Connection): void {
   for (const handler of connectionHandlers) handler(link.entry.id, next);
 }
 
+/** The key of the host of this PC when a row of the list can be its row, else null (ticket this-pc-runs-twice). It exists also while no host runs. */
+async function ownHostKey(): Promise<string | null> {
+  if (settings.mode === "local" || !settings.hosts.some((entry) => isLoopback(entry.address))) return null;
+  try {
+    return (await invoke<{ key: string | null }>("host_run_status")).key;
+  } catch (error) {
+    console.warn("the key of the host of this PC could not be read", error);
+    return null;
+  }
+}
+
 /**
  * Reads the mode from `state.json` and, in the mode "Use hosts", starts the first try of every
  * host at the same time. The calls to a host that come during its first try wait for its result.
@@ -106,7 +117,7 @@ export async function initBackend(): Promise<void> {
   } catch (error) {
     console.error("host settings could not be read", error);
   }
-  const entries = completeHosts(settings);
+  const entries = completeHosts(settings, await ownHostKey());
   if (entries.length === 0) return;
   try {
     appVersion = await getVersion();

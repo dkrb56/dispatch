@@ -6,6 +6,7 @@ import { parsePulse, PULSE_KEY } from "./attention";
 import { COMPACT_KEY, parseCompact } from "./compact";
 import { cleanAddress, DEFAULT_PORT, type HostEntry, hostSettings, setHostSettings, windowCall } from "./backend";
 import { initDialogTabs } from "./dialogtabs";
+import { isOwnHostRow, modeAfterHostStop } from "./hosts";
 import { phoneLink } from "./phonelink";
 import qrcode from "qrcode-generator";
 
@@ -13,6 +14,7 @@ const dialog = document.querySelector<HTMLDialogElement>("#options")!;
 const listEl = document.querySelector<HTMLElement>("#host-list")!;
 const addEl = document.querySelector<HTMLButtonElement>("#host-add")!;
 const rowTemplate = document.querySelector<HTMLTemplateElement>("#host-row")!;
+const ownNoteEl = document.querySelector<HTMLElement>("#host-own-note")!;
 /** The address of the host of this PC in the list. */
 const THIS_PC = "127.0.0.1";
 
@@ -45,6 +47,13 @@ function showHostSettings(onHostChange: () => unknown): void {
   for (const radio of dialog.querySelectorAll<HTMLInputElement>('input[name="work-mode"]')) radio.checked = radio.value === saved.mode;
   listEl.replaceChildren(...saved.hosts.map((entry) => hostRow(entry, () => readHostSettings(onHostChange))));
   enableHostFields(saved.mode !== "local");
+  showOwnNote();
+}
+
+/** The note under the list: the mode "This PC and hosts" skips the row of this PC (ticket this-pc-runs-twice, decision 1). */
+function showOwnNote(): void {
+  const mixed = dialog.querySelector<HTMLInputElement>('input[name="work-mode"]:checked')?.value === "mixed";
+  ownNoteEl.hidden = !(mixed && rowEntries().some((entry) => isOwnHostRow(entry, lastRun?.key)));
 }
 
 function enableHostFields(on: boolean): void {
@@ -69,6 +78,7 @@ function readHostSettings(onHostChange: () => unknown): void {
   const mode = checked === "hosts" || checked === "mixed" ? checked : "local";
   setHostSettings({ mode, hosts: rowEntries() });
   enableHostFields(mode !== "local");
+  showOwnNote();
   onHostChange();
 }
 
@@ -164,6 +174,7 @@ function drawHostRun(run: HostRun | null, error = ""): void {
   runErrorEl.hidden = error === "";
   runErrorEl.textContent = error;
   drawPhoneBlock(run);
+  showOwnNote();
 }
 
 async function showHostRun(): Promise<void> {
@@ -235,6 +246,28 @@ export async function useOwnHost(onHostChange: () => unknown): Promise<void> {
   await useHostOfThisPc(run, run.port ?? chosenPort(), onHostChange);
 }
 
+/**
+ * After a stop of the host of this PC: removes its row on `port`, and this PC does its own work
+ * (ticket this-pc-runs-twice, decision 4). Dispatch starts again. Without a row nothing changes, and
+ * the reply is false.
+ */
+async function dropOwnRow(port: number | null, onHostChange: () => unknown): Promise<boolean> {
+  const known = localHostEntry(port);
+  if (!known) return false;
+  const hosts = hostSettings().hosts.filter((entry) => entry.id !== known.id);
+  setHostSettings({ mode: modeAfterHostStop(hosts.length), hosts });
+  await saveAndRestart(onHostChange);
+  return true;
+}
+
+/** The button Stop the host of the bar (ticket this-pc-runs-twice, decision 2). False: the host ended and Dispatch does not start again. */
+export async function stopOwnHost(onHostChange: () => unknown): Promise<boolean> {
+  // The reply of the stop has no port any more.
+  const { port } = await windowCall<HostRun>("host_run_status");
+  await windowCall<HostRun>("host_run_stop");
+  return dropOwnRow(port, onHostChange);
+}
+
 function initHostRun(onHostChange: () => unknown): void {
   runStartEl.addEventListener("click", () => {
     const port = chosenPort();
@@ -243,12 +276,7 @@ function initHostRun(onHostChange: () => unknown): void {
   runStopEl.addEventListener("click", () => {
     const port = lastRun?.port ?? null;
     void hostRunAction("host_run_stop", {}, async () => {
-      const known = localHostEntry(port);
-      if (!known) return;
-      // Stop removes the row of this PC; an empty list goes back to "This PC does the work".
-      const hosts = hostSettings().hosts.filter((entry) => entry.id !== known.id);
-      setHostSettings({ mode: hosts.length > 0 ? "hosts" : "local", hosts });
-      await saveAndRestart(onHostChange);
+      await dropOwnRow(port, onHostChange);
     });
   });
   runNewKeyEl.addEventListener("click", () => {

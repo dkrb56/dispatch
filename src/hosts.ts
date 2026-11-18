@@ -92,9 +92,36 @@ export function parseHostSettings(value: unknown, newId: () => string = newUuid)
   return { mode, window, hosts };
 }
 
-/** The entries that get a connection: those with an address and a key, in the order of the list. */
-export function completeHosts(settings: HostSettings): HostEntry[] {
-  return settings.mode === "local" ? [] : settings.hosts.filter((entry) => entry.address !== "" && entry.key !== "");
+/** Whether an address names this computer itself. */
+export function isLoopback(address: string): boolean {
+  return ["127.0.0.1", "localhost", "::1"].includes(address.toLowerCase());
+}
+
+/**
+ * Whether a row is the host of this PC (ticket this-pc-runs-twice): a loopback address and the key
+ * of this PC. A test host on 127.0.0.1 has another key and stays a normal host.
+ */
+export function isOwnHostRow(entry: HostEntry, ownKey: string | null | undefined): boolean {
+  return isLoopback(entry.address) && entry.key !== "" && entry.key === ownKey;
+}
+
+/**
+ * The entries that get a connection: those with an address and a key, in the order of the list.
+ * With `ownKey` the row of the host of this PC has its own place (ticket this-pc-runs-twice): the
+ * mode `mixed` leaves it out, because this PC already does its work there; the mode `hosts` puts it
+ * first, because the first backend gets the tabs of this PC.
+ */
+export function completeHosts(settings: HostSettings, ownKey: string | null = null): HostEntry[] {
+  if (settings.mode === "local") return [];
+  const complete = settings.hosts.filter((entry) => entry.address !== "" && entry.key !== "");
+  const others = complete.filter((entry) => !isOwnHostRow(entry, ownKey));
+  if (settings.mode === "mixed") return others;
+  return [...complete.filter((entry) => isOwnHostRow(entry, ownKey)), ...others];
+}
+
+/** The mode after Stop the host of this PC: this PC does its own work, next to the hosts that are left (ticket this-pc-runs-twice, decision 4). */
+export function modeAfterHostStop(hostsLeft: number): "local" | "mixed" {
+  return hostsLeft === 0 ? "local" : "mixed";
 }
 
 /**
@@ -142,6 +169,32 @@ export function keyHost(key: string, firstHost: HostId): HostId {
 export function keyPath(key: string): string {
   const bar = key.indexOf("|");
   return bar > 0 ? key.slice(bar + 1) : key;
+}
+
+/** The project keys of one computer; a key without a host belongs to `firstHost`. */
+export function keysOfHost(keys: readonly string[], host: HostId, firstHost: HostId): string[] {
+  return keys.filter((key) => keyHost(key, firstHost) === host);
+}
+
+/** A folder that a tab or a project uses on a computer. */
+export interface FolderItem {
+  host: HostId;
+  path: string;
+}
+
+/**
+ * The folders on a host that also exist on this PC (`foldersHere`, path keys), each project once and
+ * without those in `kept` (project keys). A folder can exist on both computers, so the user decides
+ * (ticket this-pc-runs-twice, decision 3).
+ */
+export function strayItems<T extends FolderItem>(items: readonly T[], foldersHere: ReadonlySet<string>, kept: ReadonlySet<string>): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = projectKey(item.host, item.path);
+    if (item.host === LOCAL || seen.has(key) || kept.has(key) || !foldersHere.has(pathKey(item.path))) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /** The name of a project: the folder name, with ` · <host name>` after it when the window has more than one backend. */
