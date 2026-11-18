@@ -2,6 +2,19 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.75 (2026-11-19)
+- The Dispatch host now serves a small phone page with only the Overview: project cards with their tasks and tickets, and a box for a new ticket. In Options, under Run the host on this PC, scan the code with an iPhone that has Tailscale, then add the page to the Home Screen. New phone key ends the access of the old code.
+- Focus has a new button in the top bar that stacks the projects as full-width rows. Drag the lower edge of a project to change its height, – makes it a thin bar, and ⤢ gives it the whole height. Dispatch keeps the layout and the heights after a restart.
+- A terminal that is shared with a larger window now opens at its newest lines in a smaller window, and you can scroll to every line.
+- A restarted window now redraws its terminals, and a size change during the start of a terminal is no longer lost. Both faults could remove the prompt mark. A terminal also has a new Save record button at the top right: if letters stick, click it at once. It saves the last output, the last keys and the screen into a file, which can hold what you typed.
+- A question about a plan in Focus now goes to the Open terminal terminal of the project, and the window stays in Focus. The Chat button of a project is gone. Two project buttons with the same name now show their folder.
+- In the Token usage window, a project that cannot be read now gets its own red message. The other projects keep their numbers and the weekly line.
+- The task card now lists the steps of a work run under its row, with a check mark and the time of each finished step and a running time for the current step. You see this for work runs that you approve after the update.
+- This PC now runs its projects one time: This PC and hosts skips the row of the host of this PC, and Use hosts puts that row first. A terminal shows only under a project of its own computer. The host warning can now stop the host, and a new bar offers to move tabs from a host back to this PC.
+- Done and Canceled on the tickets board show their newest 10 tickets, with a Show all button for the rest. The count and the search still include all tickets, and the lists keep their scroll place at a redraw.
+- Each task card has a copy button after its name that copies the ticket title.
+- A plan run can now write only its plan, and it can read a web page that its ticket names. Each project needs Setup pipeline → Apply for this.
+
 ## 0.1.74 (2026-11-18)
 - The commits that Dispatch makes for its task files now say what changed and for which task, instead of only counting files.
 - Dispatch now finds the tests of a project in its files, without running anything. Setup pipeline lists them in the Checks box, and Apply saves them, so a project with tests and no saved list shows the step Checks as open. The new Find tests button adds later tests and keeps your lines.
