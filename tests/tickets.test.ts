@@ -44,6 +44,7 @@ import {
   splitImages,
   ticketMatches,
   ticketMessage,
+  taskCopyText,
   ticketRoute,
   TICKETS_SIZE_KEY,
   typeName,
@@ -866,4 +867,23 @@ test("the board draws the cut columns, keeps the count and the scroll place, and
   assert.match(MAIN, /fillTicketColumns\(ticketsColumnsEl, key, ticketsSearchEl\.value\);/, "the call that the other tests match stays");
   assert.match(CSS, /\.tickets-show-all \{[^}]*flex: none;/);
   assert.ok(HTML.includes("<b>Long columns.</b>"), "the Help item");
+});
+
+test("the copy button of a task card copies the ticket title", () => {
+  const tickets = [
+    { id: "a", task: "", title: "Title of a" },
+    { id: "b", task: "work-b", title: "Title of b" },
+    { id: "c", task: "", title: "" },
+  ];
+  assert.equal(taskCopyText("a", tickets), "Title of a");
+  assert.equal(taskCopyText("work-b", tickets), "Title of b");
+  assert.equal(taskCopyText("nobody", tickets), "nobody");
+  assert.equal(taskCopyText("c", tickets), "c");
+  assert.match(MAIN, /function taskCopyButton\(/);
+  assert.match(MAIN, /top\.append\(dot, title, taskCopyButton\(task, key\), time\);/);
+  const button = MAIN.slice(MAIN.indexOf("function taskCopyButton("), MAIN.indexOf("function taskElement("));
+  assert.doesNotMatch(button, /createElement\("button"\)/);
+  assert.match(button, /stopPropagation\(\)/);
+  assert.match(CSS, /\.task-copy \{/);
+  assert.ok(HTML.includes("<b>Copy button.</b>"), "the Help item");
 });

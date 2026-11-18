@@ -724,6 +724,48 @@ button.task-head:hover {
   font-size: calc(12px * var(--text-scale));
 }
 
+.task-copy {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.task-copy:hover {
+  background: var(--hairline);
+  color: var(--text);
+}
+
+.task-copy:focus-visible {
+  outline: 2px solid var(--work);
+  outline-offset: 1px;
+}
+
+.task-copy svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linejoin: round;
+}
+
+.task-copy.done {
+  color: var(--work);
+}
+
+.task-title:has(+ .task-copy) {
+  flex: 0 1 auto;
+}
+
+.task-copy + .task-time {
+  margin-left: auto;
+}
+
 /* The state under the name, in line with the name. */
 .task-status {
   padding-left: 33px;

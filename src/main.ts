@@ -52,7 +52,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, bulkIds, canDrag, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, parseBoardSize, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages } from "./tickets";
+import { addedText, bulkIds, canDrag, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
@@ -9045,6 +9045,49 @@ function startCardDrag(event: PointerEvent, card: OverviewCard): void {
   head.addEventListener("pointercancel", end);
 }
 
+/** The last copy of a task card: its key and the end of its "Copied" look. A redraw keeps the look. */
+let lastTaskCopy: { key: string; until: number } | null = null;
+
+/** The copy button after the name of a task card. A span, because the head of the card can be a button. */
+function taskCopyButton(task: Task, key: string): HTMLElement {
+  const copy = document.createElement("span");
+  copy.className = "task-copy";
+  copy.setAttribute("role", "button");
+  copy.tabIndex = 0;
+  copy.setAttribute("aria-label", "Copy the ticket title");
+  copy.title = "Copy the ticket title";
+  copy.innerHTML =
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5v-.5a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5"/></svg>';
+  const show = (done: boolean) => {
+    copy.classList.toggle("done", done);
+    copy.title = done ? "Copied" : "Copy the ticket title";
+  };
+  if (lastTaskCopy && lastTaskCopy.key === key && lastTaskCopy.until > Date.now()) {
+    show(true);
+    setTimeout(() => show(false), lastTaskCopy.until - Date.now());
+  }
+  const run = (event: Event) => {
+    event.stopPropagation();
+    event.preventDefault();
+    const text = taskCopyText(task.name, task.project?.tickets ?? []);
+    navigator.clipboard.writeText(text).then(
+      () => {
+        lastTaskCopy = { key, until: Date.now() + 1500 };
+        show(true);
+        setTimeout(() => show(false), 1500);
+      },
+      () => {
+        copy.title = "Could not copy";
+      },
+    );
+  };
+  copy.addEventListener("click", run);
+  copy.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") run(event);
+  });
+  return copy;
+}
+
 /**
  * A task with a header that opens and closes its rows: workers, plan, report. Without a choice of
  * the user it is open while it runs or waits. The card of something that waits shows also when it
@@ -9092,7 +9135,7 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   time.className = "task-time";
   const changed = taskTime(task);
   time.textContent = changed ? chatTime(changed) : "";
-  top.append(dot, title, time);
+  top.append(dot, title, taskCopyButton(task, key), time);
   const state = document.createElement("span");
   state.className = "task-status";
   state.textContent = status.text;
