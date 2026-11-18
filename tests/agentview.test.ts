@@ -105,12 +105,12 @@ test("the Help names the button in the item of the Workers pane, and the style h
 // reconnect) gives the terminal the size of the pane; the agent view stacked its frames otherwise.
 test("main.ts: a re-attach compares the size of the host terminal with the pane and resizes it", () => {
   const start = MAIN.slice(MAIN.indexOf("async function startPane"), MAIN.indexOf("/** The size of a host terminal"));
-  assert.match(start, /const reply = await call<HostSize \| null>\(pane\.host, "pty_spawn", \{ id, shell, cwd: pane\.cwd, cols: term\.cols, rows: term\.rows, \.\.\.start \}\);\n\s*matchHostSize\(pane, reply\);/);
+  assert.match(start, /const sent: HostSize = \{ cols: term\.cols, rows: term\.rows \};\n\s*const reply = await call<HostSize \| null>\(pane\.host, "pty_spawn", \{ id, shell, cwd: pane\.cwd, \.\.\.sent, \.\.\.start \}\);\n(\s*\/\/.*\n)?\s*matchHostSize\(pane, reply \?\? sent, !!reply\);/);
   const again = MAIN.slice(MAIN.indexOf("function reattach("), MAIN.indexOf("async function joinTerminal"));
-  assert.match(again, /const reply = await call<HostSize \| null>\(pane\.host, "pty_spawn", \{ \.\.\.pane\.spawnArgs, [^}]*\}\);\n\s*matchHostSize\(pane, reply\);/);
+  assert.match(again, /const reply = await call<HostSize \| null>\(pane\.host, "pty_spawn", \{ \.\.\.pane\.spawnArgs, [^}]*\}\);\n\s*matchHostSize\(pane, reply \?\? sent\);/);
   const helper = MAIN.slice(MAIN.indexOf("function matchHostSize"), MAIN.indexOf("function reattach("));
-  assert.match(helper, /if \(!reply \|\| pane\.joined\) return;/);
-  assert.match(helper, /if \(reply\.cols === term\.cols && reply\.rows === term\.rows\) return;/);
+  assert.match(helper, /if \(pane\.joined\) return;/);
+  assert.match(helper, /const action = afterAttach\(reply, term\.cols, term\.rows, fresh\);\s*if \(action === "none"\) return;/);
   // Only the Workers pane is wiped; a chat pane keeps its text.
   assert.match(helper, /if \(pane\.role === "agents"\) \{\n\s*term\.clear\(\);\n\s*term\.write\("\\x1b\[H\\x1b\[2J"\);\n\s*\}/);
   // The wipe comes before the resize, so the next frame of the agent view lands on an empty pane.

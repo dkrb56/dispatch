@@ -101,6 +101,54 @@ export function isTerminalReport(data: string): boolean {
   return /^\x1b\[(\d+;\d+R|[?>=]?[\d;]*c|\d*n|[IO]|\??[\d;]*\$y|[\d;]*t)$/.test(data) || /^\x1b[P\]][\s\S]*(\x07|\x1b\\)$/.test(data);
 }
 
+/** What a pane does after `pty_spawn` of a running terminal of a host. */
+export type AttachAction = "none" | "resize" | "repaint";
+
+/**
+ * `reply` is the size that the running terminal kept; a new terminal, the local app and an older
+ * host reply nothing. Another size: the terminal takes the size of the pane, and the program draws
+ * again. `fresh` says that the terminal of the pane has just been made: it shows nothing of the
+ * program, the host sends only the output that the window missed, and the program writes only the
+ * cells that it thinks changed, so the same size needs a full redraw (typing-is-still-broken).
+ * A reconnect keeps its screen and gets the missed output.
+ */
+export function afterAttach(reply: { cols: number; rows: number } | null | undefined, cols: number, rows: number, fresh: boolean): AttachAction {
+  if (!reply) return "none";
+  if (reply.cols !== cols || reply.rows !== rows) return "resize";
+  return fresh ? "repaint" : "none";
+}
+
+/** The two sizes of a full redraw: one column away from the size, then the size again. */
+export function repaintSizes(cols: number, rows: number): [{ cols: number; rows: number }, { cols: number; rows: number }] {
+  return [{ cols: cols > 2 ? cols - 1 : cols + 1, rows }, { cols, rows }];
+}
+
+/** One thing that happened in a terminal: its output, a key that the window sent, or a new size. */
+export interface TrailEntry {
+  at: number;
+  kind: "out" | "key" | "size";
+  data: string;
+}
+
+/** The newest entries of a terminal, for the record that the user can save (typing-is-still-broken). */
+export interface Trail {
+  entries: TrailEntry[];
+  chars: number;
+}
+
+/** The characters that the trail of one terminal keeps. */
+export const TRAIL_CHARS = 128_000;
+
+/** Adds an entry. Past a quarter over the limit the oldest entries go, so most calls only append. */
+export function addToTrail(trail: Trail, entry: TrailEntry, limit = TRAIL_CHARS): void {
+  trail.entries.push(entry);
+  trail.chars += entry.data.length;
+  if (trail.chars <= limit * 1.25) return;
+  let drop = 0;
+  while (drop < trail.entries.length - 1 && trail.chars > limit) trail.chars -= trail.entries[drop++].data.length;
+  trail.entries.splice(0, drop);
+}
+
 /** How long a joined chat may show no session before the window leaves the terminal: a switch to a new chat takes a few seconds. */
 export const JOINED_GONE_MS = 25_000;
 

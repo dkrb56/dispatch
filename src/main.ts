@@ -56,7 +56,7 @@ import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ti
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
 import { MENU_ABOVE_LINES, menuScreen, parseMenu, parseReview, SUBMIT_QUESTION } from "./menu";
-import { joinRows, type MenuRecord, type ScreenRow } from "./menurecord";
+import { joinRows, type MenuRecord, recordName, type ScreenRow } from "./menurecord";
 import { agentListShown, asksAgain, backKey, BACK_TITLE, LIST_TITLE } from "./agentview";
 import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, type FileInfo, imageFileUrl, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
@@ -72,7 +72,7 @@ import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { HOLD_NOTE, holdWait } from "./holdstep";
 import { triageCard, triagePanesToClose, withoutTriage } from "./notriage";
-import { isTerminalReport, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, type TriageStart, triagePlace, triageStart } from "./triageowner";
+import { addToTrail, afterAttach, isTerminalReport, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { type AskDecision, askAbout, askBlocked, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
 import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
@@ -192,6 +192,8 @@ interface Pane extends SavedPane {
   thumbsEl: HTMLElement;
   /** The context of the session in this terminal by category, from `/context`. */
   context?: ContextState;
+  /** The newest output, keys and sizes of the terminal, in memory, for the record button. */
+  trail: Trail;
   /** The screen has output that is not in the screen file. */
   dirty: boolean;
   /** The time of the next refresh of the side panel. 0 means now. */
@@ -3947,6 +3949,32 @@ async function saveMenuRecord(pane: Pane, name: string, record: MenuRecord): Pro
   recordVersion ??= getVersion().catch(() => "");
   const full: MenuRecord = { ...record, version: await recordVersion, project: pane.project ?? pane.cwd ?? null };
   await windowCall("menu_record_save", { name, data: JSON.stringify(full, null, 2) });
+}
+
+/**
+ * Saves what a terminal did: its newest output and keys, its size, its cursor and the rows of its
+ * screen, as one file in the folder `menu-reads` of the data folder of this window. A wrong screen
+ * can then be explained afterwards (typing-is-still-broken). Nothing leaves this computer.
+ */
+async function saveTerminalRecord(pane: Pane): Promise<void> {
+  recordVersion ??= getVersion().catch(() => "");
+  const { term } = pane;
+  const now = Date.now();
+  const record = {
+    kind: "terminal-record",
+    version: await recordVersion,
+    project: pane.project ?? pane.cwd ?? null,
+    pane: pane.id,
+    host: pane.host,
+    joined: !!pane.joined,
+    saved: new Date(now).toISOString(),
+    cols: term.cols,
+    rowsCount: term.rows,
+    cursor: { x: term.buffer.active.cursorX, y: term.buffer.active.cursorY },
+    rows: terminalRows(term).rows,
+    entries: pane.trail.entries,
+  };
+  await windowCall("menu_record_save", { name: recordName(now, `terminal-${pane.id}`), data: JSON.stringify(record) });
 }
 
 /** The `count` rows of the scrollback right above the screen of a terminal, joined as in `terminalLines`. */
@@ -10232,6 +10260,7 @@ function createPane(tabId: string, saved: SavedPane): Pane {
     contextHeadEl,
     contextEl,
     thumbsEl,
+    trail: { entries: [], chars: 0 },
     dirty: false,
     sideDue: 0,
     sideShown: "",
@@ -10239,6 +10268,27 @@ function createPane(tabId: string, saved: SavedPane): Pane {
     outputs: [],
     extra: [],
   };
+  // Shows on the terminal under the mouse: saves what the terminal did, for a wrong screen.
+  const recordEl = document.createElement("button");
+  recordEl.className = "term-record";
+  recordEl.type = "button";
+  recordEl.tabIndex = -1;
+  recordEl.textContent = "Save record";
+  recordEl.title = "Save what this terminal did, to explain a wrong screen. The file stays on this computer.";
+  recordEl.addEventListener("click", () => {
+    void saveTerminalRecord(pane)
+      .then(() => "Saved")
+      .catch((error) => {
+        console.error("the terminal record was not saved", error);
+        return "Not saved";
+      })
+      .then((text) => {
+        recordEl.textContent = text;
+        setTimeout(() => (recordEl.textContent = "Save record"), 1500);
+      });
+    term.focus();
+  });
+  termEl.append(recordEl);
   if (pane.role === "triage") {
     pane.chat = createChatView({
       pane: pane.id,
@@ -10438,9 +10488,11 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
     if (pane.role === "triage" && !pane.pasting && (!data.startsWith("\x1b") || data.startsWith("\x1b[200~"))) {
       pane.typed = { text: typedAfter(pane.typed?.text ?? "", data), at: Date.now() };
     }
+    addToTrail(pane.trail, { at: Date.now(), kind: "key", data });
     void call(pane.host, "pty_write", { id, data });
   });
   term.onResize(({ cols, rows }) => {
+    addToTrail(pane.trail, { at: Date.now(), kind: "size", data: `${cols}x${rows}` });
     // The agent view prints a new frame at each size and leaves the old ones above it. Before it
     // draws again, the screen and the scrollback of its pane are empty, and the cursor is at the top.
     if (pane.role === "agents") {
@@ -10462,8 +10514,10 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
   if (start?.note) term.write(`\x1b[0;2m${start.note}\x1b[0m\r\n`);
   pane.spawnArgs = { id, shell, cwd: pane.cwd, ...start };
   try {
-    const reply = await call<HostSize | null>(pane.host, "pty_spawn", { id, shell, cwd: pane.cwd, cols: term.cols, rows: term.rows, ...start });
-    matchHostSize(pane, reply);
+    const sent: HostSize = { cols: term.cols, rows: term.rows };
+    const reply = await call<HostSize | null>(pane.host, "pty_spawn", { id, shell, cwd: pane.cwd, ...sent, ...start });
+    // A size change during the start finds no terminal yet and is refused: `sent` is the size that a new terminal has.
+    matchHostSize(pane, reply ?? sent, !!reply);
   } catch (error) {
     term.write(`\r\n\x1b[31mCould not start ${shell}: ${error}\x1b[0m\r\n`);
   }
@@ -10477,17 +10531,38 @@ type HostSize = { cols: number; rows: number };
  * that the terminal kept. When its pane has another size now, the terminal takes the size of the
  * pane: with a wrong size the agent view stacks its frames (ticket something-is-wrong). The Workers
  * pane is wiped first, so its next frame draws on an empty pane; a chat pane keeps its text.
- * A new terminal, the local app and an older host reply nothing.
+ * The callers give a new terminal the size that its `pty_spawn` named, so a size change that the
+ * start refused is sent again. `fresh`: the pane re-attached with a terminal that it just made (a
+ * restart of the window), so at the same size the program draws once more (`afterAttach`,
+ * typing-is-still-broken).
  */
-function matchHostSize(pane: Pane, reply: HostSize | null | undefined): void {
-  if (!reply || pane.joined) return;
+function matchHostSize(pane: Pane, reply: HostSize | null | undefined, fresh = false): void {
+  if (pane.joined) return;
   const { term } = pane;
-  if (reply.cols === term.cols && reply.rows === term.rows) return;
+  const action = afterAttach(reply, term.cols, term.rows, fresh);
+  if (action === "none") return;
   if (pane.role === "agents") {
     term.clear();
     term.write("\x1b[H\x1b[2J");
   }
-  void call(pane.host, "pty_resize", { id: pane.id, cols: term.cols, rows: term.rows });
+  if (action === "repaint") void repaintTerminal(pane);
+  else void call(pane.host, "pty_resize", { id: pane.id, cols: term.cols, rows: term.rows });
+}
+
+/** The time between the two size changes of a redraw: the program must see the first one. */
+const REPAINT_GAP_MS = 250;
+
+/**
+ * Makes the program of a host terminal draw its whole screen: one column away from the size and
+ * back. Only the owner of the terminal sends sizes. The screen of the window keeps its size. The
+ * second step takes the size that the pane has then.
+ */
+async function repaintTerminal(pane: Pane): Promise<void> {
+  const [away] = repaintSizes(pane.term.cols, pane.term.rows);
+  await call(pane.host, "pty_resize", { id: pane.id, ...away });
+  await new Promise((resolve) => setTimeout(resolve, REPAINT_GAP_MS));
+  if (panes.get(pane.id) !== pane) return;
+  await call(pane.host, "pty_resize", { id: pane.id, cols: pane.term.cols, rows: pane.term.rows });
 }
 
 /**
@@ -10507,8 +10582,9 @@ function reattach(host: HostId, alive: string[], restartAfterMs: number): void {
       return;
     }
     try {
-      const reply = await call<HostSize | null>(pane.host, "pty_spawn", { ...pane.spawnArgs, cwd: pane.cwd, cols: pane.term.cols, rows: pane.term.rows });
-      matchHostSize(pane, reply);
+      const sent: HostSize = { cols: pane.term.cols, rows: pane.term.rows };
+      const reply = await call<HostSize | null>(pane.host, "pty_spawn", { ...pane.spawnArgs, cwd: pane.cwd, ...sent });
+      matchHostSize(pane, reply ?? sent);
     } catch (error) {
       pane.term.write(`\r\n\x1b[31mCould not start ${pane.shell}: ${error}\x1b[0m\r\n`);
     }
@@ -12764,6 +12840,7 @@ async function start(): Promise<void> {
   await onEvent<{ id: string; data: string }>("pty-output", (host, payload) => {
     const pane = panes.get(payload.id);
     if (!pane || pane.host !== host) return;
+    addToTrail(pane.trail, { at: Date.now(), kind: "out", data: payload.data });
     pane.term.write(payload.data);
     pane.dirty = true;
   });
@@ -12775,6 +12852,7 @@ async function start(): Promise<void> {
     const pane = panes.get(payload.id);
     if (!pane || pane.host !== host || !pane.joined) return;
     pane.ptySize = { cols: payload.cols, rows: payload.rows };
+    addToTrail(pane.trail, { at: Date.now(), kind: "size", data: `${payload.cols}x${payload.rows}` });
     fitPane(pane);
   });
 

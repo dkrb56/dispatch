@@ -5,7 +5,7 @@
 // Run: node --test tests/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isTerminalReport, JOINED_GONE_MS, leaveJoined, mayDriveChat, maySendTicket, type TicketWindow, triagePlace, triageStart } from "../src/triageowner.ts";
+import { addToTrail, afterAttach, isTerminalReport, JOINED_GONE_MS, leaveJoined, mayDriveChat, maySendTicket, repaintSizes, type TicketWindow, type Trail, triagePlace, triageStart } from "../src/triageowner.ts";
 
 const CHAT = "5ab0c0de-7e57-4a11-9b0b-000000000001";
 const mine = (...ids: string[]) => (id: string) => ids.includes(id);
@@ -107,4 +107,38 @@ test("a joined window leaves the terminal only after the chat stayed away, and n
   assert.equal(leaveJoined(now - JOINED_GONE_MS + 1, false, now), false, "a switch starts the next chat within this time");
   assert.equal(leaveJoined(now - JOINED_GONE_MS, false, now), true);
   assert.equal(leaveJoined(now - JOINED_GONE_MS * 4, true, now), false, "this window runs the switch");
+});
+
+test("a window that starts again on a running terminal of the same size asks for a full redraw (typing-is-still-broken)", () => {
+  // Its new terminal is empty, and the host sends only the output that the window missed.
+  assert.equal(afterAttach({ cols: 120, rows: 40 }, 120, 40, true), "repaint");
+  // Another size: the size change itself makes the program draw again.
+  assert.equal(afterAttach({ cols: 100, rows: 40 }, 120, 40, true), "resize");
+  assert.equal(afterAttach({ cols: 100, rows: 40 }, 120, 40, false), "resize");
+  // A reconnect keeps its screen and gets the missed output: no redraw, no flicker.
+  assert.equal(afterAttach({ cols: 120, rows: 40 }, 120, 40, false), "none");
+  // A new terminal: main.ts gives the size of its pty_spawn. A size change during the start was
+  // refused, because the terminal did not exist yet, so it goes out again; no redraw otherwise.
+  assert.equal(afterAttach({ cols: 55, rows: 38 }, 230, 60, false), "resize");
+  assert.equal(afterAttach({ cols: 230, rows: 60 }, 230, 60, false), "none");
+  // No size at all.
+  assert.equal(afterAttach(null, 120, 40, true), "none");
+  assert.equal(afterAttach(undefined, 120, 40, false), "none");
+});
+
+test("the redraw goes one column away from the size and back to it", () => {
+  assert.deepEqual(repaintSizes(120, 40), [{ cols: 119, rows: 40 }, { cols: 120, rows: 40 }]);
+  // The narrowest terminal goes one column wider instead.
+  assert.deepEqual(repaintSizes(2, 10), [{ cols: 3, rows: 10 }, { cols: 2, rows: 10 }]);
+});
+
+test("the terminal record keeps the newest entries within its limit", () => {
+  const trail: Trail = { entries: [], chars: 0 };
+  for (let n = 0; n < 50; n++) addToTrail(trail, { at: n, kind: "out", data: "x".repeat(10) }, 100);
+  assert.ok(trail.chars <= 125, `the record holds ${trail.chars} characters`);
+  assert.equal(trail.entries.at(-1)?.at, 49);
+  assert.equal(trail.chars, trail.entries.reduce((sum, entry) => sum + entry.data.length, 0));
+  // One entry larger than the limit stays: it is the newest thing that happened.
+  addToTrail(trail, { at: 50, kind: "key", data: "y".repeat(500) }, 100);
+  assert.deepEqual(trail.entries.map((entry) => entry.at), [50]);
 });

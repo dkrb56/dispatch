@@ -4766,6 +4766,26 @@ button.ticket-level {
   padding: 6px 0 0 10px;
 }
 
+/* Saves what the terminal did. It shows only on the terminal under the mouse. */
+.term-record {
+  position: absolute;
+  top: 8px;
+  right: 16px;
+  z-index: 5;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  cursor: pointer;
+  opacity: 0;
+}
+
+.term:hover .term-record {
+  opacity: 1;
+}
+
 /* A terminal that another window owns keeps the size of that window: it scrolls inside this panel.
    The xterm element scrolls, because the chat view next to it stays in place. */
 .joined-term .term > .xterm {
