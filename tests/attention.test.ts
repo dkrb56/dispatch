@@ -65,3 +65,14 @@ test("the page, the styles and main.ts use the signal", () => {
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
   assert.match(main, /from "\.\/attention(\.ts)?"/);
 });
+
+test("a pulse animates only what the graphics card draws", () => {
+  const css = read("../src/styles.css").replace(/\r\n/g, "\n");
+  for (const name of ["attention-pulse", "attention-dot", "setup-pulse"]) {
+    const start = css.indexOf(`@keyframes ${name} {`);
+    assert.ok(start >= 0, name);
+    const body = css.slice(start, css.indexOf("\n}\n", start));
+    const properties = [...body.matchAll(/^\s+([a-z-]+):/gm)].map((match) => match[1]);
+    assert.ok(properties.length > 0 && properties.every((property) => property === "opacity" || property === "transform"), `${name}: ${properties}`);
+  }
+});

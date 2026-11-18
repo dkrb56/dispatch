@@ -167,6 +167,25 @@ export function mergeLists<T extends object>(
   return merged.sort((a, b) => time(b) - time(a));
 }
 
+/** A repeating read of a minimized, unused window comes after this time (ticket dispatch-was-still-lagging-even-after). */
+export const IDLE_READ_MS = 30_000;
+/** A window without a key or a click for this time counts as unused. */
+export const UNUSED_AFTER_MS = 60_000;
+
+/** What decides a repeating read: the window drives the host, it is not minimized, its last key or click (0: none), its last read of this kind. */
+export interface ReadState {
+  drives: boolean;
+  visible: boolean;
+  lastUse: number;
+  lastRead: number | undefined;
+}
+
+/** Whether a repeating read goes out now. Only a minimized, unused window that does not drive waits. */
+export function readDue(state: ReadState, now: number): boolean {
+  if (state.drives || state.visible || state.lastRead === undefined) return true;
+  return now - state.lastUse < UNUSED_AFTER_MS || now - state.lastRead >= IDLE_READ_MS;
+}
+
 /** The look of the one Nightmode switch: on when every host is on, off when every host is off, else mixed. */
 export function nightSwitch(states: readonly boolean[]): "on" | "off" | "mixed" {
   if (states.length === 0) return "off";

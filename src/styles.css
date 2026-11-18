@@ -538,27 +538,25 @@ button.chat-note {
 
 /* A card that waits for the user and was not clicked yet (ticket card-attention): a yellow frame
    with a glow, still with the switch Pulse off or with reduced motion; with the pulse the glow and
-   the dot swell and fade in a cycle of 1.6 s. */
+   the dot swell and fade in a cycle of 1.6 s. A pulse animates only opacity and transform: the
+   graphics card draws these, while an animated box-shadow repaints the window at each screen
+   refresh (ticket dispatch-was-still-lagging-even-after). */
 @keyframes attention-pulse {
   0%,
   100% {
-    border-color: var(--wait-line);
-    box-shadow: 0 0 0 0 var(--wait-glow);
+    opacity: 0;
   }
   50% {
-    border-color: var(--wait);
-    box-shadow: 0 0 0 5px var(--wait-glow);
+    opacity: 1;
   }
 }
 
 @keyframes attention-dot {
   0%,
   100% {
-    box-shadow: 0 0 0 0 var(--wait-glow);
     transform: scale(1);
   }
   50% {
-    box-shadow: 0 0 0 4px var(--wait-glow);
     transform: scale(1.35);
   }
 }
@@ -569,10 +567,24 @@ button.chat-note {
 }
 
 .task.attention.pulse {
+  position: relative;
+  border-color: var(--wait-line);
+  box-shadow: none;
+}
+
+.task.attention.pulse::after {
+  position: absolute;
+  inset: -2px;
+  border: 2px solid var(--wait);
+  border-radius: inherit;
+  box-shadow: 0 0 0 5px var(--wait-glow);
+  content: "";
+  pointer-events: none;
   animation: attention-pulse 1.6s ease-in-out infinite;
 }
 
 .task.attention.pulse .task-dot {
+  box-shadow: 0 0 0 3px var(--wait-glow);
   animation: attention-dot 1.6s ease-in-out infinite;
 }
 
@@ -6140,14 +6152,10 @@ body.focus-mode #chats {
 @keyframes setup-pulse {
   0%,
   100% {
-    box-shadow:
-      inset 0 0 0 1px var(--wait),
-      0 0 0 0 var(--wait-glow);
+    opacity: 0;
   }
   50% {
-    box-shadow:
-      inset 0 0 0 1px var(--wait),
-      0 0 0 4px var(--wait-glow);
+    opacity: 1;
   }
 }
 
@@ -6158,7 +6166,20 @@ body.focus-mode #chats {
 }
 
 .focus-head .project-tool.attention.pulse,
-#bar #setup-pipeline.attention.pulse {
+#bar #setup-pipeline.attention.pulse,
+.ticket-sign.attention.pulse {
+  position: relative;
+}
+
+.focus-head .project-tool.attention.pulse::after,
+#bar #setup-pipeline.attention.pulse::after,
+.ticket-sign.attention.pulse::after {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 0 4px var(--wait-glow);
+  content: "";
+  pointer-events: none;
   animation: setup-pulse 1.6s ease-in-out infinite;
 }
 
@@ -6192,16 +6213,16 @@ body.focus-mode #chats {
   outline-offset: 1px;
 }
 
-.ticket-sign.attention.pulse {
-  animation: setup-pulse 1.6s ease-in-out infinite;
-}
-
 /* The motion of the signal stops with the system setting for reduced motion; the still mark stays. */
 @media (prefers-reduced-motion: reduce) {
-  .ticket-sign.attention.pulse,
-  .focus-head .project-tool.attention.pulse,
-  #bar #setup-pipeline.attention.pulse,
-  .task.attention.pulse,
+  .ticket-sign.attention.pulse::after,
+  .focus-head .project-tool.attention.pulse::after,
+  #bar #setup-pipeline.attention.pulse::after,
+  .task.attention.pulse::after {
+    opacity: 1;
+    animation: none;
+  }
+
   .task.attention.pulse .task-dot,
   .focus-dot.attention.pulse {
     animation: none;

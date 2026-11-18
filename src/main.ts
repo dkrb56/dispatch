@@ -17,7 +17,7 @@ import {
 } from "./backend";
 import { chooseFolder } from "./folderchooser";
 import { initHostMode, initOwnHostBar, reachable, titleBase } from "./hostmode";
-import { keyHost, keyPath, mergeLists, pathKey, projectKey, projectLabel, type ProjectRef } from "./hosts";
+import { keyHost, keyPath, mergeLists, pathKey, projectKey, projectLabel, type ProjectRef, readDue } from "./hosts";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -789,6 +789,7 @@ async function pollSide(): Promise<void> {
     if (pane.sideEl.offsetParent === null || Date.now() < pane.sideDue) continue;
     // A change of the folder during the request sets `sideDue` to 0 again.
     pane.sideDue = Date.now() + SIDE_REFRESH_MS;
+    if (!readIsDue(pane.host, `side:${pane.id}`)) continue;
     try {
       const info = await call<PaneInfo>(pane.host, "pane_info", { id: pane.id, cwd: pane.cwd });
       pane.info = info;
@@ -1209,7 +1210,7 @@ function showNewest(): void {
 /** Reads the new messages for the chat views of the visible tab. It runs again and again. */
 async function pollChatViews(): Promise<void> {
   for (const pane of shownPanes()) {
-    if (!pane.chat?.visible()) continue;
+    if (!pane.chat?.visible() || !readIsDue(pane.host, `chat:${pane.id}`)) continue;
     try {
       await pane.chat.refresh();
     } catch (error) {
@@ -2710,12 +2711,13 @@ function addUnverifiedChip(row: HTMLElement, text: string, title: string): void 
   else when?.prepend(made);
 }
 
-/** Reads the tasks of the project of the focused terminal and shows them in the chat panel. */
-async function refreshTasks(): Promise<void> {
+/** Reads the tasks of the project of the focused terminal and shows them in the chat panel. `poll`: the read can wait (`readIsDue`). */
+async function refreshTasks(poll = false): Promise<void> {
   if (chatsEl.hidden) return;
   const focused = focusedPane();
   const cwd = focused?.cwd ?? null;
   const host = focused?.host ?? firstBackend();
+  if (poll && cwd && !readIsDue(host, `tasks:${projectKey(host, cwd)}`)) return;
   let reply: TaskListReply = { tasks: [], dirty: [], autoApprove: false, setup: null, tickets: [] };
   if (cwd) {
     // The time the read began: a read that began during a start shows the state before it (ticket one-work-run-race).
@@ -3365,7 +3367,7 @@ function initRemoveProject(): void {
 async function pollTasks(): Promise<void> {
   const readAt = Date.now();
   try {
-    await refreshTasks();
+    await refreshTasks(true);
     await refreshFocusTasks(true);
   } catch (error) {
     console.error("task list refresh failed", error);
@@ -4040,14 +4042,75 @@ function driverOf(host: HostId): boolean {
   return host === LOCAL || drivers.has(host);
 }
 
-/** Takes the reply of a host. A window that gets the lease runs what waited for it. */
-function setDriver(host: HostId, now: boolean): void {
-  const gained = now && !drivers.has(host);
-  if (now) drivers.add(host);
-  else drivers.delete(host);
-  if (!gained) return;
+/** How often a window of hosts asks whether it is minimized. */
+const MINIMIZED_CHECK_MS = 1000;
+/** The window is minimized. WebView2 keeps `document.visibilityState` "visible" then, so the window itself is asked. */
+let windowMinimized = false;
+/** When each repeating read last went out, by host and read. */
+const repeatReads = new Map<string, number>();
+/** The hosts with a read that this window skipped: their lists can be up to 30 s old. */
+const skippedReads = new Set<HostId>();
+/** The hosts whose lease waits for fresh lists; a lost lease removes the entry and so cancels the wait. */
+const leaseCatchUps = new Map<HostId, symbol>();
+
+function checkMinimized(): void {
+  getCurrentWindow()
+    .isMinimized()
+    .then((minimized) => (windowMinimized = minimized))
+    .catch(() => (windowMinimized = false));
+}
+
+/** Whether a repeating read of a poll goes out now; a minimized, unused window that does not drive reads less often. */
+function readIsDue(host: HostId, read: string): boolean {
+  const key = `${host}\n${read}`;
+  const now = Date.now();
+  const due = readDue({ drives: driverOf(host), visible: !windowMinimized, lastUse: lastInput, lastRead: repeatReads.get(key) }, now);
+  if (due) repeatReads.set(key, now);
+  else skippedReads.add(host);
+  return due;
+}
+
+/** The window drives the host now and runs what waited for it. */
+function gainDriver(host: HostId): void {
+  drivers.add(host);
   approvePlans();
   void flushTriageQueue();
+}
+
+/**
+ * A window with skipped reads reads the workers and the tasks of the host before it drives: no
+ * automatic start comes from lists up to 30 s old. A failed worker read leaves it without the lease
+ * until the next report; a project whose task read failed loses its record, so it starts nothing.
+ */
+async function readThenDrive(host: HostId, turn: symbol): Promise<void> {
+  const from = Date.now();
+  try {
+    await refreshWorkers();
+    if ((workerReadTimes.get(host) ?? 0) < from) return;
+    const projects = [...projectTasks].filter(([, project]) => project.host === host);
+    await Promise.all(projects.map(([key, project]) => readProjectTasks(host, project.cwd).catch(() => void projectTasks.delete(key))));
+    if (leaseCatchUps.get(host) !== turn) return;
+    skippedReads.delete(host);
+    gainDriver(host);
+  } catch (error) {
+    console.warn("the reads before the lease failed", backendName(host), error);
+  } finally {
+    if (leaseCatchUps.get(host) === turn) leaseCatchUps.delete(host);
+  }
+}
+
+/** Takes the reply of a host. A window that gets the lease runs what waited for it. */
+function setDriver(host: HostId, now: boolean): void {
+  if (!now) {
+    leaseCatchUps.delete(host);
+    drivers.delete(host);
+    return;
+  }
+  if (drivers.has(host) || leaseCatchUps.has(host)) return;
+  if (!skippedReads.has(host)) return gainDriver(host);
+  const turn = Symbol(host);
+  leaseCatchUps.set(host, turn);
+  void readThenDrive(host, turn);
 }
 
 /** Reports to a host; `active` says that the user used this window since the last report. */
@@ -8934,17 +8997,18 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
 /** When the last worker read of each host with success began: the start lease waits for it (ticket one-work-run-race). */
 const workerReadTimes = new Map<HostId, number>();
 
-/** Reads the worker list and shows it in the chat panel. */
-async function refreshWorkers(): Promise<void> {
+/** Reads the worker list and shows it in the chat panel. `poll`: a host whose read is not due keeps its last list. */
+async function refreshWorkers(poll = false): Promise<void> {
   // The alert must show also when the chat panel is hidden. Thus this runs always. Every host gives
   // its workers; a host that does not answer keeps its last list (remote-multi-host).
   const readAt = Date.now();
-  const replies = await Promise.allSettled(backends().map((host) => call<Omit<Worker, "host">[]>(host, "worker_list")));
+  const replies = await Promise.allSettled(backends().map((host) => (!poll || readIsDue(host, "workers") ? call<Omit<Worker, "host">[]>(host, "worker_list") : null)));
   if (replies.every((reply) => reply.status === "rejected")) throw (replies[0] as PromiseRejectedResult).reason;
   const byHost = backends().map((host, at) => {
     const reply = replies[at];
-    if (reply.status === "fulfilled") workerReadTimes.set(host, readAt);
-    return [host, reply.status === "fulfilled" ? reply.value : null] as const;
+    const list = reply.status === "fulfilled" ? reply.value : null;
+    if (list) workerReadTimes.set(host, readAt);
+    return [host, list] as const;
   });
   const workers = mergeLists(byHost, workerList, (worker) => worker.startedAt ?? 0);
   const shown = JSON.stringify(workers);
@@ -9231,7 +9295,7 @@ async function pollWorkers(): Promise<void> {
   // Before the worker list: its changes go to triage only from the window that drives.
   await pollShared();
   try {
-    await refreshWorkers();
+    await refreshWorkers(true);
     await flushTriageQueue();
   } catch (error) {
     console.error("worker list refresh failed", error);
@@ -9598,12 +9662,12 @@ function renderChats(): void {
   chatListEl.replaceChildren(...items);
 }
 
-/** Reads the chat list and shows it in the chat panel. */
-async function refreshChats(): Promise<void> {
+/** Reads the chat list and shows it in the chat panel. `poll`: a host whose read is not due keeps its last list. */
+async function refreshChats(poll = false): Promise<void> {
   // Focus mode shows the chats of each project, also when the user hid the chat panel of Details.
   if (chatsEl.hidden && !focusOn) return;
   // Every host gives its chats; a host that does not answer keeps its last list (remote-multi-host).
-  const replies = await Promise.allSettled(backends().map((host) => call<Omit<Chat, "host">[]>(host, "chat_list")));
+  const replies = await Promise.allSettled(backends().map((host) => (!poll || readIsDue(host, "chats") ? call<Omit<Chat, "host">[]>(host, "chat_list") : null)));
   if (replies.every((reply) => reply.status === "rejected")) throw (replies[0] as PromiseRejectedResult).reason;
   const byHost = backends().map((host, at) => {
     const reply = replies[at];
@@ -9620,7 +9684,7 @@ async function refreshChats(): Promise<void> {
 /** Refreshes the chat panel. It runs again and again. */
 async function pollChats(): Promise<void> {
   try {
-    await refreshChats();
+    await refreshChats(true);
   } catch (error) {
     console.error("chat list refresh failed", error);
   }
@@ -11622,6 +11686,7 @@ async function refreshFocusTasks(onlyWhenChanged = false): Promise<void> {
       // The time the read began (ticket one-work-run-race).
       const readAt = Date.now();
       const key = projectKey(host, root);
+      if (onlyWhenChanged && !readIsDue(host, `focus:${key}`)) return;
       try {
         const reply = await call<TaskListReply>(host, "task_list", { cwd: root });
         tellRepairs(host, root, reply);
@@ -12705,6 +12770,14 @@ async function start(): Promise<void> {
   initTicketDetails();
   initTokens();
   initActions();
+  if (usesHosts()) {
+    checkMinimized();
+    setInterval(checkMinimized, MINIMIZED_CHECK_MS);
+    // A restored window changes its size: it reads at the normal rate at once.
+    getCurrentWindow()
+      .onResized(checkMinimized)
+      .catch((error) => console.warn("no resize events of the window", error));
+  }
   void pollSide();
   // A click on the alert opens the first worker that waits.
   workerAlertEl.addEventListener("click", () => {

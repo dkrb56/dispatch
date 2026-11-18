@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { completeHosts, keyHost, keyPath, LOCAL, mergeLists, nightSwitch, parseHostSettings, pathKey, projectKey, projectLabel, windowTitle, workBackends } from "../src/hosts.ts";
+import { completeHosts, IDLE_READ_MS, keyHost, keyPath, LOCAL, mergeLists, nightSwitch, parseHostSettings, pathKey, projectKey, projectLabel, windowTitle, workBackends, readDue, UNUSED_AFTER_MS } from "../src/hosts.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -186,4 +186,29 @@ test("Options has the third radio, and the Help names it with the switch of each
   assert.match(where, /<b>This PC and hosts<\/b>/);
   const night = HTML.slice(HTML.indexOf("<h3>Night mode</h3>"), HTML.indexOf("<h3>The Chats panel</h3>"));
   assert.match(night, /This PC and hosts/);
+});
+
+test("only a minimized, unused window that does not drive reads less often", () => {
+  const now = 1_000_000;
+  const idle = { drives: false, visible: false, lastUse: now - UNUSED_AFTER_MS, lastRead: now - 1000 };
+  assert.equal(readDue(idle, now), false);
+  assert.equal(readDue({ ...idle, lastRead: now - IDLE_READ_MS + 1 }, now), false);
+  assert.equal(readDue({ ...idle, lastRead: now - IDLE_READ_MS }, now), true, "the read after 30 s");
+  assert.equal(readDue({ ...idle, lastRead: undefined }, now), true, "the first read");
+  assert.equal(readDue({ ...idle, visible: true, lastUse: 0 }, now), true, "a window that you can see is never unused");
+  assert.equal(readDue({ ...idle, drives: true }, now), true, "the window that drives");
+  assert.equal(readDue({ ...idle, lastUse: now - UNUSED_AFTER_MS + 1 }, now), true, "a key or a click within 1 minute");
+  assert.equal(IDLE_READ_MS, 30_000);
+  assert.equal(UNUSED_AFTER_MS, 60_000);
+});
+
+test("the polls can wait, and a window with skipped reads reads before it drives", () => {
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  for (const call of ["await refreshWorkers(true);", "await refreshChats(true);", "await refreshTasks(true);", "await refreshFocusTasks(true);"]) assert.ok(main.includes(call), call);
+  for (const read of ['readIsDue(host, "workers")', 'readIsDue(host, "chats")', "readIsDue(host, `tasks:", "readIsDue(host, `focus:", "readIsDue(pane.host, `chat:", "readIsDue(pane.host, `side:"]) assert.ok(main.includes(read), read);
+  assert.ok(main.includes("visible: !windowMinimized"), "a minimized window is asked through Tauri");
+  const setDriver = main.slice(main.indexOf("function setDriver("), main.indexOf("/** Reports to a host;"));
+  assert.ok(setDriver.indexOf("skippedReads.has(host)") < setDriver.indexOf("readThenDrive(host, turn)"));
+  const catchUp = main.slice(main.indexOf("async function readThenDrive("), main.indexOf("/** Takes the reply of a host."));
+  assert.ok(catchUp.indexOf("await refreshWorkers();") < catchUp.indexOf("readProjectTasks(") && catchUp.indexOf("readProjectTasks(") < catchUp.indexOf("gainDriver(host);"));
 });
