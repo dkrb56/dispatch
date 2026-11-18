@@ -769,8 +769,10 @@ impl Project {
         texts
     }
 
-    /// The permission rules that let triage run the worker script and check the workers, and
-    /// let each session read and write the reports, without a prompt.
+    /// The permission rules that let triage run the worker script, check the workers and write the
+    /// briefs, and let each session read the reports, without a prompt. An `Edit` rule covers every
+    /// tool that edits files, so a rule on the whole folder would let a plan run overwrite the
+    /// worker script (ticket a-plan-run-can-write-only-into-dispatch).
     fn allow_rules(&self) -> Result<Vec<String>, String> {
         let reports = self.reports_text();
         let rule_path = self.rule_path();
@@ -778,7 +780,7 @@ impl Project {
             format!("Bash({} *)", script_command(&reports)),
             "Bash(claude agents --json --all)".to_string(),
             "Bash(claude logs *)".to_string(),
-            format!("Edit({rule_path}/**)"),
+            format!("Edit({rule_path}/briefs/**)"),
             format!("Read({rule_path}/**)"),
         ])
     }
@@ -1032,7 +1034,7 @@ project, so a clone on another path or computer needs no change.
 #>
 param(
   [Parameter(Mandatory = $true, Position = 0)]
-  [ValidateSet('plan', 'approve', 'reply', 'status', 'stop', 'resume', 'measure', 'merge')]
+  [ValidateSet('plan', 'approve', 'reply', 'status', 'stop', 'resume', 'measure', 'merge', IgnoreCase = $false)]
   [string]$Verb,
   [Parameter(Position = 1)]
   [string]$Id,
@@ -2000,6 +2002,11 @@ fn rule_changes(project: &Project) -> Result<RuleChanges, String> {
     };
     let mut obsolete: Vec<String> = OBSOLETE_RULES.iter().filter(|rule| has(allow, rule)).map(|rule| rule.to_string()).collect();
     obsolete.extend(named_old(allow));
+    // The rule of older versions on the whole task folder: it let a plan run write every task file.
+    let broad_edit = format!("Edit({}/**)", project.rule_path());
+    if has(allow, &broad_edit) {
+        obsolete.push(broad_edit);
+    }
     let mut obsolete_deny = named_old(deny);
     // With "Task branches" off again, the deny rule of the merge verb goes, so the file is as before.
     let merge_deny = format!("Bash({} merge *)", script_command(&project.reports_text()));
@@ -2659,20 +2666,28 @@ const WORK_DEFAULT: (&str, &str) = ("opus", "xhigh");
 
 /// The fixed part of the plan run, one argument per line: no permission prompt; the four tools
 /// that only read, WebFetch so that a plan can read a web page that its ticket names, plus Write,
-/// and no Edit, Agent or question tool; three git commands that only read; and Write allowed in
-/// the plans folder only. Under `dontAsk` every other write is refused without a prompt. There is
-/// no Edit tool because the local settings allow Edit on the whole reports folder, which would
-/// reach a planner that had the tool. With "Measure before the plan" on, the list also allows the
-/// `measure` verb of the worker script, which runs only the listed commands, and Write in the
-/// scratch folder of the measuring.
+/// and no Edit, Agent or question tool; and writes allowed in the plans folder only. Under
+/// `dontAsk` every other write is refused without a prompt. The rule is an `Edit` rule because
+/// Claude Code matches no `Write(path)` rule, and an `Edit` rule covers the Write tool. There is
+/// no allow rule for git: read-only git runs without one, and a rule such as `Bash(git log *)`
+/// would also allow `--output=<file>`. The last option takes back what the local settings allow
+/// triage: the briefs and the worker script; a deny rule wins over an allow rule. With "Measure
+/// before the plan" on, the plan run keeps the `measure` verb of the script, which runs only the
+/// listed commands, and writes in the scratch folder of the measuring, so each other verb and
+/// each option of the script is denied by name (ticket a-plan-run-can-write-only-into-dispatch).
 fn plan_fixed_lines(project: &Project) -> Result<Vec<String>, String> {
     let rule_path = project.rule_path();
-    let plans = format!("{rule_path}/plans/**");
-    let allowed = if project.options().measure_before_plan {
-        let script = script_command(&project.reports_text());
-        format!("Bash(git status*),Bash(git log *),Bash(git diff *),Bash({script} measure *),WebFetch,Write({plans}),Write({rule_path}/measure/**)")
+    let script = script_command(&project.reports_text());
+    let plans = format!("Edit({rule_path}/plans/**)");
+    let briefs = format!("Edit({rule_path}/briefs/**)");
+    let (allowed, denied) = if project.options().measure_before_plan {
+        let verbs = ["plan", "approve", "reply", "status", "stop", "resume", "merge"].map(|verb| format!("Bash({script} {verb} *)")).join(",");
+        (
+            format!("Bash({script} measure *),WebFetch,{plans},Edit({rule_path}/measure/**)"),
+            format!("{briefs},{verbs},Bash({script} -*),Bash({script} * -*)"),
+        )
     } else {
-        format!("Bash(git status*),Bash(git log *),Bash(git diff *),WebFetch,Write({plans})")
+        (format!("WebFetch,{plans}"), format!("{briefs},Bash({script} *)"))
     };
     Ok(vec![
         "--permission-mode".to_string(),
@@ -2681,6 +2696,8 @@ fn plan_fixed_lines(project: &Project) -> Result<Vec<String>, String> {
         "Read,Grep,Glob,Bash,WebFetch,Write".to_string(),
         "--allowedTools".to_string(),
         allowed,
+        "--disallowedTools".to_string(),
+        denied,
     ])
 }
 
@@ -5914,12 +5931,19 @@ pub(crate) mod tests {
     const WORK_FIXED: &str = "--permission-mode\nauto\n--tools\ndefault\n--disallowedTools\nAskUserQuestion,SendMessage\n";
 
     /// The expected text of `plan-flags.txt` for a choice: the choice lines, then the fixed part
-    /// with the plans folder of this scratch project in its Write rule.
+    /// with the plans folder of this scratch project in its Edit rule.
     fn plan_lines(project: &Project, choice_lines: &str) -> String {
-        format!(
-            "{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,WebFetch,Write\n--allowedTools\nBash(git status*),Bash(git log *),Bash(git diff *),WebFetch,Write({}/plans/**)\n",
-            project.rule_path()
-        )
+        format!("{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,WebFetch,Write\n--allowedTools\n{}\n--disallowedTools\n{}\n", plan_allowed(project), plan_denied(project))
+    }
+
+    /// The allow list of a plan run with "Measure before the plan" off.
+    fn plan_allowed(project: &Project) -> String {
+        format!("WebFetch,Edit({}/plans/**)", project.rule_path())
+    }
+
+    /// The deny list of a plan run with "Measure before the plan" off.
+    fn plan_denied(project: &Project) -> String {
+        format!("Edit({}/briefs/**),Bash({} *)", project.rule_path(), script_command(&project.reports_text()))
     }
 
     #[test]
@@ -5927,20 +5951,22 @@ pub(crate) mod tests {
         let project = scratch("apply");
         write_file(
             &project.local_settings(),
-            r#"{ "permissions": { "allow": ["Bash(claude --bg *)", "Bash(claude agents --json --all)", "Bash(claude --resume * --bg *)"] } }"#,
+            r#"{ "permissions": { "allow": ["Bash(claude --bg *)", "Bash(claude agents --json --all)", "Bash(claude --resume * --bg *)", "Edit(.dispatch/**)"] } }"#,
         )
         .unwrap();
         apply(&project, &[0, 3]).unwrap();
 
         assert!(project.briefs().is_dir() && project.plans().is_dir());
         assert_eq!(read(&project.plan_flags()), plan_lines(&project, "--model\nfable\n--effort\nxhigh\n"));
-        assert!(read(&project.plan_flags()).contains("Write(.dispatch/plans/**)\n"), "the Write rule names the plans folder relative to the project");
+        assert!(read(&project.plan_flags()).contains(",Edit(.dispatch/plans/**)\n"), "the Edit rule names the plans folder relative to the project");
         assert_eq!(read(&project.work_flags()), format!("--model\nopus\n--effort\nxhigh\n{WORK_FIXED}"));
         assert_eq!(read(&project.script()), WORKER_SCRIPT);
 
         let settings = read_settings(&project.local_settings()).unwrap();
         let allow: Vec<&str> = settings["permissions"]["allow"].as_array().unwrap().iter().map(|rule| rule.as_str().unwrap()).collect();
         assert!(!allow.iter().any(|rule| OBSOLETE_RULES.contains(rule)), "{allow:?}");
+        // The rule on the whole task folder goes: triage keeps the briefs only.
+        assert!(!allow.contains(&"Edit(.dispatch/**)") && allow.contains(&"Edit(.dispatch/briefs/**)"), "{allow:?}");
         assert_eq!(allow.iter().filter(|rule| rule.contains("worker.ps1 *)")).count(), 1, "{allow:?}");
         assert_eq!(allow.iter().filter(|rule| **rule == "Bash(claude agents --json --all)").count(), 1, "{allow:?}");
         // Triage may run every verb of the script except approve: the Approve button of Dispatch runs that.
@@ -5981,7 +6007,7 @@ pub(crate) mod tests {
         assert!(deny[0].contains(" .dispatch/worker.ps1 approve *)"), "{deny:?}");
         assert!(!claude_md.contains("/proj/") && !role.contains("/proj/"), "no absolute path in the shared files");
         assert!(role.contains(&format!("{tasks}/worker.ps1 plan <ticket-id>")), "{role}");
-        assert!(read(&project.plan_flags()).contains(&format!("Write({rule_path}/plans/**)")));
+        assert!(read(&project.plan_flags()).contains(&format!("Edit({rule_path}/plans/**)")));
         assert!(WORKER_SCRIPT.contains("$Project = Split-Path -Parent $Reports") && !WORKER_SCRIPT.contains("-reports"));
         assert!(!allow.iter().chain(deny.iter()).any(|rule| rule.contains("-reports")), "{allow:?} {deny:?}");
 
@@ -7124,12 +7150,13 @@ if (args[0] === 'agents') {
     }
 
     /// The expected `plan-flags.txt` with "Measure before the plan" on: the lines of `plan_lines`
-    /// with the measure verb of the script and the measure folder in the allowed list.
+    /// with the measure verb of the script and the measure folder in the allowed list, and each
+    /// other verb and each option of the script in the denied list.
     fn plan_lines_measuring(project: &Project, choice_lines: &str) -> String {
         let rule = project.rule_path();
         let script = script_command(&project.reports_text());
         format!(
-            "{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,WebFetch,Write\n--allowedTools\nBash(git status*),Bash(git log *),Bash(git diff *),Bash({script} measure *),WebFetch,Write({rule}/plans/**),Write({rule}/measure/**)\n"
+            "{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,WebFetch,Write\n--allowedTools\nBash({script} measure *),WebFetch,Edit({rule}/plans/**),Edit({rule}/measure/**)\n--disallowedTools\nEdit({rule}/briefs/**),Bash({script} plan *),Bash({script} approve *),Bash({script} reply *),Bash({script} status *),Bash({script} stop *),Bash({script} resume *),Bash({script} merge *),Bash({script} -*),Bash({script} * -*)\n"
         )
     }
 
@@ -7395,6 +7422,41 @@ if (args[0] === 'agents') {
         apply(&off, &[]).unwrap();
     }
 
+    /// The scratch projects of the proof script of ticket a-plan-run-can-write-only-into-dispatch.
+    /// It runs only on request: the proof script sets PLAN_WRITE_PROOF_DIR, starts it with
+    /// `--ignored`, and starts real Claude Code sessions in the projects `off` and `on` (the switch
+    /// "Measure before the plan"). Each project starts with the old rule on the whole task folder,
+    /// so the proof also shows that Apply removes it. `CLAUDE.md` goes: the rules do not depend on
+    /// it, and its text about plan runs would keep the session of the proof from its tool calls.
+    /// The local settings must stay out of git: Claude Code 2.1.319 ignores that file when git
+    /// tracks it (seen in this proof: the allow rules had no effect until the file was untracked).
+    #[test]
+    #[ignore]
+    fn plan_write_proof_projects() {
+        let Ok(dir) = std::env::var("PLAN_WRITE_PROOF_DIR") else { return };
+        let dir = PathBuf::from(dir);
+        for (name, measure) in [("off", false), ("on", true)] {
+            let root = dir.join(name);
+            fs::create_dir_all(&root).unwrap();
+            let project = Project { reports: root.join(TASKS_DIR), root, in_git: true };
+            git_init(&project);
+            write_file(&project.root.join("README.md"), "scratch project\n").unwrap();
+            write_file(&project.local_settings(), &json!({ "permissions": { "allow": [format!("Edit({}/**)", project.rule_path())] } }).to_string()).unwrap();
+            apply(&project, &[]).unwrap();
+            if measure {
+                set_measure(&project, true);
+                write_file(&project.measure_commands_file(), "cmd /c echo measured-by-the-proof\n").unwrap();
+                apply(&project, &[]).unwrap();
+            }
+            write_file(&project.briefs().join("t-1.md"), "# t-1: a scratch task\n").unwrap();
+            write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+            fs::remove_file(project.instructions()).unwrap();
+            run_git(&project.root, &["add", "--all"]).unwrap();
+            run_git(&project.root, &["commit", "-q", "-m", "scratch setup"]).unwrap();
+            assert!(!project.local_settings_tracked(), "git must not track the local settings");
+        }
+    }
+
     #[test]
     fn the_script_parses_and_drives_the_two_runs() {
         let project = scratch("script");
@@ -7427,8 +7489,9 @@ if (args[0] === 'agents') {
         let start = last_call(&fake);
         assert!(start[0].starts_with("Plan ticket t-1. Read the brief "), "{start:?}");
         assert_eq!(&start[1..6], ["--bg", "--name", "t-1 [plan]", "--model", "fable"]);
-        assert_eq!(start[start.len() - 3], "Read,Grep,Glob,Bash,WebFetch,Write");
-        assert_eq!(start.last().unwrap(), &format!("Bash(git status*),Bash(git log *),Bash(git diff *),WebFetch,Write({}/plans/**)", project.rule_path()));
+        assert_eq!(start[start.len() - 5], "Read,Grep,Glob,Bash,WebFetch,Write");
+        assert_eq!(start[start.len() - 3], plan_allowed(&project));
+        assert_eq!(start.last().unwrap(), &plan_denied(&project));
         // The session file names the session of the plan run (ticket task-tokens); claude printed bg-1.
         assert!(out.contains("bg-1"), "the script writes the output of claude on: {out}");
         assert_eq!(read(&project.session_file("t-1")), "plan sess-1\n");
@@ -7580,7 +7643,7 @@ if (args[0] === 'agents') {
         assert_eq!(read(&project.reports.join("t-1.state")), "planning\n");
         let plan = last_call(&fake);
         assert_eq!(&plan[1..8], ["--resume", "sess-1", "--bg", "--name", "t-1 [plan]", "--model", "fable"]);
-        assert_eq!(plan.last().unwrap(), &format!("Bash(git status*),Bash(git log *),Bash(git diff *),WebFetch,Write({}/plans/**)", project.rule_path()));
+        assert_eq!(plan.last().unwrap(), &plan_denied(&project));
         // A claude that fails writes stopped back, so the card shows Resume again.
         write_file(&project.reports.join("t-1.state"), "stopped\n").unwrap();
         write_file(&fake.join("fail.txt"), "3").unwrap();
@@ -8163,7 +8226,7 @@ if (args[0] === 'agents') {
         assert_eq!(code, 0, "{text}");
         let call = last_call(&fake);
         assert!(call[0].contains(&clone.plans().join("t-1.md").to_string_lossy().into_owned()), "{call:?}");
-        assert!(call.iter().any(|arg| arg.contains("Write(.dispatch/plans/**)")), "{call:?}");
+        assert!(call.iter().any(|arg| arg.contains("Edit(.dispatch/plans/**)")), "{call:?}");
         assert!(!call.iter().any(|arg| arg.contains(&origin)), "{call:?}");
         assert_eq!(read(&fake.join("cwd.txt")).to_lowercase(), clone.root.to_string_lossy().to_lowercase());
 
