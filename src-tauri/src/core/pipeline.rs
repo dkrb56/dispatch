@@ -2658,26 +2658,27 @@ const PLAN_DEFAULT: (&str, &str) = ("fable", "xhigh");
 const WORK_DEFAULT: (&str, &str) = ("opus", "xhigh");
 
 /// The fixed part of the plan run, one argument per line: no permission prompt; the four tools
-/// that only read plus Write, and no Edit, Agent or question tool; three git commands that only
-/// read; and Write allowed in the plans folder only. Under `dontAsk` every other write is refused
-/// without a prompt. There is no Edit tool because the local settings allow Edit on the whole
-/// reports folder, which would reach a planner that had the tool. With "Measure before the plan"
-/// on, the list also allows the `measure` verb of the worker script, which runs only the listed
-/// commands, and Write in the scratch folder of the measuring; off, the lines are those of 0.1.54.
+/// that only read, WebFetch so that a plan can read a web page that its ticket names, plus Write,
+/// and no Edit, Agent or question tool; three git commands that only read; and Write allowed in
+/// the plans folder only. Under `dontAsk` every other write is refused without a prompt. There is
+/// no Edit tool because the local settings allow Edit on the whole reports folder, which would
+/// reach a planner that had the tool. With "Measure before the plan" on, the list also allows the
+/// `measure` verb of the worker script, which runs only the listed commands, and Write in the
+/// scratch folder of the measuring.
 fn plan_fixed_lines(project: &Project) -> Result<Vec<String>, String> {
     let rule_path = project.rule_path();
     let plans = format!("{rule_path}/plans/**");
     let allowed = if project.options().measure_before_plan {
         let script = script_command(&project.reports_text());
-        format!("Bash(git status*),Bash(git log *),Bash(git diff *),Bash({script} measure *),Write({plans}),Write({rule_path}/measure/**)")
+        format!("Bash(git status*),Bash(git log *),Bash(git diff *),Bash({script} measure *),WebFetch,Write({plans}),Write({rule_path}/measure/**)")
     } else {
-        format!("Bash(git status*),Bash(git log *),Bash(git diff *),Write({plans})")
+        format!("Bash(git status*),Bash(git log *),Bash(git diff *),WebFetch,Write({plans})")
     };
     Ok(vec![
         "--permission-mode".to_string(),
         "dontAsk".to_string(),
         "--tools".to_string(),
-        "Read,Grep,Glob,Bash,Write".to_string(),
+        "Read,Grep,Glob,Bash,WebFetch,Write".to_string(),
         "--allowedTools".to_string(),
         allowed,
     ])
@@ -5916,7 +5917,7 @@ pub(crate) mod tests {
     /// with the plans folder of this scratch project in its Write rule.
     fn plan_lines(project: &Project, choice_lines: &str) -> String {
         format!(
-            "{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,Write\n--allowedTools\nBash(git status*),Bash(git log *),Bash(git diff *),Write({}/plans/**)\n",
+            "{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,WebFetch,Write\n--allowedTools\nBash(git status*),Bash(git log *),Bash(git diff *),WebFetch,Write({}/plans/**)\n",
             project.rule_path()
         )
     }
@@ -7128,7 +7129,7 @@ if (args[0] === 'agents') {
         let rule = project.rule_path();
         let script = script_command(&project.reports_text());
         format!(
-            "{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,Write\n--allowedTools\nBash(git status*),Bash(git log *),Bash(git diff *),Bash({script} measure *),Write({rule}/plans/**),Write({rule}/measure/**)\n"
+            "{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,WebFetch,Write\n--allowedTools\nBash(git status*),Bash(git log *),Bash(git diff *),Bash({script} measure *),WebFetch,Write({rule}/plans/**),Write({rule}/measure/**)\n"
         )
     }
 
@@ -7161,7 +7162,7 @@ if (args[0] === 'agents') {
         let project = scratch("measure-flags");
         apply(&project, &[0]).unwrap();
         let today = plan_lines(&project, "--model\nfable\n--effort\nxhigh\n");
-        assert_eq!(read(&project.plan_flags()), today, "off: the options of 0.1.54");
+        assert_eq!(read(&project.plan_flags()), today, "off: the options without measuring");
         let claude_off = fs::read_to_string(project.instructions()).unwrap();
         assert!(!claude_off.contains("measure-commands.txt"), "{claude_off}");
         assert!(open_steps(&project).is_empty());
@@ -7213,7 +7214,7 @@ if (args[0] === 'agents') {
         assert!(!options.measure_before_plan && options.auto_approve && !options.triage_name, "the other settings stay");
         // The same file has no field for "Pause tasks" (ticket pause-tasks): it is off.
         assert!(!options.paused);
-        assert!(plan_flags_current(&project), "the plan options of 0.1.54 are current");
+        assert!(plan_flags_current(&project), "the plan options are current");
         assert_eq!(read(&project.plan_flags()), plan_lines(&project, "--model\nfable\n--effort\nxhigh\n"));
         assert!(!project.section_body().contains("Measure before the plan"));
         let shown = plan(&project).unwrap();
@@ -7426,8 +7427,8 @@ if (args[0] === 'agents') {
         let start = last_call(&fake);
         assert!(start[0].starts_with("Plan ticket t-1. Read the brief "), "{start:?}");
         assert_eq!(&start[1..6], ["--bg", "--name", "t-1 [plan]", "--model", "fable"]);
-        assert_eq!(start[start.len() - 3], "Read,Grep,Glob,Bash,Write");
-        assert_eq!(start.last().unwrap(), &format!("Bash(git status*),Bash(git log *),Bash(git diff *),Write({}/plans/**)", project.rule_path()));
+        assert_eq!(start[start.len() - 3], "Read,Grep,Glob,Bash,WebFetch,Write");
+        assert_eq!(start.last().unwrap(), &format!("Bash(git status*),Bash(git log *),Bash(git diff *),WebFetch,Write({}/plans/**)", project.rule_path()));
         // The session file names the session of the plan run (ticket task-tokens); claude printed bg-1.
         assert!(out.contains("bg-1"), "the script writes the output of claude on: {out}");
         assert_eq!(read(&project.session_file("t-1")), "plan sess-1\n");
@@ -7579,7 +7580,7 @@ if (args[0] === 'agents') {
         assert_eq!(read(&project.reports.join("t-1.state")), "planning\n");
         let plan = last_call(&fake);
         assert_eq!(&plan[1..8], ["--resume", "sess-1", "--bg", "--name", "t-1 [plan]", "--model", "fable"]);
-        assert_eq!(plan.last().unwrap(), &format!("Bash(git status*),Bash(git log *),Bash(git diff *),Write({}/plans/**)", project.rule_path()));
+        assert_eq!(plan.last().unwrap(), &format!("Bash(git status*),Bash(git log *),Bash(git diff *),WebFetch,Write({}/plans/**)", project.rule_path()));
         // A claude that fails writes stopped back, so the card shows Resume again.
         write_file(&project.reports.join("t-1.state"), "stopped\n").unwrap();
         write_file(&fake.join("fail.txt"), "3").unwrap();
