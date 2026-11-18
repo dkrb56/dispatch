@@ -162,6 +162,7 @@ pub fn run(
         "set_measure_commands" => json(pipeline::set_measure_commands(a.req("cwd")?, a.req("text")?)?),
         "set_merge_gate" => json(pipeline::set_merge_gate(a.req("cwd")?, a.req("text")?)?),
         "set_checks" => json(pipeline::set_checks(a.req("cwd")?, a.req("text")?)?),
+        "find_checks" => json(pipeline::find_checks(a.req("cwd")?, a.req("text")?)?),
         "task_list" => json(pipeline::task_list(a.req("cwd")?)?),
         "task_evidence" => json(pipeline::task_evidence(a.req("cwd")?, a.req("id")?)?),
         "ticket_add" => json(tickets::ticket_add_in(

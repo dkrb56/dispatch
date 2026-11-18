@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::core::info::{file_entry, git, FileEntry, NoWindow};
+use crate::core::testfind::find_tests;
 use crate::core::{err, pty::session_flags};
 
 /// The start of the heading of the section that the setup adds to `CLAUDE.md`.
@@ -327,7 +328,8 @@ pub struct Plan {
     measure_commands: String,
     /// The text of `merge-gate.txt`, for the box under the switch "Task branches".
     merge_gate: String,
-    /// The text of `checks.txt`, for the box "Checks" (ticket task-checks).
+    /// The text of `checks.txt`, for the box "Checks" (ticket task-checks). Without the file, the
+    /// tests that Dispatch found in the project.
     checks: String,
 }
 
@@ -2219,6 +2221,9 @@ fn plan(project: &Project) -> Result<Plan, String> {
     let script_done = fs::read_to_string(project.script()).is_ok_and(|text| text.replace("\r\n", "\n") == WORKER_SCRIPT);
     // The reports folder of the old layout, while it still exists: Apply moves it.
     let old_reports = project.old_reports().filter(|old| old.is_dir());
+    // A saved list stays as it is, also an empty one: the user turned the checks off with it.
+    let checks_saved = project.checks_file().exists();
+    let found_checks = if checks_saved { String::new() } else { found_checks_text(project) };
     let steps = vec![
         Step {
             title: "Task files",
@@ -2301,11 +2306,29 @@ fn plan(project: &Project) -> Result<Plan, String> {
         branches_step(project, options.task_branches),
         ignore_step(project, options.ignore_tasks),
         notes_step(project, options.notes_in_git),
+        checks_step(project, checks_saved, &found_checks),
     ];
     let measure_commands = fs::read_to_string(project.measure_commands_file()).unwrap_or_default().replace("\r\n", "\n");
     let merge_gate = fs::read_to_string(project.merge_gate_file()).unwrap_or_default().replace("\r\n", "\n");
-    let checks = fs::read_to_string(project.checks_file()).unwrap_or_default().replace("\r\n", "\n");
+    let checks = if checks_saved { fs::read_to_string(project.checks_file()).unwrap_or_default().replace("\r\n", "\n") } else { found_checks };
     Ok(Plan { root: show(project.root.clone()), git: project.in_git, options, steps, measure_commands, merge_gate, checks })
+}
+
+/// The tests that Dispatch finds in the files of the project, as lines of the list of checks.
+fn found_checks_text(project: &Project) -> String {
+    find_tests(&project.root).iter().map(|(name, command)| format!("{name} | {command}\n")).collect()
+}
+
+/// The step "Checks": To do while the project has tests and no saved list. Apply saves the tests found.
+fn checks_step(project: &Project, saved: bool, found: &str) -> Step {
+    let detail = if saved {
+        "The list of checks is saved. The box Checks on the tab Branches and checks changes it, and Find tests adds new tests.".to_string()
+    } else if found.is_empty() {
+        "Dispatch found no tests in this project. Write them in the box Checks on the tab Branches and checks when the project has some.".to_string()
+    } else {
+        format!("Dispatch found these tests in the files of the project. Apply saves them as the checks of the project; each plan then recommends some, and you tick them on the task card. The box Checks on the tab Branches and checks changes the list.\n\n{found}")
+    };
+    Step { title: "Checks", target: project.checks_file().to_string_lossy().into_owned(), done: saved || found.is_empty(), detail, rules: None }
 }
 
 /// The step "Task branches" (ticket task-branches). Off, it is done and changes nothing. On, it is
@@ -5120,6 +5143,11 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
         default_flags(project)?;
         join_tickets(project)?;
     }
+    // After the move of the old folder, which may hold a list. The new list changes the section below.
+    let checks_added = !done(11) && !project.checks_file().exists();
+    if checks_added {
+        write_file(&project.checks_file(), &found_checks_text(project))?;
+    }
     if !done(1) {
         add_rules(project)?;
         // The local settings stay on each computer (ticket second-computer, user decision 3).
@@ -5133,7 +5161,7 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
     if !done(2) {
         set_isolation(project)?;
     }
-    if !done(3) {
+    if !done(3) || checks_added {
         replace_section(project, SECTION_HEADING, &project.section())?;
     }
     if !done(4) && !rules.is_empty() {
@@ -5616,12 +5644,34 @@ pub fn set_merge_gate(cwd: String, text: String) -> Result<Plan, String> {
 /// each line trimmed, empty lines at the end dropped. The steps then show what Apply must change.
 pub fn set_checks(cwd: String, text: String) -> Result<Plan, String> {
     let project = Project::find(&cwd)?;
+    write_file(&project.checks_file(), &checks_box_text(&text))?;
+    plan(&project)
+}
+
+/// The text of the box "Checks" as the list file holds it.
+fn checks_box_text(text: &str) -> String {
     let mut lines: Vec<&str> = text.lines().map(str::trim).collect();
     while lines.last().is_some_and(|line| line.is_empty()) {
         lines.pop();
     }
-    let text = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
-    write_file(&project.checks_file(), &text)?;
+    if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) }
+}
+
+/// The button Find tests: adds the tests found in the project to the text of the box and saves the
+/// list. Each line of the box stays; a test with a name or a command of the list is not added.
+pub fn find_checks(cwd: String, text: String) -> Result<Plan, String> {
+    let project = Project::find(&cwd)?;
+    let mut list = checks_box_text(&text);
+    let known = parse_checks(&list);
+    for (name, command) in find_tests(&project.root) {
+        if !known.iter().any(|check| check.name.eq_ignore_ascii_case(&name) || check.command == command) {
+            list.push_str(&format!("{name} | {command}\n"));
+        }
+    }
+    // Nothing found and nothing saved: no empty file, which would mean that the user turned the checks off.
+    if !list.is_empty() || project.checks_file().exists() {
+        write_file(&project.checks_file(), &list)?;
+    }
     plan(&project)
 }
 
@@ -6126,6 +6176,41 @@ pub(crate) mod tests {
         assert_eq!(rows, vec![("unit", true, Some(false)), ("lint", true, Some(true)), ("net", false, Some(false))]);
         assert_eq!(serde_json::to_value(&task.checks[0]).unwrap()["chosen"], json!(false));
         assert!(task_checks(cwd, "t-2".into(), Vec::new()).unwrap_err().contains("no plan at"));
+        clean(&project);
+    }
+
+    #[test]
+    fn apply_saves_the_tests_found_and_a_saved_list_stays() {
+        let project = scratch("found-checks");
+        let cwd = project.root.to_string_lossy().into_owned();
+        write_file(&project.root.join("package.json"), r#"{"scripts":{"test":"vitest run","lint":"eslint ."}}"#).unwrap();
+        // Before Apply nothing is written; the box shows the tests and the step is To do.
+        let shown = pipeline_plan(cwd.clone()).unwrap();
+        assert_eq!(shown.checks, "test | npm run test\nlint | npm run lint\n");
+        assert!(open_steps(&project).contains(&"Checks"), "{:?}", open_steps(&project));
+        assert!(!project.checks_file().exists());
+        // Apply saves the list, and the section of CLAUDE.md names it in the same run.
+        pipeline_apply(cwd.clone(), Vec::new()).unwrap();
+        assert_eq!(read(&project.checks_file()), "test | npm run test\nlint | npm run lint\n");
+        assert!(read(&project.instructions()).contains("checks.txt"));
+        let open = open_steps(&project);
+        assert!(!open.contains(&"Checks") && !open.contains(&"Section in CLAUDE.md"), "{open:?}");
+        // An emptied box stays empty: the tests do not come back by themselves.
+        assert_eq!(set_checks(cwd.clone(), String::new()).unwrap().checks, "");
+        assert!(!open_steps(&project).contains(&"Checks"));
+        // Find tests adds only what the list lacks and keeps the lines of the user.
+        let text = "# mine\nunit | npm run test\n".to_string();
+        assert_eq!(find_checks(cwd, text).unwrap().checks, "# mine\nunit | npm run test\nlint | npm run lint\n");
+        clean(&project);
+    }
+
+    #[test]
+    fn find_tests_without_tests_saves_no_list() {
+        let project = scratch("no-tests");
+        let shown = find_checks(project.root.to_string_lossy().into_owned(), String::new()).unwrap();
+        assert_eq!(shown.checks, "");
+        assert!(!project.checks_file().exists());
+        assert!(!open_steps(&project).contains(&"Checks"));
         clean(&project);
     }
 

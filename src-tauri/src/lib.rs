@@ -73,6 +73,7 @@ pub fn run() {
             commands::set_measure_commands,
             commands::set_merge_gate,
             commands::set_checks,
+            commands::find_checks,
             commands::task_list,
             commands::task_evidence,
             commands::ticket_add,

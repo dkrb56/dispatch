@@ -81,6 +81,8 @@ const measureEl = document.querySelector<HTMLTextAreaElement>("#setup-measure-co
 const gateEl = document.querySelector<HTMLTextAreaElement>("#setup-merge-gate")!;
 /** The box with the checks of the project (ticket task-checks). It has no switch: an empty list is off. */
 const checksEl = document.querySelector<HTMLTextAreaElement>("#setup-checks")!;
+/** The button that adds the tests that Dispatch finds in the project to that box. */
+const findChecksEl = document.querySelector<HTMLButtonElement>("#setup-find-checks")!;
 
 /** The folder for which the dialog shows the steps, and its host (remote-multi-host). */
 let folder: string | null = null;
@@ -224,6 +226,7 @@ function show(plan: Plan): void {
   gateEl.disabled = !plan.options.taskBranches;
   if (document.activeElement !== checksEl) checksEl.value = plan.checks ?? "";
   checksEl.disabled = false;
+  findChecksEl.disabled = false;
   stepsEl.replaceChildren(
     ...plan.steps.map((step) => {
       const item = document.createElement("details");
@@ -248,7 +251,7 @@ function show(plan: Plan): void {
 }
 
 /** Asks the backend for the steps, or to do them, and shows the result. */
-async function run(command: "pipeline_plan" | "pipeline_apply" | "set_project_options" | "set_measure_commands" | "set_merge_gate" | "set_checks", options?: Options, text?: string): Promise<void> {
+async function run(command: "pipeline_plan" | "pipeline_apply" | "set_project_options" | "set_measure_commands" | "set_merge_gate" | "set_checks" | "find_checks", options?: Options, text?: string): Promise<void> {
   applyEl.disabled = true;
   // The positions of the checked working rules. Apply adds these.
   const rules = [...stepsEl.querySelectorAll<HTMLInputElement>(".setup-rules input:checked")].map((box) => Number(box.dataset.rule));
@@ -290,6 +293,17 @@ export function initPipeline(
   // The list of checks is saved the same way (ticket task-checks).
   checksEl.addEventListener("change", () => {
     if (folder) void run("set_checks", undefined, checksEl.value);
+  });
+  // The button sends the text of the box, so a line that the user just typed stays.
+  findChecksEl.addEventListener("click", async () => {
+    if (!folder) return;
+    const count = () => checksEl.value.split("\n").filter((line) => line.trim()).length;
+    const before = count();
+    findChecksEl.disabled = true;
+    await run("find_checks", undefined, checksEl.value);
+    findChecksEl.disabled = false;
+    const added = count() - before;
+    messageEl.textContent = `${added > 0 ? `Find tests added ${added} to the list.` : "Find tests found nothing new."} ${messageEl.textContent}`;
   });
   applyEl.addEventListener("click", async () => {
     if (!folder) return;
@@ -352,6 +366,7 @@ function open(host: HostId, target: string | null): void {
   gateEl.disabled = true;
   checksEl.value = "";
   checksEl.disabled = true;
+  findChecksEl.disabled = true;
   checkRun += 1;
   checkStateEl.textContent = "";
   checkListEl.replaceChildren();

@@ -241,6 +241,11 @@ pub fn set_checks(cwd: String, text: String) -> Result<Plan, String> {
 }
 
 #[tauri::command(async)]
+pub fn find_checks(cwd: String, text: String) -> Result<Plan, String> {
+    pipeline::find_checks(cwd, text)
+}
+
+#[tauri::command(async)]
 pub fn task_list(cwd: String) -> Result<TaskList, String> {
     pipeline::task_list(cwd)
 }

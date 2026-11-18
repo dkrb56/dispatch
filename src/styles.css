@@ -3988,6 +3988,10 @@ button.ticket-level {
   opacity: 0.5;
 }
 
+#setup-find-checks {
+  align-self: flex-start;
+}
+
 /* The Options window: the frame of the Help window, at most 760 px wide, one fixed height. */
 #options {
   box-sizing: border-box;

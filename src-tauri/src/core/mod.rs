@@ -19,6 +19,7 @@ pub mod rules;
 pub mod rules_check;
 pub mod status;
 pub mod store;
+pub mod testfind;
 pub mod tickets;
 pub mod tokens;
 pub mod update;
