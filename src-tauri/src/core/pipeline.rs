@@ -149,6 +149,10 @@ pub struct Options {
     /// force (ticket simpler-process, change 4). Needs task branches. Off at the start; a settings
     /// file without the field is off.
     push_after_merge: bool,
+    /// Dispatch merges the branch of a task with a done report by itself, through the merge verb and
+    /// after the gate command passed (ticket create-project-settings-option-to-auto). Needs task
+    /// branches and a gate command. Off at the start; a settings file without the field is off.
+    auto_merge: bool,
     /// Dispatch writes the brief from a New ticket of the tickets board and starts its plan run
     /// itself, without triage; a question still goes to triage (ticket simpler-process-tickets,
     /// change 1). Off at the start; a settings file without the field is off.
@@ -164,7 +168,7 @@ pub struct Options {
 // field it does not know, so such a file reads without an error.
 impl Default for Options {
     fn default() -> Self {
-        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, push_after_merge: false, tickets_start_plans: false, no_triage: false }
+        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, push_after_merge: false, auto_merge: false, tickets_start_plans: false, no_triage: false }
     }
 }
 
@@ -239,6 +243,13 @@ fn gate_checks_rule(reports: &str) -> String {
 /// task branches on (ticket simpler-process, change 4).
 fn push_rule() -> String {
     "- Push after the merge is on in this project: after the merge commit, the Merge button (and the merge of night mode) pushes the base to its upstream branch, never with force. A refused or failed push leaves the base merged on this computer, and the task card says so. Triage pushes nothing after a merge.
+".to_string()
+}
+
+/// The line of the "Background workers" section for a project with "Auto-merge finished tasks" on,
+/// task branches on and a gate command (ticket create-project-settings-option-to-auto).
+fn auto_merge_rule() -> String {
+    "- Auto-merge finished tasks is on in this project: Dispatch merges the branch of a task with a done report by itself, without the Merge click, after the gate command passed on the merged code, one merge at a time. A refused merge merges nothing and waits in the task card with the Merge button. Triage and the workers still never merge.
 ".to_string()
 }
 
@@ -817,6 +828,8 @@ impl Project {
         let plain = if options.start_plain_plans { plain_rule() } else { String::new() };
         let gate_checks = if options.checks_at_gate && options.task_branches && !self.merge_gate().is_empty() { gate_checks_rule(&reports) } else { String::new() };
         let push = if options.push_after_merge && options.task_branches { push_rule() } else { String::new() };
+        // "Auto-merge finished tasks" (ticket create-project-settings-option-to-auto): off, the line is empty.
+        let auto_merge = if options.auto_merge && options.task_branches && !self.merge_gate().is_empty() { auto_merge_rule() } else { String::new() };
         // "Tickets start their plan" (ticket simpler-process-tickets): off, the line is empty.
         let tickets = if options.tickets_start_plans { tickets_rule(&reports, &script) } else { String::new() };
         // "No triage" (ticket no-triage-a-project-switch-no-triage-in): off, the line is empty.
@@ -835,7 +848,7 @@ impl Project {
 {measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Notes for the work run (the facts from the code that the other sections do not hold, because the work run starts without the context of the plan run: how the touched code works, why an anchor was chosen, traps it saw, and the command that showed a fact; one fact per line, 15 lines maximum); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; each question, option and reason in everyday words for the user, who does not read the code: what changes for the user and what the user sees or does, not how the code does it; no file, function or command names and no terms of the code, or a short explanation of a term that must stay; the technical detail goes into Files to change, Notes for the work run or Steps; a question 20 words maximum and an option 15 words maximum, its reason not counted; for example, not `No: they follow the same rule; Setup pipeline still offers Commit to git` but `No, these files stop no task; you can still commit them in Setup pipeline`; the word HOLD stands in no other line of this section); Do not touch; Size (files); Work run (the advice of the plan run for the work run of this task: the line `model: <model>` (fable, opus, sonnet or haiku), the line `effort: <effort>` (low, medium, high, xhigh or max), then one line with the reason in plain words; the task card of Dispatch shows the advice at Approve, the user can change it, and the work run uses the result); Parts (optional: only when the work is too large for one work run, and never in the plan of a part: the Steps of the plan are the first piece, and the parts follow in their order after its work run; each part a numbered item `N. <title>` with the list lines `Level:` (simple, medium or hard), `Type:` (fix, feature, refactor or content), `Goal:` and the optional lines `Why:`, `Done when:`, `Do not change:`, `Context:`, `What I see:` and `What I expect:`; the task card of Dispatch shows the parts before Approve, and Approve opens one Backlog ticket per part, linked to the ticket of the plan; when a part is done, Dispatch moves the next one to New). No code in a plan.
 {checks}{gate_checks}- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; only that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which starts the work run as a new session on the options in `{reports}/work-flags.txt`, with the model and the effort of `{reports}/<ticket-id>.models` when it has them, with the brief, the plan and the user's decisions as its input, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The script refuses when an uncommitted change outside `{reports}/` touches a file of the task (a path of the section Files to change of its plan, or a file that its task branch changed), when the worker still runs, or when the task was stopped; other uncommitted changes stay where they are and hold no task ({tasks_git}).
 {plain}- The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It commits only the files that it changed, each by name, never with `git add -A`, `git add .` or `git commit -a`, and leaves every other change as it is. It never pushes or merges. The user decides the push.
-{branches}{push}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification says in the worker's own words what it ran and what that showed. Dispatch reads the commands of the work run from the transcripts and shows each under the report with its exit code and its last lines. A done report whose work run ran no command, or without a run of a chosen check, counts as working, and its ticket stays open.
+{branches}{push}{auto_merge}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification says in the worker's own words what it ran and what that showed. Dispatch reads the commands of the work run from the transcripts and shows each under the report with its exit code and its last lines. A done report whose work run ran no command, or without a run of a chosen check, counts as working, and its ticket stays open.
 - A worker starts no session and sends no message to a chat. It has no question tool. A question for the user goes into the report under the heading `## Questions`: numbered items, each with its options as list items, the recommended option first. Each option is one short line, because Dispatch shows it as a button and sends it back word for word; the question and each option follow the rule of plain words of the Decisions of a plan; the details stand above the questions. The worker then writes `state: needs-decision` and `needs: decision` and ends its turn, also when the question is about a permission. `needs: permission` means: a refused tool call stopped the work, the report names the refused call and the rule it needs, and the work goes on with a follow-up `Continue` once the user changed the rule. The user answers in the task card of Dispatch, and the answer arrives as a follow-up `Answer to question N: <option>`. An answered question never comes back unchanged: after the answer the worker takes the question out of its report or writes what it decided and did, and ends with `state: done` or a new question. A follow-up `Continue` after an answer means: take the answers as given and go on.
 - A follow-up goes through `{script} reply <ticket-id> \"<message>\"` and quotes the user's words exactly. The script takes the options of the run from `{reports}/<ticket-id>.state`.
 - Triage does no implementation. It classifies, writes briefs, starts the plan run, shows the plan, relays the yes, checks results and reports to the user.
@@ -4304,6 +4317,9 @@ pub struct TaskList {
     /// The setting of the project, with task branches on: Merge pushes the base after the merge
     /// (ticket simpler-process, change 4).
     push_after_merge: bool,
+    /// The setting of the project, with task branches on: Dispatch merges a task with a done report
+    /// by itself (ticket create-project-settings-option-to-auto).
+    auto_merge: bool,
     /// The setting of the project: Dispatch starts the plan run of a New ticket itself (ticket
     /// simpler-process-tickets).
     tickets_start_plans: bool,
@@ -4681,7 +4697,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     }
     let setup = setup_time(&project);
     let options = project.options();
-    Ok((TaskList { tasks, dirty, auto_approve: options.auto_approve, start_plain_plans: options.start_plain_plans, push_after_merge: options.push_after_merge && options.task_branches, tickets_start_plans: options.tickets_start_plans, no_triage: options.no_triage, paused: options.paused, setup, tickets, repairs, merging, gate: project.merge_gate(), actions }, moved))
+    Ok((TaskList { tasks, dirty, auto_approve: options.auto_approve, start_plain_plans: options.start_plain_plans, push_after_merge: options.push_after_merge && options.task_branches, auto_merge: options.auto_merge && options.task_branches, tickets_start_plans: options.tickets_start_plans, no_triage: options.no_triage, paused: options.paused, setup, tickets, repairs, merging, gate: project.merge_gate(), actions }, moved))
 }
 
 /// Writes the branch file of each task that has none while its branch `task/<ticket>` exists and is
@@ -8183,6 +8199,12 @@ if (args[0] === 'agents') {
         write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
     }
 
+    /// Sets "Auto-merge finished tasks" in the settings file, as the switch does.
+    fn set_auto_merge(project: &Project, on: bool) {
+        let options = Options { auto_merge: on, ..project.options() };
+        write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
+    }
+
     #[test]
     fn an_old_settings_file_has_the_three_new_switches_off() {
         let project = scratch("simpler-old");
@@ -8249,6 +8271,67 @@ if (args[0] === 'agents') {
         apply(&project, &[]).unwrap();
         for (at, file) in files.iter().enumerate() {
             assert!(fs::read(file).unwrap() == first[at], "{} changed with the switches", file.display());
+        }
+        clean(&project);
+    }
+
+    #[test]
+    fn an_old_settings_file_has_auto_merge_off() {
+        let project = scratch("auto-merge-old");
+        apply(&project, &[0]).unwrap();
+        // The settings file of the version before: no field for this switch.
+        write_file(&project.options_file(), "{\n  \"shortReports\": true,\n  \"triageName\": true,\n  \"autoApprove\": false,\n  \"measureBeforePlan\": false,\n  \"taskBranches\": false,\n  \"ignoreTasks\": false,\n  \"notesInGit\": false,\n  \"paused\": false,\n  \"startPlainPlans\": false,\n  \"checksAtGate\": false,\n  \"pushAfterMerge\": false,\n  \"ticketsStartPlans\": false,\n  \"noTriage\": false\n}\n").unwrap();
+        let files = [project.options_file(), project.plan_flags(), project.work_flags(), project.instructions(), project.triage_prompt(), project.local_settings(), project.settings(), project.script()];
+        let before: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+        assert!(!project.options().auto_merge);
+        assert_eq!(serde_json::to_value(&plan(&project).unwrap().options).unwrap()["autoMerge"], json!(false));
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(serde_json::to_value(&list).unwrap()["autoMerge"], json!(false));
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        apply(&project, &[]).unwrap();
+        let after: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+        assert!(before == after, "Apply changed a file of the old project");
+        clean(&project);
+    }
+
+    #[test]
+    fn auto_merge_changes_only_its_line_of_the_section() {
+        let project = scratch("auto-merge-section");
+        apply(&project, &[0]).unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        let files = [project.script(), project.plan_flags(), project.work_flags()];
+        let first: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+        let listed = |cwd: &str| serde_json::to_value(&task_list(cwd.to_string()).unwrap()).unwrap()["autoMerge"].clone();
+        let before = project.section_body();
+        assert!(!before.contains("Auto-merge finished tasks"));
+
+        // Without Task branches: no line, and the task list says off.
+        set_auto_merge(&project, true);
+        assert_eq!(project.section_body(), before);
+        assert_eq!(listed(&cwd), json!(false));
+
+        // Task branches without a gate command: no line, and the task list says on.
+        set_auto_merge(&project, false);
+        set_branches(&project, true);
+        let with_branches = project.section_body();
+        set_auto_merge(&project, true);
+        assert_eq!(project.section_body(), with_branches, "no gate command: no line");
+        assert_eq!(listed(&cwd), json!(true));
+
+        // Task branches and a gate command: the one line, before the line of the report.
+        set_auto_merge(&project, false);
+        set_merge_gate(cwd.clone(), "npm test\n".to_string()).unwrap();
+        let with_gate = project.section_body();
+        assert_eq!(listed(&cwd), json!(false));
+        set_auto_merge(&project, true);
+        let on = project.section_body();
+        assert!(on.contains(&format!("{}- A worker ends with a report", auto_merge_rule())), "{on}");
+        assert_eq!(on.replacen(&auto_merge_rule(), "", 1), with_gate);
+
+        // The script and the options files are the same text: the window reads the switch.
+        apply(&project, &[]).unwrap();
+        for (at, file) in files.iter().enumerate() {
+            assert!(fs::read(file).unwrap() == first[at], "{} changed with the switch", file.display());
         }
         clean(&project);
     }
@@ -9977,6 +10060,51 @@ if (args[0] === 'agents') {
         set_merge_gate(cwd.clone(), "echo the gate of the proof refuses every merge & exit 1\n".to_string()).unwrap();
         let list = task_list(cwd.clone()).unwrap();
         assert!(list.tickets.iter().any(|one| one.id == ticket.id && one.status == crate::core::tickets::DONE), "{:?}", list.tickets);
+        fs::write(dir.join("project.txt"), &cwd).unwrap();
+        fs::write(dir.join("base.txt"), &branch.base).unwrap();
+    }
+
+    /// Builds the scratch project of the proof of ticket create-project-settings-option-to-auto when
+    /// the variable AUTO_MERGE_PROOF_DIR names an empty folder: `<dir>/proj` with Task branches on, the
+    /// ticket t-1 through plan, approve and report with the fake worker, the checkout back on the base,
+    /// and one ticket of the board for it. AUTO_MERGE_PROOF_MODE says the scene: `pass` (the switch on,
+    /// a gate that passes), `fail` (the switch on, a gate that fails) or `off` (the switch off, a gate
+    /// that passes). Each run of the gate adds a line to `.dispatch/merge/gate-runs.txt`, which git
+    /// ignores. It merges nothing; the test copy must do that without a click.
+    #[test]
+    #[ignore]
+    fn auto_merge_proof_project() {
+        let Ok(dir) = std::env::var("AUTO_MERGE_PROOF_DIR") else { return };
+        let mode = std::env::var("AUTO_MERGE_PROOF_MODE").unwrap_or_default();
+        let dir = PathBuf::from(dir);
+        let root = dir.join("proj");
+        fs::create_dir_all(&root).unwrap();
+        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false };
+        git_init(&project);
+        project.in_git = true;
+        write_file(&project.root.join("README.md"), "scratch project of the auto-merge proof\n").unwrap();
+        apply(&project, &[0]).unwrap();
+        set_branches(&project, true);
+        apply(&project, &[]).unwrap();
+        git_out(&project, &["add", "--all"]);
+        git_out(&project, &["commit", "-q", "-m", "scratch setup"]);
+        let fake = fake_claude(&dir);
+        write_file(&fake.join("work.txt"), "the work of the task\n").unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        let ticket = crate::core::tickets::ticket_add(cwd.clone(), "Merge a finished task without a click".to_string(), None, None, None).unwrap();
+        crate::core::tickets::ticket_update(cwd.clone(), ticket.id.clone(), None, None, Some("t-1".to_string()), None, None).unwrap();
+        crate::core::tickets::ticket_move(cwd.clone(), ticket.id.clone(), "new".to_string(), vec![ticket.id.clone()], None).unwrap();
+        git_out(&project, &["add", "--all"]);
+        git_out(&project, &["commit", "-q", "-m", "the ticket of the proof"]);
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.exists && !branch.checked_out && branch.merge.is_empty(), "{branch:?}");
+        let exit = if mode == "fail" { 1 } else { 0 };
+        set_merge_gate(cwd.clone(), format!("echo run>> .dispatch\\merge\\gate-runs.txt & exit {exit}\n")).unwrap();
+        set_auto_merge(&project, mode != "off");
+        let list = serde_json::to_value(&task_list(cwd.clone()).unwrap()).unwrap();
+        assert_eq!(list["autoMerge"], json!(mode != "off"));
         fs::write(dir.join("project.txt"), &cwd).unwrap();
         fs::write(dir.join("base.txt"), &branch.base).unwrap();
     }

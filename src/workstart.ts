@@ -151,27 +151,33 @@ export interface MergeCandidate {
   state: string | null;
   /** A click of the task runs now. */
   busy: boolean;
-  /** Night mode tried this merge already for the same report time. */
+  /** Night mode or auto-merge tried this merge already for the same report time. */
   tried: boolean;
+  /** The task cannot merge yet: the checkout is on its branch, or its files have uncommitted changes. */
+  held?: boolean;
 }
 
-/** The facts of one project for the night merge. */
+/** The facts of one project for the night merge and for "Auto-merge finished tasks". */
 export interface MergeFacts extends BusyFacts {
   /** Night mode of the host of the project. */
   night: boolean;
-  /** The project has a gate command: night mode merges only behind a check that passes. */
+  /** The switch "Auto-merge finished tasks" of the project (ticket create-project-settings-option-to-auto). */
+  auto?: boolean;
+  /** The project has a gate command: Dispatch merges by itself only behind a check that passes. */
   gate: boolean;
   /** The tasks in the order of the task list. */
   tasks: MergeCandidate[];
 }
 
 /**
- * The task whose branch night mode merges at this poll, or null (ticket task-branches-blocked-work):
- * night mode on, a gate command, the project not busy and no click of any of its tasks running, and
- * the first task whose branch waits for Merge with a done report and no earlier try for that report.
- * The merge runs the gate first, so a check that fails merges nothing and the branch waits for the user.
+ * The task whose branch Dispatch merges by itself at this poll, or null (ticket
+ * task-branches-blocked-work): night mode or the switch "Auto-merge finished tasks" on, a gate command,
+ * the project not busy and no click of any of its tasks running, and the first task whose branch waits
+ * for Merge with a done report and no earlier try for that report. With the switch on, a held task is
+ * skipped and keeps its try. The merge runs the gate first, so a check that fails merges nothing and
+ * the branch waits for the user.
  */
 export function chooseNightMerge(facts: MergeFacts): string | null {
-  if (!facts.night || !facts.gate || projectBusy(facts) || facts.tasks.some((task) => task.busy)) return null;
-  return facts.tasks.find((task) => task.waits && task.state === "done" && !task.tried)?.name ?? null;
+  if ((!facts.night && !facts.auto) || !facts.gate || projectBusy(facts) || facts.tasks.some((task) => task.busy)) return null;
+  return facts.tasks.find((task) => task.waits && task.state === "done" && !task.tried && !(facts.auto && task.held))?.name ?? null;
 }

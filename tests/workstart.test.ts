@@ -251,12 +251,48 @@ test("the night merge needs night mode, a gate, a free project and a done report
   assert.equal(chooseNightMerge(mergeNight([waiting("a", { waits: false }), waiting("b")])), "b");
 });
 
+// Ticket create-project-settings-option-to-auto: the switch merges by day under the same rules.
+const autoDay = (tasks: MergeCandidate[], extra: Partial<MergeFacts> = {}) => mergeNight(tasks, { night: false, auto: true, ...extra });
+
+test("auto-merge: the switch merges a done task by day", () => {
+  assert.equal(chooseNightMerge(autoDay([waiting("a")])), "a");
+  assert.equal(chooseNightMerge(autoDay([waiting("a")], { auto: false })), null, "switch off, by day: only the click merges");
+});
+
+test("auto-merge: no gate command, no merge", () => {
+  assert.equal(chooseNightMerge(autoDay([waiting("a")], { gate: false })), null);
+});
+
+test("auto-merge: a busy or paused project does not merge", () => {
+  for (const busy of [{ merging: "b" }, { running: "b" }, { leased: "b" }, { paused: true }]) {
+    assert.equal(chooseNightMerge(autoDay([waiting("a")], busy)), null, JSON.stringify(busy));
+  }
+  assert.equal(chooseNightMerge(autoDay([waiting("a"), { ...waiting("b"), waits: false, busy: true }])), null, "a click of another task runs");
+});
+
+test("auto-merge: only a done report merges, with one try per report", () => {
+  for (const state of ["failed", "needs-decision", "working", null]) {
+    assert.equal(chooseNightMerge(autoDay([waiting("a", { state })])), null, String(state));
+  }
+  assert.equal(chooseNightMerge(autoDay([waiting("a", { tried: true })])), null);
+});
+
+test("auto-merge: a held task is skipped, the next one merges, and it merges once it is free", () => {
+  assert.equal(chooseNightMerge(autoDay([waiting("a", { held: true }), waiting("b")])), "b");
+  assert.equal(chooseNightMerge(autoDay([waiting("a", { held: true })])), null);
+  assert.equal(chooseNightMerge(autoDay([waiting("a", { held: false })])), "a");
+});
+
+test("night mode without the switch ignores held", () => {
+  assert.equal(chooseNightMerge(mergeNight([waiting("a", { held: true })])), "a");
+});
+
 test("main.ts: approvePlans merges at night before a start, and the line for triage says night mode", () => {
   const body = MAIN.slice(MAIN.indexOf("function approvePlans("), MAIN.indexOf("function nextQueued("));
   const merge = body.indexOf("chooseNightMerge(");
   assert.ok(merge > body.indexOf("nightDefaults(") && merge < body.indexOf("chooseStart("), "the night merge runs after the night answers and before a start");
   assert.match(body, /gate: project\.gate\.trim\(\) !== ""/);
-  assert.match(body, /void mergeTask\(merge, true\);\n\s*continue;/);
+  assert.match(body, /void mergeTask\(merge, night \? "night" : "auto"\);\n\s*continue;/);
   assert.match(MAIN, /`Night mode merged branch \$\{branch\.name\} of \$\{task\.name\}/);
   assert.doesNotMatch(MAIN, /Night mode never merges/);
 });

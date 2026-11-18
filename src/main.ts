@@ -77,7 +77,7 @@ import { type AskDecision, askAbout, askBlocked, askChatLine, askLine, CHAT_ASK_
 import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
-import { mergedWords, outsideLine, pushWords, refusalGoes } from "./merged";
+import { autoMergeNote, type AutoMergeFacts, mergedWords, outsideLine, pushWords, refusalGoes } from "./merged";
 import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
 import { type CheckInfo, checkRows, checksSentence, checksText, choiceNames, defaultChoice, type SavedWork, type WorkChoice, workChosen, workIsAdvice } from "./checks";
 import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards, triageFree } from "./pending";
@@ -2384,6 +2384,8 @@ interface TaskListReply {
   startPlainPlans?: boolean;
   /** The setting of the project, with task branches on: Merge pushes the base (ticket simpler-process). Absent from an older host. */
   pushAfterMerge?: boolean;
+  /** The setting of the project, with task branches on: Dispatch merges a done task itself (ticket create-project-settings-option-to-auto). Absent from an older host. */
+  autoMerge?: boolean;
   /** The setting of the project: Dispatch starts the plan run of a New ticket itself (ticket simpler-process-tickets). Absent from an older host. */
   ticketsStartPlans?: boolean;
   /** The setting of the project: no triage runs (ticket no-triage-a-project-switch-no-triage-in). Absent from an older host. */
@@ -2421,6 +2423,8 @@ interface ProjectTasks {
   startPlain: boolean;
   /** Merge pushes the base after the merge (ticket simpler-process). */
   pushAfterMerge: boolean;
+  /** Dispatch merges a task with a done report itself (ticket create-project-settings-option-to-auto). */
+  autoMerge: boolean;
   /** Dispatch writes the brief of a New ticket and starts its plan run itself (ticket simpler-process-tickets). */
   ticketsStartPlans: boolean;
   /** No triage runs: Dispatch starts the plan of every New ticket and tells no triage chat (ticket no-triage-a-project-switch-no-triage-in). */
@@ -2448,6 +2452,7 @@ function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTa
     autoApprove: reply.autoApprove,
     startPlain: reply.startPlainPlans ?? false,
     pushAfterMerge: reply.pushAfterMerge ?? false,
+    autoMerge: reply.autoMerge ?? false,
     ticketsStartPlans: reply.ticketsStartPlans ?? false,
     noTriage: reply.noTriage ?? false,
     paused: reply.paused ?? false,
@@ -2525,6 +2530,8 @@ let mergingTask: string | null = null;
 let gateCommand = "";
 /** Merge pushes in that project (ticket simpler-process). */
 let pushAfterMerge = false;
+/** Dispatch merges a done task itself in that project (ticket create-project-settings-option-to-auto). */
+let autoMerge = false;
 /** The setup time of that project: the chats that started before it are old. */
 let projectSetup: number | null = null;
 /** The plans that Dispatch approved itself, or tried to: the task name and the time of the plan file. One try per plan. */
@@ -2738,6 +2745,7 @@ async function refreshTasks(poll = false): Promise<void> {
   mergingTask = reply.merging ?? null;
   gateCommand = reply.gate ?? "";
   pushAfterMerge = reply.pushAfterMerge ?? false;
+  autoMerge = reply.autoMerge ?? false;
   projectSetup = reply.setup ?? null;
   tasksFolder = projectKey(host, cwd);
   tasksCwd = cwd ?? "";
@@ -2769,20 +2777,20 @@ function approvePlans(): void {
     const busy = { merging: project.merging, running: workRun(tasks)?.name ?? null, leased: startHolder(project.host, project.cwd), paused: project.paused };
     // Night mode merges a finished task when the merge check passes (ticket task-branches-blocked-work,
     // user decision 3), so a task that needs its work goes on at night. One try per report. The merge
-    // holds the checkout: nothing else starts in this project at this poll.
-    if (night) {
-      const folder = projectKey(project.host, project.cwd);
-      const mergeKey = (task: Task) => `merge:${folder}:${task.name}:${task.info?.report?.modified ?? ""}`;
+    // holds the checkout: nothing else starts in this project at this poll. The switch "Auto-merge
+    // finished tasks" does the same by day (ticket create-project-settings-option-to-auto).
+    if (night || project.autoMerge) {
       const name = chooseNightMerge({
         ...busy,
         night,
+        auto: project.autoMerge,
         gate: project.gate.trim() !== "",
-        tasks: tasks.map((task) => ({ name: task.name, waits: mergeWaits(task), state: task.info?.header?.state ?? null, busy: busyTasks.has(task.name), tried: nightDone.has(mergeKey(task)) })),
+        tasks: tasks.map((task) => ({ name: task.name, waits: mergeWaits(task), state: task.info?.header?.state ?? null, busy: busyTasks.has(task.name), tried: nightDone.has(mergeTryKey(task)), held: mergeHeld(task) })),
       });
       const merge = name ? tasks.find((task) => task.name === name) : undefined;
       if (merge) {
-        nightDone.add(mergeKey(merge));
-        void mergeTask(merge, true);
+        nightDone.add(mergeTryKey(merge));
+        void mergeTask(merge, night ? "night" : "auto");
         continue;
       }
     }
@@ -6226,6 +6234,34 @@ function mergeWaits(task: Task): boolean {
   return !task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
 }
 
+/** The key of the one merge try that Dispatch makes by itself for a report of the task. */
+function mergeTryKey(task: Task): string {
+  return `merge:${projectKey(taskHost(task), taskCwd(task))}:${task.name}:${task.info?.report?.modified ?? ""}`;
+}
+
+/** The task cannot merge yet: the checkout is on its branch, or its files have uncommitted changes. */
+function mergeHeld(task: Task): boolean {
+  const leftovers = task.project ? taskLeftovers(task.project, task.info) : (task.info?.leftovers ?? dirtyLines);
+  return !!task.info?.branch?.checkedOut || leftovers.length > 0;
+}
+
+/** What the card and the alert know about "Auto-merge finished tasks" for this task. */
+function autoMergeFacts(task: Task): AutoMergeFacts {
+  return {
+    on: task.project ? task.project.autoMerge : autoMerge,
+    gate: (task.project ? task.project.gate : gateCommand).trim() !== "",
+    done: task.info?.header?.state === "done",
+    tried: nightDone.has(mergeTryKey(task)),
+    held: mergeHeld(task),
+  };
+}
+
+/** Dispatch will merge this branch by itself, so the task does not wait for the user. */
+function autoMergeComes(task: Task): boolean {
+  const facts = autoMergeFacts(task);
+  return facts.on && facts.gate && facts.done && !facts.tried && !facts.held;
+}
+
 /** When the user clicked Merge in this window, by task name: the card says since when it merges. */
 const mergeStarts = new Map<string, number>();
 
@@ -6238,9 +6274,10 @@ function mergeRunning(task: Task): boolean {
  * Merges the branch of a task through the worker script, then queues one line for triage with the
  * merge commit. The gate can run for hours; the card says "merging" meanwhile. A refusal stays in
  * the card until the next click, or until `storeProjectTasks` takes it away (ticket merged-outside).
- * `night`: night mode started it (ticket task-branches-blocked-work); the line for triage says so.
+ * `by`: who started it, the click of the user, night mode (ticket task-branches-blocked-work) or
+ * "Auto-merge finished tasks" (ticket create-project-settings-option-to-auto); the line for triage says so.
  */
-async function mergeTask(task: Task, night = false): Promise<void> {
+async function mergeTask(task: Task, by: "click" | "night" | "auto" = "click"): Promise<void> {
   const branch = task.info?.branch;
   if (!branch || busyTasks.has(task.name)) return;
   busyTasks.add(task.name);
@@ -6256,9 +6293,11 @@ async function mergeTask(task: Task, night = false): Promise<void> {
     const [first = "", pushed = ""] = result.split(/\r?\n/);
     const commit = first.split(": ").pop()?.trim() ?? "";
     const push = pushed.trim() ? `${pushed.trim().replace(/\.$/, "")}.` : "No push.";
-    const line = night
+    const line = by === "night"
       ? `Night mode merged branch ${branch.name} of ${task.name} into ${branch.base} in Dispatch after the merge check passed (merge ${commit}). ${push}`
-      : `Branch ${branch.name} of ${task.name} merged into ${branch.base} in Dispatch (merge ${commit}). ${push}`;
+      : by === "auto"
+        ? `Auto-merge merged branch ${branch.name} of ${task.name} into ${branch.base} in Dispatch after the gate passed (merge ${commit}). ${push}`
+        : `Branch ${branch.name} of ${task.name} merged into ${branch.base} in Dispatch (merge ${commit}). ${push}`;
     tellTriage(projectFor(host, cwd), line);
   } catch (error) {
     actionErrors.set(task.name, String(error));
@@ -6305,6 +6344,14 @@ function mergeCard(task: Task): HTMLElement {
   button.addEventListener("click", () => void mergeTask(task));
   actions.append(button);
   card.append(title, text, actions);
+  // What "Auto-merge finished tasks" does with this branch (ticket create-project-settings-option-to-auto).
+  const autoNote = running ? "" : autoMergeNote(autoMergeFacts(task), branch.base);
+  if (autoNote) {
+    const note = document.createElement("div");
+    note.className = "card-reason";
+    note.textContent = autoNote;
+    card.append(note);
+  }
   // The checkout is still on the task branch: the branch row says why, and the merge waits for it.
   if (branch.checkedOut && branch.note) {
     const note = document.createElement("div");
@@ -6523,7 +6570,7 @@ function taskAttentionWait(task: Task): AttentionWait | null {
   const blocked = task.workers.find((worker) => worker.state === "blocked");
   if (blocked) return { key, kind: "prompt", stamp: `${blocked.id}#${promptCounts.get(workerKey(blocked)) ?? 1}` };
   if (task.workers.some((worker) => worker.state === "working")) return null;
-  if (mergeWaits(task) && !mergeRunning(task)) return { key, kind: "merge", stamp: report || "stopped" };
+  if (mergeWaits(task) && !mergeRunning(task) && !autoMergeComes(task)) return { key, kind: "merge", stamp: report || "stopped" };
   return null;
 }
 

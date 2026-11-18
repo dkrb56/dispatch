@@ -43,6 +43,33 @@ export function pushWords(push: string): { words: string; failed: boolean } | nu
   return { words: `push failed: ${failed ? failed[1] : value}`, failed: true };
 }
 
+/** What the merge card knows about "Auto-merge finished tasks" for one task. */
+export interface AutoMergeFacts {
+  /** The switch of the project, with Task branches on. */
+  on: boolean;
+  /** The project has a gate command. */
+  gate: boolean;
+  /** The report of the task says done. */
+  done: boolean;
+  /** The automatic merge was tried for this report. */
+  tried: boolean;
+  /** The checkout is on the branch of the task, or the files of the task have uncommitted changes. */
+  held: boolean;
+}
+
+/**
+ * The sentence of the merge card about the automatic merge (ticket
+ * create-project-settings-option-to-auto), or an empty text with the switch off.
+ */
+export function autoMergeNote(facts: AutoMergeFacts, base: string): string {
+  if (!facts.on) return "";
+  if (!facts.gate) return "Auto-merge needs a gate command, so this branch waits for your Merge click.";
+  if (!facts.done) return "Auto-merge takes only a done report, so this branch waits for your Merge click.";
+  if (facts.tried) return "The automatic merge did not go through. Fix the cause, or click Merge.";
+  if (facts.held) return `Auto-merge waits until the checkout is on ${base} and the files of this task have no uncommitted changes.`;
+  return "Auto-merge starts when no other work runs in this project.";
+}
+
 /** The texts of the merge verb of the worker script: a refusal of the Merge button. */
 const MERGE_REFUSALS = [
   /the checkout has uncommitted changes; commit or stash them first/,

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { mergedWords, mergeParts, outsideLine, pushWords, refusalGoes } from "../src/merged.ts";
+import { autoMergeNote, mergedWords, mergeParts, outsideLine, pushWords, refusalGoes } from "../src/merged.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -60,7 +60,7 @@ test("the line for triage names the ticket, the branch, the base and the merge c
 });
 
 test("main.ts: the branch row, the task lists and the refusal rule use the module", () => {
-  assert.match(MAIN, /import \{ mergedWords, outsideLine, pushWords, refusalGoes \} from "\.\/merged";/);
+  assert.match(MAIN, /import \{ autoMergeNote, type AutoMergeFacts, mergedWords, outsideLine, pushWords, refusalGoes \} from "\.\/merged";/);
   const row = MAIN.slice(MAIN.indexOf("function branchRow("), MAIN.indexOf("function stopRow("));
   assert.match(row, /mergedWords\(branch\.merge\)/);
   const store = MAIN.slice(MAIN.indexOf("function storeProjectTasks("), MAIN.indexOf("/** The last reply of the `task_list` command"));
@@ -121,4 +121,32 @@ test("index.html: the Setup dialog has the three switches of simpler-process", (
   }
   const night = html.slice(html.indexOf("<h3>Night mode</h3>"), html.indexOf("<h3>The Chats panel</h3>"));
   assert.match(night, /a merge of night mode also pushes/);
+});
+
+// Ticket create-project-settings-option-to-auto: the sentence of the merge card.
+const AUTO = { on: true, gate: true, done: true, tried: false, held: false };
+
+test("autoMergeNote: no text with the switch off", () => {
+  assert.equal(autoMergeNote({ ...AUTO, on: false }, "main"), "");
+});
+
+test("autoMergeNote: each state has its sentence", () => {
+  assert.match(autoMergeNote({ ...AUTO, gate: false }, "main"), /needs a gate command.*Merge click/);
+  assert.match(autoMergeNote({ ...AUTO, done: false }, "main"), /only a done report.*Merge click/);
+  assert.match(autoMergeNote({ ...AUTO, tried: true }, "main"), /did not go through.*click Merge/);
+  assert.match(autoMergeNote({ ...AUTO, held: true }, "trunk"), /checkout is on trunk.*uncommitted changes/);
+  assert.match(autoMergeNote(AUTO, "main"), /starts when no other work runs/);
+});
+
+test("main.ts: the line for triage says that auto-merge merged", () => {
+  const body = MAIN.slice(MAIN.indexOf("async function mergeTask("), MAIN.indexOf("function mergeCard("));
+  assert.match(body, /`Auto-merge merged branch \$\{branch\.name\} of \$\{task\.name\} into \$\{branch\.base\} in Dispatch after the gate passed \(merge \$\{commit\}\)\. \$\{push\}`/);
+});
+
+test("index.html: the Setup dialog and the Help name Auto-merge finished tasks", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  assert.match(html, /data-option="autoMerge"/);
+  const help = html.slice(html.indexOf("<h3>Project settings</h3>"), html.indexOf("<h3>The workspace</h3>"));
+  assert.ok(help.includes("<b>Auto-merge finished tasks.</b>"));
+  assert.ok(help.includes("<b>Auto-merge finished tasks</b> is off at the start"));
 });

@@ -40,6 +40,8 @@ interface Options {
   checksAtGate: boolean;
   /** Merge pushes the base to its upstream branch after the merge, never with force (ticket simpler-process). Off at the start. */
   pushAfterMerge: boolean;
+  /** Dispatch merges a task with a done report by itself after the gate passed (ticket create-project-settings-option-to-auto). Off at the start. */
+  autoMerge: boolean;
   /** Dispatch writes the brief from a New ticket and starts its plan run itself; a question goes to triage (ticket simpler-process-tickets). Off at the start. */
   ticketsStartPlans: boolean;
   /** No triage runs: Dispatch starts the plan of every New ticket, writes no line to a triage chat, and the cards and alerts tell the user (ticket no-triage-a-project-switch-no-triage-in). Off at the start. */
