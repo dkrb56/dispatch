@@ -246,6 +246,11 @@ pub fn task_list(cwd: String) -> Result<TaskList, String> {
 }
 
 #[tauri::command(async)]
+pub fn task_evidence(cwd: String, id: String) -> Result<Vec<flow::Evidence>, String> {
+    pipeline::task_evidence(cwd, id)
+}
+
+#[tauri::command(async)]
 pub fn ticket_add(
     cwd: String,
     text: String,

@@ -2,7 +2,7 @@
 // (src/typing.ts, ticket typing-sent-by-line). Run: node --test tests/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { screenShows, typedAfter, TYPING_RECENT_MS, typingState } from "../src/typing.ts";
+import { DRAW_PAUSE_KEY_MS, DRAW_PAUSE_MAX_MS, drawPause, screenShows, typedAfter, TYPING_RECENT_MS, typingState } from "../src/typing.ts";
 
 /** The half sentence of the user on 2026-11-14 that went out with a line of Dispatch. */
 const HALF = "yes short list of fails. also for starminer i want some o";
@@ -70,4 +70,27 @@ test("the end of the text wrapped over two rows with indentation still holds", (
 test("a blank typed text does not hold the line", () => {
   assert.equal(typingState({ text: "   ", at: 1 }, ["> "], 60_000), "free");
   assert.equal(screenShows("   ", [">    "]), false);
+});
+
+test("a recent key in a text box holds a redraw until the key is old", () => {
+  const now = 100_000;
+  assert.deepEqual(drawPause({ typing: true, lastKey: now - 200, since: now }, now), { pause: true, wait: DRAW_PAUSE_KEY_MS - 200 });
+});
+
+test("an old key draws at once", () => {
+  const now = 100_000;
+  assert.deepEqual(drawPause({ typing: true, lastKey: now - DRAW_PAUSE_KEY_MS, since: now }, now), { pause: false, wait: 0 });
+  assert.equal(drawPause({ typing: true, lastKey: 0, since: now }, now).pause, false, "no key yet");
+});
+
+test("without a text box a redraw does not wait", () => {
+  const now = 100_000;
+  assert.deepEqual(drawPause({ typing: false, lastKey: now - 10, since: now }, now), { pause: false, wait: 0 });
+});
+
+test("the longest pause ends also while the user goes on typing", () => {
+  const now = 100_000;
+  assert.equal(drawPause({ typing: true, lastKey: now - 10, since: now - DRAW_PAUSE_MAX_MS }, now).pause, false);
+  // Close to the end, the next try comes at the end of the longest pause.
+  assert.deepEqual(drawPause({ typing: true, lastKey: now - 10, since: now - DRAW_PAUSE_MAX_MS + 50 }, now), { pause: true, wait: 50 });
 });

@@ -74,6 +74,7 @@ pub fn run() {
             commands::set_merge_gate,
             commands::set_checks,
             commands::task_list,
+            commands::task_evidence,
             commands::ticket_add,
             commands::ticket_update,
             commands::ticket_move,

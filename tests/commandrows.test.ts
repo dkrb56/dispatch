@@ -55,7 +55,7 @@ test("the report check says no command, or the count of the checks that did not 
 
 test("the task card puts the commands of the work run under the report", () => {
   assert.match(MAIN, /import \{[^}]*commandLines[^}]*\} from "\.\/commandrows"/);
-  assert.ok(MAIN.includes("body.append(report);\n      const commands = commandsRow(key, info.evidence);"), "the commands row stands right after the report row");
+  assert.ok(MAIN.includes("body.append(report);\n      const commands = commandsRow(key, task, info);"), "the commands row stands right after the report row");
   assert.ok(!MAIN.includes("No command: "), "the old claim words are gone");
   assert.ok(!/function unverifiedText/.test(MAIN), "main.ts takes unverifiedText from src/commandrows.ts");
 });

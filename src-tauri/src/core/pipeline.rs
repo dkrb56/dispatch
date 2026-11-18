@@ -3690,8 +3690,14 @@ pub struct TaskInfo {
     run_tokens: Vec<crate::core::flow::RunUsage>,
     /// The Bash commands of the plan run and the work run with their exit codes and output tails,
     /// from the transcripts of the sessions of `<ticket>.session` (ticket task-evidence). Empty
-    /// without the file or without a transcript.
+    /// without the file or without a transcript. The report check and the task log use it; it stays
+    /// out of the reply, which each poll reads (ticket dispatch-lags): `task_evidence` gives it.
+    #[serde(skip_serializing)]
     evidence: Vec<crate::core::flow::Evidence>,
+    /// How many commands of `evidence` belong to the work run: the count of the commands row of the
+    /// task card (ticket dispatch-lags).
+    #[serde(rename = "workCommands")]
+    work_commands: usize,
     /// The Verification claims of a done report that no Bash command of the evidence matches
     /// (ticket report-check). With a claim here, or without a Verification section, the header
     /// says `working` and `did` gives the reason. Empty when the report passes or is not checked.
@@ -4332,6 +4338,16 @@ fn setup_time(project: &Project) -> Option<u64> {
     states.chain([folder]).min()
 }
 
+/// The Bash commands of the runs of one task, for the commands row of its card when the user opens
+/// it (ticket dispatch-lags). Empty without a session file or without a transcript.
+pub fn task_evidence(cwd: String, id: String) -> Result<Vec<crate::core::flow::Evidence>, String> {
+    let project = Project::find(&cwd)?;
+    check_ticket(&id)?;
+    let Some(projects) = claude_projects_dir() else { return Ok(Vec::new()) };
+    let runs = read_session_runs(&project.session_file(&id));
+    Ok(crate::core::flow::evidence_of(&projects, &runs))
+}
+
 /// The tasks of the project of a folder: every ticket with a state file, a plan or a report.
 /// The briefs and the options files are not tasks.
 pub fn task_list(cwd: String) -> Result<TaskList, String> {
@@ -4398,6 +4414,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             tokens: Vec::new(),
             run_tokens: Vec::new(),
             evidence: Vec::new(),
+            work_commands: 0,
             unverified: Vec::new(),
             taken: None,
             log: None,
@@ -4461,6 +4478,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             let runs = read_session_runs(&project.session_file(&task.name));
             task.run_tokens = crate::core::flow::run_token_usage(projects, &runs);
             task.evidence = crate::core::flow::evidence_of(projects, &runs);
+            task.work_commands = task.evidence.iter().filter(|item| item.stage == "WORK").count();
             let transcript = crate::core::flow::has_transcript(projects, &sessions);
             task.elsewhere = runs.last().is_some_and(|(_, newest)| !crate::core::flow::has_transcript(projects, std::slice::from_ref(newest)));
             // A work run with its own transcript: an old work run that resumed the plan session
@@ -6118,7 +6136,12 @@ pub(crate) mod tests {
         assert_eq!(json["tokens"], serde_json::json!([]));
         assert_eq!(json["runTokens"], serde_json::json!([]));
         assert!(list.tasks[0].evidence.is_empty());
-        assert_eq!(json["evidence"], serde_json::json!([]));
+        // The list stays out of the reply; the card gets its count, and the list on open (ticket dispatch-lags).
+        assert!(json.get("evidence").is_none());
+        assert_eq!(json["workCommands"], serde_json::json!(0));
+        let cwd = project.root.to_string_lossy().into_owned();
+        assert!(task_evidence(cwd.clone(), "t-1".into()).unwrap().is_empty());
+        assert!(task_evidence(cwd, "../t-1".into()).is_err());
     }
 
     /// The proof of ticket task-tokens: the token rows of each task of the project in
@@ -6671,6 +6694,7 @@ Blockers: none
             tokens: Vec::new(),
             run_tokens: Vec::new(),
             evidence: Vec::new(),
+            work_commands: 0,
             unverified: Vec::new(),
             taken: None,
             log: None,

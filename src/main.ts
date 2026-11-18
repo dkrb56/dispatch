@@ -54,7 +54,7 @@ import {
 import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, parseBoardSize, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
-import { type Typed, typedAfter, typingState } from "./typing";
+import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
 import { MENU_ABOVE_LINES, menuScreen, parseMenu, parseReview, SUBMIT_QUESTION } from "./menu";
 import { joinRows, type MenuRecord, type ScreenRow } from "./menurecord";
 import { agentListShown, asksAgain, backKey, BACK_TITLE, LIST_TITLE } from "./agentview";
@@ -1218,7 +1218,7 @@ async function pollChatViews(): Promise<void> {
     // Busy and idle of triage move the temporary cards of the project on (pending-task-card).
     if (pane.project && noteStatus(pendingCards, paneKey(pane), pane.chat.status(), Date.now())) {
       savePending();
-      renderChats();
+      requestDraw();
     }
   }
   setTimeout(() => void pollChatViews(), CHAT_VIEW_REFRESH_MS);
@@ -2259,11 +2259,12 @@ interface TaskInfo {
   runTokens?: RunUsage[];
   /**
    * The Bash commands of the plan run and the work run from the transcripts (ticket task-evidence).
-   * Absent from an older host. The card shows the commands of the work run under the report
-   * (ticket the-report-check-uses-the-commands-of); the task log, the report check and the hand-off
-   * of the host use them all.
+   * Only an older host still sends them here; the card reads them with `task_evidence` when the
+   * user opens the row (ticket dispatch-lags).
    */
   evidence?: Evidence[];
+  /** How many commands the work run has: the count of the commands row (ticket dispatch-lags). Absent from an older host. */
+  workCommands?: number;
   /**
    * The result of the report check of a done report (ticket the-report-check-uses-the-commands-of):
    * the commands of the chosen checks that did not run in the work run; empty with the reason in
@@ -2740,7 +2741,7 @@ async function refreshTasks(): Promise<void> {
   tasksCwd = cwd ?? "";
   tasksHost = host;
   if (cwd) storeProjectTasks(tasksFolder, tasksRecord(host, cwd, reply));
-  renderChats();
+  requestDraw();
   approvePlans();
   updateAlerts();
 }
@@ -3365,7 +3366,7 @@ async function pollTasks(): Promise<void> {
   const readAt = Date.now();
   try {
     await refreshTasks();
-    await refreshFocusTasks();
+    await refreshFocusTasks(true);
   } catch (error) {
     console.error("task list refresh failed", error);
   }
@@ -5976,16 +5977,34 @@ function permissionCard(task: Task): HTMLElement {
 
 /** The task keys whose list of the commands of the work run is open: a re-render keeps it. */
 const commandsOpen = new Set<string>();
+/** The commands of the open rows, read from the host on open and dropped on close (ticket dispatch-lags). */
+const commandsRead = new Map<string, { list?: Evidence[]; error?: string }>();
+
+/** Reads the commands of a task for its open row, then shows them. A row closed meanwhile drops the reply. */
+async function readCommands(key: string, task: Task): Promise<void> {
+  const read: { list?: Evidence[]; error?: string } = {};
+  commandsRead.set(key, read);
+  try {
+    read.list = await call<Evidence[]>(taskHost(task), "task_evidence", { cwd: taskCwd(task), id: task.name });
+  } catch (error) {
+    read.error = String(error);
+  }
+  if (commandsRead.get(key) === read) renderChats();
+}
 
 /**
  * The commands of the work run under the report (ticket the-report-check-uses-the-commands-of, user
  * decision 1): one row with their count; a click opens the list, each command with its exit code
- * and its last lines. Null when the work run ran no command that this computer sees.
+ * and its last lines. The list comes from the host on open (ticket dispatch-lags); an older host
+ * still sends it with the task. Null when the work run ran no command that this computer sees.
  */
-function commandsRow(key: string, evidence: Evidence[] | undefined): HTMLElement | null {
-  const lines = commandLines(evidence);
-  if (lines.length === 0) return null;
+function commandsRow(key: string, task: Task, info: TaskInfo): HTMLElement | null {
   const open = commandsOpen.has(key);
+  if (open && !info.evidence && !commandsRead.has(key)) void readCommands(key, task);
+  const read = info.evidence ? { list: info.evidence } : commandsRead.get(key);
+  const lines = commandLines(read?.list);
+  const count = info.evidence ? lines.length : (info.workCommands ?? 0);
+  if (count === 0) return null;
   const made = document.createElement("div");
   made.className = `task-commands${open ? " open" : ""}`;
   const row = document.createElement("button");
@@ -5993,18 +6012,28 @@ function commandsRow(key: string, evidence: Evidence[] | undefined): HTMLElement
   row.setAttribute("aria-expanded", String(open));
   row.title = `${open ? "Hide" : "Show"} the commands. They come from the transcript of the work run, not from the report. An exit code behind a pipe can be 0 for a failed run: the last lines show the result.`;
   const name = document.createElement("span");
-  name.textContent = groupLabel(lines.length);
+  name.textContent = groupLabel(count);
   const when = document.createElement("span");
   when.className = "when";
   when.textContent = open ? "▾" : "▸";
   row.append(name, when);
   row.addEventListener("click", () => {
-    if (open) commandsOpen.delete(key);
-    else commandsOpen.add(key);
+    if (open) {
+      commandsOpen.delete(key);
+      commandsRead.delete(key);
+    } else {
+      commandsOpen.add(key);
+    }
     renderChats();
   });
   made.append(row);
   if (open) {
+    if (!read?.list) {
+      const wait = document.createElement("pre");
+      wait.className = "task-command-tail";
+      wait.textContent = read?.error ? `The commands could not be read: ${read.error}` : "Reading…";
+      made.append(wait);
+    }
     for (const line of lines) {
       const head = document.createElement("div");
       head.className = "task-command";
@@ -8873,7 +8902,7 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
         addUnverifiedChip(report, `${unverifiedText(missing, "chip")} · taken as done`, title.join("\n"));
       }
       body.append(report);
-      const commands = commandsRow(key, info.evidence);
+      const commands = commandsRow(key, task, info);
       if (commands) body.append(commands);
     }
     // The log of the task: the plan, each command with its output, the report (ticket task-log).
@@ -8923,7 +8952,7 @@ async function refreshWorkers(): Promise<void> {
   workersShown = shown;
   workerList = workers;
   announceWorkerChanges(workers);
-  renderChats();
+  requestDraw();
   // The end of a work run frees the next plan.
   approvePlans();
   for (const pane of panes.values()) showAgentCount(pane);
@@ -9370,10 +9399,51 @@ function setChatScope(scope: "project" | "all"): void {
   renderChats();
 }
 
+/** The time of the last key of the user (ticket dispatch-lags); a mouse press does not count. */
+let lastKeyAt = 0;
+/** The time of the last full draw of the screens. */
+let lastDrawAt = 0;
+/** A redraw of a poll waits since this time; 0: none waits. */
+let drawDueSince = 0;
+let drawTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** A box that takes text has the keyboard: a text field, a chat box, the input of a terminal. */
+function textBoxActive(): boolean {
+  const active = document.activeElement;
+  if (active instanceof HTMLTextAreaElement) return true;
+  if (active instanceof HTMLInputElement) return !["button", "checkbox", "color", "file", "image", "radio", "range", "reset", "submit"].includes(active.type);
+  return active instanceof HTMLElement && active.isContentEditable;
+}
+
+/**
+ * The redraw that a poll asks for (ticket dispatch-lags): it waits while the user types, and one
+ * draw follows the pause. A click and the search box call `renderChats` and draw at once.
+ */
+function requestDraw(): void {
+  if (drawTimer !== null) return;
+  const now = Date.now();
+  const since = drawDueSince || now;
+  const { pause, wait } = drawPause({ typing: textBoxActive(), lastKey: lastKeyAt, since }, now);
+  if (!pause) {
+    renderChats();
+    return;
+  }
+  drawDueSince = since;
+  drawTimer = setTimeout(() => {
+    drawTimer = null;
+    requestDraw();
+  }, wait);
+}
+
 /** Shows the chats that agree with the search text and the scope. */
 function renderChats(): void {
   // A drag of a ticket card keeps its cards until the drop, which renders.
   if (ticketDragging) return;
+  // This draw also serves a redraw that waits.
+  if (drawTimer !== null) clearTimeout(drawTimer);
+  drawTimer = null;
+  drawDueSince = 0;
+  lastDrawAt = Date.now();
   // The Decisions window shows why Approve waits; a refresh of the tasks can change that.
   updateDecisionsFooter();
   updateQuestionsWindow();
@@ -9544,7 +9614,7 @@ async function refreshChats(): Promise<void> {
   if (shown === chatsShown) return;
   chatsShown = shown;
   chatList = chats;
-  renderChats();
+  requestDraw();
 }
 
 /** Refreshes the chat panel. It runs again and again. */
@@ -11521,8 +11591,14 @@ async function refreshSetupStates(roots: Iterable<ProjectRef>): Promise<void> {
   showSetupButtons();
 }
 
-/** Reads the tasks of every project of focus mode. */
-async function refreshFocusTasks(): Promise<void> {
+/** The last task reply of each project, as text: the poll draws only when one changed (ticket dispatch-lags). */
+const focusReplies = new Map<string, string>();
+
+/**
+ * Reads the tasks of every project of focus mode. With `onlyWhenChanged` (the poll), the screens are
+ * drawn when a reply changed, a read failed, or the last draw is `DRAW_STALE_MS` old; else always.
+ */
+async function refreshFocusTasks(onlyWhenChanged = false): Promise<void> {
   // Focus mode shows its projects; night mode takes the defaults of every project with a workspace.
   const roots = new Map<string, ProjectRef>();
   if (focusOn || mapOn) for (const root of mapProjects()) roots.set(refKey(root), root);
@@ -11540,18 +11616,27 @@ async function refreshFocusTasks(): Promise<void> {
     if (pane.role === "triage" && pane.project && nightOf(pane.host)) roots.set(paneKey(pane), { host: pane.host, root: pane.project });
   }
   if (roots.size === 0) return;
+  let changed = false;
   await Promise.all(
     [...roots.values()].map(async ({ host, root }) => {
       // The time the read began (ticket one-work-run-race).
       const readAt = Date.now();
+      const key = projectKey(host, root);
       try {
         const reply = await call<TaskListReply>(host, "task_list", { cwd: root });
         tellRepairs(host, root, reply);
-        storeProjectTasks(projectKey(host, root), tasksRecord(host, root, reply));
-        taskReadTimes.set(projectKey(host, root), readAt);
+        storeProjectTasks(key, tasksRecord(host, root, reply));
+        taskReadTimes.set(key, readAt);
+        const text = JSON.stringify(reply);
+        if (focusReplies.get(key) !== text) {
+          focusReplies.set(key, text);
+          changed = true;
+        }
       } catch {
         // A folder that is no project has no tasks.
-        projectTasks.delete(projectKey(host, root));
+        projectTasks.delete(key);
+        focusReplies.delete(key);
+        changed = true;
       }
     }),
   );
@@ -11559,10 +11644,15 @@ async function refreshFocusTasks(): Promise<void> {
   updateStaleAlert();
   // The old sessions whose delay ran out end without a wait of the poll (ticket old-sessions-auto-end).
   autoEndStale().catch((error) => console.error("automatic end of old sessions failed", error));
-  renderFocus();
-  renderMap();
-  renderOverview();
-  renderTickets();
+  if (!onlyWhenChanged) {
+    lastDrawAt = Date.now();
+    renderFocus();
+    renderMap();
+    renderOverview();
+    renderTickets();
+  } else if (changed || Date.now() - lastDrawAt >= DRAW_STALE_MS) {
+    requestDraw();
+  }
   approvePlans();
   updateAlerts();
   // The setup steps of the same projects, every 30 s; the task poll does not wait for them (ticket setup-attention).
@@ -12635,8 +12725,10 @@ async function start(): Promise<void> {
   for (const type of ["keydown", "pointerdown"]) {
     document.addEventListener(
       type,
-      () => {
+      (event) => {
         lastInput = Date.now();
+        // The redraws of the polls wait while the user types (ticket dispatch-lags).
+        if (event.type === "keydown") lastKeyAt = lastInput;
         // The chime may sound only after an input of the user (alerts-options).
         startChimeAudio();
         // The window that the user used last drives the automatic actions (remote-shared-state).

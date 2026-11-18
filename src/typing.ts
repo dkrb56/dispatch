@@ -89,3 +89,28 @@ export function typingState(typed: Typed, screen: readonly string[], now: number
   if (typed.text.trim() === "") return "free";
   return screenShows(typed.text, screen) ? "types" : "reset";
 }
+
+// The redraws that a poll asks for wait while the user types (ticket dispatch-lags, user decision 1:
+// every text box, also a chat box and a terminal).
+
+/** A key within this time counts as typing: a redraw waits. */
+export const DRAW_PAUSE_KEY_MS = 1000;
+/** A redraw waits at most this long, also when the user goes on typing. */
+export const DRAW_PAUSE_MAX_MS = 20_000;
+/** With no change, the screens are drawn again after this time: waiting times and signs move on (user decision 2). */
+export const DRAW_STALE_MS = 30_000;
+
+/** What the rule looks at: a text box has the keyboard, the time of the last key (0: none), the time the wait began. */
+export interface DrawState {
+  typing: boolean;
+  lastKey: number;
+  since: number;
+}
+
+/** Whether a redraw waits now, and how long until the next try (0 when it draws). */
+export function drawPause(state: DrawState, now: number): { pause: boolean; wait: number } {
+  const sinceKey = now - state.lastKey;
+  const waited = now - state.since;
+  if (!state.typing || state.lastKey <= 0 || sinceKey >= DRAW_PAUSE_KEY_MS || waited >= DRAW_PAUSE_MAX_MS) return { pause: false, wait: 0 };
+  return { pause: true, wait: Math.min(DRAW_PAUSE_KEY_MS - sinceKey, DRAW_PAUSE_MAX_MS - waited) };
+}

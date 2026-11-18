@@ -163,6 +163,7 @@ pub fn run(
         "set_merge_gate" => json(pipeline::set_merge_gate(a.req("cwd")?, a.req("text")?)?),
         "set_checks" => json(pipeline::set_checks(a.req("cwd")?, a.req("text")?)?),
         "task_list" => json(pipeline::task_list(a.req("cwd")?)?),
+        "task_evidence" => json(pipeline::task_evidence(a.req("cwd")?, a.req("id")?)?),
         "ticket_add" => json(tickets::ticket_add_in(
             a.req("cwd")?,
             a.req("text")?,
