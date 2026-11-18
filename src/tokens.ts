@@ -555,3 +555,43 @@ export function tableRows(
   }
   return rows;
 }
+
+/** A project of the window for `settleTokenReads`: its key, its name and whether the window shows it now. */
+export interface TokenRead {
+  key: string;
+  name: string;
+  shown: boolean;
+}
+
+/**
+ * What the window keeps after a read of all projects and of the history (ticket
+ * token-usage-is-broken). Each reply stands alone: a fulfilled reply replaces what the window had
+ * for its key, a rejected reply keeps the earlier report of its key, and a key with neither has no
+ * entry. The history works the same way. The message names each shown project that failed and the
+ * history when it failed; a failed project that the window does not show gives no message.
+ */
+export function settleTokenReads<R>(
+  reads: readonly TokenRead[],
+  replies: readonly PromiseSettledResult<R>[],
+  history: PromiseSettledResult<UsageHistory>,
+  earlierReports: ReadonlyMap<string, R>,
+  earlierHistory: UsageHistory | null,
+): { reports: Map<string, R>; history: UsageHistory | null; error: string } {
+  const reports = new Map<string, R>();
+  const sentences: string[] = [];
+  reads.forEach((read, at) => {
+    const reply = replies[at];
+    if (reply?.status === "fulfilled") {
+      reports.set(read.key, reply.value);
+      return;
+    }
+    const kept = earlierReports.get(read.key);
+    if (kept !== undefined) reports.set(read.key, kept);
+    if (read.shown) {
+      const reason = reply?.status === "rejected" ? `${reply.reason}` : "no reply";
+      sentences.push(`The token usage of ${read.name} could not be read: ${reason}. ${kept !== undefined ? "The numbers below are from the last read." : "The numbers below leave it out."}`);
+    }
+  });
+  if (history.status === "rejected") sentences.push(`The weekly allowance could not be read: ${history.reason}.`);
+  return { reports, history: history.status === "fulfilled" ? history.value : earlierHistory, error: sentences.join(" ") };
+}

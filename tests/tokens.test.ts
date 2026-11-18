@@ -20,6 +20,7 @@ import {
   rangeStart,
   ranking,
   resetTime,
+  settleTokenReads,
   share,
   tableRows,
   tiles,
@@ -335,6 +336,54 @@ test("the Table view has every number of the window as a row", () => {
   );
 });
 
+const ok = <T>(value: T): PromiseSettledResult<T> => ({ status: "fulfilled", value });
+const bad = (reason: unknown): PromiseSettledResult<never> => ({ status: "rejected", reason });
+const sample = history(2.65, at(15, 3, 40));
+const reads = [
+  { key: "a", name: "alpha", shown: true },
+  { key: "b", name: "beta", shown: false },
+  { key: "c", name: "gamma", shown: true },
+];
+
+test("one project that fails leaves the others and the history in place", () => {
+  const settled = settleTokenReads(reads, [ok("A"), ok("B"), bad("not a folder: C:\\gone")], ok(sample), new Map(), null);
+  assert.deepEqual([...settled.reports], [["a", "A"], ["b", "B"]]);
+  assert.equal(settled.history, sample);
+  assert.equal(settled.error, "The token usage of gamma could not be read: not a folder: C:\\gone. The numbers below leave it out.");
+  assert.equal(settleTokenReads(reads, [ok("A"), ok("B"), ok("C")], ok(sample), new Map(), null).error, "");
+});
+
+test("a failed project keeps its earlier report; a fulfilled reply replaces it", () => {
+  const earlier = new Map([["a", "old A"], ["c", "old C"]]);
+  const settled = settleTokenReads(reads, [ok("new A"), bad("x"), bad(new Error("disk"))], ok(sample), earlier, null);
+  assert.deepEqual([...settled.reports], [["a", "new A"], ["c", "old C"]]);
+  assert.equal(settled.error, "The token usage of gamma could not be read: Error: disk. The numbers below are from the last read.");
+});
+
+test("a failed history keeps the earlier history and says so; a fulfilled one replaces it", () => {
+  const settled = settleTokenReads(reads, [ok("A"), ok("B"), ok("C")], bad("no file"), new Map(), sample);
+  assert.equal(settled.history, sample);
+  assert.equal(settled.error, "The weekly allowance could not be read: no file.");
+  const later = history(5, at(15, 3, 40));
+  assert.equal(settleTokenReads(reads, [ok("A"), ok("B"), ok("C")], ok(later), new Map(), sample).history, later);
+  assert.equal(settleTokenReads(reads, [ok("A"), ok("B"), ok("C")], bad("no file"), new Map(), null).history, null);
+});
+
+test("the messages join with one space: the projects in the order of the group, the history last", () => {
+  const settled = settleTokenReads(reads, [bad("one"), bad("two"), bad("three")], bad("four"), new Map([["c", "old C"]]), null);
+  assert.equal(
+    settled.error,
+    "The token usage of alpha could not be read: one. The numbers below leave it out. The token usage of gamma could not be read: three. The numbers below are from the last read. The weekly allowance could not be read: four.",
+  );
+  assert.deepEqual([...settled.reports], [["c", "old C"]]);
+});
+
+test("a project that the window does not show gives no message when it fails (user decision 1)", () => {
+  const settled = settleTokenReads(reads, [ok("A"), bad("x"), ok("C")], ok(sample), new Map(), null);
+  assert.equal(settled.error, "");
+  assert.deepEqual([...settled.reports], [["a", "A"], ["c", "C"]]);
+});
+
 test("the window is wired: the Tokens button after Tickets, the dialog, the two calls", () => {
   const html = read("../index.html");
   const main = read("../src/main.ts");
@@ -345,4 +394,7 @@ test("the window is wired: the Tokens button after Tickets, the dialog, the two 
   assert.match(main, /el\.append\(tickets, addTicket, tokensButton, actions, pause,/);
   assert.match(main, /"token_report"/);
   assert.match(main, /"usage_history"/);
+  // One project that fails must not fail the read of the others (token-usage-is-broken).
+  assert.ok(!main.includes("Promise.all(tokensRefs.map("));
+  assert.match(main, /settleTokenReads\(/);
 });

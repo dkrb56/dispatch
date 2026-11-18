@@ -45,6 +45,7 @@ import {
   rangeStart,
   ranking,
   type Ranked,
+  settleTokenReads,
   tableRows,
   tiles,
   type TokenEvent,
@@ -7871,19 +7872,23 @@ async function readTokens(): Promise<void> {
   renderTokens();
   // The history of the host of the shown project; in All projects the one of the first backend.
   const historyHost = tokensProject === "all" ? firstBackend() : (refs[0]?.host ?? firstBackend());
-  try {
-    const [reports, history] = await Promise.all([
-      Promise.all(tokensRefs.map((ref) => call<TokenReport>(ref.host, "token_report", { cwd: ref.root, since }).then((report) => [refKey(ref), report] as const))),
-      call<UsageHistory>(historyHost, "usage_history"),
-    ]);
-    if (read !== tokensRead) return;
-    tokensReports = new Map(reports);
-    tokensHistory = history;
-    tokensError = "";
-  } catch (error) {
-    if (read !== tokensRead) return;
-    tokensError = `The token usage could not be read: ${error}`;
-  }
+  // Each project and the history settle alone: a project that cannot be read must not empty the others.
+  const [replies, [history]] = await Promise.all([
+    Promise.allSettled(tokensRefs.map((ref) => call<TokenReport>(ref.host, "token_report", { cwd: ref.root, since }))),
+    Promise.allSettled([call<UsageHistory>(historyHost, "usage_history")]),
+  ]);
+  if (read !== tokensRead) return;
+  const shown = new Set(refs.map(refKey));
+  const settled = settleTokenReads(
+    tokensRefs.map((ref) => ({ key: refKey(ref), name: projectName(ref), shown: shown.has(refKey(ref)) })),
+    replies,
+    history,
+    tokensReports,
+    tokensHistory,
+  );
+  tokensReports = settled.reports;
+  tokensHistory = settled.history;
+  tokensError = settled.error;
   tokensLoading = false;
   renderTokens();
 }
