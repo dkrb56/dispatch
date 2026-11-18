@@ -2,6 +2,13 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.73 (2026-11-18)
+- In a No triage project on a host, Open terminal in a second window now shows the terminal that another window opened for the project, with its history and live output, instead of a new session. The × there closes it only in that window.
+- After a restart or a reconnect, a terminal on a host takes the size of its pane again, so its text fits.
+- A project that waits for you no longer has an orange frame in the top bar. The orange dot and the word "waits" stay. In Details, the project buttons and × moved to a row above the workspace, and the current project has a blue frame.
+- The Nightmode switch now follows a change that another Dispatch program makes on this PC. When this PC and a host differ, the switch reads "Nightmode: mixed".
+- The bar at the bottom shows the usage and versions of the computer of the project that you click or type in. In Map and Overview, a click in a project makes it the current project.
+
 ## 0.1.72 (2026-11-17)
 - When Approve waits because files of the task have changes that are not saved in git, the plan card offers Commit files…. Its window lists those files and a commit message that Claude writes and you can edit. Commit saves only those files in one local commit and sends nothing to GitHub.
 - A stopped task shows Resume in its card. Resume starts the stopped plan or work run again where it stopped.
