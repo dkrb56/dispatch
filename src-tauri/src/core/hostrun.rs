@@ -21,6 +21,8 @@ pub const DEFAULT_PORT: u16 = 7470;
 /// The file of a running host: its process id, port, addresses and version.
 pub const HOST_FILE: &str = "host.json";
 const KEY_FILE: &str = "host-key.txt";
+/// The key of the phone page: it opens only the phone calls of the host (`host/phone.rs`).
+pub const PHONE_KEY_FILE: &str = "phone-key.txt";
 const LOG_FILE: &str = "host.log";
 /// Written by the update when it stopped a host; the next start of the app starts it again.
 const AFTER_UPDATE: &str = "host-after-update";
@@ -42,6 +44,8 @@ pub struct HostRun {
     port: Option<u16>,
     addresses: Vec<String>,
     key: Option<String>,
+    /// The key of the phone page; `None` until a host made one.
+    phone_key: Option<String>,
     version: Option<String>,
     /// Whether the sign-in entry exists; `None` on a system without that feature.
     autostart: Option<bool>,
@@ -181,9 +185,43 @@ fn tail(text: &str, lines: usize, max: usize) -> String {
     }
 }
 
-fn read_key(dir: &Path) -> Option<String> {
-    let key = fs::read_to_string(dir.join(KEY_FILE)).ok()?.trim().to_string();
+/// The key in the file `name` of the data folder: 64 hex characters, else `None`.
+fn read_key_file(dir: &Path, name: &str) -> Option<String> {
+    let key = fs::read_to_string(dir.join(name)).ok()?.trim().to_string();
     (key.len() == 64 && key.chars().all(|c| c.is_ascii_hexdigit())).then_some(key)
+}
+
+fn read_key(dir: &Path) -> Option<String> {
+    read_key_file(dir, KEY_FILE)
+}
+
+/// Writes a new phone key: 32 random bytes as 64 hex characters. A running host reads the file at
+/// each hello and each phone call, so the old key ends without a restart.
+fn new_phone_key_in(dir: &Path) -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| format!("no random bytes for the key: {e}"))?;
+    let key: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    let path = dir.join(PHONE_KEY_FILE);
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, &key).map_err(err)?;
+    fs::rename(&tmp, &path).map_err(err)?;
+    Ok(key)
+}
+
+/// The phone key of the data folder; a host makes it at its start when there is none.
+pub fn ensure_phone_key(dir: &Path) -> Result<String, String> {
+    match read_key_file(dir, PHONE_KEY_FILE) {
+        Some(key) => Ok(key),
+        None => new_phone_key_in(dir),
+    }
+}
+
+/// Whether `key` is the phone key now. Compares in time that does not depend on the first differing
+/// byte, as `Clients::key_matches`.
+pub fn phone_key_ok(dir: &Path, key: &str) -> bool {
+    let Some(known) = read_key_file(dir, PHONE_KEY_FILE) else { return false };
+    let (a, b) = (known.as_bytes(), key.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
 }
 
 /// The command of the sign-in entry: this program starts the host and ends.
@@ -220,6 +258,7 @@ fn status_in(dir: &Path) -> HostRun {
         addresses: file.as_ref().map(|file| file.addresses.clone()).unwrap_or_default(),
         version: file.as_ref().map(|file| file.version.clone()),
         key: read_key(dir),
+        phone_key: read_key_file(dir, PHONE_KEY_FILE),
         autostart: autostart_on(dir),
         log_tail: log_tail(dir),
     }
@@ -329,6 +368,14 @@ pub fn host_run_new_key(core: &Core, port: Option<u16>) -> Result<HostRun, Strin
     Ok(status_in(&dir))
 }
 
+/// Gives the phone page a new key. The host keeps running with its terminals; the old key fails at
+/// its next call.
+pub fn host_run_new_phone_key(core: &Core) -> Result<HostRun, String> {
+    let dir = core.app_data_dir()?;
+    new_phone_key_in(&dir)?;
+    Ok(status_in(&dir))
+}
+
 /// Writes or removes the entry that starts the host at each Windows sign-in (user decision 1).
 #[cfg(windows)]
 pub fn host_run_autostart(core: &Core, on: bool, port: Option<u16>) -> Result<HostRun, String> {
@@ -404,6 +451,24 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_new_phone_key_ends_the_old_one() {
+        let dir = scratch("phone-key");
+        assert!(!phone_key_ok(&dir, ""), "no file: no key counts");
+        let old = ensure_phone_key(&dir).unwrap();
+        assert_eq!(old.len(), 64);
+        assert_eq!(ensure_phone_key(&dir).unwrap(), old, "the key stays over a restart of the host");
+        assert!(phone_key_ok(&dir, &old));
+        assert!(!phone_key_ok(&dir, &old[..63]) && !phone_key_ok(&dir, ""));
+        assert_eq!(status_in(&dir).phone_key.as_deref(), Some(old.as_str()));
+        let new = new_phone_key_in(&dir).unwrap();
+        assert_ne!(new, old);
+        assert!(phone_key_ok(&dir, &new));
+        assert!(!phone_key_ok(&dir, &old), "the old key fails at its next use");
+        assert!(!dir.join("phone-key.tmp").exists());
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

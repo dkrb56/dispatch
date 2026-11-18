@@ -154,6 +154,16 @@ Ticket `remote-mixed-mode`, 2026-11-12. The user wants to work on this desktop a
 - **Network.** Nothing on this PC listens; the window only opens connections to its hosts.
 - **Run the host on this PC.** Start switches the window to "Use hosts" with the row `127.0.0.1`, also from this mode: the host then does the work of this PC, and the third mode with a host on this PC would show every project of this PC twice.
 
+## The phone page
+
+The ticket `i-need-an-iphone-app-with-just-overview` adds a page for a phone: the project cards of the Overview in one column, and a box for a new ticket. An icon on the Home Screen opens it. There is no App Store app.
+
+- **The plain page on the host port.** The host looks at the head of each new connection without consuming it. A request with `Upgrade: websocket` goes on to the WebSocket service as before. Any other request gets a file: `/` and `/phone.html`, `/phone.js`, `/phone.css` and `/icon.png`. Another path gets 404, and another method gets 405. `src-tauri/build.rs` embeds the files of `dist/phone` into `dispatch-host`. The host listens on the same two addresses as before.
+- **The phone key.** The host makes `phone-key.txt` in its data folder at its start. Options shows it as a code with the link `http://<tailnet address>:<port>/#key=<key>`. The page sends it in its hello with a window id that starts with `phone-`, so a phone never replaces the connection of a desktop window. The host reads the file at each hello and at each phone call. **New phone key** writes a new file: the old key fails at its next call, and the host and its terminals keep running. The full host key keeps all its rights.
+- **The call list.** The phone key may use `workspaces_get`, `task_list`, `worker_list` and `ticket_add`. Every other call gets an error reply, and a binary frame is refused. The page never calls `driver_state`, so it never takes the automatic work from a window. It reads one project at a time, at most every 10 seconds and only while it shows, because `task_list` can commit task files.
+- **The project list.** Each desktop window sends the roots of its open workspaces to each host with `workspaces_set`. The host keeps them by window id in `workspaces.json`; an empty list removes the window. `workspaces_get` gives the union, each project once by its lower-case path, sorted by folder name.
+- **What the phone does not know.** A plan in the approval queue of a desktop window shows as waiting, and an answered question shows until its worker starts, because those facts live only in that window. New tickets start only while a Dispatch window drives the host.
+
 ## Open points
 
 - **A second listen address.** The desktop window reaches the host through `127.0.0.1`, next to the Tailscale address of user decision 2. The key guards both. The alternative is that the desktop window also uses the Tailscale address, which fails when Tailscale is down on the desktop. Task 3 needs the user's yes on this.

@@ -124,6 +124,7 @@ pub fn run() {
             commands::host_run_start,
             commands::host_run_stop,
             commands::host_run_new_key,
+            commands::host_run_new_phone_key,
             commands::host_run_autostart,
             commands::app_restart
         ])

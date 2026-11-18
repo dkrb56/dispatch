@@ -48,6 +48,7 @@ const LOCAL_COMMANDS = new Set([
   "host_run_start",
   "host_run_stop",
   "host_run_new_key",
+  "host_run_new_phone_key",
   "host_run_autostart",
   "app_restart",
 ]);

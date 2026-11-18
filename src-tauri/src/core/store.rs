@@ -188,9 +188,77 @@ pub fn shared_set(core: &Core, night: Option<bool>, triage: Option<Map<String, V
     Ok(shared)
 }
 
+const WORKSPACES_FILE: &str = "workspaces.json";
+/// A read and its write of `workspaces.json` happen under this lock, as for `shared.json`.
+static WORKSPACES_LOCK: Mutex<()> = Mutex::new(());
+
+/// The open projects by window id; a missing or broken file counts as none.
+fn read_workspaces(dir: &Path) -> Map<String, Value> {
+    read_json(&dir.join(WORKSPACES_FILE)).and_then(|value| value.as_object().cloned()).unwrap_or_default()
+}
+
+/// Keeps `roots` as the open projects of `window`. An empty list removes the window.
+fn set_workspaces_in(dir: &Path, window: &str, roots: Vec<String>) -> Result<(), String> {
+    let _guard = WORKSPACES_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut windows = read_workspaces(dir);
+    if roots.is_empty() {
+        windows.remove(window);
+    } else {
+        windows.insert(window.to_string(), json!(roots));
+    }
+    write_atomic(&dir.join(WORKSPACES_FILE), &serde_json::to_vec_pretty(&Value::Object(windows)).map_err(err)?)
+}
+
+/// The open projects of all windows: each project once by its lower-case path, sorted by folder name.
+fn get_workspaces_in(dir: &Path) -> Vec<String> {
+    let windows = {
+        let _guard = WORKSPACES_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        read_workspaces(dir)
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut roots: Vec<(String, String, String)> = Vec::new();
+    for root in windows.values().filter_map(Value::as_array).flatten().filter_map(Value::as_str) {
+        let key = root.trim_end_matches(['\\', '/']).to_lowercase();
+        if key.is_empty() || !seen.insert(key.clone()) {
+            continue;
+        }
+        let name = key.rsplit(['\\', '/']).next().unwrap_or_default().to_string();
+        roots.push((name, key, root.to_string()));
+    }
+    roots.sort();
+    roots.into_iter().map(|(_, _, root)| root).collect()
+}
+
+/// `window` tells the host which projects it has open.
+pub fn workspaces_set(core: &Core, window: &str, roots: Vec<String>) -> Result<(), String> {
+    set_workspaces_in(&core.data_dir()?, window, roots)
+}
+
+/// The projects that the windows of this data folder have open.
+pub fn workspaces_get(core: &Core) -> Result<Vec<String>, String> {
+    Ok(get_workspaces_in(&core.data_dir()?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_window_keeps_its_own_open_projects() {
+        let dir = scratch("workspaces");
+        assert!(get_workspaces_in(&dir).is_empty(), "no file: no project");
+        set_workspaces_in(&dir, "w-1", vec!["D:\\Work\\Zeta".into(), "D:\\Work\\alpha".into()]).unwrap();
+        set_workspaces_in(&dir, "w-2", vec!["d:\\work\\zeta\\".into(), "D:\\Work\\Mid".into()]).unwrap();
+        assert_eq!(get_workspaces_in(&dir), ["D:\\Work\\alpha", "D:\\Work\\Mid", "D:\\Work\\Zeta"], "each project once, by folder name");
+        set_workspaces_in(&dir, "w-1", vec!["D:\\Work\\alpha".into()]).unwrap();
+        assert_eq!(get_workspaces_in(&dir), ["D:\\Work\\alpha", "D:\\Work\\Mid", "d:\\work\\zeta\\"], "w-2 keeps its list");
+        set_workspaces_in(&dir, "w-2", Vec::new()).unwrap();
+        assert_eq!(get_workspaces_in(&dir), ["D:\\Work\\alpha"], "an empty list removes the window");
+        assert!(!read_workspaces(&dir).contains_key("w-2"));
+        fs::write(dir.join(WORKSPACES_FILE), "{ broken").unwrap();
+        assert!(get_workspaces_in(&dir).is_empty(), "a broken file counts as none");
+        fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("dispatch-shared-{name}-{}", std::process::id()));

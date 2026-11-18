@@ -6,6 +6,7 @@
 
 mod calls;
 mod clients;
+mod phone;
 mod protocol;
 mod server;
 
@@ -125,6 +126,7 @@ fn main() {
         fail(&format!("a host already runs (process {pid}); stop it first"));
     }
     let key = pairing_key(&data_dir).unwrap_or_else(|e| fail(&e));
+    hostrun::ensure_phone_key(&data_dir).unwrap_or_else(|e| fail(&e));
 
     let tailnet = flags.address.or_else(|| wait_for_tailscale(flags.wait_address)).unwrap_or_else(|| {
         fail("`tailscale ip -4` gave no address; start Tailscale or name the address with --address <ip>")
@@ -156,7 +158,7 @@ fn main() {
         .enable_all()
         .build()
         .unwrap_or_else(|e| fail(&format!("no runtime: {e}")));
-    let host = Arc::new(Host { core, clients, version: version.clone() });
+    let host = Arc::new(Host { core, clients, version: version.clone(), data_dir: data_dir.clone() });
     runtime.block_on(async move {
         let mut listeners = Vec::new();
         for address in &addresses {

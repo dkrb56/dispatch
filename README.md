@@ -60,6 +60,16 @@ Options → **Where the work runs** has three modes. **This PC does the work** i
 
 With several hosts, each project name gets ` · <host name>` after it, so two projects with the same folder name stay apart. Each host keeps its own Nightmode switch; the one switch in the top bar shows a third look when the hosts differ. A host that is not reachable gets its own row in a bar below the top bar, and the other hosts keep working. Use **This PC and hosts** to work on this computer and see the projects of your other computers in the same window; no host program runs on this computer then. **?** → **Where the work runs** has the details.
 
+### On your iPhone
+
+The host also serves a small page with only the Overview: one column of project cards with the tasks in work, the newest finished tasks and the tickets. You can add a ticket there.
+
+1. Install Tailscale on the iPhone and sign in to the same tailnet as the computer.
+2. On the computer: Options → **Run the host on this PC** → **Start the host**. Scan the code with the iPhone camera.
+3. In Safari tap Share, then **Add to Home Screen**. The icon opens the page full screen.
+
+The computer and the host must be on. The phone gives no alerts, and you approve plans and answer questions at the computer. A ticket from the phone starts only while a Dispatch window runs. **New phone key** ends the access of the old code; the host and its terminals keep running.
+
 ## What Setup pipeline changes
 
 All in the open, each step listed before you apply it:
@@ -91,7 +101,9 @@ The installer lands in `src-tauri/target/release/bundle/nsis/`; on a Mac, `npm r
 
 Dispatch runs on your computer. It reads the session files of Claude Code in `%USERPROFILE%\.claude` to show chats, workers and context, and it writes only the files that you apply in Setup pipeline and its own state in `%APPDATA%\com.dkrb56.dispatch`. Dispatch itself sends nothing anywhere (Claude Code talks to Anthropic as usual); its only request to the internet is the update check to the GitHub releases of this repository.
 
-In the modes **Use hosts** and **This PC and hosts** the window and each of its hosts talk over your tailnet only, and Tailscale encrypts the traffic. At the start of each connection the window sends the key, the versions and the id of the window; then keystrokes, terminal output, chat texts, task files, the files that the window shows and pasted images travel between them. The host never listens on all addresses: only on the Tailscale address of its computer and on `127.0.0.1`. The window itself listens on nothing in any mode; a computer listens only when you start the host there. It writes `host-key.txt`, `host.json`, `host.log` and `shared.json` into its data folder. The window keeps the keys of its hosts in its own `state.json`. Nothing goes to any other place.
+In the modes **Use hosts** and **This PC and hosts** the window and each of its hosts talk over your tailnet only, and Tailscale encrypts the traffic. At the start of each connection the window sends the key, the versions and the id of the window; then keystrokes, terminal output, chat texts, task files, the files that the window shows and pasted images travel between them. The host never listens on all addresses: only on the Tailscale address of its computer and on `127.0.0.1`. The window itself listens on nothing in any mode; a computer listens only when you start the host there. It writes `host-key.txt`, `phone-key.txt`, `host.json`, `host.log`, `shared.json` and `workspaces.json` (the projects that each window has open) into its data folder. The window keeps the keys of its hosts in its own `state.json`. Nothing goes to any other place.
+
+The host also answers plain web requests on its port with the phone page, on the same two addresses. The page holds no data of yours. With the phone key the page may read the list of open projects, their tasks and tickets and the list of workers, and add a ticket. That key opens no terminal and no file, and it cannot approve a plan or answer a question. The key travels in the part of the link after `#`, and the phone keeps it on the phone.
 
 Dispatch is an independent project. It is not made or endorsed by Anthropic.
 

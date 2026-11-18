@@ -6,6 +6,8 @@ import { parsePulse, PULSE_KEY } from "./attention";
 import { COMPACT_KEY, parseCompact } from "./compact";
 import { cleanAddress, DEFAULT_PORT, type HostEntry, hostSettings, setHostSettings, windowCall } from "./backend";
 import { initDialogTabs } from "./dialogtabs";
+import { phoneLink } from "./phonelink";
+import qrcode from "qrcode-generator";
 
 const dialog = document.querySelector<HTMLDialogElement>("#options")!;
 const listEl = document.querySelector<HTMLElement>("#host-list")!;
@@ -77,6 +79,8 @@ interface HostRun {
   port: number | null;
   addresses: string[];
   key: string | null;
+  /** The key of the phone page; it opens only the phone calls of the host. */
+  phoneKey?: string | null;
   version: string | null;
   /** `null` on a system without the sign-in start. */
   autostart: boolean | null;
@@ -91,12 +95,54 @@ const runNewKeyEl = document.querySelector<HTMLButtonElement>("#host-run-newkey"
 const runAutostartRow = document.querySelector<HTMLElement>("#host-run-autostart-row")!;
 const runAutostartEl = document.querySelector<HTMLInputElement>("#host-run-autostart")!;
 const runErrorEl = document.querySelector<HTMLElement>("#host-run-error")!;
+const phoneBlockEl = document.querySelector<HTMLElement>("#phone-block")!;
+const phoneNoteEl = document.querySelector<HTMLElement>("#phone-note")!;
+const phoneReadyEl = document.querySelector<HTMLElement>("#phone-ready")!;
+const phoneCodeEl = document.querySelector<HTMLCanvasElement>("#phone-code")!;
+const phoneLinkEl = document.querySelector<HTMLInputElement>("#phone-link")!;
+const phoneNewKeyEl = document.querySelector<HTMLButtonElement>("#phone-newkey")!;
 let lastRun: HostRun | null = null;
 let runBusy = false;
 
 /** The port of the row of this PC in the host list, or the default port. */
 function chosenPort(): number {
   return hostSettings().hosts.find((entry) => entry.address === THIS_PC)?.port ?? DEFAULT_PORT;
+}
+
+/** Draws the link as a code on a white ground, with the quiet zone that a camera needs. */
+function drawPhoneCode(link: string): void {
+  const code = qrcode(0, "M");
+  code.addData(link);
+  code.make();
+  const QUIET = 4;
+  const count = code.getModuleCount();
+  const scale = Math.max(2, Math.floor(240 / (count + 2 * QUIET)));
+  const size = (count + 2 * QUIET) * scale;
+  phoneCodeEl.width = size;
+  phoneCodeEl.height = size;
+  const context = phoneCodeEl.getContext("2d");
+  if (!context) return;
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, size, size);
+  context.fillStyle = "#000000";
+  for (let row = 0; row < count; row++) {
+    for (let column = 0; column < count; column++) {
+      if (code.isDark(row, column)) context.fillRect((column + QUIET) * scale, (row + QUIET) * scale, scale, scale);
+    }
+  }
+}
+
+/** The block of the phone page: it shows while the host runs. */
+function drawPhoneBlock(run: HostRun | null): void {
+  phoneBlockEl.hidden = run?.running !== true;
+  const link = run?.running ? phoneLink(run.addresses, run.phoneKey) : null;
+  phoneReadyEl.hidden = link === null;
+  phoneNoteEl.textContent = link ? "Scan this code with the iPhone camera. In Safari tap Share, then Add to Home Screen." : "The phone needs the Tailscale address of this computer. Start Tailscale, then start the host again.";
+  phoneNewKeyEl.disabled = runBusy;
+  if (link && phoneLinkEl.value !== link) {
+    phoneLinkEl.value = link;
+    drawPhoneCode(link);
+  }
 }
 
 /** The section "Run the host on this PC": the state of the host, its key and the buttons. */
@@ -117,6 +163,7 @@ function drawHostRun(run: HostRun | null, error = ""): void {
   runAutostartEl.disabled = runBusy;
   runErrorEl.hidden = error === "";
   runErrorEl.textContent = error;
+  drawPhoneBlock(run);
 }
 
 async function showHostRun(): Promise<void> {
@@ -214,6 +261,8 @@ function initHostRun(onHostChange: () => unknown): void {
       await saveAndRestart(onHostChange);
     });
   });
+  // The host keeps running: only the phone needs the new code.
+  phoneNewKeyEl.addEventListener("click", () => void hostRunAction("host_run_new_phone_key", {}, async () => {}));
   runAutostartEl.addEventListener("change", () => {
     const on = runAutostartEl.checked;
     void hostRunAction("host_run_autostart", { on, port: lastRun?.port ?? chosenPort() }, async () => {});

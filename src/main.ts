@@ -9337,8 +9337,34 @@ async function installUpdate(): Promise<void> {
   }
 }
 
+/** The list of open projects that each host got last from this window. */
+const sentWorkspaces = new Map<HostId, string>();
+
+/**
+ * Tells each host which of its projects this window has open: the phone page shows them (ticket
+ * i-need-an-iphone-app-with-just-overview). A failed send goes again at the next poll; a host of an
+ * older version does not know the call, and that counts as sent.
+ */
+async function publishWorkspaces(): Promise<void> {
+  const refs = workspaceRefs();
+  await Promise.all(
+    leaseHosts().map(async (host) => {
+      const roots = refs.filter((ref) => ref.host === host).map((ref) => ref.root).sort();
+      const text = JSON.stringify(roots);
+      if (sentWorkspaces.get(host) === text) return;
+      sentWorkspaces.set(host, text);
+      try {
+        await call(host, "workspaces_set", { roots });
+      } catch (error) {
+        if (!String(error).startsWith("unknown command")) sentWorkspaces.delete(host);
+      }
+    }),
+  );
+}
+
 /** Refreshes the workers in the chat panel, and sends the lines that wait for triage. It runs again and again. */
 async function pollWorkers(): Promise<void> {
+  void publishWorkspaces();
   // Before the worker list: its changes go to triage only from the window that drives.
   await pollShared();
   try {

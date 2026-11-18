@@ -1,16 +1,19 @@
 //! The WebSocket service: one listener per address, one task per connection. A connection must
 //! start with a hello that has this protocol and the key; then each call runs on the blocking pool
 //! of tokio (the keys and the size of a terminal in their order, see `in_order`) and its reply goes back through the writer of the connection, which also carries the
-//! events of the window's terminals in their order.
+//! events of the window's terminals in their order. A plain HTTP request on the same port gets the
+//! phone page (`phone.rs`); the phone key opens a connection that may use only the phone calls.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::stream::SplitStream;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Map, Value};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
@@ -18,10 +21,11 @@ use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
-use dispatch_lib::core::Core;
+use dispatch_lib::core::{hostrun, Core};
 
 use crate::calls::{self, Reply};
 use crate::clients::{Clients, Out, Sender};
+use crate::phone;
 use crate::protocol::{self, Incoming};
 
 /// The first frame must come within this time.
@@ -30,11 +34,24 @@ const HELLO_WAIT: Duration = Duration::from_secs(10);
 const WRONG_KEY_WAIT: Duration = Duration::from_secs(1);
 /// `file_read` gives up to 50 MB; a frame may carry that and its header.
 const MAX_FRAME: usize = 64 * 1024 * 1024;
+/// The wait between two looks at a request head that is not complete yet.
+const HEAD_POLL: Duration = Duration::from_millis(10);
 
 pub struct Host {
     pub core: Arc<Core>,
     pub clients: Arc<Clients>,
     pub version: String,
+    /// The data folder: it holds the phone key, which can change while the host runs.
+    pub data_dir: PathBuf,
+}
+
+/// What the key of a connection allows.
+#[derive(Clone)]
+enum Role {
+    /// The full key: every call.
+    Window,
+    /// The phone key: the calls of `phone::phone_call`, while this key is still the phone key.
+    Phone { key: String },
 }
 
 pub async fn serve(listener: TcpListener, host: Arc<Host>) {
@@ -63,7 +80,49 @@ async fn refuse(mut socket: Socket, peer: SocketAddr, code: CloseCode, text: &st
     let _ = tokio::time::timeout(Duration::from_secs(2), async { while let Some(Ok(_)) = socket.next().await {} }).await;
 }
 
-async fn connection(stream: TcpStream, peer: SocketAddr, host: Arc<Host>) {
+/// The request head of a new connection. It stays in the stream: a peek consumes nothing, so the
+/// WebSocket handshake still reads all of it. `None` when the head does not fit into `MAX_HEAD`.
+async fn peek_head(stream: &TcpStream) -> Option<Vec<u8>> {
+    let mut buffer = vec![0u8; phone::MAX_HEAD];
+    loop {
+        let count = stream.peek(&mut buffer).await.ok()?;
+        if count == 0 {
+            return None;
+        }
+        if let Some(end) = phone::head_end(&buffer[..count]) {
+            buffer.truncate(end);
+            return Some(buffer);
+        }
+        if count == buffer.len() {
+            return None;
+        }
+        tokio::time::sleep(HEAD_POLL).await;
+    }
+}
+
+/// Answers a plain request. The head is read first: a close with unread bytes can reset the
+/// connection and cut the page.
+async fn plain_reply(stream: &mut TcpStream, head: &[u8]) -> std::io::Result<()> {
+    let mut read = vec![0u8; head.len()];
+    stream.read_exact(&mut read).await?;
+    stream.write_all(&phone::reply(head)).await?;
+    stream.shutdown().await
+}
+
+async fn connection(mut stream: TcpStream, peer: SocketAddr, host: Arc<Host>) {
+    let head = match tokio::time::timeout(HELLO_WAIT, peek_head(&stream)).await {
+        Ok(Some(head)) => head,
+        Ok(None) | Err(_) => {
+            println!("{peer}: no request head");
+            return;
+        }
+    };
+    if !phone::wants_websocket(&head) {
+        if let Ok(Err(e)) = tokio::time::timeout(HELLO_WAIT, plain_reply(&mut stream, &head)).await {
+            println!("{peer}: the page was not sent: {e}");
+        }
+        return;
+    }
     let config = WebSocketConfig::default().max_message_size(Some(MAX_FRAME)).max_frame_size(Some(MAX_FRAME));
     let mut socket = match tokio_tungstenite::accept_async_with_config(stream, Some(config)).await {
         Ok(socket) => socket,
@@ -89,12 +148,20 @@ async fn connection(stream: TcpStream, peer: SocketAddr, host: Arc<Host>) {
         let text = protocol::other_protocol(protocol_version);
         return refuse(socket, peer, CloseCode::Protocol, &text, &text).await;
     }
-    if !host.clients.key_matches(&key) {
+    let role = if host.clients.key_matches(&key) {
+        Role::Window
+    } else if hostrun::phone_key_ok(&host.data_dir, &key) {
+        Role::Phone { key }
+    } else {
         tokio::time::sleep(WRONG_KEY_WAIT).await;
         return refuse(socket, peer, CloseCode::Policy, protocol::WRONG_KEY, protocol::WRONG_KEY).await;
-    }
+    };
     if !protocol::valid_window(&window) {
         let text = "the window id must be 1 to 64 letters, digits and -";
+        return refuse(socket, peer, CloseCode::Policy, text, "bad window id").await;
+    }
+    if matches!(role, Role::Phone { .. }) && !window.starts_with(phone::WINDOW_PREFIX) {
+        let text = "the window id of a phone must start with phone-";
         return refuse(socket, peer, CloseCode::Policy, text, "bad window id").await;
     }
 
@@ -120,7 +187,7 @@ async fn connection(stream: TcpStream, peer: SocketAddr, host: Arc<Host>) {
         let _ = write.close().await;
     });
 
-    calls_loop(read, &host, &window, &tx).await;
+    calls_loop(read, &host, &window, &role, &tx).await;
 
     host.clients.unregister(&window, serial);
     drop(tx);
@@ -129,19 +196,23 @@ async fn connection(stream: TcpStream, peer: SocketAddr, host: Arc<Host>) {
 }
 
 /// Reads the calls of a window until the connection ends.
-async fn calls_loop(mut read: SplitStream<Socket>, host: &Arc<Host>, window: &str, tx: &Sender) {
+async fn calls_loop(mut read: SplitStream<Socket>, host: &Arc<Host>, window: &str, role: &Role, tx: &Sender) {
     // `image_save` calls that wait for their binary frame.
     let mut waiting: HashMap<u32, Map<String, Value>> = HashMap::new();
     let lanes = Lanes::new();
+    let is_phone = matches!(role, Role::Phone { .. });
     while let Some(Ok(message)) = read.next().await {
         match message {
             Message::Text(text) => match protocol::parse(&text) {
+                Ok(Incoming::Call { id, command, .. }) if is_phone && !phone::phone_call(&command) => {
+                    let _ = tx.send(Out::Text(protocol::reply_error(id, phone::NOT_ALLOWED)));
+                }
                 Ok(Incoming::Call { id, command, args }) => {
                     let args = args.unwrap_or_default();
                     if command == "image_save" {
                         waiting.insert(id, args);
                     } else {
-                        start_call(host, &lanes, window, tx, id, command, args, None);
+                        start_call(host, &lanes, window, role, tx, id, command, args, None);
                     }
                 }
                 Ok(Incoming::Hello { .. }) => {
@@ -151,9 +222,12 @@ async fn calls_loop(mut read: SplitStream<Socket>, host: &Arc<Host>, window: &st
                     let _ = tx.send(Out::Text(protocol::refused(&text)));
                 }
             },
+            Message::Binary(_) if is_phone => {
+                let _ = tx.send(Out::Text(protocol::refused(phone::NO_BINARY)));
+            }
             Message::Binary(frame) => match protocol::split_binary(&frame) {
                 Ok((id, body)) => match waiting.remove(&id) {
-                    Some(args) => start_call(host, &lanes, window, tx, id, "image_save".into(), args, Some(body.to_vec())),
+                    Some(args) => start_call(host, &lanes, window, role, tx, id, "image_save".into(), args, Some(body.to_vec())),
                     None => {
                         let _ = tx.send(Out::Text(protocol::reply_error(id, "no call waits for these bytes")));
                     }
@@ -172,6 +246,7 @@ fn start_call(
     host: &Arc<Host>,
     lanes: &Lanes,
     window: &str,
+    role: &Role,
     tx: &Sender,
     id: u32,
     command: String,
@@ -180,8 +255,15 @@ fn start_call(
 ) {
     let host = host.clone();
     let window = window.to_string();
+    let role = role.clone();
     let lane = command.clone();
     lanes.run(&lane, id, tx, Box::new(move || {
+        // A new phone key ends the old one at its next call, without a restart of the host.
+        if let Role::Phone { key } = &role {
+            if !hostrun::phone_key_ok(&host.data_dir, key) {
+                return Out::Text(protocol::reply_error(id, protocol::WRONG_KEY));
+            }
+        }
         match calls::run(&host.core, &host.clients, &window, &command, &args, body.as_deref()) {
             Ok(Reply::Json(value)) => Out::Text(protocol::reply_value(id, value)),
             Ok(Reply::Bytes(bytes)) => Out::Binary(protocol::binary(id, &bytes)),

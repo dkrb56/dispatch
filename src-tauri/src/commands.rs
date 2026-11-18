@@ -540,6 +540,11 @@ pub fn host_run_new_key(core: State<Core>, port: Option<u16>) -> Result<HostRun,
 }
 
 #[tauri::command(async)]
+pub fn host_run_new_phone_key(core: State<Core>) -> Result<HostRun, String> {
+    hostrun::host_run_new_phone_key(&core)
+}
+
+#[tauri::command(async)]
 pub fn host_run_autostart(core: State<Core>, on: bool, port: Option<u16>) -> Result<HostRun, String> {
     hostrun::host_run_autostart(&core, on, port)
 }

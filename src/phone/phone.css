@@ -1,0 +1,238 @@
+/* The phone page: one column in the Slate colours of src/styles.css. */
+:root {
+  color-scheme: dark;
+  --bg: #13161a;
+  --card: #1c2127;
+  --hairline: #22282f;
+  --line: #2b323a;
+  --text: #dfe3e8;
+  --text-2: #a8b0ba;
+  --muted: #7c8591;
+  --accent: #8fb3d9;
+  --accent-bg: #1f2b38;
+  --accent-line: #34495f;
+  --work: #8cc0a0;
+  --work-bg: #1d2a23;
+  --wait: #d8b06a;
+  --wait-bg: #33291a;
+  --danger: #d99a9a;
+  --danger-bg: #352225;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow-wrap: anywhere;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: calc(env(safe-area-inset-top) + 12px) calc(env(safe-area-inset-right) + 12px) calc(env(safe-area-inset-bottom) + 16px) calc(env(safe-area-inset-left) + 12px);
+}
+
+.top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.top h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.top span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.message {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text-2);
+}
+
+.cards,
+.key-form,
+.ticket-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.card-head h2 {
+  min-width: 0;
+  margin: 0;
+  font-size: 17px;
+}
+
+.count {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--hairline);
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.count.waits {
+  background: var(--wait-bg);
+  color: var(--wait);
+}
+
+.count.working {
+  background: var(--work-bg);
+  color: var(--work);
+}
+
+.card h3 {
+  margin: 14px 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.none,
+.card-error {
+  margin: 0;
+  color: var(--muted);
+}
+
+.card-error {
+  margin-top: 8px;
+  color: var(--danger);
+}
+
+.task {
+  padding: 8px 0;
+  border-top: 1px solid var(--hairline);
+}
+
+.task p {
+  margin: 2px 0 0;
+  color: var(--text-2);
+  font-size: 14px;
+}
+
+.task .about {
+  color: var(--text);
+}
+
+.status {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.status.waits {
+  color: var(--wait);
+}
+
+.status.working {
+  color: var(--work);
+}
+
+.status.failed {
+  color: var(--danger);
+}
+
+.status.done {
+  color: var(--muted);
+}
+
+.tickets-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+button {
+  min-height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: 8px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font: inherit;
+}
+
+button:disabled {
+  opacity: 0.6;
+}
+
+textarea,
+input {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  /* Below 16 px the iPhone zooms the page when the box gets the focus. */
+  font: inherit;
+  font-size: 16px;
+}
+
+.ticket-box {
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.ticket-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.ticket-buttons button {
+  flex: 1;
+}
+
+.note {
+  margin: 8px 0 0;
+  color: var(--text-2);
+  font-size: 14px;
+}
+
+[hidden] {
+  display: none !important;
+}

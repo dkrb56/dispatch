@@ -4146,6 +4146,27 @@ button.ticket-level {
   white-space: pre-wrap;
 }
 
+/* The block of the phone page: the code keeps its white ground in every theme. */
+#phone-block {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+}
+
+#phone-code {
+  display: block;
+  max-width: 100%;
+  margin: 8px 0;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+#options #phone-link {
+  width: 80%;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+}
+
 /* The folder chooser of the mode "Use a host": the folders of the host through dir_list. */
 #folder-chooser {
   width: min(92vw, 640px);

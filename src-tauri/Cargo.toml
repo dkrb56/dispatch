@@ -37,7 +37,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 portable-pty = "0.9"
 base64 = "0.22"
 # The host only: the WebSocket service, the folders without Tauri, the key, the stop with Ctrl+C.
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "io-util"] }
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 dirs = "7"

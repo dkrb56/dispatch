@@ -266,6 +266,9 @@ pub fn run(
         // The Nightmode switch and the triage chats that all windows share (remote-shared-state).
         "shared_load" => json(store::shared_load(core)?),
         "shared_set" => json(store::shared_set(core, a.opt("night")?, a.opt("triage")?)?),
+        // The open projects of each window: the phone page shows their union.
+        "workspaces_set" => json(store::workspaces_set(core, window, a.req("roots")?)?),
+        "workspaces_get" => json(store::workspaces_get(core)?),
         "driver_state" => json(serde_json::json!({ "driver": clients.driver_state(window, a.opt("active")?.unwrap_or(false)) })),
         other if WINDOW_ONLY.contains(&other) => Err("this command runs in the window, not on the host".into()),
         other => Err(format!("unknown command: {other}")),
