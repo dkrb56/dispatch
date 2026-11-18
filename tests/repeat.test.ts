@@ -9,6 +9,14 @@ import { answeredLine, replyText } from "../src/answers.ts";
 import { type AnsweredReport, answeredRecord, parseAnswered, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered } from "../src/repeat.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+
+/** The source text of a top-level function of main.ts, up to the closing brace at the line start. */
+function mainFunction(name: string): string {
+  const start = MAIN.indexOf(`function ${name}(`);
+  assert.ok(start >= 0, `main.ts has the function ${name}`);
+  return MAIN.slice(start, MAIN.indexOf("\n}\n", start));
+}
 
 // The case of the Starminer project on 2026-11-14 (task t-20261113T210602543Z-6c3bd16c).
 const TASK = "t-20261113T210602543Z-6c3bd16c";
@@ -104,4 +112,42 @@ test("the Help says that an answered question does not come back as new", () => 
   const item = HTML.slice(start, HTML.indexOf("<h3>Where the work runs</h3>", start));
   assert.match(item, /leaves? (?:an|the|your) answered question in its report/);
   assert.match(item, /Send the answer again/);
+});
+
+test("the Stop button of the permission card: first click only asks, Stop now ends, Keep waiting steps back", () => {
+  const controls = mainFunction("permissionStopControls");
+  assert.match(controls, /"Stop"/);
+  assert.match(controls, /"Stop now"/);
+  assert.match(controls, /"Keep waiting"/);
+  assert.match(controls, /"task-stop"/);
+  assert.match(controls, /"task-stop-text"/);
+  assert.match(controls, /"danger"/);
+  // Only the Stop now handler runs the verb: the text before it holds the first click and no task_stop.
+  assert.equal(controls.match(/task_stop/g)?.length, 1);
+  assert.ok(controls.indexOf('"Stop now"') < controls.indexOf("task_stop"), "task_stop stands in the Stop now handler");
+  assert.ok(controls.indexOf("task_stop") < controls.indexOf('"Keep waiting"'), "task_stop stands before Keep waiting");
+  assert.ok(mainFunction("permissionCard").includes("permissionStopControls(task"));
+  assert.ok(!mainFunction("permissionCard").includes("task_stop"));
+});
+
+test("an armed Stop of the permission card holds for its report only, and Continue clears it", () => {
+  const controls = mainFunction("permissionStopControls");
+  assert.match(MAIN, /const permissionStopArmed = new Map<string, number>\(\)/);
+  assert.match(controls, /permissionStopArmed\.get\(task\.name\) === modified/);
+  assert.match(controls, /permissionStopArmed\.set\(task\.name, modified\)/);
+  const card = mainFunction("permissionCard");
+  assert.ok(card.indexOf("permissionStopArmed.delete(task.name)") < card.indexOf('"task_reply"'), "Continue clears the armed click first");
+});
+
+test("the line of the Stop of the permission card has the form of a stopped task", () => {
+  assert.match(mainFunction("permissionStopControls"), /`Task \$\{task\.name\} stopped in Dispatch: the worker waited for a permission and the user stopped the task\. The task is ended until the user clicks Resume\.`/);
+});
+
+test("the Help says that a task that needs a permission can be stopped", () => {
+  const start = HTML.indexOf("<h3>The Chats panel</h3>");
+  const item = HTML.slice(start, HTML.indexOf("<h3>Where the work runs</h3>", start));
+  const line = item.split("\n").find((text) => text.includes("A worker that stopped at a refused step")) ?? "";
+  assert.match(line, /<b>Continue<\/b>/);
+  assert.match(line, /<b>Stop<\/b>/);
+  assert.match(line, /<b>Stop now<\/b>/);
 });

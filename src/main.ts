@@ -2702,6 +2702,8 @@ let rejectFocus: string | null = null;
 const stopArmed = new Set<string>();
 /** The tasks whose Stop button of the repeat card waits for the second click. */
 const repeatStopArmed = new Set<string>();
+/** The tasks whose Stop of the permission card waits for the second click, with the report time of that click. A newer report disarms it. */
+const permissionStopArmed = new Map<string, number>();
 /** The tasks whose click runs now. Their buttons stay grey across re-renders. */
 const busyTasks = new Set<string>();
 /** The last failure of a click per task, shown in its card until the next click. */
@@ -6084,7 +6086,50 @@ function initQuestions(): void {
   });
 }
 
-/** The card of a report that needs a permission: the user changes the rule, then Continue resumes the worker. */
+/**
+ * The Stop controls of a card that waits for the user. Not armed: adds the button Stop to the actions
+ * row and gives null. Armed for the report on show: gives the row with the warning, Stop now and Keep waiting.
+ */
+function permissionStopControls(task: Task, actions: HTMLElement): HTMLElement | null {
+  const modified = task.info?.report?.modified ?? 0;
+  const busy = busyTasks.has(task.name);
+  const button = (text: string, title: string, click: () => void) => {
+    const made = document.createElement("button");
+    made.textContent = text;
+    made.title = title;
+    made.disabled = busy;
+    made.addEventListener("click", click);
+    return made;
+  };
+  if (permissionStopArmed.get(task.name) === modified) {
+    const row = document.createElement("div");
+    row.className = "task-stop";
+    const text = document.createElement("span");
+    text.className = "task-stop-text";
+    text.textContent = "Stop this task? It no longer waits for you. Resume in its card starts it again.";
+    const stop = button("Stop now", "End this task now", () => {
+      permissionStopArmed.delete(task.name);
+      const line = `Task ${task.name} stopped in Dispatch: the worker waited for a permission and the user stopped the task. The task is ended until the user clicks Resume.`;
+      void taskAction(task, "task_stop", { id: task.name }, line);
+    });
+    stop.className = "danger";
+    const keep = button("Keep waiting", "Keep this task and its card", () => {
+      permissionStopArmed.delete(task.name);
+      renderChats();
+    });
+    row.append(text, stop, keep);
+    return row;
+  }
+  actions.append(
+    button("Stop", "End this task. A second click confirms", () => {
+      permissionStopArmed.set(task.name, modified);
+      renderChats();
+    }),
+  );
+  return null;
+}
+
+/** The card of a report that needs a permission: the user changes the rule and clicks Continue, or ends the task with Stop. */
 function permissionCard(task: Task): HTMLElement {
   const card = document.createElement("div");
   card.className = "task-card";
@@ -6102,6 +6147,7 @@ function permissionCard(task: Task): HTMLElement {
   button.title = "Tell the worker to go on, after you changed the rule";
   button.disabled = busyTasks.has(task.name);
   button.addEventListener("click", () => {
+    permissionStopArmed.delete(task.name);
     const modified = task.info?.report?.modified ?? 0;
     const line = `Permission for ${task.name} changed in Dispatch. The worker continues.`;
     void taskAction(task, "task_reply", { id: task.name, text: "Continue" }, line).then((sent) => {
@@ -6111,7 +6157,9 @@ function permissionCard(task: Task): HTMLElement {
     });
   });
   actions.append(button);
+  const armed = permissionStopControls(task, actions);
   card.append(title, text, actions);
+  if (armed) card.append(armed);
   const error = actionError(task);
   if (error) card.append(error);
   return card;
