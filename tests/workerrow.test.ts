@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { agentsText, fileRowTitle, reportChip, rowParts, runChip, runCostText, runModelText, runTokensText, runTokensTitle, tokenText } from "../src/workerrow.ts";
+import { agentsText, fileRowTitle, reportChip, rowParts, runChip, runCostText, runModelText, runTokensText, runTokensTitle, stepRows, tokenText } from "../src/workerrow.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const HTML = read("../index.html");
@@ -300,6 +300,91 @@ test("report chip: a done report ignores the answer flag; no state gives no chip
 test("report chip: main.ts uses the rule for the report row, and the Help names Answered", () => {
   assert.match(MAIN, /reportChip\(info\.header\?\.state/);
   assert.match(HTML, /the report row shows Answered until the worker writes its new report/);
+});
+
+// Ticket under-work-run-i-want-to-see-bullets-of: the steps of a work run under its row.
+const at = (seconds: number) => new Date(Date.UTC(2026, 10, 18, 10, 0, seconds)).toISOString();
+const ms = (seconds: number) => Date.parse(at(seconds));
+const steps = [
+  { number: 1, text: "Read", startedAt: at(0) },
+  { number: 2, text: "Write", startedAt: at(10) },
+  { number: 3, text: "Test", startedAt: at(40) },
+  { number: 4, text: "Commit", startedAt: null },
+];
+const shape = (rows: ReturnType<typeof stepRows>) => rows.map((row) => [row.number, row.state, row.ms]);
+
+test("steps while the run goes on: finished steps have a time, the last started one is current", () => {
+  const rows = stepRows(steps, true, null, null);
+  assert.deepEqual(shape(rows), [
+    [1, "done", 10_000],
+    [2, "done", 30_000],
+    [3, "current", null],
+    [4, "waiting", null],
+  ]);
+  assert.equal(rows[2].since, ms(40));
+  assert.equal(rows[3].since, null);
+});
+
+test("steps after the run: the last started step ends with the report, else with the worker", () => {
+  assert.deepEqual(shape(stepRows(steps, false, ms(50), at(59)))[2], [3, "done", 10_000]);
+  assert.deepEqual(shape(stepRows(steps, false, null, at(59)))[2], [3, "done", 19_000]);
+  // A report from before the step does not end it.
+  assert.deepEqual(shape(stepRows(steps, false, ms(5), at(59)))[2], [3, "done", 19_000]);
+  // No end is known: the step has no duration.
+  assert.deepEqual(shape(stepRows(steps, false, ms(5), "not a date"))[2], [3, "done", null]);
+  assert.deepEqual(shape(stepRows(steps, false, null, null))[2], [3, "done", null]);
+  assert.equal(stepRows(steps, false, ms(50), null)[3].state, "waiting");
+});
+
+test("steps: time order decides, and a skipped step stays without a time", () => {
+  const rows = stepRows(
+    [
+      { number: 1, text: "One", startedAt: at(20) },
+      { number: 2, text: "Skipped", startedAt: null },
+      { number: 3, text: "Three", startedAt: at(5) },
+      { number: 4, text: "Bad time", startedAt: "soon" },
+    ],
+    true,
+    null,
+    null,
+  );
+  assert.deepEqual(shape(rows), [
+    [1, "current", null],
+    [2, "waiting", null],
+    [3, "done", 15_000],
+    [4, "waiting", null],
+  ]);
+  assert.deepEqual(stepRows([], true, null, null), []);
+});
+
+test("steps: two steps with one start time keep the order of the plan", () => {
+  const rows = stepRows(
+    [
+      { number: 1, text: "One", startedAt: at(0) },
+      { number: 2, text: "Two", startedAt: at(0) },
+    ],
+    true,
+    null,
+    null,
+  );
+  assert.deepEqual(shape(rows), [
+    [1, "done", 0],
+    [2, "current", null],
+  ]);
+});
+
+test("the step list meets the page: under the newest work run row, a ticking current step, its look and the Help", () => {
+  assert.match(MAIN, /import \{[^}]*stepRows[^}]*\} from "\.\/workerrow"/);
+  assert.match(MAIN, /workSteps\?: WorkStep\[\];/);
+  assert.match(MAIN, /stepRows\(info\.workSteps, running, info\.report\?\.modified \?\? null, worker\?\.endedAt \?\? null\)/);
+  assert.match(MAIN, /time\.dataset\.runSince = String\(step\.since\);/);
+  assert.match(MAIN, /workerRows\[task\.workers\.indexOf\(workRun\)\]\.after\(steps\);/);
+  assert.match(MAIN, /else if \(steps\) body\.append\(steps\);/);
+  assert.match(CSS, /\.task \.work-steps \{/);
+  assert.match(CSS, /\.task \.work-step-text \{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
+  assert.match(CSS, /\.task \.work-step\.current \{/);
+  assert.match(HTML, /Under the <b>Work run<\/b> row, a list shows the steps of the plan/);
+  assert.match(HTML, /The time of a step includes a wait for your answer\./);
 });
 
 // Ticket i-need-an-option-here-to-resume-stopped: a stopped task shows Resume in its card.

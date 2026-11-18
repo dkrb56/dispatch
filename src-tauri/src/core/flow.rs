@@ -383,10 +383,43 @@ struct Transcript {
     replies: Vec<Reply>,
     uses: Vec<BashUse>,
     results: Vec<(String, BashResult)>,
+    /// The step lines of the worker in the order of the file; no agent line gives one.
+    steps: Vec<StepMark>,
+}
+
+/// A step of a work run that the worker started (ticket under-work-run-i-want-to-see-bullets-of):
+/// its number in the plan, the words of the worker and the time of the line, RFC 3339.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StepMark {
+    pub number: u32,
+    pub text: String,
+    pub time: String,
+}
+
+/// How many characters of the words of a step line, and of a step of the plan, the card gets.
+pub(crate) const STEP_TEXT_CHARS: usize = 100;
+
+/// The number and the words of a step line: `Step <number>: <words>`, or `Step <number> of <all>:
+/// <words>`, on its own line. Spaces and `*` around the line and around the words do not count, so
+/// a line in bold is a step line too. Any other line gives none.
+fn step_line(line: &str) -> Option<(u32, String)> {
+    let around = |c: char| c.is_whitespace() || c == '*';
+    let rest = line.trim_matches(around).strip_prefix("Step ")?;
+    let digits = rest.chars().take_while(char::is_ascii_digit).count();
+    let number = rest[..digits].parse().ok()?;
+    let mut rest = &rest[digits..];
+    if let Some(after) = rest.strip_prefix(" of ") {
+        let all = after.chars().take_while(char::is_ascii_digit).count();
+        if all == 0 {
+            return None;
+        }
+        rest = &after[all..];
+    }
+    Some((number, cut_line(rest.strip_prefix(':')?.trim_matches(around), STEP_TEXT_CHARS)))
 }
 
 /// A line of a text cut to `max` characters; unlike `one_line` it keeps the spaces.
-fn cut_line(line: &str, max: usize) -> String {
+pub(crate) fn cut_line(line: &str, max: usize) -> String {
     match line.char_indices().nth(max) {
         Some((end, _)) => format!("{}…", &line[..end]),
         None => line.to_string(),
@@ -440,6 +473,14 @@ fn read_transcript_line(line: &str, read: &mut Transcript) {
     let text_of = |part: &Value, key: &str| part.get(key).and_then(Value::as_str).map(str::to_string);
     match entry.kind.as_str() {
         "assistant" => {
+            // An agent of the worker does not move the steps of the run.
+            if let (false, Some(time)) = (entry.is_sidechain, entry.timestamp.as_ref()) {
+                for part in parts.iter().filter(|part| text_of(part, "type").as_deref() == Some("text")) {
+                    for (number, text) in text_of(part, "text").unwrap_or_default().lines().filter_map(step_line) {
+                        read.steps.push(StepMark { number, text, time: time.clone() });
+                    }
+                }
+            }
             for part in parts.iter().filter(|part| text_of(part, "type").as_deref() == Some("tool_use") && text_of(part, "name").as_deref() == Some("Bash")) {
                 let command = part.get("input").and_then(|input| text_of(input, "command"));
                 if let (Some(id), Some(command)) = (text_of(part, "id"), command) {
@@ -680,6 +721,27 @@ pub fn evidence_of(projects: &Path, runs: &[(String, String)]) -> Vec<Evidence> 
     list
 }
 
+/// The steps that the work runs of a task started (ticket under-work-run-i-want-to-see-bullets-of):
+/// `runs` are the `(run, session id)` lines of the session file. Only the main transcript of a `work`
+/// run counts. The first mark of a number wins, so a summary at the end of a run moves no step and a
+/// resumed copy that repeats old lines changes nothing. Sorted by the number.
+pub fn step_marks(projects: &Path, runs: &[(String, String)]) -> Vec<StepMark> {
+    let mut marks: std::collections::BTreeMap<u32, StepMark> = std::collections::BTreeMap::new();
+    for (_, session) in runs.iter().filter(|(run, session)| run == "work" && valid_session(session)) {
+        for file in find_transcripts(projects, session) {
+            for mark in transcript_of(&file).steps {
+                match marks.get(&mark.number) {
+                    Some(known) if known.time <= mark.time => {}
+                    _ => {
+                        marks.insert(mark.number, mark);
+                    }
+                }
+            }
+        }
+    }
+    marks.into_values().collect()
+}
+
 /// What a session and its agents did since the last read: the worker view of the Map asks
 /// again and again with the positions it got.
 pub fn session_flow(core: &Core, session: String, from: HashMap<String, u64>) -> Result<Vec<FlowFile>, String> {
@@ -879,6 +941,84 @@ mod tests {
         let sessions: Vec<String> = runs.iter().map(|(_, id)| id.clone()).collect();
         assert_eq!(sums.into_values().collect::<Vec<_>>(), token_usage(&projects, &sessions));
         assert!(run_token_usage(&projects, &[]).is_empty());
+        fs::remove_dir_all(&projects).unwrap();
+    }
+
+    /// An assistant line with one text part.
+    fn text_line(text: &str, time: &str) -> String {
+        serde_json::json!({"type": "assistant", "timestamp": time, "message": {"id": format!("msg_{time}"), "content": [{"type": "text", "text": text}]}}).to_string()
+    }
+
+    /// The number, the words and the time of each mark.
+    fn marks_of(projects: &Path, runs: &[(String, String)]) -> Vec<(u32, String, String)> {
+        step_marks(projects, runs).into_iter().map(|mark| (mark.number, mark.text, mark.time)).collect()
+    }
+
+    fn work(session: &str) -> (String, String) {
+        ("work".to_string(), session.to_string())
+    }
+
+    #[test]
+    fn work_step_line_has_a_number_and_the_words_of_the_worker() {
+        assert_eq!(step_line("Step 1: Read the code"), Some((1, "Read the code".to_string())));
+        assert_eq!(step_line("  **Step 12:** Run the tests  "), Some((12, "Run the tests".to_string())));
+        assert_eq!(step_line("Step 3 of 9: Build"), Some((3, "Build".to_string())));
+        assert_eq!(step_line("Step 4:"), Some((4, String::new())));
+        let long = step_line(&format!("Step 5: {}", "w".repeat(150))).unwrap().1;
+        assert_eq!(long, format!("{}…", "w".repeat(STEP_TEXT_CHARS)));
+        for other in ["Step one: x", "Step 1 x", "Step 1 of: x", "Step 1 of 2 x", "Next is Step 1: x", "step 1: x", "- Step 1: x", ""] {
+            assert_eq!(step_line(other), None, "{other}");
+        }
+    }
+
+    #[test]
+    fn work_step_marks_come_from_the_main_transcript_of_the_work_run() {
+        let projects = scratch_projects("steps-main");
+        let (plan, session) = ("55555555-0000-0000-0000-000000000001", "55555555-0000-0000-0000-000000000002");
+        let agent_line = serde_json::json!({"type": "assistant", "isSidechain": true, "timestamp": "2026-11-18T10:00:02.000Z", "message": {"content": [{"type": "text", "text": "Step 3: agent line"}]}}).to_string();
+        let blob = serde_json::json!({"type": "api-request-blob", "timestamp": "2026-11-18T10:00:03.000Z", "message": {"role": "assistant", "content": [{"type": "text", "text": "Step 4: blob"}]}}).to_string();
+        let user = serde_json::json!({"type": "user", "timestamp": "2026-11-18T10:00:04.000Z", "message": {"role": "user", "content": [{"type": "text", "text": "Step 5: user words"}]}}).to_string();
+        let lines = [
+            text_line("I start now.\nStep 1: Read the code\nMore text.", "2026-11-18T10:00:01.000Z"),
+            agent_line,
+            blob,
+            user,
+            text_line("Step 2: Write the code", "2026-11-18T10:00:05.000Z"),
+            // The summary at the end of the run repeats a step line.
+            text_line("Step 1: Summary", "2026-11-18T10:00:09.000Z"),
+        ];
+        fs::write(projects.join("D--project").join(format!("{session}.jsonl")), lines.join("\n") + "\n").unwrap();
+        fs::write(projects.join("D--project").join(format!("{plan}.jsonl")), text_line("Step 7: The plan run", "2026-11-18T09:00:00.000Z") + "\n").unwrap();
+        // An agent file of the session gives no step either.
+        let agents = projects.join("D--project").join(session).join("subagents");
+        fs::create_dir_all(&agents).unwrap();
+        fs::write(agents.join("agent-a1.jsonl"), text_line("Step 6: The agent", "2026-11-18T10:00:06.000Z") + "\n").unwrap();
+        let runs = [("plan".to_string(), plan.to_string()), work(session)];
+        assert_eq!(
+            marks_of(&projects, &runs),
+            vec![
+                (1, "Read the code".to_string(), "2026-11-18T10:00:01.000Z".to_string()),
+                (2, "Write the code".to_string(), "2026-11-18T10:00:05.000Z".to_string()),
+            ]
+        );
+        // A plan run alone, and an id that is no session id, give no mark.
+        assert!(marks_of(&projects, &runs[..1]).is_empty());
+        assert!(marks_of(&projects, &[work("../x")]).is_empty());
+        fs::remove_dir_all(&projects).unwrap();
+    }
+
+    #[test]
+    fn work_step_marks_of_a_resumed_copy_keep_the_first_time() {
+        let projects = scratch_projects("steps-copy");
+        let (first, copy) = ("66666666-0000-0000-0000-000000000001", "66666666-0000-0000-0000-000000000002");
+        let old = text_line("Step 1: Read the code", "2026-11-18T10:00:01.000Z");
+        let folder = projects.join("D--project");
+        fs::write(folder.join(format!("{first}.jsonl")), format!("{old}\n")).unwrap();
+        // The copy repeats the old line and goes on with the next step.
+        fs::write(folder.join(format!("{copy}.jsonl")), format!("{old}\n{}\n", text_line("Step 2: Test it", "2026-11-18T11:00:00.000Z"))).unwrap();
+        let expected = vec![(1, "Read the code".to_string(), "2026-11-18T10:00:01.000Z".to_string()), (2, "Test it".to_string(), "2026-11-18T11:00:00.000Z".to_string())];
+        assert_eq!(marks_of(&projects, &[work(first), work(copy)]), expected);
+        assert_eq!(marks_of(&projects, &[work(copy), work(first)]), expected);
         fs::remove_dir_all(&projects).unwrap();
     }
 

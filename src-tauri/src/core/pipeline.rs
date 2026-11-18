@@ -930,6 +930,13 @@ pub struct CheckInfo {
 /// The heading of the section that Approve writes at the end of a plan (ticket task-checks).
 const CHECKS_CHOSEN_HEADING: &str = "## Checks chosen";
 
+/// The heading of the section that Approve writes at the end of a brief (ticket
+/// under-work-run-i-want-to-see-bullets-of). A brief with it is the mark of a run that writes step lines.
+const STEP_LINES_HEADING: &str = "## Step lines for Dispatch";
+
+/// The rule for the worker under `STEP_LINES_HEADING`.
+const STEP_LINES_TEXT: &str = "Dispatch shows the progress of this run to the user from these lines. Before you start each numbered item of the section Steps of the plan, write one line of text in your message, on its own line: `Step <number>: <what the step does, in at most 8 plain words>`. Write it once per step, as normal text and not through a tool. Use this form for nothing else.";
+
 /// The ticked check lines of a plan section: `- [x] name — reason` or `- [ ] name: reason`, the
 /// name maybe in backticks. Gives the name, whether it is ticked, and the text after the name.
 fn check_lines(text: &str, title: &str) -> Vec<(String, bool, String)> {
@@ -3030,6 +3037,68 @@ fn parse_plan(text: &str) -> (Vec<String>, bool) {
 
 const SUMMARY_LINES: usize = 5;
 
+/// The steps of a plan (ticket under-work-run-i-want-to-see-bullets-of): each numbered item at the
+/// start of a line of the section `Steps`, with its number and its first sentence without backticks,
+/// cut for the card. A number counts once; an indented item belongs to the step above it.
+fn plan_steps(text: &str) -> Vec<(u32, String)> {
+    let mut steps: Vec<(u32, String)> = Vec::new();
+    for line in section_text(text, "Steps") {
+        let digits = line.chars().take_while(char::is_ascii_digit).count();
+        let (Ok(number), Some(rest)) = (line[..digits].parse::<u32>(), line[digits..].strip_prefix(". ")) else { continue };
+        if !steps.iter().any(|(known, _)| *known == number) {
+            let sentence = first_sentence(rest.trim()).0.replace('`', "");
+            steps.push((number, crate::core::flow::cut_line(&sentence, crate::core::flow::STEP_TEXT_CHARS)));
+        }
+    }
+    steps
+}
+
+/// The steps of a work run for the card: each step of the plan, with the time and the words of its
+/// mark when the worker started it, else with the text of the plan and no time. A mark with a number
+/// that the plan does not have counts for nothing; without any mark of the plan the list is empty.
+fn work_steps(plan: &str, marks: &[crate::core::flow::StepMark]) -> Vec<WorkStep> {
+    let steps = plan_steps(plan);
+    if !steps.iter().any(|(number, _)| marks.iter().any(|mark| mark.number == *number)) {
+        return Vec::new();
+    }
+    steps
+        .into_iter()
+        .map(|(number, text)| match marks.iter().find(|mark| mark.number == number) {
+            Some(mark) => WorkStep { number, text: if mark.text.is_empty() { text } else { mark.text.clone() }, started_at: Some(mark.time.clone()) },
+            None => WorkStep { number, text, started_at: None },
+        })
+        .collect()
+}
+
+/// The steps of the work run of a task. Only a brief with the section of the step lines has them: an
+/// older run that wrote "Step 1:" by chance shows no list, and an older task costs no read.
+fn task_work_steps(project: &Project, projects: &Path, name: &str, brief: &str) -> Vec<WorkStep> {
+    if !has_heading(brief, &STEP_LINES_HEADING[3..]) {
+        return Vec::new();
+    }
+    let marks = crate::core::flow::step_marks(projects, &read_session_runs(&project.session_file(name)));
+    if marks.is_empty() {
+        return Vec::new();
+    }
+    work_steps(&fs::read_to_string(project.plans().join(format!("{name}.md"))).unwrap_or_default(), &marks)
+}
+
+/// Tells the work run of a task to write its step lines: the section goes into the brief, which the
+/// work run reads first, and not into the plan, whose change time holds the choices of the card. A
+/// plan without numbered steps, a missing brief and a brief with the section change nothing. A failed
+/// write costs only the list of steps, so it does not stop Approve.
+fn add_step_lines(project: &Project, id: &str) {
+    let plan = fs::read_to_string(project.plans().join(format!("{id}.md"))).unwrap_or_default();
+    let path = project.briefs().join(format!("{id}.md"));
+    let Ok(brief) = fs::read_to_string(&path) else { return };
+    if plan_steps(&plan).is_empty() || has_heading(&brief, &STEP_LINES_HEADING[3..]) {
+        return;
+    }
+    if let Err(error) = write_file(&path, &with_section(&brief, STEP_LINES_HEADING, STEP_LINES_TEXT)) {
+        eprintln!("the brief of {id} got no step lines: {error}");
+    }
+}
+
 /// A plan without decisions (ticket simpler-process, change 2): it has the heading `## Decisions`,
 /// `parse_decisions` finds none, no line is `HOLD`, and no line of the section starts with a number
 /// and `.` or `)`, with `- `, `* ` or `#`. A section that the parser cannot read is not plain, so
@@ -3672,6 +3741,17 @@ pub(crate) fn task_end(cwd: &str, ticket: &str) -> Result<Option<bool>, String> 
     })
 }
 
+/// One step of a work run for the task card (ticket under-work-run-i-want-to-see-bullets-of).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct WorkStep {
+    number: u32,
+    /// The words of the worker when it started the step, else the text of the plan.
+    text: String,
+    /// When the worker started the step, RFC 3339. None for a step that did not start.
+    #[serde(rename = "startedAt")]
+    started_at: Option<String>,
+}
+
 /// One task of a project, from the files of the reports folder. The frontend joins it with the
 /// workers of the same name.
 #[derive(Serialize)]
@@ -3734,6 +3814,10 @@ pub struct TaskInfo {
     /// task card (ticket dispatch-lags).
     #[serde(rename = "workCommands")]
     work_commands: usize,
+    /// The steps of the work run from its step lines (ticket under-work-run-i-want-to-see-bullets-of).
+    /// Empty for a brief without the section of the step lines and before the first step line.
+    #[serde(rename = "workSteps")]
+    work_steps: Vec<WorkStep>,
     /// The Verification claims of a done report that no Bash command of the evidence matches
     /// (ticket report-check). With a claim here, or without a Verification section, the header
     /// says `working` and `did` gives the reason. Empty when the report passes or is not checked.
@@ -4454,6 +4538,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             run_tokens: Vec::new(),
             evidence: Vec::new(),
             work_commands: 0,
+            work_steps: Vec::new(),
             unverified: Vec::new(),
             taken: None,
             log: None,
@@ -4544,6 +4629,9 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         let path = project.briefs().join(format!("{}.md", task.name));
         let Some(entry) = file_entry(&path) else { continue };
         let text = fs::read_to_string(&path).unwrap_or_default();
+        if let Some(projects) = projects.as_ref() {
+            task.work_steps = task_work_steps(project, projects, &task.name, &text);
+        }
         let about = parse_brief(&text);
         if !about.is_empty() {
             brief_titles.push((task.name.clone(), about.clone()));
@@ -4883,8 +4971,10 @@ pub fn task_approve(cwd: String, id: String) -> Result<String, String> {
 /// `task_approve` with the start of the script as an argument; a test gives a fake. After the script
 /// started the work run, the parts of the plan become Backlog tickets of the ticket of the task (ticket
 /// subtickets). A failed approve opens nothing; a task without a ticket opens nothing and logs it.
+/// The brief gets the rule for the step lines before the start, because the work run reads it first.
 fn task_approve_with(project: &Project, id: &str, start: &dyn Fn(&Project, &[&str]) -> Result<String, String>) -> Result<String, String> {
     check_ticket(id)?;
+    add_step_lines(project, id);
     let output = start(project, &["approve", id])?;
     let plan = fs::read_to_string(project.plans().join(format!("{id}.md"))).unwrap_or_default();
     let parts = plan_parts(&plan);
@@ -6873,6 +6963,7 @@ Blockers: none
             run_tokens: Vec::new(),
             evidence: Vec::new(),
             work_commands: 0,
+            work_steps: Vec::new(),
             unverified: Vec::new(),
             taken: None,
             log: None,
@@ -10313,6 +10404,98 @@ if (args[0] === 'agents') {
         // The steps of the plan are no parts; a plan without the section, or with None, gives none.
         assert!(plan_parts("# t: x\n\n## Steps\n1. One\n2. Two\n").is_empty());
         assert!(plan_parts("# t: x\n\n## Parts\nNone.\n").is_empty());
+    }
+
+    const PLAN_WITH_STEPS: &str = "# t-1: Steps\n\n## Goal\nA goal.\n\n## Steps\n1. Run `node --test` first. Then write it down.\n   1. An indented item is no step.\n2. Change the code\n\nA line between the steps.\n3. Run the checks.\n3. The same number again.\n\n## Decisions\n1. A decision is no step?\n";
+
+    /// A transcript of one work run with assistant text lines, and the session file of the task.
+    fn work_transcript(project: &Project, name: &str, session: &str, lines: &[(&str, &str)]) -> PathBuf {
+        let projects = project.root.parent().unwrap().join("claude-projects");
+        let text: String = lines
+            .iter()
+            .map(|(time, text)| format!("{}\n", json!({"type": "assistant", "timestamp": time, "message": {"content": [{"type": "text", "text": text}]}})))
+            .collect();
+        write_file(&projects.join("D--project").join(format!("{session}.jsonl")), &text).unwrap();
+        write_file(&project.session_file(name), &format!("work {session}\n")).unwrap();
+        projects
+    }
+
+    #[test]
+    fn work_step_list_of_a_plan_is_its_numbered_items() {
+        assert_eq!(
+            plan_steps(PLAN_WITH_STEPS),
+            vec![(1, "Run node --test first".to_string()), (2, "Change the code".to_string()), (3, "Run the checks".to_string())]
+        );
+        let long = plan_steps(&format!("## Steps\n1. {}\n", "w".repeat(150)));
+        assert_eq!(long[0].1, format!("{}…", "w".repeat(100)));
+        assert!(plan_steps("# t: x\n\n## Goal\n1. No steps here\n").is_empty());
+        assert!(plan_steps("## Steps\n- One\n- Two\n").is_empty());
+    }
+
+    #[test]
+    fn work_step_join_takes_the_words_of_the_worker_and_leaves_other_steps_without_a_time() {
+        let mark = |number, text: &str, time: &str| crate::core::flow::StepMark { number, text: text.to_string(), time: time.to_string() };
+        let steps = work_steps(PLAN_WITH_STEPS, &[mark(1, "Run the tests", "t1"), mark(3, "", "t3"), mark(9, "Not in the plan", "t9")]);
+        let step = |number, text: &str, time: Option<&str>| WorkStep { number, text: text.to_string(), started_at: time.map(str::to_string) };
+        assert_eq!(steps, vec![step(1, "Run the tests", Some("t1")), step(2, "Change the code", None), step(3, "Run the checks", Some("t3"))]);
+        assert_eq!(serde_json::to_value(&steps[1]).unwrap(), json!({"number": 2, "text": "Change the code", "startedAt": null}));
+        // No mark, or only a mark that the plan does not have: no list.
+        assert!(work_steps(PLAN_WITH_STEPS, &[]).is_empty());
+        assert!(work_steps(PLAN_WITH_STEPS, &[mark(9, "x", "t9")]).is_empty());
+    }
+
+    #[test]
+    fn work_step_list_needs_the_section_in_the_brief() {
+        let project = scratch("work-steps-brief");
+        write_file(&project.plans().join("t-1.md"), PLAN_WITH_STEPS).unwrap();
+        let projects = work_transcript(&project, "t-1", "77777777-0000-0000-0000-000000000001", &[("2026-11-18T10:00:00.000Z", "Step 1: Read it")]);
+        // A brief from before the section: an older run wrote the same line by chance.
+        assert!(task_work_steps(&project, &projects, "t-1", "# t-1: Old\n").is_empty());
+        let brief = with_section("# t-1: New\n", STEP_LINES_HEADING, STEP_LINES_TEXT);
+        let steps = task_work_steps(&project, &projects, "t-1", &brief);
+        assert_eq!(steps.len(), 3);
+        assert_eq!((steps[0].text.as_str(), steps[0].started_at.as_deref()), ("Read it", Some("2026-11-18T10:00:00.000Z")));
+        assert_eq!(steps[1].started_at, None);
+        // The section without a step line yet gives no list.
+        assert!(task_work_steps(&project, &projects, "t-other", &brief).is_empty());
+        clean(&project);
+    }
+
+    #[test]
+    fn work_step_section_goes_into_the_brief_once_at_approve_and_leaves_the_plan() {
+        let project = scratch("work-steps-approve");
+        let ok = |_: &Project, _: &[&str]| -> Result<String, String> { Ok("started".to_string()) };
+        let plan_path = project.plans().join("t-1.md");
+        let brief_path = project.briefs().join("t-1.md");
+        write_file(&plan_path, PLAN_WITH_STEPS).unwrap();
+        write_file(&brief_path, "# t-1: Steps\r\n\r\n## The user's words\r\nShow the steps.\r\n").unwrap();
+        let plan_time = fs::metadata(&plan_path).unwrap().modified().unwrap();
+        // The brief has the section when the script starts the work run.
+        let seen = std::cell::RefCell::new(String::new());
+        let start = |project: &Project, _: &[&str]| -> Result<String, String> {
+            *seen.borrow_mut() = fs::read_to_string(project.briefs().join("t-1.md")).unwrap();
+            Ok("started".to_string())
+        };
+        task_approve_with(&project, "t-1", &start).unwrap();
+        assert!(seen.borrow().contains("## Step lines for Dispatch\r\n\r\nDispatch shows the progress"), "{}", seen.borrow());
+        let brief = fs::read_to_string(&brief_path).unwrap();
+        assert!(brief.starts_with("# t-1: Steps\r\n\r\n## The user's words\r\nShow the steps.\r\n"), "{brief}");
+        assert!(brief.contains("`Step <number>: <what the step does, in at most 8 plain words>`"), "{brief}");
+        // The plan keeps its text and its time, so the choices of the card stay.
+        assert_eq!(read(&plan_path), PLAN_WITH_STEPS);
+        assert_eq!(fs::metadata(&plan_path).unwrap().modified().unwrap(), plan_time);
+        // A second Approve leaves the brief as it is.
+        task_approve_with(&project, "t-1", &ok).unwrap();
+        assert_eq!(fs::read_to_string(&brief_path).unwrap(), brief);
+        // A plan without numbered steps leaves the brief; a missing brief stays missing.
+        write_file(&project.plans().join("t-2.md"), "# t-2: x\n\n## Steps\n- One\n").unwrap();
+        write_file(&project.briefs().join("t-2.md"), "# t-2: x\n").unwrap();
+        task_approve_with(&project, "t-2", &ok).unwrap();
+        assert_eq!(read(&project.briefs().join("t-2.md")), "# t-2: x\n");
+        write_file(&project.plans().join("t-3.md"), PLAN_WITH_STEPS).unwrap();
+        task_approve_with(&project, "t-3", &ok).unwrap();
+        assert!(!project.briefs().join("t-3.md").exists());
+        clean(&project);
     }
 
     #[test]

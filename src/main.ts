@@ -62,7 +62,7 @@ import { agentListShown, asksAgain, backKey, BACK_TITLE, LIST_TITLE } from "./ag
 import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, type FileInfo, imageFileUrl, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
-import { agentsText, fileRowTitle, reportChip, rowParts, runChip, type RunChip, runCostText, runTokensTitle, tokenText } from "./workerrow";
+import { agentsText, fileRowTitle, reportChip, rowParts, runChip, type RunChip, runCostText, runTokensTitle, stepRows, tokenText, type WorkStep } from "./workerrow";
 import { commandLines, groupLabel, unverifiedText } from "./commandrows";
 import { announcements, parseEnded, serializeEnded } from "./announce";
 import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, type FailedEnds, oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
@@ -2296,6 +2296,8 @@ interface TaskInfo {
   evidence?: Evidence[];
   /** How many commands the work run has: the count of the commands row (ticket dispatch-lags). Absent from an older host. */
   workCommands?: number;
+  /** The steps of the work run from its step lines (ticket under-work-run-i-want-to-see-bullets-of). Absent from an older host. */
+  workSteps?: WorkStep[];
   /**
    * The result of the report check of a done report (ticket the-report-check-uses-the-commands-of):
    * the commands of the chosen checks that did not run in the work run; empty with the reason in
@@ -6120,6 +6122,48 @@ async function readCommands(key: string, task: Task): Promise<void> {
   if (commandsRead.get(key) === read) renderChats();
 }
 
+/** The mark and the tooltip word of each state of a step line. */
+const STEP_LOOK = {
+  done: { mark: "✓", word: "finished" },
+  current: { mark: "▸", word: "in progress" },
+  waiting: { mark: "•", word: "not started" },
+};
+
+/**
+ * The steps of a work run (ticket under-work-run-i-want-to-see-bullets-of): one line per step of the
+ * plan with its state and its time. The ticker moves the time of the current step. Null for a task
+ * without steps. `worker` is the newest work run; without it the run counts as ended.
+ */
+function stepsList(info: TaskInfo, worker: Worker | null): HTMLElement | null {
+  if (!info.workSteps?.length) return null;
+  const running = worker?.state === "working" || worker?.state === "blocked";
+  const list = document.createElement("ul");
+  list.className = "work-steps";
+  for (const step of stepRows(info.workSteps, running, info.report?.modified ?? null, worker?.endedAt ?? null)) {
+    const line = document.createElement("li");
+    line.className = `work-step ${step.state}`;
+    line.title = `Step ${step.number}, ${STEP_LOOK[step.state].word}: ${step.text}`;
+    const mark = document.createElement("span");
+    mark.className = "work-step-mark";
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = STEP_LOOK[step.state].mark;
+    const text = document.createElement("span");
+    text.className = "work-step-text";
+    text.textContent = step.text;
+    const time = document.createElement("span");
+    time.className = "work-step-time";
+    if (step.state === "current" && step.since !== null) {
+      time.textContent = durationText(Date.now() - step.since);
+      time.dataset.runSince = String(step.since);
+    } else if (step.ms !== null) {
+      time.textContent = durationText(step.ms);
+    }
+    line.append(mark, text, time);
+    list.append(line);
+  }
+  return list;
+}
+
 /**
  * The commands of the work run under the report (ticket the-report-check-uses-the-commands-of, user
  * decision 1): one row with their count; a click opens the list, each command with its exit code
@@ -9044,15 +9088,22 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     const runTokens = task.info?.runTokens ?? [];
     // The newest run of the task: a stopped task's newest session is the one the user stopped (ticket ended-session-label).
     const newest = task.workers.reduce<Worker | null>((best, worker) => (!best || (worker.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity) ? worker : best), null);
-    body.append(
-      ...task.workers.map((worker) => {
-        const kind = workerRun(task, worker);
-        const finished = kind === "plan" ? !!task.info?.plan : kind === "work" ? !!task.info?.report : !!(task.info?.plan || task.info?.report);
-        const userStopped = task.info?.state === "stopped" && worker === newest;
-        return workerRow(worker, kind, runTokens.find((run) => run.session === worker.sessionId)?.models, runChip(worker.state, finished, userStopped));
-      }),
-    );
+    const workerRows = task.workers.map((worker) => {
+      const kind = workerRun(task, worker);
+      const finished = kind === "plan" ? !!task.info?.plan : kind === "work" ? !!task.info?.report : !!(task.info?.plan || task.info?.report);
+      const userStopped = task.info?.state === "stopped" && worker === newest;
+      return workerRow(worker, kind, runTokens.find((run) => run.session === worker.sessionId)?.models, runChip(worker.state, finished, userStopped));
+    });
+    body.append(...workerRows);
     const info = task.info;
+    // The steps stand directly under the row of the newest work run; without such a row, after the worker rows.
+    const workRun = task.workers.reduce<Worker | null>(
+      (best, worker) => (workerRun(task, worker) === "work" && (!best || (worker.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity)) ? worker : best),
+      null,
+    );
+    const steps = info ? stepsList(info, workRun) : null;
+    if (steps && workRun) workerRows[task.workers.indexOf(workRun)].after(steps);
+    else if (steps) body.append(steps);
     // The plan row is a file, so it has no chip: a chip there read as a second run (task-plan-row-chip).
     // The state of the script stands in the header of the card and in the tooltip of the plan row.
     // The report row carries the report's state, or "answered" after an answer in Dispatch until the new report (ticket report-answered-chip).

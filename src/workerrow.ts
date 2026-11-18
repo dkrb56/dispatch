@@ -106,6 +106,49 @@ export function runChip(state: string | null, finished: boolean, userStopped: bo
   return { text: state ?? "unknown", cls: state ?? "", title: "" };
 }
 
+/** A step of a work run, as the host sends it (ticket under-work-run-i-want-to-see-bullets-of). */
+export interface WorkStep {
+  number: number;
+  text: string;
+  /** When the worker started the step, RFC 3339; null for a step that did not start. */
+  startedAt: string | null;
+}
+
+/** A line of the step list of a task card. */
+export interface StepRow {
+  number: number;
+  text: string;
+  state: "done" | "current" | "waiting";
+  /** The start in milliseconds; null for a step that did not start. */
+  since: number | null;
+  /** How long a finished step took; null when that is not known. */
+  ms: number | null;
+}
+
+/**
+ * The lines of the step list. A step ends where the next started step begins, in the order of time.
+ * The step that started last is the current one while the run goes on; after the run it ends with
+ * the report, else with the end of the worker, else it has no duration. A step without a start stays
+ * without a time, also when a later step has one.
+ */
+export function stepRows(steps: WorkStep[], running: boolean, reportAt: number | null, endedAt: string | null): StepRow[] {
+  const rows: StepRow[] = steps.map((step) => ({ number: step.number, text: step.text, state: "waiting", since: null, ms: null }));
+  const started = steps
+    .map((step, at) => ({ at, time: Date.parse(step.startedAt ?? "") }))
+    .filter((step) => !Number.isNaN(step.time))
+    .sort((a, b) => a.time - b.time || a.at - b.at);
+  const end = Date.parse(endedAt ?? "");
+  started.forEach(({ at, time }, place) => {
+    const next = started[place + 1];
+    const last = reportAt !== null && reportAt >= time ? reportAt : end >= time ? end : null;
+    const until = next ? next.time : last;
+    rows[at].since = time;
+    rows[at].state = !next && running ? "current" : "done";
+    rows[at].ms = rows[at].state === "done" && until !== null ? until - time : null;
+  });
+  return rows;
+}
+
 /**
  * The tooltip of a file row of a task card (ticket task-plan-row-chip). The plan row has no state
  * chip, so that it does not look like a run; the state of the task script stands here, on a
