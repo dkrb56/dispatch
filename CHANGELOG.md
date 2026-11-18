@@ -2,6 +2,12 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.74 (2026-11-18)
+- The commits that Dispatch makes for its task files now say what changed and for which task, instead of only counting files.
+- Dispatch now finds the tests of a project in its files, without running anything. Setup pipeline lists them in the Checks box, and Apply saves them, so a project with tests and no saved list shows the step Checks as open. The new Find tests button adds later tests and keeps your lines.
+- Dispatch does less work while a project is open, because the pulsing signs no longer make the window redraw itself at each screen refresh. They still pulse. A minimized window that you have not used for 1 minute, and that does not do the automatic work of the host, updates its lists about every 30 seconds.
+- Setup pipeline has a new switch, Auto-merge finished tasks, on the tab Branches and checks. It is off at the start and needs Task branches and a gate command. With it on, Dispatch merges a task with a done report without your click, after the gate command passed, one merge at a time. A failed merge stays on the task card with its reason, and the card says why a branch still waits.
+
 ## 0.1.73 (2026-11-18)
 - In a No triage project on a host, Open terminal in a second window now shows the terminal that another window opened for the project, with its history and live output, instead of a new session. The × there closes it only in that window.
 - After a restart or a reconnect, a terminal on a host takes the size of its pane again, so its text fits.
