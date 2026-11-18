@@ -52,7 +52,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, bulkIds, canDrag, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, parseBoardSize, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages } from "./tickets";
+import { addedText, bulkIds, canDrag, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, parseBoardSize, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
@@ -6838,6 +6838,8 @@ let ticketDragging = false;
 let renamingTicket: string | null = null;
 /** `focusNew` gives the form of a part in Backlog the keyboard once. */
 let focusNew = false;
+/** The statuses whose column shows every card (Show all) on a board, by the columns container of the board: the window and each Focus board keep their own. */
+const showAllColumns = new WeakMap<HTMLElement, Set<string>>();
 
 /** The draft of the new ticket form (ticket ticket-form-optional-fields-on-a-new): Goal, type (empty: Auto), level, More open, optional fields. */
 interface TicketDraft {
@@ -6885,6 +6887,9 @@ function openTickets(ref: ProjectRef): void {
   ticketError = "";
   renamingTicket = null;
   ticketsSearchEl.value = "";
+  // Each opening starts with 10 cards in Done and Canceled and at the top of the lists.
+  showAllColumns.delete(ticketsColumnsEl);
+  ticketsColumnsEl.replaceChildren();
   applySavedSize(ticketsDialog, TICKETS_SIZE_KEY);
   if (!ticketsDialog.open) ticketsDialog.showModal();
   renderTickets();
@@ -8479,8 +8484,15 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
   const shown = tickets.filter((ticket) => ticketMatches(ticket, search));
   const queueIds = queueOrder(tickets).map((ticket) => ticket.id);
   const inFlight = projectPending(key).flatMap((card) => (card.entry ? [card.entry] : []));
+  // Each list keeps its scroll place across the drawing; a column with a Show all choice can be long.
+  const scrolls = new Map<string, number>();
+  for (const old of container.querySelectorAll<HTMLElement>(".tickets-column")) {
+    scrolls.set(old.dataset.status ?? "", old.querySelector(".tickets-list")?.scrollTop ?? 0);
+  }
+  const showAll = showAllColumns.get(container) ?? new Set<string>();
   const columns = COLUMNS.map(({ status, name }) => {
     const items = columnTickets(shown, status);
+    const { shown: cards, hidden } = columnCards(items, status, search.trim() !== "", showAll.has(status));
     const column = mapElement("section", "tickets-column");
     column.dataset.status = status;
     column.dataset.project = key;
@@ -8502,7 +8514,19 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
     // A board of another project (Focus mode) shows no form of this part.
     const form = status === "backlog" && partForm !== null && tickets.some((ticket) => ticket.id === partForm?.id) ? partForm : null;
     if (form) list.append(newTicketForm(key, form));
-    list.append(...items.map((ticket) => ticketCard(key, ticket, queueIds, record)));
+    list.append(...cards.map((ticket) => ticketCard(key, ticket, queueIds, record)));
+    if (hidden > 0) {
+      const more = ticketButton(
+        "Show all",
+        `Show the ${hidden} older ${hidden === 1 ? "ticket" : "tickets"} of ${name} too`,
+        () => {
+          showAllColumns.set(container, new Set(showAllColumns.get(container) ?? []).add(status));
+          renderTickets();
+        },
+      );
+      more.classList.add("tickets-show-all");
+      list.append(more);
+    }
     if (items.length === 0 && !form) {
       const none = paused ? PAUSED_NEW_EMPTY : "No tickets. A message to triage lands here, and Dispatch sends it when triage is free.";
       const backlog = "No tickets. Dispatch never sends a Backlog ticket: drag it to New when it should go.";
@@ -8519,6 +8543,10 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
     return column;
   });
   container.replaceChildren(...columns);
+  for (const column of columns) {
+    const list = column.querySelector(".tickets-list");
+    if (list) list.scrollTop = scrolls.get(column.dataset.status ?? "") ?? 0;
+  }
 }
 
 /** The open right-click menu of a board and the listeners that close it. */

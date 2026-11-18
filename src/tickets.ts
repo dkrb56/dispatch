@@ -399,6 +399,18 @@ export function columnTickets<T extends Pick<Ticket, "id" | "status" | "order" |
   return shown;
 }
 
+/** Done and Canceled show only this many cards until the user clicks Show all (ticket done-and-canceled-show-only-the-newest). */
+export const CLOSED_COLUMN_LIMIT = 10;
+
+/**
+ * The cards of a column to draw, and how many stay hidden. Only Done and Canceled are cut, to their
+ * newest `CLOSED_COLUMN_LIMIT` cards; a search or Show all shows every card.
+ */
+export function columnCards<T>(cards: readonly T[], status: TicketStatus, searching: boolean, showAll: boolean): { shown: T[]; hidden: number } {
+  const cut = (status === "done" || status === "canceled") && !searching && !showAll && cards.length > CLOSED_COLUMN_LIMIT;
+  return cut ? { shown: cards.slice(0, CLOSED_COLUMN_LIMIT), hidden: cards.length - CLOSED_COLUMN_LIMIT } : { shown: [...cards], hidden: 0 };
+}
+
 /** The end words of the user's own cancel: such a part leaves the chain and its count (`USER_CANCELS` in tickets.rs). */
 const USER_CANCELS = ["canceled", "asked triage"];
 

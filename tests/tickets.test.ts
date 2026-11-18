@@ -9,6 +9,8 @@ import {
   addedText,
   bulkIds,
   canDrag,
+  CLOSED_COLUMN_LIMIT,
+  columnCards,
   columnOf,
   COLUMNS,
   columnTickets,
@@ -818,4 +820,50 @@ test("a ticket that comes back into New loses its send marks (ticket i-cant-drag
   assert.match(body, /sentTickets\.delete\(/);
   assert.match(body, /"ticket_claim", \{ cwd, id, release: true \}/);
   assert.ok(HTML.includes("A stopped ticket that you move back to New or Backlog stays there; from New it starts again from the start, and its old files go to <code>.dispatch/old</code>."));
+});
+
+test("Done and Canceled show their newest 10 tickets; Show all and a search show every card (ticket done-and-canceled-show-only-the-newest)", () => {
+  assert.equal(CLOSED_COLUMN_LIMIT, 10);
+  const closed = (status: "done" | "canceled", count: number) => Array.from({ length: count }, (_, at) => ticket(`${status}-${at}`, status, null, at));
+  for (const status of ["done", "canceled"] as const) {
+    const cards = columnTickets(closed(status, 12), status);
+    const cut = columnCards(cards, status, false, false);
+    assert.deepEqual(ids(cut.shown), ids(cards).slice(0, 10), `${status}: the newest 10`);
+    assert.equal(cut.shown[0].id, `${status}-11`, `${status}: newest first`);
+    assert.equal(cut.hidden, 2);
+    const ten = columnCards(columnTickets(closed(status, 10), status), status, false, false);
+    assert.equal(ten.shown.length, 10);
+    assert.equal(ten.hidden, 0, "exactly 10 cards: no button");
+    assert.equal(columnCards(columnTickets(closed(status, 3), status), status, false, false).hidden, 0);
+    const all = columnCards(cards, status, false, true);
+    assert.deepEqual(ids(all.shown), ids(cards), "Show all: every card");
+    assert.equal(all.hidden, 0);
+    const found = columnCards(cards, status, true, false);
+    assert.deepEqual(ids(found.shown), ids(cards), "a search: every match");
+    assert.equal(found.hidden, 0);
+  }
+  for (const status of ["backlog", "new", "in-progress"] as const) {
+    const cards = Array.from({ length: 15 }, (_, at) => ticket(`${status}-${at}`, status, status === "new" ? at + 1 : null, at));
+    const out = columnCards(cards, status, false, false);
+    assert.equal(out.shown.length, 15, `${status} is never cut`);
+    assert.equal(out.hidden, 0);
+  }
+});
+
+test("the board draws the cut columns, keeps the count and the scroll place, and the window starts at 10 again", () => {
+  assert.match(MAIN, /import \{[^}]*columnCards[^}]*\} from "\.\/tickets";/);
+  const fill = MAIN.slice(MAIN.indexOf("function fillTicketColumns("), MAIN.indexOf("function openBoardMenu("));
+  assert.match(fill, /columnCards\(items, status, search\.trim\(\) !== "", showAll\.has\(status\)\)/);
+  assert.match(fill, /String\(items\.length\)/, "the head counts every card of the column");
+  assert.ok(fill.includes('"Show all"'), "the button text");
+  assert.match(fill, /tickets-show-all/);
+  assert.match(fill, /scrollTop/, "the scroll place of each list");
+  // The window and each board keep their own choice; opening the window resets its own.
+  assert.match(MAIN, /const showAllColumns = new WeakMap<HTMLElement, Set<string>>\(\);/);
+  const open = MAIN.slice(MAIN.indexOf("function openTickets("), MAIN.indexOf("function renderTickets("));
+  assert.match(open, /showAllColumns\.delete\(ticketsColumnsEl\);/);
+  assert.match(open, /ticketsColumnsEl\.replaceChildren\(\);/);
+  assert.match(MAIN, /fillTicketColumns\(ticketsColumnsEl, key, ticketsSearchEl\.value\);/, "the call that the other tests match stays");
+  assert.match(CSS, /\.tickets-show-all \{[^}]*flex: none;/);
+  assert.ok(HTML.includes("<b>Long columns.</b>"), "the Help item");
 });

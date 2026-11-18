@@ -2001,6 +2001,25 @@ button.task-head:hover {
   color: var(--muted);
 }
 
+/* The button under the cut cards of Done and Canceled (ticket done-and-canceled-show-only-the-newest). */
+.tickets-show-all {
+  flex: none;
+  align-self: flex-start;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  cursor: pointer;
+}
+
+.tickets-show-all:hover {
+  background: var(--card);
+  color: var(--text);
+}
+
 .ticket-card {
   display: flex;
   flex: none;
