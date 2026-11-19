@@ -17,9 +17,10 @@ export const DEFAULT_ALERT_OPTIONS: AlertOptions = { notify: true, chime: true, 
 
 /**
  * What a task waits for: a plan without a HOLD decision, a plan with one, a question in the report,
- * a permission in the report, or a worker at a prompt.
+ * a permission in the report, a worker at a prompt, or picked checks that wait for the click "Run
+ * checks" (ticket test-picker-an-agent-picks-the-checks).
  */
-export type WaitKind = "plan" | "hold" | "question" | "permission" | "prompt";
+export type WaitKind = "plan" | "hold" | "question" | "permission" | "prompt" | "checks";
 
 /** A task that waits for the user now. */
 export interface Wait {
@@ -63,8 +64,8 @@ export function parseAlertOptions(stored: string | null | undefined): AlertOptio
 
 /**
  * Whether a wait still waits for the user while night mode is on. Night mode approves a plan
- * without a HOLD decision and answers a question itself; a HOLD plan, a permission and a prompt
- * stay for the user.
+ * without a HOLD decision, answers a question and runs the picked checks itself; a HOLD plan, a
+ * permission and a prompt stay for the user.
  */
 export function waitsForUser(kind: WaitKind, night: boolean): boolean {
   if (!night) return true;

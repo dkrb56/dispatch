@@ -314,9 +314,9 @@ fn run_claude(dir: Option<&std::path::Path>, prompt: &str, options: &Options, se
 /// The time limit of the commit message of the Commit files window, in seconds.
 const COMMIT_MESSAGE_LIMIT: u64 = 45;
 
-/// Reads the commit message from the answer of `claude -p --output-format json`: the `result`
-/// text, trimmed, without a code fence around it. An error answer or an empty text is an error.
-fn read_commit_message(text: &str) -> Result<String, String> {
+/// Reads the text of the answer of `claude -p --output-format json`: the `result` text, trimmed,
+/// without a code fence around it. An error answer or an empty text is an error.
+fn read_result_text(text: &str) -> Result<String, String> {
     let reply: Value = serde_json::from_str(text.trim()).map_err(|_| "Claude Code gave no answer that Dispatch can read.".to_string())?;
     let result = reply.get("result").and_then(Value::as_str).unwrap_or_default().trim();
     if reply.get("is_error").and_then(Value::as_bool) == Some(true) {
@@ -331,19 +331,34 @@ fn read_commit_message(text: &str) -> Result<String, String> {
     }
     let message = lines.join("\n").trim().to_string();
     if message.is_empty() {
-        return Err("Claude Code gave an empty commit message.".to_string());
+        return Err("Claude Code gave an empty answer.".to_string());
     }
     Ok(message)
+}
+
+/// Asks Claude in `root` for a text from `prompt` with the options, without tools and hooks, and
+/// gives the text of its answer (`read_result_text`). The one way of Dispatch to ask Claude for a
+/// text: the commit message of the Commit files window and the pick of the checks use it.
+fn ask_with(root: &std::path::Path, prompt: &str, options: &Options, name: &str) -> Result<String, String> {
+    // A settings file that turns the hooks off, as `check_rules` does. It holds no value.
+    let settings = std::env::temp_dir().join(format!("dispatch-{name}-settings.json"));
+    std::fs::write(&settings, "{\"disableAllHooks\":true}").map_err(|e| e.to_string())?;
+    read_result_text(&run_claude(Some(root), prompt, options, &settings.to_string_lossy())?)
+}
+
+/// Asks Claude in `root` for a text from `prompt` with a model, an effort and a time limit in
+/// seconds (ticket test-picker-an-agent-picks-the-checks). `Options::new` checks the values: the
+/// limit is at least one minute. An empty model or effort takes the default of Claude Code.
+pub(crate) fn ask(root: &std::path::Path, prompt: &str, model: &str, effort: &str, limit_seconds: u64) -> Result<String, String> {
+    let options = Options::new(limit_seconds, model, effort)?;
+    ask_with(root, prompt, &options, "ask")
 }
 
 /// Asks Claude (haiku, default effort, 45 s) in `root` for a commit message from `prompt`. Built
 /// here without `Options::new`, which refuses a limit under one minute.
 pub(crate) fn commit_message(root: &std::path::Path, prompt: &str) -> Result<String, String> {
     let options = Options { limit: Duration::from_secs(COMMIT_MESSAGE_LIMIT), model: "haiku".to_string(), args: vec!["--model".to_string(), "haiku".to_string()] };
-    // A settings file that turns the hooks off, as `check_rules` does. It holds no value.
-    let settings = std::env::temp_dir().join("dispatch-commit-message-settings.json");
-    std::fs::write(&settings, "{\"disableAllHooks\":true}").map_err(|e| e.to_string())?;
-    read_commit_message(&run_claude(Some(root), prompt, &options, &settings.to_string_lossy())?)
+    ask_with(root, prompt, &options, "commit-message")
 }
 
 /// Checks the rules of the project of a folder. `scope` is `pipeline` (the conflicts with the
@@ -442,11 +457,11 @@ mod tests {
 
     #[test]
     fn task_commit_message_reads_the_result_text() {
-        assert_eq!(read_commit_message(&answer("  t-1: add the button\n\nThe card commits.\n")).unwrap(), "t-1: add the button\n\nThe card commits.");
-        assert_eq!(read_commit_message(&answer("```\nt-1: add the button\n```")).unwrap(), "t-1: add the button");
-        assert!(read_commit_message(&answer("   ")).is_err());
-        assert!(read_commit_message("not json").is_err());
-        assert!(read_commit_message(&serde_json::json!({ "is_error": true, "result": "Not logged in" }).to_string()).is_err());
+        assert_eq!(read_result_text(&answer("  t-1: add the button\n\nThe card commits.\n")).unwrap(), "t-1: add the button\n\nThe card commits.");
+        assert_eq!(read_result_text(&answer("```\nt-1: add the button\n```")).unwrap(), "t-1: add the button");
+        assert!(read_result_text(&answer("   ")).is_err());
+        assert!(read_result_text("not json").is_err());
+        assert!(read_result_text(&serde_json::json!({ "is_error": true, "result": "Not logged in" }).to_string()).is_err());
     }
 
     #[test]

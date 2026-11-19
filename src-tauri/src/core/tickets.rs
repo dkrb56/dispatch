@@ -679,6 +679,9 @@ pub(crate) struct TaskFacts<'a> {
     /// The task has a branch file without a `merge:` line, with Task branches on: a done task still
     /// waits for Merge and stays In progress (ticket board-in-progress, user decision 1).
     pub(crate) waits_merge: bool,
+    /// The picked checks of the task wait for their run, run now, or failed (ticket
+    /// test-picker-an-agent-picks-the-checks): a done task stays In progress.
+    pub(crate) checks_open: bool,
     /// When a run of the task started last: the newest modification time of its state and session
     /// files in milliseconds since the Unix epoch, 0 without them. A closed ticket moves back to In
     /// progress only for a run that started after the close (ticket board-in-progress).
@@ -700,7 +703,7 @@ fn target(facts: &TaskFacts) -> Option<(&'static str, &'static str)> {
         return Some((CANCELED, "stopped"));
     }
     match facts.report {
-        Some("done") if facts.waits_merge => Some((IN_PROGRESS, "")),
+        Some("done") if facts.waits_merge || facts.checks_open => Some((IN_PROGRESS, "")),
         Some("done") => Some((DONE, "done")),
         Some("failed") => Some((DONE, "failed")),
         Some(_) => Some((IN_PROGRESS, "")),
@@ -1664,7 +1667,7 @@ mod tests {
         let one = ticket_add(cwd(&project), "one".into(), None, None, None).unwrap();
         crate::core::pipeline::set_paused(cwd(&project), true).unwrap();
         let before = fs::read_to_string(project.tickets_file()).unwrap();
-        let facts = [TaskFacts { name: &one.id, state: "working", report: Some("done"), brief: "The brief of one", merged: false, waits_merge: false, started: 0, ended: 0 }];
+        let facts = [TaskFacts { name: &one.id, state: "working", report: Some("done"), brief: "The brief of one", merged: false, waits_merge: false, checks_open: false, started: 0, ended: 0 }];
         let mut list = read(&project);
         follow(&project, &mut list, &facts).unwrap();
         assert_eq!((list[0].status.as_str(), list[0].title.as_str()), (DONE, "The brief of one"), "the board shows the task");
@@ -1850,7 +1853,7 @@ mod tests {
         let mut list = read(&project);
         // The task of six started after its cancel (ticket board-in-progress).
         let later = now() + 1000;
-        let fact = |name, state, report, brief, started| TaskFacts { name, state, report, brief, merged: false, waits_merge: false, started, ended: 0 };
+        let fact = |name, state, report, brief, started| TaskFacts { name, state, report, brief, merged: false, waits_merge: false, checks_open: false, started, ended: 0 };
         let facts = [
             fact("one", "planning", None, "The brief of one", 0),
             fact("two", "working", Some("done"), "", 0),
@@ -1902,7 +1905,7 @@ mod tests {
         assert_eq!((line["op"].as_str(), line["ref"].as_str(), line["resolution"].as_str(), line["note"].as_str()), (Some("close"), Some(one.id.as_str()), Some("done"), Some(USER_DONE)));
         // A task of that name starts later: the ticket stays in Done, and follow writes nothing.
         let mut list = read(&project);
-        follow(&project, &mut list, &[TaskFacts { name: "one", state: "planning", report: None, brief: "The brief of one", merged: false, waits_merge: false, started: 0, ended: 0 }]).unwrap();
+        follow(&project, &mut list, &[TaskFacts { name: "one", state: "planning", report: None, brief: "The brief of one", merged: false, waits_merge: false, checks_open: false, started: 0, ended: 0 }]).unwrap();
         assert_eq!(list.iter().find(|t| t.id == one.id).map(|t| (t.status.as_str(), t.note.as_str())), Some((DONE, USER_DONE)));
         assert_eq!(text(), written);
         let _ = fs::remove_dir_all(base);
@@ -1913,7 +1916,7 @@ mod tests {
         let (project, base) = scratch("stopped-back");
         let one = ticket_add(cwd(&project), "one".into(), None, None, None).unwrap();
         let two = ticket_add(cwd(&project), "two".into(), None, None, None).unwrap();
-        let stopped = |name, started| TaskFacts { name, state: "stopped", report: None, brief: "", merged: false, waits_merge: false, started, ended: 0 };
+        let stopped = |name, started| TaskFacts { name, state: "stopped", report: None, brief: "", merged: false, waits_merge: false, checks_open: false, started, ended: 0 };
         let status = |list: &[Ticket], id: &str| list.iter().find(|t| t.id == id).map(|t| (t.status.clone(), t.note.clone())).unwrap();
         for (id, back) in [(one.id.clone(), NEW), (two.id.clone(), BACKLOG)] {
             let name = if id == one.id { "one" } else { "two" };
@@ -1941,7 +1944,7 @@ mod tests {
 
     /// The facts of a running task without a report, for the tests of ticket board-in-progress.
     fn running(name: &str, started: u64) -> TaskFacts<'_> {
-        TaskFacts { name, state: "working", report: None, brief: "", merged: false, waits_merge: false, started, ended: 0 }
+        TaskFacts { name, state: "working", report: None, brief: "", merged: false, waits_merge: false, checks_open: false, started, ended: 0 }
     }
 
     #[test]
@@ -1969,6 +1972,27 @@ mod tests {
         assert_eq!(list[0].status, CANCELED);
         assert_eq!(text(), canceled);
         assert!(!text().lines().skip(closed.lines().count()).any(|line| line.contains("in_progress")));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    /// Ticket test-picker-an-agent-picks-the-checks: a done task whose picked checks wait, run or failed
+    /// stays In progress; when the run passed, the ticket goes to Done.
+    #[test]
+    fn a_picked_task_without_a_run_stays_in_progress() {
+        let (project, base) = scratch("picked-open");
+        ticket_add(cwd(&project), "one".into(), None, None, None).unwrap();
+        let mut list = read(&project);
+        let open = TaskFacts { report: Some("done"), checks_open: true, ..running("one", 1) };
+        assert_eq!(target(&open), Some((IN_PROGRESS, "")));
+        follow(&project, &mut list, &[open]).unwrap();
+        assert_eq!(list[0].status, IN_PROGRESS);
+        let closed = TaskFacts { report: Some("done"), checks_open: false, ..running("one", 1) };
+        assert_eq!(target(&closed), Some((DONE, "done")));
+        follow(&project, &mut list, &[closed]).unwrap();
+        assert_eq!((list[0].status.as_str(), list[0].note.as_str()), (DONE, "done"));
+        // A failed report or a merged task does not wait for its checks.
+        assert_eq!(target(&TaskFacts { report: Some("failed"), checks_open: true, ..running("one", 1) }), Some((DONE, "failed")));
+        assert_eq!(target(&TaskFacts { merged: true, checks_open: true, ..open }), Some((DONE, "done")));
         let _ = fs::remove_dir_all(base);
     }
 
@@ -2161,7 +2185,7 @@ mod tests {
 
     /// The facts of a task whose report says done, ended at `ended`.
     fn done_task(name: &str, ended: u64) -> TaskFacts<'_> {
-        TaskFacts { name, state: "working", report: Some("done"), brief: "", merged: false, waits_merge: false, started: 0, ended }
+        TaskFacts { name, state: "working", report: Some("done"), brief: "", merged: false, waits_merge: false, checks_open: false, started: 0, ended }
     }
 
     fn column(list: &[Ticket], id: &str) -> (String, String) {

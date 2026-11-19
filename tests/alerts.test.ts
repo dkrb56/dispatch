@@ -64,7 +64,7 @@ test("night mode alerts only for what it leaves to the user", () => {
   assert.equal(waitsForUser("hold", true), true);
   assert.equal(waitsForUser("permission", true), true);
   assert.equal(waitsForUser("prompt", true), true);
-  for (const kind of ["plan", "hold", "question", "permission", "prompt"] as WaitKind[]) assert.equal(waitsForUser(kind, false), true, kind);
+  for (const kind of ["plan", "hold", "question", "permission", "prompt", "checks"] as WaitKind[]) assert.equal(waitsForUser(kind, false), true, kind);
 
   const state = alertState();
   newWaits([], ["tasks|d:/p"], state, true);
@@ -77,6 +77,18 @@ test("night mode alerts only for what it leaves to the user", () => {
   assert.deepEqual(found.map((one) => one.name), ["c", "d", "e"]);
   // A plan that night mode left alone and that still waits after night mode alerts then.
   assert.deepEqual(newWaits([wait("a", "plan", "1")], ["tasks|d:/p"], state, false).map((one) => one.name), ["a"]);
+});
+
+// Ticket test-picker-an-agent-picks-the-checks: picked checks that wait for Run checks alert the user by day; night mode runs them.
+test("picked checks that wait for the click alert by day and not at night", () => {
+  assert.equal(waitsForUser("checks", false), true);
+  assert.equal(waitsForUser("checks", true), false);
+  const state = alertState();
+  newWaits([], ["tasks|d:/p"], state, false);
+  assert.equal(newWaits([wait("a", "checks", "5")], ["tasks|d:/p"], state, false).length, 1, "the pick of a report alerts once");
+  assert.equal(newWaits([wait("a", "checks", "5")], ["tasks|d:/p"], state, false).length, 0, "the same report");
+  assert.equal(newWaits([wait("a", "checks", "6")], ["tasks|d:/p"], state, true).length, 0, "night mode runs the checks itself");
+  assert.equal(newWaits([wait("a", "checks", "6")], ["tasks|d:/p"], state, false).length, 1, "after night mode it alerts");
 });
 
 test("each switch turns off only its own action", () => {

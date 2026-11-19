@@ -38,6 +38,8 @@ interface Options {
   startPlainPlans: boolean;
   /** The chosen checks run once, at the merge, through the gate command (ticket simpler-process). Off at the start. */
   checksAtGate: boolean;
+  /** An agent picks the checks after the work run from the change, and the task card shows them before they run (ticket test-picker-an-agent-picks-the-checks). Off at the start. */
+  pickChecks: boolean;
   /** Merge pushes the base to its upstream branch after the merge, never with force (ticket simpler-process). Off at the start. */
   pushAfterMerge: boolean;
   /** Dispatch merges a task with a done report by itself after the gate passed (ticket create-project-settings-option-to-auto). Off at the start. */
@@ -62,6 +64,8 @@ interface Plan {
   mergeGate?: string;
   /** The text of `.dispatch/checks.txt`: the checks that a task can run (ticket task-checks). Absent from an older host. */
   checks?: string;
+  /** The text of `.dispatch/checks-all.txt`: the files whose change runs every check (ticket test-picker-an-agent-picks-the-checks). Absent from an older host. */
+  checksAll?: string;
 }
 
 const dialog = document.querySelector<HTMLDialogElement>("#setup")!;
@@ -85,6 +89,8 @@ const gateEl = document.querySelector<HTMLTextAreaElement>("#setup-merge-gate")!
 const checksEl = document.querySelector<HTMLTextAreaElement>("#setup-checks")!;
 /** The button that adds the tests that Dispatch finds in the project to that box. */
 const findChecksEl = document.querySelector<HTMLButtonElement>("#setup-find-checks")!;
+/** The box with the files whose change runs every check, under the switch "Pick the checks after the work run" (ticket test-picker-an-agent-picks-the-checks). */
+const checksAllEl = document.querySelector<HTMLTextAreaElement>("#setup-checks-all")!;
 
 /** The folder for which the dialog shows the steps, and its host (remote-multi-host). */
 let folder: string | null = null;
@@ -229,6 +235,8 @@ function show(plan: Plan): void {
   if (document.activeElement !== checksEl) checksEl.value = plan.checks ?? "";
   checksEl.disabled = false;
   findChecksEl.disabled = false;
+  if (document.activeElement !== checksAllEl) checksAllEl.value = plan.checksAll ?? "";
+  checksAllEl.disabled = false;
   stepsEl.replaceChildren(
     ...plan.steps.map((step) => {
       const item = document.createElement("details");
@@ -253,7 +261,11 @@ function show(plan: Plan): void {
 }
 
 /** Asks the backend for the steps, or to do them, and shows the result. */
-async function run(command: "pipeline_plan" | "pipeline_apply" | "set_project_options" | "set_measure_commands" | "set_merge_gate" | "set_checks" | "find_checks", options?: Options, text?: string): Promise<void> {
+async function run(
+  command: "pipeline_plan" | "pipeline_apply" | "set_project_options" | "set_measure_commands" | "set_merge_gate" | "set_checks" | "set_checks_all" | "find_checks",
+  options?: Options,
+  text?: string,
+): Promise<void> {
   applyEl.disabled = true;
   // The positions of the checked working rules. Apply adds these.
   const rules = [...stepsEl.querySelectorAll<HTMLInputElement>(".setup-rules input:checked")].map((box) => Number(box.dataset.rule));
@@ -295,6 +307,10 @@ export function initPipeline(
   // The list of checks is saved the same way (ticket task-checks).
   checksEl.addEventListener("change", () => {
     if (folder) void run("set_checks", undefined, checksEl.value);
+  });
+  // The run-everything list of the picker is saved the same way (ticket test-picker-an-agent-picks-the-checks).
+  checksAllEl.addEventListener("change", () => {
+    if (folder) void run("set_checks_all", undefined, checksAllEl.value);
   });
   // The button sends the text of the box, so a line that the user just typed stays.
   findChecksEl.addEventListener("click", async () => {
@@ -369,6 +385,8 @@ function open(host: HostId, target: string | null): void {
   checksEl.value = "";
   checksEl.disabled = true;
   findChecksEl.disabled = true;
+  checksAllEl.value = "";
+  checksAllEl.disabled = true;
   checkRun += 1;
   checkStateEl.textContent = "";
   checkListEl.replaceChildren();

@@ -92,3 +92,131 @@ export function checksText(checks: readonly CheckInfo[]): string | null {
   const names = checks.filter((check) => check.chosen === true).map((check) => check.name);
   return names.length > 0 ? names.join(", ") : "none chosen";
 }
+
+// The checks picked after the work run (ticket test-picker-an-agent-picks-the-checks): the pick of
+// the agent with one reason per check, the choice of the user on the card, and the results of the run.
+
+/** One check of the list in the pick of a task, as `task_list` gives it (`PickedCheck` in pipeline.rs). */
+export interface PickedCheck {
+  name: string;
+  /** The picker wants the check to run. */
+  picked: boolean;
+  /** One reason in plain words. */
+  reason: string;
+}
+
+/** The pick of the checks of a task after its work run (`PickInfo` in pipeline.rs). */
+export interface PickInfo {
+  /** When the pick was made, RFC 3339. */
+  at: string;
+  /** The change time of the report that the pick belongs to, in milliseconds. */
+  report: number;
+  /** `model`, `rule` (the rule decided every check) or `error` (the model call failed, every check is picked). */
+  source: string;
+  /** The changed file of the run-everything list that picked every check, or empty. */
+  all: string;
+  /** The error of the model call, or empty. */
+  error: string;
+  checks: PickedCheck[];
+}
+
+/** The log of a check, as the host gives a file: the viewer opens it. */
+export interface CheckLog {
+  path: string;
+  kind: string;
+  modified: number;
+  size: number;
+}
+
+/** One check of a check run with its result (`CheckResult` in pipeline.rs). */
+export interface CheckResult {
+  name: string;
+  command: string;
+  /** The exit code; 124 for a command that the time limit stopped. */
+  exit: number;
+  seconds: number;
+  log: CheckLog | null;
+}
+
+/** The check run of a task (`CheckRunInfo` in pipeline.rs). */
+export interface CheckRunInfo {
+  started: string;
+  /** None while the run goes on. */
+  ended: string | null;
+  /** `run` (in the checkout) or `merge` (at the merge of the task branch). */
+  place: string;
+  results: CheckResult[];
+}
+
+/** One checkbox of the pick card. */
+export interface PickRow {
+  name: string;
+  checked: boolean;
+  /** The reason of the picker, or empty for a check the pick does not know. */
+  reason: string;
+  /** A changed file of the run-everything list picked every check. */
+  everything: boolean;
+}
+
+/** Where the checks of a task stand after the work run. */
+export type PickState = "picking" | "picked" | "running" | "failed" | "passed";
+
+/** The names that the picker picked: the default of the checkboxes. */
+export function pickDefault(pick: PickInfo | null | undefined): Set<string> {
+  return new Set((pick?.checks ?? []).filter((check) => check.picked).map((check) => check.name));
+}
+
+/** The checkboxes of the pick card for a choice; without a choice of the user, the pick. One row per check of the list. */
+export function pickRows(checks: readonly CheckInfo[], pick: PickInfo | null | undefined, choice?: ReadonlySet<string>): PickRow[] {
+  const ticked = choice ?? pickDefault(pick);
+  const everything = !!pick?.all;
+  return checks.map((check) => {
+    const picked = pick?.checks.find((one) => one.name === check.name);
+    return { name: check.name, checked: ticked.has(check.name), reason: picked?.reason ?? "", everything };
+  });
+}
+
+/** The names of a run whose exit code is not 0. */
+export function failedChecks(run: CheckRunInfo | null | undefined): string[] {
+  return (run?.results ?? []).filter((result) => result.exit !== 0).map((result) => result.name);
+}
+
+/**
+ * The state of the checks of a task: `picking` without a pick for this report, `picked` with a
+ * pick and no run, `running` while the run has no end, `failed` with a result other than 0, else `passed`.
+ */
+export function pickState(pick: PickInfo | null | undefined, run: CheckRunInfo | null | undefined, reportTime: number): PickState {
+  if (!pick || pick.report !== reportTime) return "picking";
+  if (!run) return "picked";
+  if (run.ended === null) return "running";
+  return failedChecks(run).length > 0 ? "failed" : "passed";
+}
+
+/** The text of the header of the card for a state; `atMerge`: the ticked checks run at the merge, not on a click. */
+export function pickStatusText(state: PickState, atMerge: boolean, run?: CheckRunInfo | null): string {
+  switch (state) {
+    case "picking":
+      return "Dispatch picks the checks";
+    case "picked":
+      return atMerge ? "checks picked · waits for Merge" : "checks picked · waits for Run checks";
+    case "running":
+      return "checks running";
+    case "failed": {
+      const failed = failedChecks(run);
+      return `${failed.length === 1 ? "check" : "checks"} failed · ${failed.join(", ")}`;
+    }
+    default:
+      return "checks passed";
+  }
+}
+
+/** One result row of the card: the name, the exit text, whether it failed, the seconds as text, and the log. */
+export function checkResultLines(run: CheckRunInfo | null | undefined): { name: string; exit: string; failed: boolean; seconds: string; log: CheckLog | null }[] {
+  return (run?.results ?? []).map((result) => ({
+    name: result.name,
+    exit: result.exit === 124 ? "stopped at the time limit" : `exit ${result.exit}`,
+    failed: result.exit !== 0,
+    seconds: result.seconds < 120 ? `${result.seconds} s` : `${Math.round(result.seconds / 60)} min`,
+    log: result.log,
+  }));
+}

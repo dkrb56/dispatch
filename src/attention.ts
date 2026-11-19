@@ -4,8 +4,8 @@
 // No imports and no access to the page, so a test can load this file with Node
 // (tests/attention.test.ts). main.ts gives the waits, because only it knows the tasks and workers.
 
-/** What a task waits for: a plan, a plan with a HOLD decision, a question, a repeated question, a permission, a worker at a prompt, a branch for Merge. */
-export type AttentionKind = "plan" | "hold" | "question" | "repeat" | "permission" | "prompt" | "merge";
+/** What a task waits for: a plan, a plan with a HOLD decision, a question, a repeated question, a permission, a worker at a prompt, a branch for Merge, picked checks for Run checks. */
+export type AttentionKind = "plan" | "hold" | "question" | "repeat" | "permission" | "prompt" | "merge" | "checks";
 
 /** A task that waits for the user now. */
 export interface AttentionWait {

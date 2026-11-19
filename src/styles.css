@@ -1032,6 +1032,77 @@ button.task-head:hover {
   font-size: calc(11px * var(--text-scale));
 }
 
+/* The checks picked after the work run (ticket test-picker-an-agent-picks-the-checks): one checkbox
+   per check with the reason of the picker after the name, and the result rows after a run. */
+.task-card .card-picks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+}
+
+.task-card .card-picks-head {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
+.task-card .card-picks label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.task-card .card-picks label input {
+  flex: none;
+  align-self: center;
+}
+
+.task-card .card-picks .pick-reason {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+}
+
+.task-card .card-pick-results {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+}
+
+.task-card .card-pick-results .pick-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: calc(12px * var(--text-scale));
+}
+
+.task-card .card-pick-results .pick-result .pick-name {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-card .card-pick-results .exit {
+  color: var(--muted);
+}
+
+.task-card .card-pick-results .exit.failed {
+  color: var(--danger);
+}
+
+.task-card .card-pick-results .pick-log {
+  display: inline-flex;
+  align-items: center;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
 /* The model and the effort of the work run on the Plan ready card (ticket ticket-form-optional-fields-on-a-new). */
 .task-card .card-work {
   display: flex;

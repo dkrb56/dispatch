@@ -241,6 +241,11 @@ pub fn set_checks(cwd: String, text: String) -> Result<Plan, String> {
 }
 
 #[tauri::command(async)]
+pub fn set_checks_all(cwd: String, text: String) -> Result<Plan, String> {
+    pipeline::set_checks_all(cwd, text)
+}
+
+#[tauri::command(async)]
 pub fn find_checks(cwd: String, text: String) -> Result<Plan, String> {
     pipeline::find_checks(cwd, text)
 }
@@ -378,6 +383,21 @@ pub fn task_decide(cwd: String, id: String, text: String) -> Result<u64, String>
 #[tauri::command(async)]
 pub fn task_checks(cwd: String, id: String, names: Vec<String>) -> Result<u64, String> {
     pipeline::task_checks(cwd, id, names)
+}
+
+#[tauri::command(async)]
+pub fn task_pick_checks(cwd: String, id: String) -> Result<pipeline::PickInfo, String> {
+    pipeline::task_pick_checks(cwd, id)
+}
+
+#[tauri::command(async)]
+pub fn task_pick_choice(cwd: String, id: String, names: Vec<String>) -> Result<u64, String> {
+    pipeline::task_pick_choice(cwd, id, names)
+}
+
+#[tauri::command(async)]
+pub fn task_run_checks(cwd: String, id: String) -> Result<String, String> {
+    pipeline::task_run_checks(cwd, id)
 }
 
 #[tauri::command(async)]

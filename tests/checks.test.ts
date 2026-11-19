@@ -3,7 +3,25 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { type CheckInfo, checkRows, checksSentence, checksText, choiceNames, defaultChoice, workChosen, workDefault, workIsAdvice } from "../src/checks.ts";
+import {
+  type CheckInfo,
+  type CheckRunInfo,
+  type PickInfo,
+  checkResultLines,
+  checkRows,
+  checksSentence,
+  checksText,
+  choiceNames,
+  defaultChoice,
+  failedChecks,
+  pickDefault,
+  pickRows,
+  pickState,
+  pickStatusText,
+  workChosen,
+  workDefault,
+  workIsAdvice,
+} from "../src/checks.ts";
 
 const check = (name: string, recommended: boolean, more: Partial<CheckInfo> = {}): CheckInfo => ({
   name,
@@ -61,6 +79,88 @@ test("the page has the Setup box, the card code and the Help items", () => {
   assert.match(main, /card-checks/);
   const setup = readFileSync(new URL("../src/pipeline.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   assert.match(setup, /"set_checks"/);
+});
+
+// Ticket test-picker-an-agent-picks-the-checks: the pick card after the work run.
+const PICK: PickInfo = {
+  at: "2026-11-19T12:00:00Z",
+  report: 100,
+  source: "model",
+  all: "",
+  error: "",
+  checks: [
+    { name: "unit", picked: true, reason: "always in the list of this project" },
+    { name: "lint", picked: false, reason: "ran in the work run and passed" },
+    { name: "net", picked: true, reason: "the sync of two computers changed" },
+  ],
+};
+
+test("the pick card starts with the picks of the agent and takes the choice of the user", () => {
+  assert.deepEqual([...pickDefault(PICK)], ["unit", "net"]);
+  assert.deepEqual([...pickDefault(null)], []);
+  const rows = pickRows(THREE, PICK);
+  assert.deepEqual(
+    rows.map((row) => [row.name, row.checked, row.reason, row.everything]),
+    [
+      ["unit", true, "always in the list of this project", false],
+      ["lint", false, "ran in the work run and passed", false],
+      ["net", true, "the sync of two computers changed", false],
+    ],
+  );
+  // A changed choice: the boxes follow it, the reasons stay.
+  assert.deepEqual(pickRows(THREE, PICK, new Set(["lint"])).map((row) => row.checked), [false, true, false]);
+  // A changed file of the run-everything list marks every row; a check the pick does not know has no reason.
+  const all = { ...PICK, source: "rule", all: "src/net/a.ts", checks: PICK.checks.slice(0, 2).map((check) => ({ ...check, picked: true })) };
+  assert.deepEqual(pickRows(THREE, all).map((row) => [row.checked, row.reason !== "", row.everything]), [[true, true, true], [true, true, true], [false, false, true]]);
+  assert.deepEqual(choiceNames(THREE, pickDefault(PICK)), ["unit", "net"]);
+});
+
+test("the state of the picks follows the pick and the run", () => {
+  const run = (results: CheckRunInfo["results"], ended: string | null = "2026-11-19T12:05:00Z"): CheckRunInfo => ({ started: "2026-11-19T12:01:00Z", ended, place: "run", results });
+  const ok = { name: "unit", command: "run unit", exit: 0, seconds: 12, log: null };
+  const bad = { name: "net", command: "run net", exit: 1, seconds: 130, log: { path: "d:/p/.dispatch/checks/t-1/2.log", kind: "text", modified: 1, size: 9 } };
+  assert.equal(pickState(null, null, 100), "picking");
+  assert.equal(pickState(PICK, null, 101), "picking", "a pick of another report counts as none");
+  assert.equal(pickState(PICK, null, 100), "picked");
+  assert.equal(pickState(PICK, run([ok], null), 100), "running");
+  assert.equal(pickState(PICK, run([ok, bad]), 100), "failed");
+  assert.equal(pickState(PICK, run([ok]), 100), "passed");
+  assert.equal(pickState(PICK, run([]), 100), "passed", "no check ticked: nothing failed");
+  assert.deepEqual(failedChecks(run([ok, bad])), ["net"]);
+  assert.equal(pickStatusText("picking", false), "Dispatch picks the checks");
+  assert.equal(pickStatusText("picked", false), "checks picked · waits for Run checks");
+  assert.equal(pickStatusText("picked", true), "checks picked · waits for Merge");
+  assert.equal(pickStatusText("running", false), "checks running");
+  assert.equal(pickStatusText("failed", false, run([ok, bad])), "check failed · net");
+  assert.equal(pickStatusText("failed", false, run([{ ...ok, exit: 2 }, bad])), "checks failed · unit, net");
+  assert.equal(pickStatusText("passed", false), "checks passed");
+  const lines = checkResultLines(run([ok, bad, { ...ok, name: "slow", exit: 124, seconds: 7200 }]));
+  assert.deepEqual(
+    lines.map((line) => [line.name, line.exit, line.failed, line.seconds, line.log?.path ?? null]),
+    [
+      ["unit", "exit 0", false, "12 s", null],
+      ["net", "exit 1", true, "2 min", "d:/p/.dispatch/checks/t-1/2.log"],
+      ["slow", "stopped at the time limit", true, "120 min", null],
+    ],
+  );
+  assert.deepEqual(checkResultLines(null), []);
+});
+
+test("the page has the pick switch, the run-everything box, the placeholder line and the Help items", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  assert.match(html, /<input type="checkbox" data-option="pickChecks" \/>/);
+  assert.match(html, /<textarea id="setup-checks-all"/);
+  assert.match(html, /\| covers: what the check tests, for the picker/);
+  assert.match(html, /<li><b>Pick the checks after the work run\.<\/b>/);
+  assert.match(html, /<td>Run everything<\/td><td><code>\.dispatch\/checks-all\.txt<\/code><\/td>/);
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  assert.match(main, /"task_pick_checks"/);
+  assert.match(main, /"task_pick_choice"/);
+  assert.match(main, /"task_run_checks"/);
+  assert.match(main, /card-picks/);
+  const setup = readFileSync(new URL("../src/pipeline.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  assert.match(setup, /"set_checks_all"/);
+  assert.match(setup, /pickChecks/);
 });
 
 // Ticket ticket-form-optional-fields-on-a-new: the model and the effort of the work run at Approve.

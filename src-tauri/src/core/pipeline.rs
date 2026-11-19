@@ -41,6 +41,9 @@ const MEASURE_IGNORE: &str = "measure/";
 const MEASURE_LIMIT: u32 = 600;
 /// The line of `.dispatch/.gitignore` that keeps the merge lock and the gate logs out of git.
 const MERGE_IGNORE: &str = "merge/";
+/// The line of `.dispatch/.gitignore` that keeps the logs of the check runs out of git (ticket
+/// test-picker-an-agent-picks-the-checks).
+const CHECKS_IGNORE: &str = "checks/";
 /// The time limit of the gate command in seconds, when its file names none.
 const GATE_LIMIT: u32 = 14400;
 /// The prefix of a task branch: the branch of ticket `t-1` is `task/t-1`.
@@ -145,6 +148,11 @@ pub struct Options {
     /// them (ticket simpler-process, change 3). Needs task branches and a gate command. Off at the
     /// start; a settings file without the field is off.
     checks_at_gate: bool,
+    /// An agent picks the checks of a task after its work run from the change (ticket
+    /// test-picker-an-agent-picks-the-checks): the plan run recommends none, the work run runs none
+    /// of the list, and the task card shows the picks with reasons before the ticked ones run. Off
+    /// at the start; a settings file without the field is off.
+    pick_checks: bool,
     /// The merge verb pushes the base to its upstream branch after the merge commit, never with
     /// force (ticket simpler-process, change 4). Needs task branches. Off at the start; a settings
     /// file without the field is off.
@@ -168,7 +176,7 @@ pub struct Options {
 // field it does not know, so such a file reads without an error.
 impl Default for Options {
     fn default() -> Self {
-        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, push_after_merge: false, auto_merge: false, tickets_start_plans: false, no_triage: false }
+        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, pick_checks: false, push_after_merge: false, auto_merge: false, tickets_start_plans: false, no_triage: false }
     }
 }
 
@@ -191,6 +199,16 @@ fn measure_rule(reports: &str, script: &str) -> String {
 fn checks_rule(reports: &str) -> String {
     format!(
         "- This project lists the checks that a task can run in `{reports}/checks.txt`, one per line: `name | command`, and `| always` after a check that is always recommended. The plan then has the section Checks after Acceptance: one list item per check of the list, `- [x] <name> — <reason>` when the plan run recommends it for this task and `- [ ] <name> — <reason>` when not; a check marked always is `[x]`. The task card of Dispatch shows the checks as checkboxes with the recommended ones checked, and the user changes them before Approve. Dispatch then writes the choice at the end of the plan as the section Checks chosen and into `{reports}/<ticket-id>.checks` (the name, a tab and the command of each chosen check). The work run runs each chosen check with its command as written there; a done report whose work run has no command with that text counts as working, and its ticket stays open.
+"
+    )
+}
+
+/// The line of the "Background workers" section for a project with a list of checks and "Pick the
+/// checks after the work run" on (ticket test-picker-an-agent-picks-the-checks). `reports` is the
+/// reports folder with `/`, `script` the command of the worker script.
+fn pick_rule(reports: &str, script: &str) -> String {
+    format!(
+        "- This project lists the checks that a task can run in `{reports}/checks.txt`, one per line: `name | command`, with `| always` after a check that always runs and `| covers: <what the check tests>` for the picker. Pick the checks after the work run is on: the plan has no section Checks, and the work run runs the Acceptance commands of the plan and no check of the list beyond them. When the report says done, Dispatch reads the change of the task and picks the checks with an agent, one reason per check; a check marked always is always picked, a check whose command the work run ran with exit code 0 is not, and a changed file of `{reports}/checks-all.txt` picks every check. The task card shows the picks with their reasons as checkboxes; the user adds or removes checks, and the ticked ones run with `{script} check <ticket-id>` in the checkout, or at the merge with Task branches. The results stand in `{reports}/<ticket-id>.checked`; a failed check keeps the ticket open until the user takes the task as done.
 "
     )
 }
@@ -342,6 +360,9 @@ pub struct Plan {
     /// The text of `checks.txt`, for the box "Checks" (ticket task-checks). Without the file, the
     /// tests that Dispatch found in the project.
     checks: String,
+    /// The text of `checks-all.txt`, for the box "Run everything when these files change" (ticket
+    /// test-picker-an-agent-picks-the-checks).
+    checks_all: String,
 }
 
 /// The paths of one project.
@@ -584,6 +605,30 @@ impl Project {
         self.reports.join(format!("{ticket}.checks"))
     }
 
+    /// The files whose change makes the picker pick every check (ticket
+    /// test-picker-an-agent-picks-the-checks): one path, folder or `*` pattern per line.
+    pub(crate) fn checks_all_file(&self) -> PathBuf {
+        self.reports.join("checks-all.txt")
+    }
+
+    /// The pick of the checks of a task after its work run: the report time, the source, and one
+    /// line per check with yes or no and the reason (`pick_text`).
+    fn picked_file(&self, ticket: &str) -> PathBuf {
+        self.reports.join(format!("{ticket}.picked"))
+    }
+
+    /// The results of the check run of a task: `running`, one line per check with its exit code and
+    /// its seconds, `done`. The script writes it line by line.
+    fn checked_file(&self, ticket: &str) -> PathBuf {
+        self.reports.join(format!("{ticket}.checked"))
+    }
+
+    /// The folder of the logs of the check runs, `checks/<ticket>/<n>.log`. Git ignores it through
+    /// `.dispatch/.gitignore`.
+    fn checks_dir(&self) -> PathBuf {
+        self.reports.join("checks")
+    }
+
     /// The model and the effort of the runs of a task (ticket ticket-form-optional-fields-on-a-new):
     /// one line per run, `plan <model> <effort>` (the level of the ticket) and `work <model> <effort>`
     /// (the advice of the plan or the choice of the user at Approve), `-` for no value. The worker
@@ -611,6 +656,18 @@ impl Project {
     /// The checks of the list of the project, in the order of the file. Empty without the file.
     fn checks(&self) -> Vec<Check> {
         parse_checks(&fs::read_to_string(self.checks_file()).unwrap_or_default())
+    }
+
+    /// The lines of the run-everything list (ticket test-picker-an-agent-picks-the-checks), trimmed,
+    /// without comments and empty lines. Empty without the file.
+    fn checks_all(&self) -> Vec<String> {
+        fs::read_to_string(self.checks_all_file())
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .map(str::to_string)
+            .collect()
     }
 
     /// The session file of a ticket (ticket task-tokens): the Claude sessions of its runs.
@@ -714,6 +771,7 @@ impl Project {
             ".dispatch/measure-commands.txt",
             ".dispatch/merge-gate.txt",
             ".dispatch/checks.txt",
+            ".dispatch/checks-all.txt",
         ];
         // Off again, the commit takes the removal of the line of Dispatch, while HEAD still has it.
         // The line of the local settings (ticket second-computer) makes it a setup file too.
@@ -822,11 +880,19 @@ impl Project {
         let measure = if self.options().measure_before_plan { measure_rule(&reports, &script) } else { String::new() };
         // The same for "Task branches": off, the section is the text of the version before.
         let branches = if self.options().task_branches { branches_rule(&reports, &script) } else { String::new() };
-        // A project without a list of checks (ticket task-checks): the section is the text of the version before.
-        let checks = if self.checks().is_empty() { String::new() } else { checks_rule(&reports) };
+        // A project without a list of checks (ticket task-checks): the section is the text of the version
+        // before. With "Pick the checks after the work run" on (ticket test-picker-an-agent-picks-the-checks)
+        // the line says that the checks come after the work run.
+        let options = self.options();
+        let checks = if self.checks().is_empty() {
+            String::new()
+        } else if options.pick_checks {
+            pick_rule(&reports, &script)
+        } else {
+            checks_rule(&reports)
+        };
         // The three switches of ticket simpler-process: off, each line is empty and the section is
         // the text of the version before.
-        let options = self.options();
         let plain = if options.start_plain_plans { plain_rule() } else { String::new() };
         let gate_checks = if options.checks_at_gate && options.task_branches && !self.merge_gate().is_empty() { gate_checks_rule(&reports) } else { String::new() };
         let push = if options.push_after_merge && options.task_branches { push_rule() } else { String::new() };
@@ -881,13 +947,17 @@ struct Check {
     command: String,
     /// The list marks it as always recommended.
     always: bool,
+    /// What the check covers, for the picker (ticket test-picker-an-agent-picks-the-checks): the
+    /// field `covers: <text>` of the list, or empty.
+    covers: String,
 }
 
-/// Reads the list of checks (user decision 1 of task-checks): `name | command`, with a last field
-/// `always` for a check that is always recommended. The name ends at the first `|`; a command may
-/// hold `|` itself, so only a last field that is exactly `always` is the mark. An empty line and a
-/// line that starts with `#` are skipped, and so are a line without a name or a command and a
-/// second check with the same name.
+/// Reads the list of checks (user decision 1 of task-checks): `name | command`, with the trailing
+/// fields `always` for a check that is always recommended and `covers: <text>` with what the check
+/// covers (ticket test-picker-an-agent-picks-the-checks), in either order. The name ends at the
+/// first `|`; a command may hold `|` itself, so only a last field that is exactly `always` or
+/// starts with `covers:` is cut, from the right. An empty line and a line that starts with `#` are
+/// skipped, and so are a line without a name or a command and a second check with the same name.
 fn parse_checks(text: &str) -> Vec<Check> {
     let mut checks: Vec<Check> = Vec::new();
     for line in text.lines().map(str::trim) {
@@ -896,19 +966,64 @@ fn parse_checks(text: &str) -> Vec<Check> {
         }
         let Some((name, rest)) = line.split_once('|') else { continue };
         // A tab would cut the line of the task file of the checks.
-        let (name, mut command, mut always) = (name.trim().replace('\t', " "), rest.trim(), false);
-        if let Some((head, mark)) = command.rsplit_once('|') {
-            if mark.trim().eq_ignore_ascii_case("always") {
-                command = head.trim();
+        let (name, mut command, mut always, mut covers) = (name.trim().replace('\t', " "), rest.trim(), false, String::new());
+        while let Some((head, field)) = command.rsplit_once('|') {
+            let field = field.trim();
+            if field.eq_ignore_ascii_case("always") {
                 always = true;
+            } else if field.len() >= 7 && field[..7].eq_ignore_ascii_case("covers:") {
+                covers = field[7..].trim().replace('\t', " ");
+            } else {
+                break;
             }
+            command = head.trim();
         }
         if name.is_empty() || command.is_empty() || checks.iter().any(|check| check.name.eq_ignore_ascii_case(&name)) {
             continue;
         }
-        checks.push(Check { name, command: command.to_string(), always });
+        checks.push(Check { name, command: command.to_string(), always, covers });
     }
     checks
+}
+
+/// Whether a changed file is on the run-everything list (ticket test-picker-an-agent-picks-the-checks):
+/// the line is the path, a folder that holds it (`src/net/` or `src/net`), or a pattern with `*`
+/// (`*` matches inside one segment, `**` across `/`). Without case; `\` counts as `/`.
+fn matches_all_list(path: &str, line: &str) -> bool {
+    let clean = |text: &str| text.trim().replace('\\', "/").trim_start_matches("./").to_ascii_lowercase();
+    let (path, line) = (clean(path), clean(line));
+    if line.is_empty() {
+        return false;
+    }
+    if line.contains('*') {
+        let pattern: Vec<char> = line.chars().collect();
+        let path: Vec<char> = path.chars().collect();
+        return glob_match(&pattern, &path);
+    }
+    let folder = line.trim_end_matches('/');
+    path == line || path == folder || path.starts_with(&format!("{folder}/"))
+}
+
+/// A small glob: `**` matches any text (also `/`, and `**/` also nothing), `*` matches any text
+/// without `/`, every other character itself.
+fn glob_match(pattern: &[char], path: &[char]) -> bool {
+    match pattern.first() {
+        None => path.is_empty(),
+        Some('*') if pattern.get(1) == Some(&'*') => {
+            let rest = &pattern[2..];
+            (0..=path.len()).any(|at| glob_match(rest, &path[at..])) || (rest.first() == Some(&'/') && glob_match(&rest[1..], path))
+        }
+        Some('*') => {
+            let rest = &pattern[1..];
+            (0..=path.len()).take_while(|&at| at == 0 || path[at - 1] != '/').any(|at| glob_match(rest, &path[at..]))
+        }
+        Some(expected) => path.first() == Some(expected) && glob_match(&pattern[1..], &path[1..]),
+    }
+}
+
+/// The first changed file that is on the run-everything list, with its line, or none.
+fn changed_on_all_list(files: &[String], lines: &[String]) -> Option<(String, String)> {
+    files.iter().find_map(|file| lines.iter().find(|line| matches_all_list(file, line)).map(|line| (file.clone(), line.clone())))
 }
 
 /// One check of the project for a task, for the checkboxes of the Plan ready card (ticket
@@ -995,6 +1110,248 @@ fn chosen_checks(checks: &[CheckInfo]) -> Vec<(String, String)> {
     checks.iter().filter(|check| check.chosen == Some(true)).map(|check| (check.name.clone(), check.command.clone())).collect()
 }
 
+/// One check of the list in the pick of a task (ticket test-picker-an-agent-picks-the-checks).
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PickedCheck {
+    name: String,
+    /// The picker (the rule or the model) wants the check to run.
+    picked: bool,
+    /// One reason in plain words.
+    reason: String,
+}
+
+/// The pick of the checks of a task after its work run (ticket test-picker-an-agent-picks-the-checks),
+/// as `<ticket>.picked` holds it.
+#[derive(Serialize, Clone, PartialEq, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PickInfo {
+    /// When the pick was made, RFC 3339.
+    at: String,
+    /// The change time of the report that the pick belongs to, in milliseconds since the Unix epoch.
+    /// A pick of another report counts as none.
+    report: u64,
+    /// `model` (the agent decided the open checks), `rule` (the rule decided every check: always,
+    /// passed in the work run, or a changed file of the run-everything list) or `error` (the model
+    /// call failed, every check is picked).
+    source: String,
+    /// The changed file of the run-everything list that picked every check, or empty.
+    all: String,
+    /// The error of the model call, or empty.
+    error: String,
+    /// One entry per check of the list, in its order.
+    checks: Vec<PickedCheck>,
+}
+
+/// One check of a check run with its result (ticket test-picker-an-agent-picks-the-checks).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckResult {
+    name: String,
+    command: String,
+    /// The exit code of the command; `124` for a command that the time limit stopped.
+    exit: i64,
+    seconds: u64,
+    /// The log of the command, when it exists.
+    log: Option<FileEntry>,
+}
+
+/// The check run of a task (ticket test-picker-an-agent-picks-the-checks), as `<ticket>.checked`
+/// holds it: the script writes the file line by line, so a crash leaves what ran.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckRunInfo {
+    /// When the run started, RFC 3339.
+    started: String,
+    /// When the run ended, RFC 3339; none while it runs.
+    ended: Option<String>,
+    /// `run` (the verb `check` of the script, in the checkout) or `merge` (at the merge of the task branch).
+    place: String,
+    /// The checks that ran, in their order.
+    results: Vec<CheckResult>,
+}
+
+impl CheckRunInfo {
+    /// The checks whose command ended with an exit code other than 0.
+    fn failed(&self) -> Vec<&CheckResult> {
+        self.results.iter().filter(|result| result.exit != 0).collect()
+    }
+}
+
+/// A text as one line without tabs, for a field of the pick file.
+fn one_line(text: &str) -> String {
+    text.split(['\t', '\r', '\n']).filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" ")
+}
+
+/// The text of `<ticket>.picked`: `picked`, the report time, the time and the source; `all` with the
+/// changed file and `error` with the text when set; one line per check with `yes` or `no` and the reason.
+fn pick_text(info: &PickInfo) -> String {
+    let mut text = format!("picked\t{}\t{}\t{}\n", info.report, info.at, info.source);
+    if !info.all.is_empty() {
+        text.push_str(&format!("all\t{}\n", one_line(&info.all)));
+    }
+    if !info.error.is_empty() {
+        text.push_str(&format!("error\t{}\n", one_line(&info.error)));
+    }
+    for check in &info.checks {
+        text.push_str(&format!("{}\t{}\t{}\n", check.name, if check.picked { "yes" } else { "no" }, one_line(&check.reason)));
+    }
+    text
+}
+
+/// Reads a pick file (`pick_text`). None without the file or without its first line.
+fn read_pick(path: &Path) -> Option<PickInfo> {
+    let text = fs::read_to_string(path).ok()?;
+    let mut lines = text.lines();
+    let mut head = lines.next()?.split('\t');
+    if head.next()? != "picked" {
+        return None;
+    }
+    let report = head.next()?.trim().parse().ok()?;
+    let at = head.next().unwrap_or_default().to_string();
+    let source = head.next().unwrap_or("rule").to_string();
+    let mut info = PickInfo { at, report, source, all: String::new(), error: String::new(), checks: Vec::new() };
+    for line in lines {
+        let mut fields = line.split('\t');
+        let (Some(name), Some(value)) = (fields.next(), fields.next()) else { continue };
+        let reason = fields.next().unwrap_or_default().to_string();
+        match name {
+            "all" if value != "yes" && value != "no" => info.all = value.to_string(),
+            "error" if value != "yes" && value != "no" => info.error = value.to_string(),
+            _ => info.checks.push(PickedCheck { name: name.to_string(), picked: value == "yes", reason }),
+        }
+    }
+    Some(info)
+}
+
+/// Reads the check run of a task (`<ticket>.checked`): the command of each check from `<ticket>.checks`,
+/// and its log from the folder of the place (`checks/<ticket>/<n>.log` or `merge/<ticket>-<n>.log`,
+/// `n` the position of the check in `<ticket>.checks`). None without the file.
+fn read_checked(project: &Project, ticket: &str) -> Option<CheckRunInfo> {
+    let text = fs::read_to_string(project.checked_file(ticket)).ok()?;
+    let mut lines = text.lines();
+    let mut head = lines.next()?.split('\t');
+    if head.next()? != "running" {
+        return None;
+    }
+    let started = head.next().unwrap_or_default().to_string();
+    let place = head.next().unwrap_or("run").to_string();
+    let chosen: Vec<(String, String)> = fs::read_to_string(project.task_checks_file(ticket))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| line.split_once('\t').map(|(name, command)| (name.trim().to_string(), command.trim().to_string())))
+        .collect();
+    let mut info = CheckRunInfo { started, ended: None, place, results: Vec::new() };
+    for line in lines {
+        let mut fields = line.split('\t');
+        let Some(name) = fields.next().filter(|name| !name.is_empty()) else { continue };
+        if name == "done" {
+            info.ended = Some(fields.next().unwrap_or_default().to_string());
+            continue;
+        }
+        let exit = fields.next().and_then(|value| value.trim().parse().ok()).unwrap_or(-1);
+        let seconds = fields.next().and_then(|value| value.trim().parse().ok()).unwrap_or(0);
+        let at = chosen.iter().position(|(known, _)| known.eq_ignore_ascii_case(name));
+        let command = at.map(|at| chosen[at].1.clone()).unwrap_or_default();
+        let log = at
+            .map(|at| if info.place == "merge" { project.merge_dir().join(format!("{ticket}-{}.log", at + 1)) } else { project.checks_dir().join(ticket).join(format!("{}.log", at + 1)) })
+            .and_then(|path| file_entry(&path));
+        info.results.push(CheckResult { name: name.to_string(), command, exit, seconds, log });
+    }
+    Some(info)
+}
+
+/// The longest diff, in characters, that the prompt of the picker holds.
+const PICK_DIFF_LIMIT: usize = 60_000;
+
+/// The model, the effort and the time limit in seconds of the picker (user decision 4 of ticket
+/// test-picker-an-agent-picks-the-checks): a cheap and fast model reads a diff and a short list.
+const PICK_MODEL: (&str, &str, u64) = ("sonnet", "medium", 180);
+
+/// The prompt of the picker: the checks with what they cover (else their command), the changed
+/// files, the commands of the work run with their exit codes, the diff cut at `PICK_DIFF_LIMIT`,
+/// and the order to answer with one line per check of the list.
+fn pick_prompt(checks: &[Check], files: &[String], diff: &str, ran: &[(String, String)]) -> String {
+    let list: String = checks
+        .iter()
+        .map(|check| format!("- {}: {}\n", check.name, if check.covers.is_empty() { format!("the command `{}`", check.command) } else { check.covers.clone() }))
+        .collect();
+    let files = if files.is_empty() { "(none known)\n".to_string() } else { files.iter().map(|file| format!("{file}\n")).collect() };
+    let ran = if ran.is_empty() { "(none)\n".to_string() } else { ran.iter().map(|(command, exit)| format!("- exit {exit}: {command}\n")).collect() };
+    let mut diff_text: String = diff.chars().take(PICK_DIFF_LIMIT).collect();
+    if diff.chars().count() > PICK_DIFF_LIMIT {
+        diff_text.push_str("\n[diff cut here]");
+    }
+    if diff_text.trim().is_empty() {
+        diff_text = "(no diff)".to_string();
+    }
+    format!(
+        "Pick the checks that this change needs. The project lists its checks below, each with its name and what it covers. Read the changed files and the diff, then answer with one line per check of the list, in this form and nothing else:\n- [x] <name> — <reason>\n- [ ] <name> — <reason>\n`[x]` means the check runs, `[ ]` means it does not run. The reason has at most 20 plain words. Pick a check when the change can break what it covers; do not pick a check that the change cannot touch. When in doubt, pick it. Plain text only: no code fence, no heading, no text before or after the lines.\n\nChecks:\n{list}\nChanged files:\n{files}\nCommands of the work run, with their exit codes:\n{ran}\nDiff:\n{diff_text}\n"
+    )
+}
+
+/// The pick of the checks of a task from its change (ticket test-picker-an-agent-picks-the-checks).
+/// The rule picks first: a changed file of the run-everything list (`all`) picks every check and
+/// calls no model; a check marked always is picked; a check whose command a command of the work
+/// run contains with exit code 0 is not picked. The model (`ask`) decides the other checks from
+/// `pick_prompt`: its answer is read as the check lines of a plan section, a name that is not in
+/// the list is dropped, a check without a line is not picked. A failed call picks every check and
+/// keeps the error. `report` is the change time of the report that the pick belongs to.
+fn pick_checks(list: &[Check], files: &[String], diff: &str, ran: &[(String, String)], all: &[String], report: u64, ask: &dyn Fn(&str) -> Result<String, String>) -> PickInfo {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
+    let mut info = PickInfo { at: crate::core::tickets::iso(now), report, source: "rule".to_string(), all: String::new(), error: String::new(), checks: Vec::new() };
+    let pick = |check: &Check, picked: bool, reason: String| PickedCheck { name: check.name.clone(), picked, reason };
+    if let Some((file, _)) = changed_on_all_list(files, all) {
+        info.all = file.clone();
+        info.checks = list.iter().map(|check| pick(check, true, format!("{file} changed, and a change there runs every check"))).collect();
+        return info;
+    }
+    let passed = |check: &Check| ran.iter().any(|(command, exit)| exit == "0" && one_space(command).contains(&one_space(&check.command)));
+    let by_rule: Vec<Option<PickedCheck>> = list
+        .iter()
+        .map(|check| {
+            if check.always {
+                Some(pick(check, true, "always in the list of this project".to_string()))
+            } else if passed(check) {
+                Some(pick(check, false, "ran in the work run and passed".to_string()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    if by_rule.iter().all(Option::is_some) {
+        info.checks = by_rule.into_iter().flatten().collect();
+        return info;
+    }
+    match ask(&pick_prompt(list, files, diff, ran)) {
+        Ok(answer) => {
+            let lines = check_lines(&format!("## Checks\n{answer}\n"), "Checks");
+            info.source = "model".to_string();
+            info.checks = list
+                .iter()
+                .zip(by_rule)
+                .map(|(check, rule)| {
+                    rule.unwrap_or_else(|| match lines.iter().find(|(name, _, _)| name.eq_ignore_ascii_case(&check.name)) {
+                        Some((_, ticked, reason)) => pick(check, *ticked, if reason.is_empty() { "the picker gave no reason".to_string() } else { reason.clone() }),
+                        None => pick(check, false, "the picker gave no line".to_string()),
+                    })
+                })
+                .collect();
+        }
+        Err(error) => {
+            // Every check runs, also one that passed in the work run; an always check keeps its reason.
+            info.source = "error".to_string();
+            info.error = error;
+            info.checks = list
+                .iter()
+                .zip(by_rule)
+                .map(|(check, rule)| rule.filter(|rule| rule.picked).unwrap_or_else(|| pick(check, true, "the picker failed, so every check runs".to_string())))
+                .collect();
+        }
+    }
+    info
+}
+
 /// The time limit of the commands of a list file: the first line of the file that is not empty,
 /// when it is `# limit <seconds>`, else `default`. The script reads it the same way.
 fn list_limit(path: &Path, default: u32) -> u32 {
@@ -1023,10 +1380,15 @@ Dispatch worker script. Triage starts and resumes a worker only through this fil
   measure <ticket-id> <n>       run command n of measure-commands.txt for the plan run (Measure before the plan)
   merge <ticket-id>             merge the task branch into its base after the gate command (Task branches; Dispatch only);
                                 with Push after the merge, then push the base to its upstream branch, never with force
+  check <ticket-id>             run the picked checks of <ticket-id>.checks in the checkout (Pick the checks after the work run);
+                                the logs go to checks\<ticket-id>\<n>.log, the results to <ticket-id>.checked
 Exit codes: 0 done, 2 refused (the reason is on stderr), 124 a measuring command stopped at its
 time limit, other: the exit code of claude or of the measuring command.
 The gate command of merge gets DISPATCH_TICKET (the ticket id) and DISPATCH_CHECKS (the path of
 <ticket-id>.checks: the checks that the user chose, one line each, the name, a tab and the command).
+With Pick the checks after the work run, Dispatch writes <ticket-id>.picked (the pick of the agent)
+and, after the user's choice, <ticket-id>.checks; the merge runs these checks before the gate, unless
+Checks at the gate gives them to the gate command.
 <ticket-id>.models, when it exists, gives the model and the effort of a run of the task: a line
 `plan <model> <effort>` or `work <model> <effort>` replaces those of the options file.
 The script finds the project from its own folder, and the options files name paths relative to the
@@ -1034,7 +1396,7 @@ project, so a clone on another path or computer needs no change.
 #>
 param(
   [Parameter(Mandatory = $true, Position = 0)]
-  [ValidateSet('plan', 'approve', 'reply', 'status', 'stop', 'resume', 'measure', 'merge', IgnoreCase = $false)]
+  [ValidateSet('plan', 'approve', 'reply', 'status', 'stop', 'resume', 'measure', 'merge', 'check', IgnoreCase = $false)]
   [string]$Verb,
   [Parameter(Position = 1)]
   [string]$Id,
@@ -1484,6 +1846,18 @@ function Merge-Branch($Info, [string]$Gate, [int]$Limit) {
       }
     }
   }
+  # Pick the checks after the work run: the ticked checks run on the merged code before the gate, and
+  # the first failed one aborts the merge. With Checks at the gate and a gate command, the gate runs them.
+  if ((Option-On 'pickChecks') -and -not ($Gate -and (Option-On 'checksAtGate'))) {
+    $folder = Join-Path $Reports 'merge'
+    if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder | Out-Null }
+    $failed = Run-Checks 'merge' { param($n) Join-Path $Reports "merge\$Id-$n.log" } (Command-Limit 'checks.txt' 14400) -StopAtFailure
+    if ($null -ne $failed) {
+      Invoke-Git @('merge', '--abort') | Out-Null
+      $tail = if (Test-Path -LiteralPath $failed.Log) { (Get-Content -LiteralPath $failed.Log -Tail 40) -join "`n" } else { '' }
+      return "the check $($failed.Name) failed with exit code $($failed.Code), so nothing was merged ($($failed.Command); the log is $($failed.Log)). Its last 40 lines:`n$tail"
+    }
+  }
   if ($Gate) {
     $log = Join-Path $Reports "merge\$Id.log"
     # The gate reads the ticket and the checks that the user chose for it (ticket task-checks); the
@@ -1757,6 +2131,56 @@ function Run-Measured([string]$Command, [string]$Log, [int]$Limit) {
   124
 }
 
+# The lines of <ticket-id>.checks: the name, a tab and the command of each check that runs (Pick the
+# checks after the work run). Empty without the file.
+function Chosen-Checks {
+  $file = Join-Path $Reports "$Id.checks"
+  if (-not (Test-Path -LiteralPath $file)) { return @() }
+  @(Get-Content -LiteralPath $file | Where-Object { $_.Trim() -ne '' })
+}
+
+# Removes the pick files of the task before a new work run (Pick the checks after the work run): a
+# new report gets a new pick, a new choice and a new run.
+function Clear-Picks {
+  foreach ($name in @("$Id.checks", "$Id.picked", "$Id.checked")) {
+    Remove-Item -LiteralPath (Join-Path $Reports $name) -Force -ErrorAction SilentlyContinue
+  }
+  $folder = Join-Path $Reports "checks\$Id"
+  if (Test-Path -LiteralPath $folder) { Remove-Item -LiteralPath $folder -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+# Runs the checks of <ticket-id>.checks one by one with Run-Measured and writes <ticket-id>.checked
+# line by line: "running", the time and the place first, then the name, the exit code and the seconds
+# of each check as it ends, then "done" and the time. $LogOf gives the log path of check n. In the
+# place 'run' each result goes to the console as "<name>: exit <code>", not into the pipeline. With -StopAtFailure the
+# run ends at the first failed check and gives its name, exit code, command and log; else it gives
+# $null after every check ran.
+function Run-Checks([string]$Place, [scriptblock]$LogOf, [int]$Limit, [switch]$StopAtFailure) {
+  $checked = Join-Path $Reports "$Id.checked"
+  [IO.File]::WriteAllText($checked, "running`t$((Get-Date).ToString('o'))`t$Place`n")
+  $n = 0
+  foreach ($line in @(Chosen-Checks)) {
+    $n++
+    $parts = $line -split "`t", 2
+    $name = $parts[0].Trim()
+    $command = if ($parts.Count -gt 1) { $parts[1].Trim() } else { '' }
+    if (-not $name -or -not $command) { continue }
+    $log = & $LogOf $n
+    $started = Get-Date
+    $code = Run-Measured $command $log $Limit
+    $seconds = [int][Math]::Round(((Get-Date) - $started).TotalSeconds)
+    [IO.File]::AppendAllText($checked, "$name`t$code`t$seconds`n")
+    # The merge verb prints its merge line first: Dispatch reads the first line of its output.
+    if ($Place -eq 'run') { [Console]::Out.WriteLine("$name`: exit $code") }
+    if ($StopAtFailure -and $code -ne 0) {
+      [IO.File]::AppendAllText($checked, "done`t$((Get-Date).ToString('o'))`n")
+      return [pscustomobject]@{ Name = $name; Code = $code; Command = $command; Log = $log }
+    }
+  }
+  [IO.File]::AppendAllText($checked, "done`t$((Get-Date).ToString('o'))`n")
+  return $null
+}
+
 # Resumes the session of $Worker for $Run with $Text: the start of reply and of resume. $State, when
 # given, is written before the branch switch; without it a tracked branch rewrites the current state.
 # The own changes of a stopped run are found while the state still says stopped: the state file time
@@ -1835,9 +2259,14 @@ switch ($Verb) {
     $brief = Join-Path $Reports "briefs\$Id.md"
     $report = Join-Path $Reports "$Id.md"
     $prompt = "Plan approved: $plan. This is the work run of ticket $Id. Read the brief $brief and the plan first: they are the whole context of this run, and the sections User decisions and Checks chosen of the plan hold the choices of the user. Execute the plan. A deviation goes into the report, not into the code. Commit only the files that this run changed, each by name in git add and git commit; never run git add -A, git add . or git commit -a, and leave every other change in the checkout as it is. Write the report to $report."
-    # The checks that the user chose at Approve (ticket task-checks): one line per check, the name, a
-    # tab and the command. A quote of a name becomes an apostrophe, as in a reply.
+    # Pick the checks after the work run: the files of an earlier pick go, and the run is told that the
+    # checks come after it. Else the checks that the user chose at Approve (ticket task-checks): one
+    # line per check, the name, a tab and the command. A quote of a name becomes an apostrophe, as in a reply.
     $chosen = Join-Path $Reports "$Id.checks"
+    if (Option-On 'pickChecks') {
+      Clear-Picks
+      $prompt += " The checks of this project are picked by Dispatch after this run: run the Acceptance commands of the plan, but no check of the list checks.txt beyond them."
+    }
     if (Test-Path -LiteralPath $chosen) {
       $names = @(Get-Content -LiteralPath $chosen | Where-Object { $_.Trim() -ne '' } | ForEach-Object { ($_ -split "`t", 2)[0].Trim() -replace '"', "'" })
       # Checks at the gate (ticket simpler-process): with task branches and a gate command, the gate
@@ -1875,6 +2304,8 @@ switch ($Verb) {
     if (-not $text) { Refuse 'reply needs a message' }
     $run = if ((Get-State) -eq 'planning') { 'plan' } else { 'work' }
     $worker = Resume-Target $run
+    # A reply of the work run brings a new report: the pick of the old one goes (Pick the checks after the work run).
+    if ($run -eq 'work' -and (Option-On 'pickChecks')) { Clear-Picks }
     Resume-Run $run $worker $text '' ''
   }
   'status' {
@@ -1970,6 +2401,22 @@ switch ($Verb) {
       if ($push.StartsWith('pushed ')) { "pushed $($info.base) to $(($push -split ' ')[1])" }
       elseif ($push -eq 'no-upstream') { "no push: $($info.base) has no upstream branch" }
       else { "push failed: $($push.Substring(7)); $($info.base) is merged on this computer only" }
+    }
+  }
+  'check' {
+    Need-Id
+    if (-not (Option-On 'pickChecks')) { Refuse 'Pick the checks after the work run is off in this project; Setup pipeline turns it on' }
+    if (-not (Test-Path -LiteralPath (Join-Path $Reports "$Id.checks"))) { Refuse "the task $Id has no chosen checks; Run checks in its task card writes them first" }
+    $folder = Join-Path $Reports "checks\$Id"
+    if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
+    $limit = Command-Limit 'checks.txt' 14400
+    # One command run at a time per project, as a measuring: the projects use fixed test ports. The
+    # merge lock stays free: it guards the checkout, and Dispatch waits for it at the switch back.
+    Enter-Lock (Lock-Path) $limit 'check run'
+    try {
+      Run-Checks 'run' { param($n) Join-Path $folder "$n.log" } $limit | Out-Null
+    } finally {
+      Exit-Lock (Lock-Path)
     }
   }
   'stop' {
@@ -2402,7 +2849,8 @@ fn plan(project: &Project) -> Result<Plan, String> {
     let measure_commands = fs::read_to_string(project.measure_commands_file()).unwrap_or_default().replace("\r\n", "\n");
     let merge_gate = fs::read_to_string(project.merge_gate_file()).unwrap_or_default().replace("\r\n", "\n");
     let checks = if checks_saved { fs::read_to_string(project.checks_file()).unwrap_or_default().replace("\r\n", "\n") } else { found_checks };
-    Ok(Plan { root: show(project.root.clone()), git: project.in_git, options, steps, measure_commands, merge_gate, checks })
+    let checks_all = fs::read_to_string(project.checks_all_file()).unwrap_or_default().replace("\r\n", "\n");
+    Ok(Plan { root: show(project.root.clone()), git: project.in_git, options, steps, measure_commands, merge_gate, checks, checks_all })
 }
 
 /// The tests that Dispatch finds in the files of the project, as lines of the list of checks.
@@ -3640,6 +4088,35 @@ pub fn task_checks(cwd: String, id: String, names: Vec<String>) -> Result<u64, S
     Ok(file_entry(&path).map_or(0, |entry| entry.modified))
 }
 
+/// Writes the final choice of the picked checks of a task (ticket test-picker-an-agent-picks-the-checks,
+/// user decision 1): the file `<ticket>.checks` from the names, in the order of the list; the plan has
+/// no section to update. An old result file of the task goes, because a new run comes. Gives the
+/// change time of the checks file in milliseconds.
+pub fn task_pick_choice(cwd: String, id: String, names: Vec<String>) -> Result<u64, String> {
+    check_ticket(&id)?;
+    let project = Project::find(&cwd)?;
+    let list = project.checks();
+    if list.is_empty() {
+        return Err("The project has no list of checks.".to_string());
+    }
+    write_file(&project.task_checks_file(&id), &task_checks_text(&list, &names))?;
+    let checked = project.checked_file(&id);
+    if checked.exists() {
+        fs::remove_file(&checked).map_err(|error| format!("{}: {error}", checked.display()))?;
+    }
+    Ok(file_entry(&project.task_checks_file(&id)).map_or(0, |entry| entry.modified))
+}
+
+/// Runs the ticked checks of a task in the checkout through the verb `check` of the worker script
+/// (ticket test-picker-an-agent-picks-the-checks): the button "Run checks" of the task card, or night
+/// mode. The script writes `<ticket>.checked` and the logs; git ignores the logs.
+pub fn task_run_checks(cwd: String, id: String) -> Result<String, String> {
+    check_ticket(&id)?;
+    let project = Project::find(&cwd)?;
+    ignore_line(&project, CHECKS_IGNORE)?;
+    run_script(&project, &["check", &id])
+}
+
 /// Writes the line of one run (`plan` or `work`) into `<ticket>.models` and keeps the line of the
 /// other run. None, or a choice without a model and an effort, removes the line; the file goes when
 /// it has no line. The values are checked as the options of a session.
@@ -3933,6 +4410,16 @@ pub struct TaskInfo {
     /// decision 1): night mode does not start its work run.
     #[serde(rename = "nightHold")]
     night_hold: bool,
+    /// The pick of the checks after the work run (ticket test-picker-an-agent-picks-the-checks), when
+    /// the switch is on, the report says done and the pick belongs to this report. None else.
+    picked: Option<PickInfo>,
+    /// The check run of the picked checks, when its file exists. None else.
+    checked: Option<CheckRunInfo>,
+    /// The task waits for its checks (ticket test-picker-an-agent-picks-the-checks): the report says
+    /// done and the switch is on, and no pick exists yet, or the picked checks did not run to the end,
+    /// or one failed. Its ticket stays In progress.
+    #[serde(rename = "checksOpen")]
+    checks_open: bool,
 }
 
 /// The decision of the user to take a task as done (ticket take-as-done): the time of the click
@@ -4582,9 +5069,11 @@ fn checks_at_gate(project: &Project) -> bool {
 }
 
 /// The checks that the report check looks for in the work run: the chosen checks, or none with
-/// "Checks at the gate" on, because the gate runs them at the merge (ticket simpler-process, change 3).
+/// "Checks at the gate" on, because the gate runs them at the merge (ticket simpler-process, change 3),
+/// and none with "Pick the checks after the work run" on, because the picked checks run after the
+/// report (ticket test-picker-an-agent-picks-the-checks).
 fn checks_to_look_for(project: &Project, checks: &[CheckInfo]) -> Vec<(String, String)> {
-    if checks_at_gate(project) { Vec::new() } else { chosen_checks(checks) }
+    if checks_at_gate(project) || project.options().pick_checks { Vec::new() } else { chosen_checks(checks) }
 }
 
 /// The reply of the `task_list` command.
@@ -4614,6 +5103,11 @@ pub struct TaskList {
     no_triage: bool,
     /// The setting of the project: Dispatch starts nothing new for it (ticket pause-tasks).
     paused: bool,
+    /// The setting of the project: an agent picks the checks after the work run (ticket
+    /// test-picker-an-agent-picks-the-checks). The frontend starts the pick of a done report once.
+    pick_checks: bool,
+    /// The picked checks run at the merge, not in the checkout: the switch and task branches are on.
+    checks_at_merge: bool,
     /// When the project got its Dispatch setup: the creation time of the task folder (or of its
     /// oldest state file, see `setup_time`), which the first Apply makes and a later one keeps, in milliseconds since the Unix epoch. The chat
     /// list folds the chats from before it.
@@ -4751,6 +5245,9 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             work_choice: None,
             parts: Vec::new(),
             night_hold: false,
+            picked: None,
+            checked: None,
+            checks_open: false,
         });
         tasks.len() - 1
     }
@@ -4784,6 +5281,23 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         tasks[at].questions = questions;
         tasks[at].did = report_gist(&text);
         tasks[at].report = Some(entry);
+    }
+    // The checks picked after the work run (ticket test-picker-an-agent-picks-the-checks): with the
+    // switch on and a list, a done report gets the pick that belongs to it and the run of the picks;
+    // the task waits while the pick is missing, the run did not end, or a check failed.
+    let pick_on = project.options().pick_checks && !check_list.is_empty();
+    if pick_on {
+        for task in tasks.iter_mut() {
+            let (Some(report), Some(header)) = (task.report.as_ref(), task.header.as_ref()) else { continue };
+            if header.state != "done" {
+                continue;
+            }
+            task.picked = read_pick(&project.picked_file(&task.name)).filter(|pick| pick.report == report.modified);
+            task.checked = read_checked(project, &task.name);
+            // Take as done (ticket take-as-done) closes the task also when its checks wait or failed.
+            let taken = project.taken_file(&task.name).is_file();
+            task.checks_open = !taken && (task.picked.is_none() || task.checked.as_ref().is_none_or(|run| run.ended.is_none() || !run.failed().is_empty()));
+        }
     }
     // A measuring command that changed the working tree left a note in the scratch folder.
     for task in tasks.iter_mut() {
@@ -4822,6 +5336,20 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             let taken = fs::read_to_string(project.taken_file(&task.name)).ok();
             let check = check_report(&text, &task.evidence, work_transcript, &checks_to_look_for(project, &task.checks));
             (task.unverified, task.taken) = apply_report_check(&mut task.header, &mut task.did, check, taken.as_deref());
+        }
+        // A failed picked check (ticket test-picker-an-agent-picks-the-checks, user decision 2) goes
+        // the way of a sent-back report: the header says working, `did` names the check, and the
+        // taken file closes the task by hand. A report that the check above sent back stays as it is.
+        let failed: Vec<(String, String, i64)> = task.checked.as_ref().map(|run| run.failed().iter().map(|result| (result.name.clone(), result.command.clone(), result.exit)).collect()).unwrap_or_default();
+        if !failed.is_empty() && task.header.as_ref().is_some_and(|header| header.state == "done") && task.taken.is_none() {
+            let taken = fs::read_to_string(project.taken_file(&task.name)).ok();
+            let (name, _, exit) = &failed[0];
+            let reason = if failed.len() == 1 {
+                format!("The check {name} failed with exit code {exit}.")
+            } else {
+                format!("The checks {} failed; {name} ended with exit code {exit}.", failed.iter().map(|(name, _, _)| name.as_str()).collect::<Vec<_>>().join(", "))
+            };
+            (task.unverified, task.taken) = apply_report_check(&mut task.header, &mut task.did, Some((reason, failed.iter().map(|(_, command, _)| command.clone()).collect())), taken.as_deref());
         }
     }
     // A brief alone makes no task; a task that exists gets its brief. The title of the brief is
@@ -4872,6 +5400,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
                     brief: brief(&task.name),
                     merged,
                     waits_merge: branch.is_some() && !merged && branches_on,
+                    checks_open: task.checks_open,
                     started,
                     ended: report_time.max(merge),
                 }
@@ -4988,7 +5517,28 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     }
     let setup = setup_time(&project);
     let options = project.options();
-    Ok((TaskList { tasks, dirty, auto_approve: options.auto_approve, start_plain_plans: options.start_plain_plans, push_after_merge: options.push_after_merge && options.task_branches, auto_merge: options.auto_merge && options.task_branches, tickets_start_plans: options.tickets_start_plans, no_triage: options.no_triage, paused: options.paused, setup, tickets, repairs, merging, gate: project.merge_gate(), actions }, moved))
+    Ok((
+        TaskList {
+            tasks,
+            dirty,
+            auto_approve: options.auto_approve,
+            start_plain_plans: options.start_plain_plans,
+            push_after_merge: options.push_after_merge && options.task_branches,
+            auto_merge: options.auto_merge && options.task_branches,
+            tickets_start_plans: options.tickets_start_plans,
+            no_triage: options.no_triage,
+            paused: options.paused,
+            pick_checks: pick_on,
+            checks_at_merge: pick_on && options.task_branches,
+            setup,
+            tickets,
+            repairs,
+            merging,
+            gate: project.merge_gate(),
+            actions,
+        },
+        moved,
+    ))
 }
 
 /// Writes the branch file of each task that has none while its branch `task/<ticket>` exists and is
@@ -5066,6 +5616,10 @@ fn handoff_state(task: &TaskInfo, live: bool, queued: bool) -> Option<String> {
     }
     if report_state == "failed" {
         return Some("failed, see its report".to_string());
+    }
+    // The picked checks wait for the user or failed (ticket test-picker-an-agent-picks-the-checks).
+    if task.checks_open {
+        return Some("done, its checks are picked and wait for Run checks (or for the merge) in the task card of Dispatch".to_string());
     }
     // A done report that the check sent back (ticket report-check): the task list says working.
     if report_state == "working" && task.report.is_some() {
@@ -5370,7 +5924,7 @@ fn ticket_plan_with(project: &Project, id: &str, start: &dyn Fn(&Project, &[&str
 }
 
 /// The kinds of the files `<id>.<kind>` of a task in the task folder.
-const TASK_FILE_KINDS: [&str; 7] = ["md", "state", "session", "models", "branch", "taken", "checks"];
+const TASK_FILE_KINDS: [&str; 9] = ["md", "state", "session", "models", "branch", "taken", "checks", "picked", "checked"];
 
 /// Moves the files of the task `id` into `old/<id>-<yyyyMMdd-HHmmss>/` of the task folder (UTC): its
 /// files `<id>.<kind>`, its brief, its plan and its measure folder, each under its own folder name.
@@ -5382,6 +5936,7 @@ fn move_old_task(project: &Project, id: &str, now: u64) -> Result<(), String> {
     moves.push((project.briefs().join(format!("{id}.md")), target.join("briefs").join(format!("{id}.md"))));
     moves.push((project.plans().join(format!("{id}.md")), target.join("plans").join(format!("{id}.md"))));
     moves.push((project.measure_dir().join(id), target.join("measure").join(id)));
+    moves.push((project.checks_dir().join(id), target.join("checks").join(id)));
     for (from, to) in moves.iter().filter(|(from, _)| from.exists()) {
         if let Some(parent) = to.parent() {
             fs::create_dir_all(parent).map_err(|error| format!("{}: {error}", parent.display()))?;
@@ -5488,6 +6043,12 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
     }
     if !done(8) {
         ignore_line(project, MERGE_IGNORE)?;
+    }
+    // The logs of the check runs (ticket test-picker-an-agent-picks-the-checks) stay out of git like
+    // the gate logs. A project with a list gets the line; `task_run_checks` adds it too, because an
+    // old project has every step done and no Apply.
+    if !project.checks().is_empty() {
+        ignore_line(project, CHECKS_IGNORE)?;
     }
     // "Task files local only" (ticket ignore-tasks). On: the line, then the task files leave git in
     // one commit of their own. Off: the line of Dispatch goes, and the task files are committed again.
@@ -5898,6 +6459,88 @@ pub fn task_commit_message(cwd: String, id: String, files: Vec<String>) -> Resul
     crate::core::rules_check::commit_message(&project.root, &prompt)
 }
 
+/// The hash of the empty tree of git: the parent of a root commit for a diff.
+const EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// The change of a task for the picker (ticket test-picker-an-agent-picks-the-checks): the changed
+/// files and the diff. From the task branch against its base while the branch exists unmerged; else
+/// from the commits of the ticket (the parent of the oldest to the newest); else the files of the
+/// `files:` line of the report against `HEAD~1`. Empty outside git or without a change.
+fn task_change(project: &Project, id: &str, report: &str) -> (Vec<String>, String) {
+    if !project.in_git {
+        return (Vec::new(), String::new());
+    }
+    let names = |text: String| -> Vec<String> { text.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect() };
+    if let Some(info) = read_branch_file(&project.branch_file(id)).filter(|info| info.merge.is_empty()) {
+        if git(&project.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", info.name)]).is_some() {
+            let range = format!("{}...{}", info.base, info.name);
+            let files = names(git(&project.root, &["diff", "--name-only", &range]).unwrap_or_default());
+            if !files.is_empty() {
+                return (files, git(&project.root, &["diff", &range]).unwrap_or_default());
+            }
+        }
+    }
+    let commits = ticket_commits(project, id);
+    if let (Some(newest), Some(oldest)) = (commits.first(), commits.last()) {
+        let hash = |line: &String| line.split_whitespace().next().unwrap_or_default().to_string();
+        let (newest, oldest) = (hash(newest), hash(oldest));
+        let parent = format!("{oldest}^");
+        let from = if git(&project.root, &["rev-parse", "--verify", "--quiet", &parent]).is_some() { parent } else { EMPTY_TREE.to_string() };
+        let files = names(git(&project.root, &["diff", "--name-only", &from, &newest]).unwrap_or_default());
+        if !files.is_empty() {
+            return (files, git(&project.root, &["diff", &from, &newest]).unwrap_or_default());
+        }
+    }
+    let (header, _) = parse_report(report);
+    let files: Vec<String> = header
+        .map(|header| header.files)
+        .filter(|files| files.trim() != "none")
+        .map(|files| files.split([',', ' ']).map(str::trim).filter(|file| !file.is_empty()).map(str::to_string).collect())
+        .unwrap_or_default();
+    if files.is_empty() {
+        return (files, String::new());
+    }
+    let mut args = vec!["diff", "HEAD~1", "--"];
+    args.extend(files.iter().map(String::as_str));
+    let diff = git(&project.root, &args).unwrap_or_default();
+    (files, diff)
+}
+
+/// The Bash commands of the work run of a task with their exit codes, from the transcripts. Empty
+/// without a session file or a transcript.
+fn work_commands(project: &Project, id: &str) -> Vec<(String, String)> {
+    let Some(projects) = claude_projects_dir() else { return Vec::new() };
+    let runs = read_session_runs(&project.session_file(id));
+    crate::core::flow::evidence_of(&projects, &runs).into_iter().filter(|item| item.stage == "WORK").map(|item| (item.command, item.exit)).collect()
+}
+
+/// Picks the checks of a task after its work run (ticket test-picker-an-agent-picks-the-checks):
+/// the change of the task, the commands of the work run and the two lists go through `pick_checks`
+/// with the picker model; the pick goes into `<ticket>.picked` and comes back. Dispatch calls it
+/// once per report from the driver window.
+pub fn task_pick_checks(cwd: String, id: String) -> Result<PickInfo, String> {
+    let project = Project::find(&cwd)?;
+    let root = project.root.clone();
+    task_pick_checks_with(&project, &id, &|prompt| crate::core::rules_check::ask(&root, prompt, PICK_MODEL.0, PICK_MODEL.1, PICK_MODEL.2))
+}
+
+/// `task_pick_checks` with the model as an argument; a test gives a fake.
+fn task_pick_checks_with(project: &Project, id: &str, ask: &dyn Fn(&str) -> Result<String, String>) -> Result<PickInfo, String> {
+    check_ticket(id)?;
+    let list = project.checks();
+    if list.is_empty() {
+        return Err("The project has no list of checks.".to_string());
+    }
+    let path = project.reports.join(format!("{id}.md"));
+    let report = file_entry(&path).ok_or_else(|| format!("no report at {}", path.display()))?;
+    let text = fs::read_to_string(&path).unwrap_or_default();
+    let (files, diff) = task_change(project, id, &text);
+    let ran = work_commands(project, id);
+    let info = pick_checks(&list, &files, &diff, &ran, &project.checks_all(), report.modified, ask);
+    write_file(&project.picked_file(id), &pick_text(&info))?;
+    Ok(info)
+}
+
 /// Commits the changed files of a task that the Commit files window showed, by path, on the current
 /// branch, with the message of the window. It makes no push. A file that changed into a task file
 /// after the window opened is not taken; other staged changes of the user stay staged.
@@ -5960,6 +6603,14 @@ pub fn set_merge_gate(cwd: String, text: String) -> Result<Plan, String> {
 pub fn set_checks(cwd: String, text: String) -> Result<Plan, String> {
     let project = Project::find(&cwd)?;
     write_file(&project.checks_file(), &checks_box_text(&text))?;
+    plan(&project)
+}
+
+/// Saves the run-everything list of the project of a folder (ticket test-picker-an-agent-picks-the-checks):
+/// the text of the box, each line trimmed, empty lines at the end dropped.
+pub fn set_checks_all(cwd: String, text: String) -> Result<Plan, String> {
+    let project = Project::find(&cwd)?;
+    write_file(&project.checks_all_file(), &checks_box_text(&text))?;
     plan(&project)
 }
 
@@ -6101,7 +6752,7 @@ pub(crate) mod tests {
         // and the commit takes its line and no other file.
         assert!(!project.setup_files().contains(&".gitignore"));
         set_ignore(&project, true);
-        assert_eq!(project.setup_files().len(), 11);
+        assert_eq!(project.setup_files().len(), 12);
         add_root_ignore(&project).unwrap();
         let text = commit_setup(&project).unwrap();
         assert!(text.contains("made with .gitignore. "), "{text}");
@@ -6114,7 +6765,7 @@ pub(crate) mod tests {
         assert!(project.setup_files().contains(&".gitignore"));
         commit_setup(&project).unwrap();
         assert_eq!(git(&["show", "--name-only", "--format=", "HEAD"]).trim(), ".gitignore");
-        assert_eq!(project.setup_files().len(), 10);
+        assert_eq!(project.setup_files().len(), 11);
         clean(&project);
     }
 
@@ -6419,7 +7070,7 @@ pub(crate) mod tests {
     #[test]
     fn a_checks_file_gives_its_checks() {
         let text = "# The checks of the project\n\n  unit | cargo test --lib | always\nlint|npx tsc --noEmit\nlong | node net.mjs | tail -3\n| no name\nempty |\nno bar\nUnit | npm test\nwide\tname | x | ALWAYS\n";
-        let check = |name: &str, command: &str, always: bool| Check { name: name.into(), command: command.into(), always };
+        let check = |name: &str, command: &str, always: bool| Check { name: name.into(), command: command.into(), always, covers: String::new() };
         assert_eq!(
             parse_checks(text),
             vec![
@@ -6432,6 +7083,234 @@ pub(crate) mod tests {
             ]
         );
         assert!(parse_checks("").is_empty());
+    }
+
+    /// Ticket test-picker-an-agent-picks-the-checks: the field `covers:` tells the picker what a check tests.
+    #[test]
+    fn a_checks_line_may_say_what_it_covers() {
+        let text = "net | node net.mjs | covers: the network code and the sync of two computers\nunit | cargo test --lib | always | Covers: the Rust core\nui | npm run e2e | covers: the cards | always\nlong | node a.mjs | tail -3 | covers: x\nplain | npm test\n";
+        let list = parse_checks(text);
+        let row = |at: usize| (list[at].name.as_str(), list[at].command.as_str(), list[at].always, list[at].covers.as_str());
+        assert_eq!(row(0), ("net", "node net.mjs", false, "the network code and the sync of two computers"));
+        // `always` and `covers:` in either order, the case of the field word free.
+        assert_eq!(row(1), ("unit", "cargo test --lib", true, "the Rust core"));
+        assert_eq!(row(2), ("ui", "npm run e2e", true, "the cards"));
+        // A command with `|` stays whole.
+        assert_eq!(row(3), ("long", "node a.mjs | tail -3", false, "x"));
+        assert_eq!(row(4), ("plain", "npm test", false, ""));
+    }
+
+    /// Ticket test-picker-an-agent-picks-the-checks: the run-everything list names paths, folders and patterns.
+    #[test]
+    fn the_run_everything_list_matches_changed_files() {
+        let lines: Vec<String> = ["src/net/", "Cargo.lock", "**/*.proto", "docs", "src/*.rs"].iter().map(|line| line.to_string()).collect();
+        assert!(matches_all_list("src/net/sync.ts", "src/net/"), "a folder line with /");
+        assert!(matches_all_list("src/net/deep/sync.ts", "src/net"), "a folder line without /");
+        assert!(!matches_all_list("src/network.ts", "src/net"), "a folder line matches no longer name");
+        assert!(matches_all_list("Cargo.lock", "Cargo.lock") && !matches_all_list("src/Cargo.lock", "Cargo.lock"), "a file line");
+        assert!(matches_all_list("api/v1/user.proto", "**/*.proto") && matches_all_list("user.proto", "**/*.proto"), "** crosses folders");
+        assert!(matches_all_list("src/main.rs", "src/*.rs") && !matches_all_list("src/core/main.rs", "src/*.rs"), "* stays in its segment");
+        assert!(matches_all_list("SRC\\Net\\a.ts", "src/net/"), "without case, a backslash as /");
+        assert!(!matches_all_list("src/main.ts", ""), "an empty line matches nothing");
+        let files: Vec<String> = ["README.md", "src/main.ts", "src/net/a.ts", "Cargo.lock"].iter().map(|file| file.to_string()).collect();
+        assert_eq!(changed_on_all_list(&files, &lines), Some(("src/net/a.ts".to_string(), "src/net/".to_string())), "the first changed file on the list, with its line");
+        assert_eq!(changed_on_all_list(&files[..2], &lines), None);
+        assert_eq!(changed_on_all_list(&files, &[]), None);
+        // The project reads the list without comments and empty lines.
+        let project = scratch("checks-all");
+        write_file(&project.checks_all_file(), "# the files that need every check\n\nsrc/net/\n  Cargo.lock  \n").unwrap();
+        assert_eq!(project.checks_all(), vec!["src/net/".to_string(), "Cargo.lock".to_string()]);
+        clean(&project);
+    }
+
+    /// A fake picker model: it records each prompt and answers with the lines it was given.
+    fn fake_picker(answer: &str) -> (std::cell::RefCell<Vec<String>>, impl Fn(&str) -> Result<String, String>) {
+        let prompts = std::cell::RefCell::new(Vec::new());
+        let text = answer.to_string();
+        (prompts, move |_prompt: &str| Ok(text.clone()))
+    }
+
+    /// The commands of a work run with their exit codes, as `work_commands` gives them.
+    fn ran(items: &[(&str, &str)]) -> Vec<(String, String)> {
+        items.iter().map(|(command, exit)| (command.to_string(), exit.to_string())).collect()
+    }
+
+    /// Ticket test-picker-an-agent-picks-the-checks: the rule picks the always checks and drops the checks
+    /// that passed in the work run; the model decides the rest; an unknown name of the answer is dropped.
+    #[test]
+    fn a_pick_takes_the_always_checks_and_the_passed_ones_by_rule() {
+        let list = parse_checks("unit | cargo test --lib | always | covers: the Rust core\nlint | npx tsc --noEmit\nnet | node net.mjs | covers: the sync of two computers\nui | npm run e2e\ne2e | npm run full\n");
+        let files: Vec<String> = ["src/net/sync.ts".to_string(), "README.md".to_string()].to_vec();
+        let prompts = std::cell::RefCell::new(Vec::new());
+        let ask = |prompt: &str| {
+            prompts.borrow_mut().push(prompt.to_string());
+            Ok("- [x] `net` — the sync of two computers changed.\n- [ ] ui: no card changes\n- [x] other — not in the list\n- [x] unit — the model wants it, but the rule decided\n- [ ] lint — the model says no, but it passed already\n".to_string())
+        };
+        let work = ran(&[("cargo build && npx tsc --noEmit", "0"), ("cargo test --lib", "1"), ("git status", "0")]);
+        let pick = pick_checks(&list, &files, "diff --git a/src/net/sync.ts\n+a line\n", &work, &["Cargo.lock".to_string()], 1234, &ask);
+        let rows: Vec<(&str, bool, &str)> = pick.checks.iter().map(|check| (check.name.as_str(), check.picked, check.reason.as_str())).collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("unit", true, "always in the list of this project"),
+                ("lint", false, "ran in the work run and passed"),
+                ("net", true, "the sync of two computers changed."),
+                ("ui", false, "no card changes"),
+                ("e2e", false, "the picker gave no line"),
+            ]
+        );
+        assert_eq!((pick.source.as_str(), pick.all.as_str(), pick.error.as_str(), pick.report), ("model", "", "", 1234));
+        assert!(pick.at.starts_with("20"), "{}", pick.at);
+        // The prompt names the checks with what they cover (else the command), the files, the commands and the diff.
+        let prompts = prompts.borrow();
+        assert_eq!(prompts.len(), 1);
+        let prompt = &prompts[0];
+        for part in ["one line per check of the list", "- unit: the Rust core", "- lint: the command `npx tsc --noEmit`", "- net: the sync of two computers", "src/net/sync.ts\nREADME.md", "- exit 1: cargo test --lib", "+a line", "- [x] <name> — <reason>"] {
+            assert!(prompt.contains(part), "{part} is not in the prompt:\n{prompt}");
+        }
+        // Every check decided by the rule: no model call, source rule.
+        let (_, silent) = fake_picker("");
+        let calls = std::cell::Cell::new(0);
+        let counting = |prompt: &str| {
+            calls.set(calls.get() + 1);
+            silent(prompt)
+        };
+        let all_rule = pick_checks(&parse_checks("unit | cargo test --lib | always\nlint | npx tsc --noEmit\n"), &files, "", &ran(&[("npx tsc --noEmit", "0")]), &[], 1, &counting);
+        assert_eq!(calls.get(), 0, "the rule decided every check");
+        assert_eq!(all_rule.source, "rule");
+        assert_eq!(all_rule.checks.iter().map(|check| check.picked).collect::<Vec<_>>(), vec![true, false]);
+        // A long diff is cut; a check without a reason gets one.
+        let (prompts, long) = fake_picker("- [x] lint\n");
+        let long_diff = "x".repeat(PICK_DIFF_LIMIT + 10);
+        let cut = pick_checks(&parse_checks("lint | npx tsc --noEmit\n"), &files, &long_diff, &[], &[], 1, &|prompt| {
+            prompts.borrow_mut().push(prompt.to_string());
+            long(prompt)
+        });
+        assert_eq!((cut.checks[0].picked, cut.checks[0].reason.as_str()), (true, "the picker gave no reason"));
+        let prompt = prompts.borrow()[0].clone();
+        assert!(prompt.contains("[diff cut here]") && !prompt.contains(&long_diff), "the diff is cut");
+    }
+
+    /// Ticket test-picker-an-agent-picks-the-checks: a changed file of the run-everything list picks every check
+    /// and calls no model; each line names the file.
+    #[test]
+    fn a_change_on_the_run_everything_list_picks_every_check_without_the_model() {
+        let list = parse_checks("unit | cargo test --lib | always\nlint | npx tsc --noEmit\nnet | node net.mjs\n");
+        let files: Vec<String> = ["README.md".to_string(), "src/net/sync.ts".to_string()].to_vec();
+        let all: Vec<String> = ["Cargo.lock".to_string(), "src/net/".to_string()].to_vec();
+        let pick = pick_checks(&list, &files, "diff", &ran(&[("npx tsc --noEmit", "0")]), &all, 7, &|_| panic!("the model must not be called"));
+        assert_eq!((pick.source.as_str(), pick.all.as_str(), pick.report), ("rule", "src/net/sync.ts", 7));
+        assert_eq!(pick.checks.len(), 3);
+        for check in &pick.checks {
+            assert!(check.picked, "{}", check.name);
+            assert_eq!(check.reason, "src/net/sync.ts changed, and a change there runs every check");
+        }
+        // Without a hit the passed check is not picked and the model decides the rest.
+        let (prompts, model) = fake_picker("- [x] net — x\n");
+        let pick = pick_checks(&list, &files[..1], "diff", &ran(&[("npx tsc --noEmit", "0")]), &all, 7, &|prompt| {
+            prompts.borrow_mut().push(prompt.to_string());
+            model(prompt)
+        });
+        assert_eq!(pick.checks.iter().map(|check| check.picked).collect::<Vec<_>>(), vec![true, false, true]);
+        assert_eq!(prompts.borrow().len(), 1);
+    }
+
+    /// Ticket test-picker-an-agent-picks-the-checks: a failed model call picks every check and keeps the error.
+    #[test]
+    fn a_failed_model_call_picks_every_check_and_keeps_the_error() {
+        let list = parse_checks("unit | cargo test --lib | always\nlint | npx tsc --noEmit\nnet | node net.mjs\n");
+        let pick = pick_checks(&list, &["src/a.ts".to_string()], "diff", &[], &[], 9, &|_| Err("The check took longer than 3 minutes and was stopped.".to_string()));
+        assert_eq!((pick.source.as_str(), pick.error.as_str()), ("error", "The check took longer than 3 minutes and was stopped."));
+        assert_eq!(pick.checks.iter().map(|check| (check.picked, check.reason.as_str())).collect::<Vec<_>>(), vec![(true, "always in the list of this project"), (true, "the picker failed, so every check runs"), (true, "the picker failed, so every check runs")]);
+        // The file keeps the error and reads back the same.
+        let text = pick_text(&pick);
+        assert!(text.starts_with("picked\t9\t") && text.contains("\terror\n"), "{text}");
+        assert!(text.contains("error\tThe check took longer than 3 minutes and was stopped.\n"), "{text}");
+        let project = scratch("pick-error");
+        write_file(&project.picked_file("t-1"), &text).unwrap();
+        assert_eq!(read_pick(&project.picked_file("t-1")).unwrap(), pick);
+        clean(&project);
+    }
+
+    /// Ticket test-picker-an-agent-picks-the-checks: the pick file and the checked file read back; the pick of
+    /// a task comes from its change in git and goes into the pick file.
+    #[test]
+    fn the_pick_file_and_the_checked_file_read_back() {
+        let project = scratch("pick-files");
+        let pick = PickInfo {
+            at: "2026-11-19T12:00:00Z".to_string(),
+            report: 1700,
+            source: "rule".to_string(),
+            all: "src/net/a.ts".to_string(),
+            error: String::new(),
+            checks: vec![
+                PickedCheck { name: "unit".to_string(), picked: true, reason: "src/net/a.ts changed".to_string() },
+                PickedCheck { name: "all".to_string(), picked: false, reason: "a check named all\twith a tab".to_string() },
+            ],
+        };
+        let text = pick_text(&pick);
+        assert_eq!(text, "picked\t1700\t2026-11-19T12:00:00Z\trule\nall\tsrc/net/a.ts\nunit\tyes\tsrc/net/a.ts changed\nall\tno\ta check named all with a tab\n");
+        write_file(&project.picked_file("t-1"), &text).unwrap();
+        let back = read_pick(&project.picked_file("t-1")).unwrap();
+        assert_eq!(back.checks[1].reason, "a check named all with a tab");
+        assert_eq!(back, PickInfo { checks: vec![pick.checks[0].clone(), PickedCheck { reason: "a check named all with a tab".to_string(), ..pick.checks[1].clone() }], ..pick });
+        assert!(read_pick(&project.picked_file("t-2")).is_none(), "no file: no pick");
+        write_file(&project.picked_file("t-3"), "state: done\n").unwrap();
+        assert!(read_pick(&project.picked_file("t-3")).is_none(), "another file: no pick");
+
+        // The checked file: the command of each check from the checks file, the log from the folder of the place.
+        write_file(&project.task_checks_file("t-1"), "unit\tcargo test --lib\nnet\tnode net.mjs\n").unwrap();
+        write_file(&project.checks_dir().join("t-1").join("2.log"), "net failed\n").unwrap();
+        write_file(&project.checked_file("t-1"), "running\t2026-11-19T12:01:00Z\trun\nunit\t0\t12\nnet\t1\t3\n").unwrap();
+        let run = read_checked(&project, "t-1").unwrap();
+        assert_eq!((run.started.as_str(), run.ended.as_deref(), run.place.as_str()), ("2026-11-19T12:01:00Z", None, "run"));
+        let rows: Vec<(&str, &str, i64, u64, bool)> = run.results.iter().map(|result| (result.name.as_str(), result.command.as_str(), result.exit, result.seconds, result.log.is_some())).collect();
+        assert_eq!(rows, vec![("unit", "cargo test --lib", 0, 12, false), ("net", "node net.mjs", 1, 3, true)]);
+        assert_eq!(run.failed().iter().map(|result| result.name.as_str()).collect::<Vec<_>>(), vec!["net"]);
+        write_file(&project.checked_file("t-1"), "running\t2026-11-19T12:01:00Z\tmerge\nunit\t0\t12\nnet\t0\t3\ndone\t2026-11-19T12:02:00Z\n").unwrap();
+        write_file(&project.merge_dir().join("t-1-1.log"), "ok\n").unwrap();
+        let run = read_checked(&project, "t-1").unwrap();
+        assert_eq!((run.ended.as_deref(), run.place.as_str(), run.failed().len()), (Some("2026-11-19T12:02:00Z"), "merge", 0));
+        assert!(run.results[0].log.is_some() && run.results[1].log.is_none(), "the merge logs lie in the merge folder");
+        assert!(read_checked(&project, "t-2").is_none());
+        clean(&project);
+
+        // The pick of a task: the change from the commits of the ticket, the pick into the file.
+        let project = git_scratch("pick-task");
+        let cwd = project.root.to_string_lossy().into_owned();
+        write_file(&project.root.join("README.md"), "scratch\n").unwrap();
+        git_out(&project, &["add", "README.md"]);
+        git_out(&project, &["commit", "-q", "-m", "start"]);
+        set_checks(cwd.clone(), "unit | cargo test --lib | always\nnet | node net.mjs | covers: the sync\n".to_string()).unwrap();
+        write_file(&project.root.join("src").join("sync.ts"), "export const a = 1;\n").unwrap();
+        git_out(&project, &["add", "src/sync.ts"]);
+        git_out(&project, &["commit", "-q", "-m", "t-1: the sync"]);
+        write_file(&project.reports.join("t-1.md"), "state: done\nneeds: nothing\nfiles: src/sync.ts\nplan: p\n\nDid the work.\n").unwrap();
+        let report = file_entry(&project.reports.join("t-1.md")).unwrap().modified;
+        let prompts = std::cell::RefCell::new(Vec::new());
+        let pick = task_pick_checks_with(&project, "t-1", &|prompt| {
+            prompts.borrow_mut().push(prompt.to_string());
+            Ok("- [x] net — the sync changed\n".to_string())
+        })
+        .unwrap();
+        assert_eq!(pick.report, report);
+        assert_eq!(pick.checks.iter().map(|check| (check.name.as_str(), check.picked)).collect::<Vec<_>>(), vec![("unit", true), ("net", true)]);
+        let prompt = prompts.borrow()[0].clone();
+        assert!(prompt.contains("Changed files:\nsrc/sync.ts\n") && prompt.contains("+export const a = 1;"), "{prompt}");
+        assert_eq!(read_pick(&project.picked_file("t-1")).unwrap(), pick);
+        // A changed file of the run-everything list: every check, no model.
+        set_checks_all(cwd.clone(), "src/\n".to_string()).unwrap();
+        let pick = task_pick_checks_with(&project, "t-1", &|_| panic!("no model call")).unwrap();
+        assert_eq!((pick.all.as_str(), pick.source.as_str()), ("src/sync.ts", "rule"));
+        assert!(task_pick_checks_with(&project, "t-9", &|_| Ok(String::new())).unwrap_err().contains("no report at"));
+        // The final choice of the user and the result file.
+        write_file(&project.checked_file("t-1"), "running\tx\trun\n").unwrap();
+        task_pick_choice(cwd.clone(), "t-1".into(), vec!["net".into(), "unknown".into()]).unwrap();
+        assert_eq!(read(&project.task_checks_file("t-1")), "net\tnode net.mjs\n");
+        assert!(!project.checked_file("t-1").exists(), "an old result goes with the new choice");
+        task_pick_choice(cwd, "t-1".into(), Vec::new()).unwrap();
+        assert_eq!(read(&project.task_checks_file("t-1")), "");
+        clean(&project);
     }
 
     #[test]
@@ -7192,6 +8071,9 @@ Blockers: none
             work_choice: None,
             parts: Vec::new(),
             night_hold: false,
+            picked: None,
+            checked: None,
+            checks_open: false,
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };
@@ -7725,6 +8607,69 @@ if (args[0] === 'agents') {
         assert_eq!(&resume[1..], ["--bg", "--name", "t-1 [work]", "--model", "opus", "--effort", "xhigh", "--permission-mode", "auto", "--tools", "default", "--disallowedTools", "AskUserQuestion,SendMessage"]);
         // claude runs in the project folder, whatever the folder of the caller is.
         assert_eq!(Path::new(read(&fake.join("cwd.txt")).trim()), project.root.as_path());
+
+        // Pick the checks after the work run (ticket test-picker-an-agent-picks-the-checks): approve tells
+        // the run that the checks come after it, and the files of an earlier pick go.
+        set_pick(&project, true);
+        write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        write_file(&project.task_checks_file("t-1"), "unit\tcargo test --lib\n").unwrap();
+        write_file(&project.picked_file("t-1"), "picked\t1\tx\tmodel\nunit\tyes\tr\n").unwrap();
+        write_file(&project.checked_file("t-1"), "running\tx\trun\n").unwrap();
+        write_file(&project.checks_dir().join("t-1").join("1.log"), "old log\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        let picked = last_call(&fake);
+        assert!(picked[0].ends_with(" The checks of this project are picked by Dispatch after this run: run the Acceptance commands of the plan, but no check of the list checks.txt beyond them."), "{picked:?}");
+        assert!(!picked[0].contains("The user chose these checks"), "{picked:?}");
+        for file in [project.task_checks_file("t-1"), project.picked_file("t-1"), project.checked_file("t-1"), project.checks_dir().join("t-1")] {
+            assert!(!file.exists(), "{} stayed", file.display());
+        }
+        // A reply of the work run removes them too; a reply of the plan run does not.
+        write_file(&project.picked_file("t-1"), "picked\t1\tx\tmodel\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["reply", "t-1", "go on"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(!project.picked_file("t-1").exists(), "a reply of the work run removes the old pick");
+        write_file(&project.picked_file("t-1"), "picked\t1\tx\tmodel\n").unwrap();
+        write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["reply", "t-1", "revise"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(project.picked_file("t-1").exists(), "a reply of the plan run keeps the pick");
+        fs::remove_file(project.picked_file("t-1")).unwrap();
+        write_file(&project.reports.join("t-1.state"), "working\n").unwrap();
+
+        // The verb check: refused with the switch off and without a choice; then it runs the lines of
+        // the checks file with the fake commands, writes the logs and the results, and frees the lock.
+        set_pick(&project, false);
+        let (code, out) = run_script(&project, &fake, "done", &["check", "t-1"]);
+        assert!(code == 2 && out.contains("is off in this project"), "{out}");
+        set_pick(&project, true);
+        let (code, out) = run_script(&project, &fake, "done", &["check", "t-1"]);
+        assert!(code == 2 && out.contains("has no chosen checks"), "{out}");
+        write_file(&project.checks_file(), "# limit 2\none | cmd /c echo one & exit 0\ntwo | cmd /c echo two & exit 3\n").unwrap();
+        write_file(&project.task_checks_file("t-1"), "one\tcmd /c echo one & exit 0\ntwo\tcmd /c echo two & exit 3\n").unwrap();
+        // The measure lock of another run holds it: the check run waits for the limit, then is refused.
+        write_file(&project.measure_dir().join("lock"), &format!("{}\tt-9\tnow\n", std::process::id())).unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["check", "t-1"]);
+        assert!(code == 2 && out.contains("another check run of this project runs (task t-9)"), "{out}");
+        assert!(!project.checked_file("t-1").exists(), "a refused run writes no result");
+        fs::remove_file(project.measure_dir().join("lock")).unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["check", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("one: exit 0") && out.contains("two: exit 3"), "{out}");
+        let checked = read(&project.checked_file("t-1"));
+        assert!(checked.starts_with("running\t") && checked.contains("\trun\n"), "{checked}");
+        assert!(checked.contains("\none\t0\t") && checked.contains("\ntwo\t3\t"), "{checked}");
+        assert!(checked.lines().last().unwrap().starts_with("done\t"), "{checked}");
+        assert_eq!(read(&project.checks_dir().join("t-1").join("1.log")).trim(), "one");
+        assert_eq!(read(&project.checks_dir().join("t-1").join("2.log")).trim(), "two");
+        assert!(!project.measure_dir().join("lock").exists(), "the check run freed the lock");
+        let run = read_checked(&project, "t-1").unwrap();
+        assert_eq!(run.results.iter().map(|result| (result.name.as_str(), result.exit, result.log.is_some())).collect::<Vec<_>>(), vec![("one", 0, true), ("two", 3, true)]);
+        assert!(run.ended.is_some() && run.place == "run");
+        set_pick(&project, false);
+        fs::remove_file(project.checks_file()).unwrap();
+        fs::remove_file(project.task_checks_file("t-1")).unwrap();
+        fs::remove_file(project.checked_file("t-1")).unwrap();
 
         // approve needs no worker of the ticket in the agent list (user decision 2 of work-fresh-session):
         // the plan session can be gone, and the plan file is the input of the new session.
@@ -8545,6 +9490,48 @@ if (args[0] === 'agents') {
         write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
     }
 
+    /// Sets "Pick the checks after the work run" (ticket test-picker-an-agent-picks-the-checks) in the settings file.
+    fn set_pick(project: &Project, on: bool) {
+        let options = Options { pick_checks: on, ..project.options() };
+        write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
+    }
+
+    /// Ticket test-picker-an-agent-picks-the-checks: with the switch on, the checks line of the section
+    /// says that the checks come after the work run; off, the line is the one of task-checks; without a
+    /// list there is no line. The Setup box of the run-everything list saves like the other boxes.
+    #[test]
+    fn the_pick_switch_changes_the_checks_line_of_the_section() {
+        let project = scratch("pick-section");
+        apply(&project, &[0]).unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        let without_list = project.section_body();
+        set_pick(&project, true);
+        assert_eq!(project.section_body(), without_list, "no list: no line, whatever the switch says");
+        set_pick(&project, false);
+        set_checks(cwd.clone(), "unit | cargo test --lib | always | covers: the Rust core\nnet | node net.mjs\n".to_string()).unwrap();
+        let (reports, script) = (project.reports_text(), script_command(&project.reports_text()));
+        let off = project.section_body();
+        assert!(off.contains(&checks_rule(&reports)) && !off.contains("Pick the checks after the work run"), "{off}");
+        set_pick(&project, true);
+        let on = project.section_body();
+        assert!(on.contains(&pick_rule(&reports, &script)), "{on}");
+        assert!(!on.contains(&checks_rule(&reports)), "{on}");
+        assert_eq!(on.replacen(&pick_rule(&reports, &script), &checks_rule(&reports), 1), off, "only the checks line changes");
+        assert!(on.contains(&format!("`{script} check <ticket-id>`")) && on.contains(&format!("`{reports}/checks-all.txt`")) && on.contains("no section Checks"), "{on}");
+        assert!(open_steps(&project).contains(&"Section in CLAUDE.md"), "{:?}", open_steps(&project));
+        // The settings file keeps the switch; a file of an older version has it off.
+        assert!(project.options().pick_checks);
+        assert_eq!(serde_json::to_value(plan(&project).unwrap().options).unwrap()["pickChecks"], json!(true));
+        // The run-everything box: saved like the other lists, shown in the plan, read without comments.
+        let shown = set_checks_all(cwd.clone(), "  src/net/  \n# a comment\nCargo.lock\n\n\n".to_string()).unwrap();
+        assert_eq!(shown.checks_all, "src/net/\n# a comment\nCargo.lock\n");
+        assert_eq!(project.checks_all(), vec!["src/net/".to_string(), "Cargo.lock".to_string()]);
+        assert!(project.setup_files().contains(&".dispatch/checks-all.txt"));
+        set_checks_all(cwd, String::new()).unwrap();
+        assert_eq!(read(&project.checks_all_file()), "");
+        clean(&project);
+    }
+
     /// Sets "Auto-merge finished tasks" in the settings file, as the switch does.
     fn set_auto_merge(project: &Project, on: bool) {
         let options = Options { auto_merge: on, ..project.options() };
@@ -9156,6 +10143,84 @@ if (args[0] === 'agents') {
         assert!(!plain("## User decisions\nNone.\n"), "another heading");
     }
 
+    /// Ticket test-picker-an-agent-picks-the-checks: a failed picked check keeps the task open like a
+    /// sent-back report, and Take as done closes it; a task without a pick or a run waits.
+    #[test]
+    fn a_failed_check_run_keeps_the_task_open_and_take_as_done_closes_it() {
+        let project = scratch("pick-open");
+        apply(&project, &[0]).unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        set_checks(cwd.clone(), "unit | cargo test --lib | always\nnet | node net.mjs\n".to_string()).unwrap();
+        write_file(&project.plans().join("t-1.md"), "# t-1: a plan\n\n## Checks\n- [x] net — the network\n").unwrap();
+        write_file(&project.reports.join("t-1.md"), "state: done\nneeds: nothing\nfiles: a.ts\nplan: p\n\nDid the work.\n").unwrap();
+        // Switch off: no pick, the task is done, and the report check looks for the chosen checks.
+        task_checks(cwd.clone(), "t-1".into(), vec!["net".into()]).unwrap();
+        let task = listed_task(&project, "t-1");
+        assert!(task.picked.is_none() && task.checked.is_none() && !task.checks_open);
+        assert_eq!(checks_to_look_for(&project, &task.checks), vec![("net".to_string(), "node net.mjs".to_string())]);
+        let list = task_list(cwd.clone()).unwrap();
+        assert!(!list.pick_checks && !list.checks_at_merge);
+
+        // Switch on: the task waits for its pick; the report check looks for no check.
+        set_pick(&project, true);
+        let list = task_list(cwd.clone()).unwrap();
+        assert!(list.pick_checks && !list.checks_at_merge);
+        let task = list.tasks.iter().find(|task| task.name == "t-1").unwrap();
+        assert!(task.picked.is_none() && task.checks_open, "no pick yet: the task waits");
+        assert_eq!(task.header.as_ref().unwrap().state, "done", "a waiting pick does not send the report back");
+        assert_eq!(checks_to_look_for(&project, &task.checks), Vec::new());
+        assert!(handoff_state(task, false, false).unwrap().contains("its checks are picked and wait for Run checks"));
+        // The pick of this report shows; a pick of another report time counts as none.
+        let report = file_entry(&project.reports.join("t-1.md")).unwrap().modified;
+        write_file(&project.picked_file("t-1"), &format!("picked\t{}\t2026-11-19T12:00:00Z\tmodel\nunit\tyes\talways\nnet\tyes\tthe sync changed\n", report + 1)).unwrap();
+        let task = listed_task(&project, "t-1");
+        assert!(task.picked.is_none() && task.checks_open, "a pick of another report counts as none");
+        write_file(&project.picked_file("t-1"), &format!("picked\t{report}\t2026-11-19T12:00:00Z\tmodel\nunit\tyes\talways\nnet\tyes\tthe sync changed\n")).unwrap();
+        let task = listed_task(&project, "t-1");
+        let pick = task.picked.as_ref().expect("the pick of this report");
+        assert_eq!((pick.report, pick.source.as_str(), pick.checks.len()), (report, "model", 2));
+        assert!(task.checks_open && task.checked.is_none(), "picked, no run yet: the task waits");
+        assert_eq!(serde_json::to_value(&task.picked).unwrap()["checks"][1]["reason"], json!("the sync changed"));
+
+        // The run: running keeps it open; a failed check sends the report back; a passed run closes it.
+        task_pick_choice(cwd.clone(), "t-1".into(), vec!["unit".into(), "net".into()]).unwrap();
+        write_file(&project.checked_file("t-1"), "running\t2026-11-19T12:01:00Z\trun\nunit\t0\t3\n").unwrap();
+        let task = listed_task(&project, "t-1");
+        assert!(task.checks_open && task.checked.as_ref().is_some_and(|run| run.ended.is_none()), "running: open");
+        assert_eq!(task.header.as_ref().unwrap().state, "done");
+        write_file(&project.checked_file("t-1"), "running\t2026-11-19T12:01:00Z\trun\nunit\t0\t3\nnet\t1\t7\ndone\t2026-11-19T12:02:00Z\n").unwrap();
+        let task = listed_task(&project, "t-1");
+        assert!(task.checks_open);
+        assert_eq!(task.header.as_ref().unwrap().state, "working", "a failed check sends the report back");
+        assert_eq!(task.did, "The check net failed with exit code 1.");
+        assert_eq!(task.unverified, vec!["node net.mjs".to_string()]);
+        assert!(task.taken.is_none());
+        let list = task_list(cwd.clone()).unwrap();
+        assert_eq!(serde_json::to_value(list.tasks.iter().find(|task| task.name == "t-1").unwrap()).unwrap()["checksOpen"], json!(true));
+        // Take as done closes the task by hand: the header says done, the taken note keeps the reason.
+        task_take_done(cwd.clone(), "t-1".into()).unwrap();
+        let task = listed_task(&project, "t-1");
+        assert_eq!(task.header.as_ref().unwrap().state, "done");
+        assert_eq!(task.taken.as_ref().map(|taken| taken.reason.as_str()), Some("The check net failed with exit code 1."));
+        assert_eq!(task.unverified, vec!["node net.mjs".to_string()]);
+        assert!(!task.checks_open, "a task taken as done waits for no check");
+        fs::remove_file(project.taken_file("t-1")).unwrap();
+        // Two failed checks name both.
+        write_file(&project.checked_file("t-1"), "running\tx\trun\nunit\t2\t3\nnet\t1\t7\ndone\ty\n").unwrap();
+        assert_eq!(listed_task(&project, "t-1").did, "The checks unit, net failed; unit ended with exit code 2.");
+        // A passed run: the task is done and closed.
+        write_file(&project.checked_file("t-1"), "running\tx\trun\nunit\t0\t3\nnet\t0\t7\ndone\ty\n").unwrap();
+        let task = listed_task(&project, "t-1");
+        assert!(!task.checks_open, "every check passed: the task is done");
+        assert_eq!(task.header.as_ref().unwrap().state, "done");
+        assert!(task.unverified.is_empty() && task.taken.is_none());
+        assert!(handoff_state(&task, false, false).is_none());
+        // With task branches on, the checks run at the merge.
+        set_branches(&project, true);
+        assert!(task_list(cwd).unwrap().checks_at_merge);
+        clean(&project);
+    }
+
     #[test]
     fn a_done_report_needs_no_run_for_checks_that_the_gate_runs() {
         let project = scratch("simpler-claims");
@@ -9464,6 +10529,57 @@ if (args[0] === 'agents') {
         assert_eq!(seen.trim(), format!("t-1|{}", project.task_checks_file("t-1").display()), "{seen}");
         assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
         assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    /// Ticket test-picker-an-agent-picks-the-checks: with the switch on and Checks at the gate off, the
+    /// merge runs the ticked checks on the merged code before the gate; a failed check aborts the merge
+    /// with the check in the refusal. With Checks at the gate and a gate, the gate runs them itself.
+    #[test]
+    fn the_merge_runs_the_picked_checks_before_the_gate() {
+        let (project, fake, base) = branch_project("branch-picks");
+        let cwd = project.root.to_string_lossy().into_owned();
+        set_pick(&project, true);
+        set_checks(cwd.clone(), "one | cmd /c echo one & exit 0\ntwo | cmd /c echo two fails & exit 1\n".to_string()).unwrap();
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        let head = git_out(&project, &["rev-parse", &base]);
+        // The ticked checks, as Merge writes them from the card; the second one fails.
+        task_pick_choice(cwd.clone(), "t-1".into(), vec!["one".into(), "two".into()]).unwrap();
+        let refused = task_merge(cwd.clone(), "t-1".to_string()).unwrap_err();
+        assert!(refused.contains("the check two failed with exit code 1, so nothing was merged (cmd /c echo two fails & exit 1; the log is ") && refused.contains("two fails"), "{refused}");
+        assert!(refused.contains(&project.merge_dir().join("t-1-2.log").display().to_string()), "{refused}");
+        assert_eq!(git_out(&project, &["rev-parse", &format!("{base}~1")]), head, "the task files were committed, the code did not move");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_none());
+        assert_no_merge_left(&project);
+        assert!(listed_branch(&project, "t-1").exists);
+        let run = read_checked(&project, "t-1").unwrap();
+        assert_eq!((run.place.as_str(), run.ended.is_some()), ("merge", true));
+        assert_eq!(run.results.iter().map(|result| (result.name.as_str(), result.exit)).collect::<Vec<_>>(), vec![("one", 0), ("two", 1)]);
+        let task = listed_task(&project, "t-1");
+        assert!(task.checks_open && task.header.as_ref().unwrap().state == "working", "a failed check at the merge keeps the task open");
+        // Only the passing check: the merge runs it and the gate after it, and merges.
+        set_merge_gate(cwd.clone(), "# limit 60\necho %DISPATCH_TICKET%> .dispatch\\merge\\gate-env.txt\n".to_string()).unwrap();
+        task_pick_choice(cwd.clone(), "t-1".into(), vec!["one".into()]).unwrap();
+        let merged = task_merge(cwd.clone(), "t-1".to_string()).unwrap();
+        assert!(merged.starts_with("merged task/t-1"), "{merged}");
+        assert_eq!(read(&project.merge_dir().join("gate-env.txt")).trim(), "t-1", "the gate ran after the checks");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
+        let run = read_checked(&project, "t-1").unwrap();
+        assert_eq!(run.results.iter().map(|result| (result.name.as_str(), result.exit)).collect::<Vec<_>>(), vec![("one", 0)]);
+        assert_eq!(read(&project.merge_dir().join("t-1-1.log")).trim(), "one");
+        assert_no_merge_left(&project);
+        // Checks at the gate with a gate: the gate gets the list and runs the checks itself; Merge runs none.
+        set_simpler(&project, false, true, false);
+        plan_and_approve(&project, &fake, "t-2");
+        write_report(&project, "t-2");
+        assert!(!listed_branch(&project, "t-2").checked_out);
+        task_pick_choice(cwd.clone(), "t-2".into(), vec!["two".into()]).unwrap();
+        let merged = task_merge(cwd, "t-2".to_string()).unwrap();
+        assert!(merged.starts_with("merged task/t-2"), "{merged}");
+        assert!(!project.checked_file("t-2").exists(), "the gate runs the checks: no result file of the merge");
+        assert!(!project.merge_dir().join("t-2-1.log").exists());
         clean(&project);
     }
 

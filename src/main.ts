@@ -80,7 +80,26 @@ import { type Action, type ActionList, type ActionRun, actionsButtonText, checkA
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { autoMergeNote, type AutoMergeFacts, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
 import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
-import { type CheckInfo, checkRows, checksSentence, checksText, choiceNames, defaultChoice, type SavedWork, type WorkChoice, workChosen, workIsAdvice } from "./checks";
+import {
+  type CheckInfo,
+  type CheckRunInfo,
+  checkResultLines,
+  checkRows,
+  checksSentence,
+  checksText,
+  choiceNames,
+  defaultChoice,
+  type PickInfo,
+  type PickState,
+  pickDefault,
+  pickRows,
+  pickState,
+  pickStatusText,
+  type SavedWork,
+  type WorkChoice,
+  workChosen,
+  workIsAdvice,
+} from "./checks";
 import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards, triageFree } from "./pending";
 import { type FlowView, openFlow } from "./flow";
 import { drawLinks, type Link } from "./links";
@@ -2343,6 +2362,12 @@ interface TaskInfo {
   parts?: PlanPart[];
   /** A part whose parent did not tick the night box: night mode does not start it (ticket subtickets). Absent from an older host. */
   nightHold?: boolean;
+  /** The pick of the checks after the work run, when it belongs to this report (ticket test-picker-an-agent-picks-the-checks). Null or absent without one. */
+  picked?: PickInfo | null;
+  /** The run of the picked checks, when its file exists. Null or absent without one. */
+  checked?: CheckRunInfo | null;
+  /** The task waits for its checks: no pick yet, a run that did not end, or a failed check. Absent from an older host. */
+  checksOpen?: boolean;
 }
 
 /** One part of the section Parts of a plan (ticket subtickets). */
@@ -2438,6 +2463,10 @@ interface TaskListReply {
   noTriage?: boolean;
   /** The setting of the project: Dispatch starts nothing new for it (ticket pause-tasks). Absent from an older host. */
   paused?: boolean;
+  /** The setting of the project: an agent picks the checks after the work run (ticket test-picker-an-agent-picks-the-checks). Absent from an older host. */
+  pickChecks?: boolean;
+  /** The picked checks run at the merge: the switch and Task branches are on. Absent from an older host. */
+  checksAtMerge?: boolean;
   /** When the project got its Dispatch setup (the reports folder was made); null without one. */
   setup: number | null;
   /** The tickets of the project (ticket tickets), in the order of the file. */
@@ -2477,6 +2506,10 @@ interface ProjectTasks {
   noTriage: boolean;
   /** The user paused the project: no ticket goes to triage and no work run starts (ticket pause-tasks). */
   paused: boolean;
+  /** An agent picks the checks after the work run (ticket test-picker-an-agent-picks-the-checks). */
+  pickChecks: boolean;
+  /** The picked checks run at the merge, not on the click "Run checks". */
+  checksAtMerge: boolean;
   setup: number | null;
   /** The tickets of the project (ticket tickets). */
   tickets: Ticket[];
@@ -2502,6 +2535,8 @@ function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTa
     ticketsStartPlans: reply.ticketsStartPlans ?? false,
     noTriage: reply.noTriage ?? false,
     paused: reply.paused ?? false,
+    pickChecks: reply.pickChecks ?? false,
+    checksAtMerge: reply.checksAtMerge ?? false,
     setup: reply.setup ?? null,
     tickets: reply.tickets ?? [],
     merging: reply.merging ?? null,
@@ -2581,6 +2616,9 @@ let gateCommand = "";
 let pushAfterMerge = false;
 /** Dispatch merges a done task itself in that project (ticket create-project-settings-option-to-auto). */
 let autoMerge = false;
+/** An agent picks the checks after the work run in that project, and whether they run at the merge (ticket test-picker-an-agent-picks-the-checks). */
+let pickChecksOn = false;
+let checksAtMergeOn = false;
 /** The setup time of that project: the chats that started before it are old. */
 let projectSetup: number | null = null;
 /** The plans that Dispatch approved itself, or tried to: the task name and the time of the plan file. One try per plan. */
@@ -2701,6 +2739,53 @@ function checkChoice(task: Task): Set<string> {
   if (saved && saved.plan === (task.info?.plan?.modified ?? 0)) return saved.names;
   return defaultChoice(task.info?.checks ?? []);
 }
+
+/** The sentence about the chosen checks for a line to triage; empty with "Pick the checks after the work run" on: the checks come later. */
+function checksLine(task: Task): string {
+  return pickOn(task) ? "" : checksSentence(task.info?.checks ?? [], checkChoice(task));
+}
+
+/**
+ * The checkboxes of the pick cards that the user changed (ticket test-picker-an-agent-picks-the-checks),
+ * by project key and task name: the time of the report file they belong to and the ticked names. A
+ * new report drops the choice; without one the card shows the picks of the agent.
+ */
+const pickChoices = new Map<string, { report: number; names: Set<string> }>();
+
+/** The ticked checks of the pick card of a task: the choice of the user, else the picks of the agent. */
+function pickChoice(task: Task): Set<string> {
+  const saved = pickChoices.get(queueKey(task));
+  if (saved && saved.report === (task.info?.report?.modified ?? 0)) return saved.names;
+  return pickDefault(task.info?.picked);
+}
+
+/** The picks that Dispatch started, by project, task and report time: one pick per report (`pickTried`, like `nightDone`). */
+const pickTried = new Set<string>();
+
+/** The key of the one pick that Dispatch makes for a report of the task. */
+function pickKey(task: Task): string {
+  return `pick:${projectKey(taskHost(task), taskCwd(task))}:${task.name}:${task.info?.report?.modified ?? ""}`;
+}
+
+/** "Pick the checks after the work run" is on in the project of the task. */
+function pickOn(task: Task): boolean {
+  return task.project ? task.project.pickChecks : pickChecksOn;
+}
+
+/** The picked checks of the task run at the merge, not on the click "Run checks". */
+function pickAtMerge(task: Task): boolean {
+  return task.project ? task.project.checksAtMerge : checksAtMergeOn;
+}
+
+/**
+ * Where the checks of a task stand after its work run, or null when the task has no pick card: the
+ * switch is off, no report, no open checks and no run, or the user took the task as done.
+ */
+function taskPickState(task: Task): PickState | null {
+  const info = task.info;
+  if (!pickOn(task) || !info?.report || info.taken || !(info.checksOpen || info.checked)) return null;
+  return pickState(info.picked, info.checked, info.report.modified);
+}
 /** The task whose Reject box was just opened and gets the focus once. */
 let rejectFocus: string | null = null;
 /** The tasks whose Stop row waits for the second click. A re-render keeps it. */
@@ -2797,6 +2882,8 @@ async function refreshTasks(poll = false): Promise<void> {
   gateCommand = reply.gate ?? "";
   pushAfterMerge = reply.pushAfterMerge ?? false;
   autoMerge = reply.autoMerge ?? false;
+  pickChecksOn = reply.pickChecks ?? false;
+  checksAtMergeOn = reply.checksAtMerge ?? false;
   projectSetup = reply.setup ?? null;
   tasksFolder = projectKey(host, cwd);
   tasksCwd = cwd ?? "";
@@ -2822,6 +2909,10 @@ function approvePlans(): void {
     const tasks = projectTaskList(project);
     // A paused project gets no answer of night mode (ticket pause-tasks, user decision 4).
     if (night && !project.paused) nightDefaults(project, tasks);
+    // The pick of the checks of a done report, once per report (ticket test-picker-an-agent-picks-the-checks);
+    // at night the picked checks run without a click, unless they run at the merge.
+    startPicks(project, tasks);
+    if (night && !project.paused && !project.checksAtMerge) nightRunPicks(project, tasks);
     // A merge holds the main checkout and runs its gate there (ticket task-branches). A start in
     // flight holds the project like a running work run. A pause holds every start (ticket pause-tasks).
     // An uncommitted change holds only the task whose files it touches (ticket leftover-files-block-tasks).
@@ -2881,14 +2972,14 @@ function approvePlans(): void {
     } else if (choice.kind === "plain") {
       // A plan without decisions with "Start plans without decisions" on (ticket simpler-process):
       // the recommended checks go into the plan, as with "Approve plans automatically".
-      const checks = checksSentence(task.info.checks ?? [], checkChoice(task));
+      const checks = checksLine(task);
       void leasedStart(task, async () => {
         if ((await writeDecisions(task, [])) === null) return false;
         return taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name} has no decisions: Dispatch started the work run by itself.${checks}`);
       });
     } else {
       // The checks of the plan with their default choice go into the plan first (ticket task-checks).
-      const checks = checksSentence(task.info.checks ?? [], checkChoice(task));
+      const checks = checksLine(task);
       // A Claude step of an action with "Approve the plan by itself" (ticket project-actions).
       const by = task.info.auto && !project.autoApprove ? "by the action in Dispatch" : "automatically in Dispatch";
       void leasedStart(task, async () => {
@@ -4954,9 +5045,15 @@ function planCard(task: Task): HTMLElement {
     card.append(note);
   }
   // The checks of the project as checkboxes, the recommended ones ticked (ticket task-checks, user
-  // decision 4): Approve all and the Decisions window both take them.
+  // decision 4): Approve all and the Decisions window both take them. With "Pick the checks after the
+  // work run" on, one line instead (ticket test-picker-an-agent-picks-the-checks, user decision 3).
   const checks = task.info?.checks ?? [];
-  if (checks.length > 0) card.append(checksElement(task, checks, busy));
+  if (checks.length > 0 && pickOn(task)) {
+    const note = document.createElement("div");
+    note.className = "card-checks-head";
+    note.textContent = "The checks are picked after the work run.";
+    card.append(note);
+  } else if (checks.length > 0) card.append(checksElement(task, checks, busy));
   // The model and the effort of the work run, with the advice of the plan (ticket ticket-form-optional-fields-on-a-new).
   card.append(workElement(task, busy));
   const actions = document.createElement("div");
@@ -5092,7 +5189,7 @@ function decisionLines(choices: DecisionAnswer[]): string[] {
 async function approveWithDecisions(task: Task, choices: DecisionAnswer[], how: string): Promise<boolean> {
   // The start counts from here: the lease holds the project for this work run (ticket one-work-run-race).
   return leasedStart(task, async () => {
-    const checks = checksSentence(task.info?.checks ?? [], checkChoice(task));
+    const checks = checksLine(task);
     if ((await writeDecisions(task, choices)) === null) return false;
     const line = `Plan ${task.name} approved in Dispatch${how ? ` ${how}` : ""}.${checks} The work run started.`;
     return taskAction(task, "task_approve", { id: task.name }, line);
@@ -5114,7 +5211,8 @@ async function writeDecisions(task: Task, choices: DecisionAnswer[]): Promise<nu
   const work = workChoiceOf(task);
   let written = await writeDecisionLines(task, choices);
   if (written === null) return written;
-  if (checks.length > 0) {
+  // With "Pick the checks after the work run" on, the plan gets no choice: the checks come after the run.
+  if (checks.length > 0 && !pickOn(task)) {
     try {
       written = await call<number>(taskHost(task), "task_checks", { cwd: taskCwd(task), id: task.name, names });
       // The written plan is the same plan: an automatic approval tries it once, not again.
@@ -5169,7 +5267,7 @@ async function approveOrQueue(task: Task, choices: DecisionAnswer[], how: string
   busyTasks.add(task.name);
   actionErrors.delete(task.name);
   renderChats();
-  const checks = checksSentence(task.info?.checks ?? [], checkChoice(task));
+  const checks = checksLine(task);
   const written = await writeDecisions(task, choices);
   busyTasks.delete(task.name);
   if (written === null) return false;
@@ -6299,7 +6397,8 @@ function takeDoneCard(task: Task): HTMLElement {
   card.className = "task-card";
   const title = document.createElement("div");
   title.className = "card-title";
-  title.textContent = "Report not verified";
+  // A failed picked check (ticket test-picker-an-agent-picks-the-checks) names itself in `did`.
+  title.textContent = (task.info?.did ?? "").startsWith("The check") ? "Check failed" : "Report not verified";
   const text = document.createElement("div");
   text.className = "card-question";
   text.textContent = [task.info?.did ?? "", ...(task.info?.unverified ?? []).map((command) => `Did not run: ${command}`)].filter(Boolean).join("\n");
@@ -6397,6 +6496,8 @@ function mergeWaits(task: Task): boolean {
   if (!info || !branch?.exists || branch.merge) return false;
   if (!info.report && info.state !== "stopped") return false;
   if (planReady(task) || reportWaits(task)) return false;
+  // The picked checks run at the merge: the merge waits for the pick (ticket test-picker-an-agent-picks-the-checks).
+  if (taskPickState(task) === "picking") return false;
   return !task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
 }
 
@@ -6453,6 +6554,11 @@ async function mergeTask(task: Task, by: "click" | "night" | "auto" = "click"): 
   try {
     const host = taskHost(task);
     const cwd = taskCwd(task);
+    // The picked checks that the merge runs: the choice of the card goes into the checks file first
+    // (ticket test-picker-an-agent-picks-the-checks).
+    if (pickOn(task) && task.info?.picked) {
+      await call(host, "task_pick_choice", { cwd, id: task.name, names: choiceNames(task.info.checks ?? [], pickChoice(task)) });
+    }
     const result = await call<string>(host, "task_merge", { cwd, id: task.name });
     // The first line names the merge commit; with "Push after the merge" a second line says what the
     // push did (ticket simpler-process).
@@ -6509,7 +6615,13 @@ function mergeCard(task: Task): HTMLElement {
   button.disabled = busyTasks.has(task.name) || running || branch.checkedOut;
   button.addEventListener("click", () => void mergeTask(task));
   actions.append(button);
-  card.append(title, text, actions);
+  card.append(title, text);
+  // The picked checks that the merge runs before the gate, with their reasons (ticket
+  // test-picker-an-agent-picks-the-checks); after a run the pick card shows them with the results.
+  if (pickOn(task) && task.info?.picked && !task.info.checked) {
+    card.append(pickBlock(task, busyTasks.has(task.name) || running, "Checks that Merge runs on the merged code"));
+  }
+  card.append(actions);
   // What "Auto-merge finished tasks" does with this branch (ticket create-project-settings-option-to-auto).
   const autoNote = running ? "" : autoMergeNote(autoMergeFacts(task), branch.base);
   if (autoNote) {
@@ -6574,6 +6686,241 @@ function mergeCard(task: Task): HTMLElement {
   const error = actionError(task);
   if (error) card.append(error);
   return card;
+}
+
+// The checks picked after the work run (ticket test-picker-an-agent-picks-the-checks): the driver
+// window starts the pick of a done report once, the pick card shows the picks with their reasons
+// as checkboxes, Run checks writes the choice and runs the ticked checks through the script, and
+// night mode runs them without a click. The pure parts are in src/checks.ts.
+
+/**
+ * Starts the pick of each task of the project whose report says done and has no pick for this
+ * report: once per report (`pickTried`), not while a worker of the task runs, not for a run of
+ * another computer, and not while a click of the task runs.
+ */
+function startPicks(project: ProjectTasks, tasks: Task[]): void {
+  if (!project.pickChecks) return;
+  for (const task of tasks) {
+    const info = task.info;
+    if (!info?.report || !info.checksOpen || info.taken) continue;
+    if (info.picked && info.picked.report === info.report.modified) continue;
+    if (task.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) continue;
+    if (info.elsewhere || busyTasks.has(task.name) || pickTried.has(pickKey(task))) continue;
+    pickTried.add(pickKey(task));
+    void pickTask(task);
+  }
+}
+
+/** Night mode runs the picked checks of a task that waits for the click, one try per report. */
+function nightRunPicks(project: ProjectTasks, tasks: Task[]): void {
+  if (!project.pickChecks) return;
+  const folder = projectKey(project.host, project.cwd);
+  for (const task of tasks) {
+    if (busyTasks.has(task.name) || taskPickState(task) !== "picked") continue;
+    const key = `checks:${folder}:${task.name}:${task.info?.report?.modified ?? ""}`;
+    if (nightDone.has(key)) continue;
+    nightDone.add(key);
+    void runPicked(task, "night");
+  }
+}
+
+/** Asks the host to pick the checks of a task; a failure stays in the card until the next click. */
+async function pickTask(task: Task): Promise<void> {
+  busyTasks.add(task.name);
+  actionErrors.delete(task.name);
+  renderChats();
+  try {
+    await call(taskHost(task), "task_pick_checks", { cwd: taskCwd(task), id: task.name });
+  } catch (error) {
+    actionErrors.set(task.name, String(error));
+  } finally {
+    busyTasks.delete(task.name);
+    tasksShown = "";
+    try {
+      await refreshTasks();
+    } catch (error) {
+      console.error("task list refresh failed", error);
+    }
+    renderChats();
+  }
+}
+
+/**
+ * Writes the choice of the card into the checks file of the task and runs the ticked checks through
+ * the verb `check` of the script; the card says "checks running" meanwhile and shows the results
+ * after. `by`: the click of the user or night mode; the line for triage says so.
+ */
+async function runPicked(task: Task, by: "click" | "night" = "click"): Promise<void> {
+  if (busyTasks.has(task.name)) return;
+  const names = choiceNames(task.info?.checks ?? [], pickChoice(task));
+  busyTasks.add(task.name);
+  actionErrors.delete(task.name);
+  renderChats();
+  try {
+    const host = taskHost(task);
+    const cwd = taskCwd(task);
+    await call(host, "task_pick_choice", { cwd, id: task.name, names });
+    const result = await call<string>(host, "task_run_checks", { cwd, id: task.name });
+    const lines = result.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const summary = lines.length > 0 ? lines.join(", ") : "no check was ticked";
+    tellTriage(projectFor(host, cwd), by === "night" ? `Night mode ran the picked checks of ${task.name} in Dispatch: ${summary}.` : `The picked checks of ${task.name} ran in Dispatch: ${summary}.`);
+  } catch (error) {
+    actionErrors.set(task.name, String(error));
+  } finally {
+    busyTasks.delete(task.name);
+    tasksShown = "";
+    try {
+      await refreshTasks();
+    } catch (error) {
+      console.error("task list refresh failed", error);
+    }
+    renderChats();
+  }
+}
+
+/**
+ * The checkboxes of the picked checks with the reason of the picker after each name. A change goes
+ * into `pickChoices`, keyed by the report time, so a new report drops it.
+ */
+function pickBlock(task: Task, busy: boolean, heading: string): HTMLElement {
+  const info = task.info!;
+  const block = document.createElement("div");
+  block.className = "card-picks";
+  const head = document.createElement("div");
+  head.className = "card-picks-head";
+  head.textContent = heading;
+  block.append(head);
+  for (const row of pickRows(info.checks ?? [], info.picked, pickChoice(task))) {
+    const label = document.createElement("label");
+    label.title = info.checks?.find((check) => check.name === row.name)?.command ?? "";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = row.checked;
+    box.disabled = busy;
+    box.dataset.check = row.name;
+    box.addEventListener("change", () => {
+      const names = new Set(pickChoice(task));
+      if (box.checked) names.add(row.name);
+      else names.delete(row.name);
+      pickChoices.set(queueKey(task), { report: info.report?.modified ?? 0, names });
+    });
+    const name = document.createElement("span");
+    name.textContent = row.name;
+    label.append(box, name);
+    if (row.reason) {
+      const reason = document.createElement("span");
+      reason.className = "pick-reason";
+      reason.textContent = row.reason;
+      label.append(reason);
+    }
+    block.append(label);
+  }
+  return block;
+}
+
+/**
+ * The card of the checks after the work run: the state in its title, the note of the run-everything
+ * file or of a failed picker, the checkboxes with their reasons, the results of a run with the exit
+ * code and the log of each check, and Run checks (or Run checks again after a failed run). At the
+ * merge the ticked checks run with Merge, so the card has no button then.
+ */
+function pickCard(task: Task, state: PickState): HTMLElement {
+  const info = task.info!;
+  const atMerge = pickAtMerge(task);
+  const busy = busyTasks.has(task.name);
+  const card = document.createElement("div");
+  card.className = "task-card";
+  const title = document.createElement("div");
+  title.className = "card-title";
+  title.textContent = pickStatusText(state, atMerge, info.checked);
+  card.append(title);
+  const note = (text: string) => {
+    const made = document.createElement("div");
+    made.className = "card-question";
+    made.textContent = text;
+    card.append(made);
+  };
+  const pick = info.picked;
+  if (state === "picking" || !pick) {
+    note(busy ? "Dispatch reads the change of the task and asks the picker which checks it needs." : "The pick starts with the next read of the tasks.");
+    const error = actionError(task);
+    if (error) card.append(error);
+    return card;
+  }
+  if (pick.all) note(`${pick.all} changed, and a change there runs every check.`);
+  if (pick.source === "error") note(`The picker failed: ${pick.error} Every check is ticked.`);
+  const fixed = busy || state === "running" || state === "passed";
+  card.append(pickBlock(task, fixed, info.checked ? "Checks that ran" : atMerge ? "Checks that Merge runs on the merged code" : "Checks picked for this change"));
+  if (info.checked) {
+    const results = document.createElement("div");
+    results.className = "card-pick-results";
+    for (const line of checkResultLines(info.checked)) {
+      const row = document.createElement("div");
+      row.className = "pick-result";
+      const name = document.createElement("span");
+      name.className = "pick-name";
+      name.textContent = line.name;
+      const exit = document.createElement("span");
+      exit.className = `exit${line.failed ? " failed" : ""}`;
+      exit.textContent = line.exit;
+      const seconds = document.createElement("span");
+      seconds.className = "exit";
+      seconds.textContent = line.seconds;
+      row.append(name, exit, seconds);
+      if (line.log) {
+        const log = line.log;
+        const open = document.createElement("button");
+        open.className = "pick-log";
+        open.title = `Open the log: ${log.path}`;
+        open.append(eyeIcon());
+        open.addEventListener("click", () => void openViewer({ ...log, host: taskHost(task) } as FileEntry));
+        row.append(open);
+      }
+      results.append(row);
+    }
+    card.append(results);
+  }
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  if (!atMerge && (state === "picked" || state === "failed")) {
+    const run = document.createElement("button");
+    run.className = "primary";
+    run.textContent = state === "failed" ? "Run checks again" : "Run checks";
+    run.title = "Run the ticked checks in the project folder, one after the other. The card shows each exit code and log.";
+    run.disabled = busy;
+    run.addEventListener("click", () => void runPicked(task));
+    actions.append(run);
+  }
+  if (pick.source === "error") {
+    const again = document.createElement("button");
+    again.textContent = "Pick again";
+    again.title = "Ask the picker again";
+    again.disabled = busy;
+    again.addEventListener("click", () => void pickTask(task));
+    actions.append(again);
+  }
+  if (atMerge && state !== "failed" && state !== "passed") note("Merge runs the ticked checks on the merged code before the gate command; a failed check merges nothing.");
+  if (actions.childElementCount > 0) card.append(actions);
+  const error = actionError(task);
+  if (error) card.append(error);
+  return card;
+}
+
+/** The row of the picked checks that ran, after the run, or null; the plan-time row has the first word. */
+function pickedRow(info: TaskInfo | null): HTMLElement | null {
+  const run = info?.checked;
+  if (!run || run.ended === null) return null;
+  const row = document.createElement("div");
+  row.className = "task-checks";
+  const name = document.createElement("span");
+  name.className = "task-checks-name";
+  name.textContent = "Checks";
+  const when = document.createElement("span");
+  when.className = "when";
+  when.textContent = run.results.length > 0 ? run.results.map((result) => `${result.name}${result.exit === 0 ? "" : ` (exit ${result.exit})`}`).join(", ") : "none ticked";
+  row.title = run.results.map((result) => `${result.name}: ${result.command}`).join("\n") || "No check was ticked after the work run.";
+  row.append(name, when);
+  return row;
 }
 
 /** The row of the branch of a task in its open card: the branch, its base and where it stands. */
@@ -6709,6 +7056,11 @@ function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"
     return live.state === "blocked" ? { kind: "waits", text: `${name} waits at a prompt` } : { kind: "working", text: `${name} working` };
   }
   if (mergeWaits(task)) return { kind: "waits", text: mergeRunning(task) ? "merging its branch" : "branch waits for Merge" };
+  // The checks picked after the work run (ticket test-picker-an-agent-picks-the-checks).
+  const picks = taskPickState(task);
+  if (picks === "picking") return { kind: "working", text: pickStatusText(picks, pickAtMerge(task)) };
+  if (picks === "running") return { kind: "working", text: pickStatusText(picks, pickAtMerge(task)) };
+  if (picks === "picked" || picks === "failed") return { kind: "waits", text: pickStatusText(picks, pickAtMerge(task), task.info?.checked) };
   if (awayRun(task)) return { kind: "waits", text: "ran on another computer · no worker here" };
   if (task.info?.state === "stopped") return { kind: "failed", text: "stopped" };
   if (!task.info?.report && task.workers.some((worker) => worker.state === "failed")) return { kind: "failed", text: "failed" };
@@ -6737,6 +7089,8 @@ function taskAttentionWait(task: Task): AttentionWait | null {
   if (blocked) return { key, kind: "prompt", stamp: `${blocked.id}#${promptCounts.get(workerKey(blocked)) ?? 1}` };
   if (task.workers.some((worker) => worker.state === "working")) return null;
   if (mergeWaits(task) && !mergeRunning(task) && !autoMergeComes(task)) return { key, kind: "merge", stamp: report || "stopped" };
+  // Picked checks that wait for the click "Run checks" (ticket test-picker-an-agent-picks-the-checks).
+  if (taskPickState(task) === "picked" && !pickAtMerge(task)) return { key, kind: "checks", stamp: report };
   return null;
 }
 
@@ -9372,8 +9726,9 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     }
     // The log of the task: the plan, each command with its output, the report (ticket task-log).
     if (info?.log) body.append(fileRow("Log", info.log, null, null));
-    // The checks that the user chose at Approve (ticket task-checks).
-    const checks = checksRow(info?.checks ?? []);
+    // The checks that the user chose at Approve (ticket task-checks), or the picked checks that ran
+    // after the work run (ticket test-picker-an-agent-picks-the-checks).
+    const checks = checksRow(info?.checks ?? []) ?? pickedRow(info);
     if (checks) body.append(checks);
     if (info?.branch) body.append(branchRow(info.branch, task.project ? task.project.pushAfterMerge : pushAfterMerge));
     // Stop stands under the runs that it stops.
@@ -9390,6 +9745,10 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   if (repeats) made.append(repeatCard(task, repeats));
   else if (questions.length > 0) made.append(questionCard(task, questions));
   else if (permissionWaits(task)) made.append(permissionCard(task));
+  // The checks picked after the work run (ticket test-picker-an-agent-picks-the-checks): the pick card
+  // while no question waits; the Merge card holds the picks until they ran.
+  const picks = taskPickState(task);
+  if (picks !== null && !repeats && questions.length === 0 && !permissionWaits(task) && (!mergeWaits(task) || task.info?.checked)) made.append(pickCard(task, picks));
   if (mergeWaits(task)) made.append(mergeCard(task));
   // A running reply rewrites the report, so the button waits for the end of the worker (ticket take-as-done).
   if (reportUnverified(task) && !task.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) made.append(takeDoneCard(task));
@@ -9546,6 +9905,9 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
         waits.push({ ...base, kind: "question", stamp: String(info.report.modified) });
       } else if (permissionWaits(task) && info?.report) {
         waits.push({ ...base, kind: "permission", stamp: String(info.report.modified) });
+      } else if (taskPickState(task) === "picked" && !pickAtMerge(task) && info?.report) {
+        // Picked checks that wait for the click "Run checks" (ticket test-picker-an-agent-picks-the-checks).
+        waits.push({ ...base, kind: "checks", stamp: String(info.report.modified) });
       }
     }
   }
