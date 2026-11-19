@@ -68,6 +68,14 @@ export function askAbout(decision?: AskDecision): string {
   return decision ? `Your question about decision ${decision.number}: ${decision.name}` : "Your question about this plan";
 }
 
+/** The tooltip of Approve and Revise while the question box has text. */
+export const ASK_FIRST = "Send or clear your question first";
+
+/** True when the question box holds text: spaces alone count as empty. */
+export function questionPending(text: string): boolean {
+  return text.trim() !== "";
+}
+
 /** Why the Ask button is off: "" when the project has an open triage chat, else the reason for its tooltip. With "No triage" on, nothing blocks it: the question goes to a new Chat. */
 export function askBlocked(triageOpen: boolean, noTriage = false): string {
   return triageOpen || noTriage ? "" : "This project has no open triage chat. Open triage to ask about the plan.";

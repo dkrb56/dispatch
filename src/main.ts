@@ -74,7 +74,7 @@ import { type WaitFacts, waitReason } from "./waitreason";
 import { HOLD_NOTE, holdWait } from "./holdstep";
 import { triageCard, triagePanesToClose, withoutTriage } from "./notriage";
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
-import { type AskDecision, askAbout, askBlocked, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
+import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
 import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
@@ -5397,7 +5397,24 @@ function openDecisions(task: Task, ask = false): void {
     text.textContent = block.lines.join("\n");
     return [head, text];
   };
-  for (const block of contextBlocks(task.info)) context.append(...contextText(block));
+  for (const block of contextBlocks(task.info)) {
+    const [head, text] = contextText(block);
+    // "Your words" stays visible and bold; the Goal folds behind Show more.
+    if (block.label === "Your words") text.classList.add("decisions-words");
+    else for (const part of [head, text]) part.classList.add("decisions-more");
+    context.append(head, text);
+  }
+  // The help text and the Goal stay hidden at each opening until the user clicks Show more.
+  decisionsDialog.classList.remove("show-more");
+  const showMore = document.createElement("button");
+  showMore.type = "button";
+  showMore.className = "decisions-show-more";
+  showMore.textContent = "Show more";
+  showMore.addEventListener("click", () => {
+    const open = decisionsDialog.classList.toggle("show-more");
+    showMore.textContent = open ? "Show less" : "Show more";
+  });
+  context.append(showMore);
   // The TL;DR of the plan in plain words (ticket decisions-tldr) stands in its own block under the
   // box, so a long Goal cannot scroll it out of view. A plan without the section gives no block.
   const tldr = tldrBlock(task.info);
@@ -5573,10 +5590,14 @@ function updateDecisionsFooter(): void {
   const wait = (holdWaitOf(decisionsTask, picks)?.full ?? "").replace(/^Its work run starts/, "Approve now: the work run starts");
   const error = actionErrors.get(decisionsTask.name) ?? "";
   document.querySelector("#decisions-reason")!.textContent = [busy ? "A click of this task is still running." : wait, error].filter(Boolean).join("\n");
-  document.querySelector<HTMLButtonElement>("#decisions-approve")!.disabled = busy;
+  // Text in the question box: only Ask may send it, so Approve and Revise wait.
+  const asking = questionPending(decisionsAskText().value);
+  footerButton("#decisions-approve", busy || asking, asking ? ASK_FIRST : "");
   // A plan without decisions goes back through Reject on its card, with a reason.
   const none = (decisionsTask.info?.decisions ?? []).length === 0;
-  footerButton("#decisions-revise", busy || none, none ? "This plan has no decisions. Use Reject on the plan card to send it back with your reason" : "");
+  footerButton("#decisions-revise", busy || none || asking, none ? "This plan has no decisions. Use Reject on the plan card to send it back with your reason" : asking ? ASK_FIRST : "");
+  document.querySelector("#decisions-approve")!.classList.toggle("primary", !asking);
+  document.querySelector("#decisions-ask")!.classList.toggle("primary", asking);
   const askProject = projectFor(taskHost(decisionsTask), taskCwd(decisionsTask));
   const chatAsk = projectNoTriage(askProject);
   const blocked = askBlocked(triagePane(askProject) !== null, chatAsk);
@@ -5952,6 +5973,7 @@ function initDecisions(): void {
     };
     run().then(end, () => end(false));
   };
+  decisionsAskText().addEventListener("input", updateDecisionsFooter);
   const approveButton = document.querySelector<HTMLButtonElement>("#decisions-approve")!;
   approveButton.addEventListener("click", () => {
     const task = decisionsTask;

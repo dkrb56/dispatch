@@ -5,10 +5,32 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS, askAbout, askBlocked, askChatLine, askLine } from "../src/discuss.ts";
+import { ASK_FIRST, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS, askAbout, askBlocked, askChatLine, askLine, questionPending } from "../src/discuss.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = read("../src/main.ts");
+const CSS = read("../src/styles.css");
+
+test("text in the question box greys Approve and Revise and makes Ask the main button", () => {
+  assert.equal(questionPending(""), false);
+  assert.equal(questionPending("   "), false);
+  assert.equal(questionPending("x"), true);
+  assert.equal(ASK_FIRST, "Send or clear your question first");
+  assert.match(MAIN, /footerButton\("#decisions-approve", busy \|\| asking, asking \? ASK_FIRST : ""\)/);
+  assert.match(MAIN, /footerButton\("#decisions-revise", busy \|\| none \|\| asking,/);
+  assert.match(MAIN, /"#decisions-approve"\)!\.classList\.toggle\("primary", !asking\)/);
+  assert.match(MAIN, /"#decisions-ask"\)!\.classList\.toggle\("primary", asking\)/);
+  assert.match(MAIN, /decisionsAskText\(\)\.addEventListener\("input", updateDecisionsFooter\)/);
+});
+
+test("the help text and the Goal fold behind Show more; your words stay bold", () => {
+  assert.match(MAIN, /decisions-words/);
+  assert.match(MAIN, /decisions-more/);
+  assert.match(MAIN, /decisionsDialog\.classList\.remove\("show-more"\)/);
+  assert.match(MAIN, /"Show less" : "Show more"/);
+  assert.match(CSS, /#decisions:not\(\.show-more\) #decisions-intro,\n#decisions:not\(\.show-more\) \.decisions-more \{\n  display: none;/);
+  assert.match(CSS, /\.decisions-words \{[^}]*font-weight: 600/);
+});
 const HTML = read("../index.html");
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const FOOTER = /<footer id="decisions-footer">([\s\S]*?)<\/footer>/.exec(HTML)?.[1] ?? "";

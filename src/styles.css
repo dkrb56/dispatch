@@ -5610,6 +5610,33 @@ button.ticket-level {
   white-space: pre-wrap;
 }
 
+/* Decisions window: "Your words" is bold; the help text and the Goal fold behind Show more. */
+.decisions-words {
+  color: var(--text);
+  font-weight: 600;
+}
+
+#decisions:not(.show-more) #decisions-intro,
+#decisions:not(.show-more) .decisions-more {
+  display: none;
+}
+
+.decisions-show-more {
+  margin: 6px 0 0;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--muted);
+  font: inherit;
+  font-size: calc(11px * var(--text-scale));
+  cursor: pointer;
+}
+
+.decisions-show-more:hover {
+  color: var(--text);
+}
+
 /* The TL;DR of the plan in plain words, under the box of the words and the Goal. It has no maximum
    height, so a long Goal cannot push it out of view (ticket decisions-tldr). */
 .decisions-tldr {
