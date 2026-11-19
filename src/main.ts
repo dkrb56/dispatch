@@ -30,7 +30,7 @@ import { onReturn } from "./chatend";
 import { barHost, markedProject, showMark, watchArea } from "./focusmark";
 import { removeAnswer, removeTexts } from "./removeproject";
 import { type ColumnAction, type ColumnChoice, type FocusSplit, type TermSplit, applyAction, columnStates, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, parseTermSplit, shareField, toggleSplit, toggleTermSplit } from "./focuslayout";
-import { type FoldPart, type Folds, foldOpen, parseFolds, setFold, splitNewest } from "./focuslists";
+import { chatSlotStep, type FoldPart, type Folds, foldOpen, parseFolds, setFold, splitNewest } from "./focuslists";
 import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode } from "./overview";
 import {
   allowanceLine,
@@ -10332,7 +10332,7 @@ function chatRow(chat: Chat): HTMLElement {
   return chatRowWith(chat, openChat);
 }
 
-/** The row of a chat with the action of its click: in Focus mode the click goes to Details first. */
+/** The row of a chat with the action of its click: in Focus mode the chat opens in the terminal panel of its column. */
 function chatRowWith(chat: Chat, open: (chat: Chat) => Promise<void>): HTMLElement {
   const row = document.createElement("button");
   row.className = `chat${chat.running ? " running" : ""}${chat.pane ? " open" : ""}`;
@@ -10355,10 +10355,52 @@ function chatRowWith(chat: Chat, open: (chat: Chat) => Promise<void>): HTMLEleme
   return row;
 }
 
-/** A click on a chat in Focus mode: Details first, then the chat beside the triage pane (focus-tickets-chats, user decision 4). */
-async function openFocusChat(chat: Chat): Promise<void> {
-  await setView("tabs");
-  await openChat(chat);
+/**
+ * A click on a chat of the Chats list of a column in Focus mode (ticket i-dont-want-to-see-duplicate-tabs-in-the):
+ * the chat shows in the terminal panel of the column, the panel of Open terminal, and the window stays
+ * in Focus. A chat that runs in this window moves there; another chat starts a new pane there. The pane
+ * that the panel showed before goes back to its tab and keeps running (user decision 1).
+ */
+async function openFocusChat(chat: Chat, ref: ProjectRef): Promise<void> {
+  const key = refKey(ref);
+  const startKey = `${chat.host}\n${chat.id}`;
+  const started = startedChats.get(startKey);
+  const recent = started && Date.now() - started.time < CHAT_START_MS ? started.pane : null;
+  const open = panes.get(chat.pane ?? recent ?? "");
+  const step = chatSlotStep(open?.id ?? null, !!open?.role, projectTerminalPane(ref)?.id ?? null);
+  if (step.kind === "focus") {
+    // A workspace pane (triage) shows in its column already.
+    open?.term.focus();
+    return;
+  }
+  // The pane that leaves the panel goes back into its tab before the new one goes in: the slot drops it otherwise.
+  const leaving = step.leaves ? panes.get(step.leaves) : undefined;
+  if (leaving) moveBack(leaving);
+  let pane = open;
+  if (pane) {
+    // A chat that shows in the head of a triage pane in Details goes back to its tab first.
+    const shownIn = shownChat?.tabId === pane.tabId ? panes.get(shownChat.triage) : undefined;
+    if (shownIn) hideChatTab(shownIn);
+  } else {
+    // A new tab behind Focus, as for Open terminal; the tab that was active stays active.
+    const saved: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: chat.cwd, host: chat.host };
+    startedChats.set(startKey, { pane: saved.id, time: Date.now() });
+    const tabId = crypto.randomUUID();
+    const back = activeId;
+    await openTab({ id: tabId, layout: saved, focus: saved.id }, false, new Map([[saved.id, { resume: chat.id }]]));
+    if (back && tabs.has(back)) activate(back);
+    pane = panes.get(saved.id);
+  }
+  if (!pane) return;
+  projectTerminals.set(key, pane.id);
+  try { localStorage.setItem(`project-terminal:${key}`, pane.id); } catch { /* no storage */ }
+  // A strip hides its terminal: a minimized column comes back first.
+  if (columnStates(focusProjects.map(refKey), focusChoices())[key] === "min") setColumnSize(key, "restore");
+  renderFocus();
+  setFocusCurrent(key);
+  focusColumns.get(key)?.el.scrollIntoView({ behavior: "smooth", inline: "nearest" });
+  pane.term.focus();
+  await saveState();
 }
 
 function setChatScope(scope: "project" | "all"): void {
@@ -12489,9 +12531,10 @@ function renderFocus(): void {
     const chatSplit = splitNewest(chats);
     if (fold("chats", "Chats", chats.length, true)) {
       if (chats.length === 0) note("No other chats in this project.");
-      items.push(...chatSplit.shown.map((chat) => chatRowWith(chat, openFocusChat)));
+      const openHere = (chat: Chat) => openFocusChat(chat, { host: column.host, root: column.root });
+      items.push(...chatSplit.shown.map((chat) => chatRowWith(chat, openHere)));
       if (chatSplit.older.length > 0 && fold("older-chats", "Older chats", chatSplit.older.length, false)) {
-        items.push(...chatSplit.older.map((chat) => chatRowWith(chat, openFocusChat)));
+        items.push(...chatSplit.older.map((chat) => chatRowWith(chat, openHere)));
       }
     }
     column.sideEl.replaceChildren(...items);

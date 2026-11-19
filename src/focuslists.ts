@@ -26,6 +26,28 @@ export function splitNewest<T>(items: readonly T[], keep: (item: T) => boolean =
   return { shown, older };
 }
 
+/**
+ * What a click on a chat of the Chats list of a column does (ticket i-dont-want-to-see-duplicate-tabs-in-the):
+ * a chat of a workspace pane (triage) shows in the column already, so it gets the focus; a chat that
+ * runs in this window shows in the terminal panel of the column; any other chat starts a new pane
+ * there. `leaves` is the pane that the panel showed before and that goes back to its tab (it keeps
+ * running, user decision 1), or null when the panel was empty or showed the same pane.
+ */
+export type ChatSlotStep =
+  | { kind: "focus"; pane: string }
+  | { kind: "show"; pane: string; leaves: string | null }
+  | { kind: "start"; leaves: string | null };
+
+/**
+ * The step of a chat click. `chatPane`: the pane of the chat in this window, or null. `workspace`: that
+ * pane is a workspace pane. `panelPane`: the pane that the terminal panel of the column shows now, or null.
+ */
+export function chatSlotStep(chatPane: string | null, workspace: boolean, panelPane: string | null): ChatSlotStep {
+  if (chatPane !== null && workspace) return { kind: "focus", pane: chatPane };
+  if (chatPane !== null) return { kind: "show", pane: chatPane, leaves: panelPane === chatPane ? null : panelPane };
+  return { kind: "start", leaves: panelPane };
+}
+
 /** Without a choice of the user, a section is open and an Older group is closed. */
 export function defaultOpen(part: FoldPart): boolean {
   return part === "tasks" || part === "chats";

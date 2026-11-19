@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { defaultOpen, FOCUS_SHOWN, foldOpen, parseFolds, setFold, splitNewest } from "../src/focuslists.ts";
+import { chatSlotStep, defaultOpen, FOCUS_SHOWN, foldOpen, parseFolds, setFold, splitNewest } from "../src/focuslists.ts";
 
 /** A task of the test: a name, and whether it waits for the user or runs. */
 interface TestTask {
@@ -83,9 +83,39 @@ test("folds: the reader drops each value that is not a boolean of a known part",
   );
 });
 
+test("chat click: a chat with no pane in this window starts a new pane in the panel", () => {
+  assert.deepEqual(chatSlotStep(null, false, null), { kind: "start", leaves: null });
+});
+
+test("chat click: a chat that runs here shows its pane in the panel", () => {
+  assert.deepEqual(chatSlotStep("p1", false, null), { kind: "show", pane: "p1", leaves: null });
+});
+
+test("chat click: the pane that the panel shows already stays, nothing leaves", () => {
+  assert.deepEqual(chatSlotStep("p1", false, "p1"), { kind: "show", pane: "p1", leaves: null });
+});
+
+test("chat click: another pane in the panel leaves it and keeps running (decision 1)", () => {
+  assert.deepEqual(chatSlotStep("p1", false, "old"), { kind: "show", pane: "p1", leaves: "old" });
+  assert.deepEqual(chatSlotStep(null, false, "old"), { kind: "start", leaves: "old" });
+});
+
+test("chat click: a chat of a workspace pane only gets the focus", () => {
+  assert.deepEqual(chatSlotStep("triage", true, "old"), { kind: "focus", pane: "triage" });
+  assert.deepEqual(chatSlotStep("triage", true, null), { kind: "focus", pane: "triage" });
+});
+
 test("the Help of Focus mode names the Older groups", () => {
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
   const focus = html.slice(html.indexOf("<h3>Focus mode</h3>"), html.indexOf("<h3>The Map</h3>"));
   assert.match(focus, /Older tasks/);
   assert.match(focus, /Older chats/);
+});
+
+test("the Help of Focus mode says that a chat click stays in Focus", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const focus = html.slice(html.indexOf("<h3>Focus mode</h3>"), html.indexOf("<h3>The Map</h3>"));
+  assert.match(focus, /A click on a chat shows it in the terminal panel of its column, and the window stays in Focus/);
+  assert.match(focus, /A click on a chat of the Chats list opens that chat in the same panel/);
+  assert.doesNotMatch(focus, /A click on a chat goes to Details/);
 });
