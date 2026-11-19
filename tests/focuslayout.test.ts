@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { applyAction, type ColumnChoices, columnStates, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, parseTermSplit, shareField, toggleSplit, toggleTermSplit } from "../src/focuslayout.ts";
+import { applyAction, type ColumnChoices, columnStates, columnTabs, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, parseTab, parseTermSplit, shareField, toggleSplit, toggleTermSplit } from "../src/focuslayout.ts";
 
 const KEYS = ["a", "b", "c"];
 
@@ -124,6 +124,22 @@ test("row shares: the smallest becomes 1 and the proportions stay, so one row al
 
 // ---- The page ---------------------------------------------------------------------------------
 
+test("the tabs of a column: Triage first only with a triage chat, then Tickets and Workers", () => {
+  assert.deepEqual(columnTabs(true), ["triage", "tickets", "workers"]);
+  assert.deepEqual(columnTabs(false), ["tickets", "workers"]);
+});
+
+test("the stored tab: a known tab stays, a missing, unknown or unavailable one gives the first tab", () => {
+  assert.equal(parseTab("workers", columnTabs(true)), "workers");
+  assert.equal(parseTab("tickets", columnTabs(false)), "tickets");
+  assert.equal(parseTab(undefined, columnTabs(true)), "triage");
+  assert.equal(parseTab(undefined, columnTabs(false)), "tickets");
+  assert.equal(parseTab("chat", columnTabs(true)), "triage");
+  assert.equal(parseTab(3, columnTabs(false)), "tickets");
+  // A project without a triage chat has no Triage tab: the stored Triage gives Tickets.
+  assert.equal(parseTab("triage", columnTabs(false)), "tickets");
+});
+
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 test("the page: a strip hides the body, main.ts uses the rule, the Help names both controls", () => {
@@ -175,11 +191,38 @@ test("the page: the terminal below the board has its wrapper, its button, its dr
   assert.doesNotMatch(css, /body\.resizing \.focus-body > :not\(\.side-resize\)/);
   assert.match(css, /#focus\.rows > \.focus-col:not\(\.min\):has\(\.focus-work\.stacked > \.focus-terminal:not\(\[hidden\]\)\)\s*\{[^}]*min-height/);
   const main = read("../src/main.ts");
-  assert.match(main, /termHead\.append\(mapElement\("span", "", "Terminal"\), termSpacer, termSplitEl, termClose\);/);
+  assert.match(main, /termHead\.append\(mapElement\("span", "", "Terminal"\), termSpacer, detailsEl, termSplitEl, termClose\);/);
   assert.match(main, /workEl\.classList\.toggle\("stacked", below\);/);
   assert.match(main, /termSplit: toggleTermSplit\(parseTermSplit\(/);
   assert.match(main, /saveFocusSize\(key, \{ termHeight: Math\.round\(term\.height\) \}\)/);
   assert.match(main, /size - dy/);
   const html = read("../index.html");
   assert.match(html, /Click <b>Below<\/b> above the terminal to put it below the board[^<]*<b>Beside<\/b> to put it back/);
+});
+
+test("the page: the column tabs and the Details switch of the terminal have their rules, code and Help", () => {
+  const css = read("../src/styles.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.match(css, /\.focus-tabs\s*\{[^}]*display:\s*flex/);
+  assert.match(css, /\.focus-tab\.active\s*\{/);
+  assert.match(css, /\.focus-triage\[hidden\],\s*\.focus-board\[hidden\]/);
+  assert.match(css, /\.focus-terminal\.details \.side\s*\{[^}]*display:\s*flex/);
+  // A narrow panel puts the side panel below the terminal, so On never shows nothing.
+  assert.match(css, /@container focus-term \(max-width: 600px\)\s*\{\s*\.focus-terminal\.details \.pane\s*\{[^}]*flex-direction:\s*column/);
+  assert.doesNotMatch(css, /workers-hide/);
+  const main = read("../src/main.ts");
+  // The Workers button of the head and the × of the Workers bar went; the tabs took their place.
+  assert.doesNotMatch(main, /workersEl|workersOpen|setWorkersOpen|workers-hide/);
+  assert.match(main, /main\.append\(tabRowEl, triageEl, boardEl, agentsEl, commandsEl\);/);
+  assert.match(main, /setColumnTab\(column, "workers"\);/);
+  assert.match(main, /saveFocusSize\(projectKey\(column\.host, column\.root\), \{ tab \}\);/);
+  // The switch is off at the start and not stored (user decision 2); the poll reaches its pane.
+  assert.match(main, /detailsOn: false/);
+  assert.doesNotMatch(main, /saveFocusSize\([^)]*detailsOn/);
+  assert.match(main, /\.\.\.tabPanes\(activeId \?\? ""\), \.\.\.focusDetailPanes\(\)/);
+  const html = read("../index.html");
+  assert.match(html, /<b>Tickets<\/b> shows the tickets board[^<]*<b>Workers<\/b> shows the agent view/);
+  assert.match(html, /<b>Triage<\/b> as the first tab/);
+  assert.match(html, /Each project remembers its tab after a restart/);
+  assert.match(html, /The <b>Details<\/b> switch above the terminal shows its side panel with Environment, Context and Outputs[^<]*off at each start/);
+  assert.doesNotMatch(html, /<b>Workers<\/b> in the head of a column/);
 });

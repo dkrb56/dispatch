@@ -6797,6 +6797,63 @@ body.chats-sized .focus-side {
   padding: 8px 0 0;
 }
 
+/* The tabs of the work area of a column (ticket title-project-rail-focus-as-the-only): chips as the
+   view switch, the active one raised, each count a small number. Only the shown tab has its slot. */
+.focus-tabs {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  align-self: flex-start;
+  padding: 2px;
+  border: 1px solid var(--group-line);
+  border-radius: 8px;
+}
+
+.focus-tab {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.focus-tab:hover {
+  background: var(--card);
+  color: var(--text);
+}
+
+.focus-tab.active {
+  background: var(--card);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.focus-tab[hidden] {
+  display: none;
+}
+
+.focus-tab-count {
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  font-variant-numeric: tabular-nums;
+}
+
+.focus-tab-count:empty {
+  display: none;
+}
+
+.focus-triage[hidden],
+.focus-board[hidden],
+.focus-board-note[hidden] {
+  display: none;
+}
+
 .focus-board-head {
   display: flex;
   flex: none;
@@ -6930,10 +6987,89 @@ body.chats-sized .focus-side {
   display: none;
 }
 
+/* The Details switch of the terminal panel (ticket title-project-rail-focus-as-the-only): the look of
+   the Nightmode switch. On, the panel shows the side panel of its pane: beside the terminal when the
+   panel has room, below it in a narrow panel, so On never shows nothing. */
+.focus-terminal-details {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  align-items: center;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: calc(12px * var(--text-scale));
+  cursor: pointer;
+}
+
+.focus-terminal-details:hover,
+.focus-terminal-details[aria-checked="true"] {
+  color: var(--text);
+}
+
+.focus-terminal-details .switch {
+  position: relative;
+  flex: none;
+  width: 28px;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--line);
+  transition: background 0.15s;
+}
+
+.focus-terminal-details .knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 6px;
+  background: var(--text);
+  transition: left 0.15s;
+}
+
+.focus-terminal-details[aria-checked="true"] .switch {
+  background: var(--switch-on);
+}
+
+.focus-terminal-details[aria-checked="true"] .knob {
+  left: 14px;
+}
+
+.focus-terminal-slot {
+  container: focus-term / inline-size;
+}
+
+.focus-terminal.details .side {
+  display: flex;
+}
+
+@container focus-term (max-width: 600px) {
+  .focus-terminal.details .pane {
+    flex-direction: column;
+  }
+
+  /* The terminal gives up height to the side panel; the pane clips what does not fit. */
+  .focus-terminal.details .term-column {
+    min-height: 0;
+  }
+
+  /* A fixed share of the height: rows that come with a later poll scroll inside it and do not
+     shrink the terminal after its fit. */
+  .focus-terminal.details .side {
+    flex: 0 0 45%;
+    width: auto;
+    border-top: 1px solid var(--hairline);
+    border-left: 0;
+  }
+}
+
 /* The agent view needs about 20 rows: in a shorter terminal every update of it leaves a copy of
-   itself above (2026-11-08: 20 copies in a drawer of 9 rows). */
+   itself above (2026-11-08: 20 copies in a drawer of 9 rows). As the Workers tab it fills the area. */
 .focus-agents {
-  flex: 0 0 52%;
+  flex: 1 1 auto;
   min-height: calc(420px * var(--text-scale));
 }
 
@@ -8028,25 +8164,6 @@ body:not(.focus-mode):not(.map-mode):not(.overview-mode) #bar #night-mode {
   color: var(--text);
 }
 
-/* The × in the bar of the Workers pane: it hides the pane in focus mode, as the Workers button does. */
-.pane-bar .workers-hide {
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 5px;
-  background: none;
-  color: var(--muted);
-  font-size: calc(15px * var(--text-scale));
-  line-height: 1;
-  cursor: pointer;
-}
-
-.pane-bar .workers-hide:hover {
-  background: var(--card);
-  color: var(--text);
-}
-
 /* "Back to list" in the bar of the Workers pane: the list of the agent view again. Grey while it shows. */
 .pane-bar .workers-back {
   height: 22px;
@@ -8068,11 +8185,6 @@ body:not(.focus-mode):not(.map-mode):not(.overview-mode) #bar #night-mode {
   color: var(--muted);
   cursor: default;
   opacity: 0.6;
-}
-
-/* In Tabs the Workers pane is a pane of its tab: no ×. */
-body:not(.focus-mode) .pane-bar .workers-hide {
-  display: none;
 }
 
 /* Focus mode: the Commands terminals of a project, below its chat. */

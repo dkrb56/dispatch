@@ -49,6 +49,22 @@ export function toggleTermSplit(split: TermSplit): TermSplit {
   return split === "below" ? "beside" : "below";
 }
 
+/**
+ * A tab of the work area of a column (ticket title-project-rail-focus-as-the-only): the triage chat,
+ * the tickets board, or the agent view with the workers of the project.
+ */
+export type ColumnTab = "triage" | "tickets" | "workers";
+
+/** The tabs of a column, in their order: Triage only for a project with a triage chat. */
+export function columnTabs(hasTriage: boolean): ColumnTab[] {
+  return hasTriage ? ["triage", "tickets", "workers"] : ["tickets", "workers"];
+}
+
+/** The tab that a column shows for a stored value: a value that is not in `tabs` gives the first tab. */
+export function parseTab(value: unknown, tabs: readonly ColumnTab[]): ColumnTab {
+  return tabs.find((tab) => tab === value) ?? tabs[0];
+}
+
 /** The field of `focus-sizes` with the share of a project: widths and heights stay apart. */
 export function shareField(split: FocusSplit): "grow" | "rowGrow" {
   return split === "rows" ? "rowGrow" : "grow";

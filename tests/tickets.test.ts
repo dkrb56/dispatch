@@ -508,7 +508,7 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   assert.match(MAIN, /if \(triage \|\| \(agents && projectNoTriage\(refKey\(ref\)\)\)\) return;/);
   // User decision 2: the note and a Chat button where triage would stand (in Focus, above the tickets board).
   assert.match(MAIN, /const NO_TRIAGE_NOTE = "No triage in this project";/);
-  assert.match(MAIN, /boardHead\.append\(terminal, mapElement\("span", "", NO_TRIAGE_NOTE\), boardCountEl\);/);
+  assert.match(MAIN, /const boardNoteEl = mapElement\("span", "focus-board-note", NO_TRIAGE_NOTE\);\n  boardHead\.append\(terminal, boardNoteEl, boardCountEl\);/);
   assert.match(MAIN, /mapElement\("button", "focus-terminal-button", "Open terminal"\)/);
   assert.match(MAIN, /async function openProjectTerminal\([\s\S]*?panes\.has\(kept\)\) return;/);
   assert.match(CSS, /\.focus-terminal-button \{/);
@@ -535,9 +535,9 @@ test("no triage: the workspace opens with the agent view only and starts no tria
 
 test("no triage: Focus shows the tickets board where triage would stand", () => {
   const focus = MAIN.slice(MAIN.indexOf("function renderFocus(): void {"));
-  const branch = focus.slice(focus.indexOf("else if (projectNoTriage(key)) {"), focus.indexOf("const start = document.createElement(\"button\");"));
-  assert.match(branch, /if \(column\.boardEl\.parentElement !== column\.triageEl\) column\.triageEl\.replaceChildren\(column\.boardEl\);/);
-  assert.match(branch, /renderFocusBoard\(column, !ticketsDialog\.open\);/);
+  // Ticket title-project-rail-focus-as-the-only: the board has its own slot, the Tickets tab, in every project.
+  const branch = focus.slice(focus.indexOf("column.boardNoteEl.hidden = !projectNoTriage(key);"), focus.indexOf("const commands = commandPanes("));
+  assert.match(branch, /if \(shownTab === "tickets"\) \{\s*renderFocusBoard\(column, !ticketsDialog\.open\);/);
   // One drawing for the window and the Focus board; each column names its project.
   const board = MAIN.slice(MAIN.indexOf("function renderFocusBoard("), MAIN.indexOf("function renderFocusBoards("));
   assert.match(board, /if \(typingIn\(column\.boardColumnsEl\)\) return;/);
