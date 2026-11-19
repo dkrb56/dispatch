@@ -2429,6 +2429,11 @@ interface BranchInfo {
   /** Why Dispatch did not switch the checkout back to the base, or empty. */
   note: string;
   /**
+   * Why the last merge stopped halfway and Dispatch undid it (ticket
+   * title-auto-merge-left-the-main-checkout); empty or absent without one.
+   */
+  aborted?: string;
+  /**
    * The push after the merge (ticket simpler-process): `pushed <remote>/<branch> <time>`, `failed
    * <reason>` or `no-upstream`; empty or absent without one.
    */
@@ -2936,7 +2941,7 @@ function approvePlans(): void {
         night,
         auto: project.autoMerge,
         gate: project.gate.trim() !== "",
-        tasks: tasks.map((task) => ({ name: task.name, waits: mergeWaits(task), state: task.info?.header?.state ?? null, busy: busyTasks.has(task.name), tried: nightDone.has(mergeTryKey(task)), held: mergeHeld(task) })),
+        tasks: tasks.map((task) => ({ name: task.name, waits: mergeWaits(task), state: task.info?.header?.state ?? null, busy: busyTasks.has(task.name), tried: mergeTried(task), held: mergeHeld(task) })),
       });
       const merge = name ? tasks.find((task) => task.name === name) : undefined;
       if (merge) {
@@ -6527,9 +6532,18 @@ function autoMergeFacts(task: Task): AutoMergeFacts {
     on: task.project ? task.project.autoMerge : autoMerge,
     gate: (task.project ? task.project.gate : gateCommand).trim() !== "",
     done: task.info?.header?.state === "done",
-    tried: nightDone.has(mergeTryKey(task)),
+    tried: mergeTried(task),
     held: mergeHeld(task),
   };
+}
+
+/**
+ * Auto-merge tried this task: in this window for this report, or a merge of it stopped halfway and
+ * Dispatch undid it (ticket title-auto-merge-left-the-main-checkout, user decision 3): the user
+ * reads the reason on the card and clicks Merge.
+ */
+function mergeTried(task: Task): boolean {
+  return nightDone.has(mergeTryKey(task)) || !!task.info?.branch?.aborted;
 }
 
 /** Dispatch will merge this branch by itself, so the task does not wait for the user. */
@@ -6644,6 +6658,14 @@ function mergeCard(task: Task): HTMLElement {
     const note = document.createElement("div");
     note.className = "card-reason";
     note.textContent = branch.note;
+    card.append(note);
+  }
+  // A merge that stopped halfway and that Dispatch undid (ticket title-auto-merge-left-the-main-checkout);
+  // a click error of this window is newer and says more.
+  if (branch.aborted && !actionErrors.has(task.name)) {
+    const note = document.createElement("div");
+    note.className = "card-reason";
+    note.textContent = branch.aborted;
     card.append(note);
   }
   // A failed gate: the first line, one line per failed check, and the whole log behind a click

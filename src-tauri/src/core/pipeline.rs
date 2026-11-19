@@ -1766,6 +1766,9 @@ function Enter-TaskBranch {
     $holder = Lock-Holder (Merge-Lock)
   }
   if ($holder) { Refuse "a merge of this project runs (task $holder); try again when it has ended" }
+  # The steps below change the index (ticket title-auto-merge-left-the-main-checkout): an open merge
+  # would take them in.
+  if ((Invoke-Git @('rev-parse', '-q', '--verify', 'MERGE_HEAD')).Code -eq 0) { Refuse 'the checkout has an unfinished merge; finish it or run git merge --abort first' }
   $current = Current-Branch
   if ($current -eq $info.branch) { return '' }
   if ($current.StartsWith('task/')) { Refuse "the checkout is on $current, the branch of another task; Dispatch switches back to the base when that work run has ended" }
@@ -2412,9 +2415,23 @@ switch ($Verb) {
     # A switch back of Dispatch holds the lock for seconds (ticket merge-issue): the merge waits up to 60 s.
     Enter-Lock (Merge-Lock) 60 'merge'
     $script:Merged = ''
+    # The marker of the open merge (ticket title-auto-merge-left-the-main-checkout): the process id,
+    # the ticket, the tip of the task branch, the HEAD of the base and the time. A killed script runs
+    # no finally; Dispatch then finds the marker and cancels the merge that it names.
+    $aborted = Join-Path $Reports "merge\$Id.aborted"
+    Remove-Item -LiteralPath $aborted -Force -ErrorAction SilentlyContinue
+    $marker = Join-Path $Reports 'merge\open'
+    $tip = (Invoke-Git @('rev-parse', "refs/heads/$($info.branch)")).Text
+    $head = (Invoke-Git @('rev-parse', 'HEAD')).Text
+    [IO.File]::WriteAllText($marker, "$PID`t$Id`t$tip`t$head`t$((Get-Date).ToString('o'))`n")
     try {
       $refusal = "$(Merge-Branch $info $gate $limit)"
     } finally {
+      # Every way out inside PowerShell (a refusal, an error, Ctrl+C) leaves no open merge.
+      if (-not $script:Merged -and (Invoke-Git @('rev-parse', '-q', '--verify', 'MERGE_HEAD')).Code -eq 0) {
+        Invoke-Git @('merge', '--abort') | Out-Null
+      }
+      Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
       Exit-Lock (Merge-Lock)
     }
     if ($refusal) { Refuse $refusal }
@@ -3081,6 +3098,9 @@ fn remove_notes_block(project: &Project) -> Result<(), String> {
 /// index of its own, made from HEAD, so the staged changes of the user stay staged (user decision 2).
 /// Then the index of the repository drops the task files too. The files stay on the disk.
 fn untrack_tasks(project: &Project) -> Result<(), String> {
+    if unfinished_git(project) {
+        return Err("a merge or rebase is not finished in this checkout".to_string());
+    }
     untrack(project, TASKS_DIR, TASKS_LOCAL_MESSAGE)
 }
 
@@ -3117,6 +3137,10 @@ fn untrack_tasks_at(project: &Project, branch: &str) -> Result<(), String> {
 /// Also for the local settings (ticket second-computer): a commit with paths would take the file on
 /// the disk again, so "Commit to git" cannot commit its removal.
 fn untrack(project: &Project, path: &str, message: &str) -> Result<(), String> {
+    // `git rm --cached` would change the index of an open merge (ticket title-auto-merge-left-the-main-checkout).
+    if unfinished_git(project) {
+        return Err("a merge or rebase is not finished in this checkout".to_string());
+    }
     // In the temp folder: `.git` is a file in a worktree.
     let index = std::env::temp_dir().join(format!("dispatch-untrack-{}-{}.index", std::process::id(), stamp(&project.root.to_string_lossy())));
     // Without a commit that has the files (no commit yet, or the files are only staged), there is
@@ -4723,6 +4747,9 @@ pub struct BranchInfo {
     checked_out: bool,
     /// Why Dispatch did not switch the checkout back to the base, or empty.
     note: String,
+    /// Why the last merge of this task stopped halfway and Dispatch cancelled it (ticket
+    /// title-auto-merge-left-the-main-checkout): the text of `.dispatch/merge/<ticket>.aborted`, or empty.
+    aborted: String,
 }
 
 /// Reads a branch file: the lines `branch:`, `base:`, `merge:` and `push:`. None without the file.
@@ -4913,7 +4940,8 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
     let stopped = state.trim() == "stopped";
     let runs = work_run_runs(project, ticket);
     let ended = (stopped || reported) && runs != Some(true);
-    if !ended {
+    // An open merge holds the commits and the checkout below (ticket title-auto-merge-left-the-main-checkout).
+    if !ended || unfinished_git(project) {
         return Ok((false, String::new()));
     }
     let leftovers_now = || -> Result<Vec<String>, String> {
@@ -5243,6 +5271,9 @@ fn task_branch(project: &Project, ticket: &str, current: &str, check_merged: boo
     let exists = |name: &str| git(&project.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_some();
     info.exists = info.merge.is_empty() && exists(&info.name);
     info.checked_out = current == info.name;
+    if info.merge.is_empty() {
+        info.aborted = fs::read_to_string(project.merge_dir().join(format!("{ticket}.aborted"))).unwrap_or_default().trim().to_string();
+    }
     let mut changed = false;
     if info.checked_out && info.merge.is_empty() {
         match return_to_base(project, ticket, &info) {
@@ -5474,8 +5505,12 @@ pub(crate) fn read_lock(root: &Path) -> std::sync::Arc<std::sync::Mutex<()>> {
 /// One read of the tasks of a project for `task_list`, and whether the branch step changed the
 /// checkout or a task file.
 fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
+    // A merge that a killed merge script left open is cancelled first (ticket
+    // title-auto-merge-left-the-main-checkout); it would hold every repair and commit below.
+    let cancelled = cancel_left_merge(project);
     // Task files with conflict markers get one side before the read (ticket board-in-progress).
-    let repairs = repair_conflicts(project);
+    let mut repairs = repair_conflicts(project);
+    repairs.splice(0..0, cancelled);
     let mut tasks: Vec<TaskInfo> = Vec::new();
     // The position of the task with a name; a new task when none has it.
     fn task_at(tasks: &mut Vec<TaskInfo>, name: &str) -> usize {
@@ -6387,6 +6422,10 @@ fn commit_setup(project: &Project) -> Result<String, String> {
     if !project.in_git {
         return Err("No commit: the project is not a git repository.".to_string());
     }
+    // `git add` would stage the files into the open merge (ticket title-auto-merge-left-the-main-checkout).
+    if unfinished_git(project) {
+        return Err("No commit: a merge or rebase is not finished in this checkout.".to_string());
+    }
     let files = project.setup_files();
     // `--untracked-files=all`: a new `.claude` folder shows its files, not only the folder.
     let mut args = vec!["status", "--porcelain", "--untracked-files=all", "--"];
@@ -6426,6 +6465,50 @@ fn unfinished_git(project: &Project) -> bool {
         }
     }
     git(&project.root, &["ls-files", "-u", "--", TASKS_DIR]).is_some_and(|text| !text.trim().is_empty())
+}
+
+/// Cancels a merge that a killed merge script of Dispatch left open (ticket
+/// title-auto-merge-left-the-main-checkout). The script writes the marker `.dispatch/merge/open`
+/// (process id, ticket, tip of the task branch, HEAD of the base, time) before its merge and removes
+/// it at its end; a hard kill runs no `finally`. While the process of the marker runs, nothing
+/// happens. Else only the merge that the marker names is cancelled: `MERGE_HEAD` is the recorded tip
+/// and HEAD the recorded base. A merge of the user stays. The reason goes into
+/// `.dispatch/merge/<ticket>.aborted` for the card. Gives the reason, or none without a cancel.
+fn cancel_left_merge(project: &Project) -> Option<String> {
+    let dir = project.merge_dir();
+    let marker = dir.join("open");
+    let text = fs::read_to_string(&marker).ok()?;
+    let fields: Vec<&str> = text.trim().split('\t').map(str::trim).collect();
+    let running = crate::core::info::parent_pids();
+    let pid = fields.first().and_then(|pid| pid.parse::<u32>().ok());
+    if pid.is_some_and(|pid| running.contains_key(&pid)) {
+        return None;
+    }
+    // The merge lock of a process that ended goes too, so the next merge does not wait for it.
+    let lock = dir.join("lock");
+    let holder = fs::read_to_string(&lock).ok().and_then(|holder| holder.split('\t').next().and_then(|pid| pid.trim().parse::<u32>().ok()));
+    if holder.is_some_and(|holder| !running.contains_key(&holder)) {
+        let _ = fs::remove_file(&lock);
+    }
+    let field = |at: usize| fields.get(at).copied().unwrap_or_default();
+    let (ticket, tip, base) = (field(1), field(2), field(3));
+    let merge_head = git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).map(|text| text.trim().to_string());
+    let head = git(&project.root, &["rev-parse", "HEAD"]).map(|text| text.trim().to_string());
+    let ours = check_ticket(ticket).is_ok() && !tip.is_empty() && merge_head.as_deref() == Some(tip) && head.as_deref() == Some(base);
+    if !ours {
+        // No open merge, or one that is not of Dispatch: it stays as it is.
+        let _ = fs::remove_file(&marker);
+        return None;
+    }
+    let reason = match run_git(&project.root, &["merge", "--abort"]) {
+        Ok(_) => {
+            let _ = fs::remove_file(&marker);
+            "The merge stopped halfway: the merge script ended before it was done, for example when Dispatch closed or restarted. Dispatch undid the merge, so nothing was merged. Click Merge to try again.".to_string()
+        }
+        Err(error) => format!("The merge stopped halfway, and Dispatch could not undo it, so nothing was merged: {error}. Run git merge --abort in the project folder."),
+    };
+    let _ = write_file(&dir.join(format!("{ticket}.aborted")), &format!("{reason}\n"));
+    Some(format!("{ticket}: {reason}"))
 }
 
 /// A line is a git conflict marker of this kind: the seven characters alone or with a space after them.
@@ -6919,10 +7002,17 @@ pub fn find_checks(cwd: String, text: String) -> Result<Plan, String> {
 pub fn task_merge(cwd: String, id: String) -> Result<String, String> {
     check_ticket(&id)?;
     let project = Project::find(&cwd)?;
+    // A merge that a killed merge script left open would refuse this one (ticket
+    // title-auto-merge-left-the-main-checkout); after a failed script, its own open merge goes too.
+    cancel_left_merge(&project);
     if let Err(error) = keep_tasks_committed(&project) {
         eprintln!("task files not committed before the merge: {error}");
     }
-    run_script(&project, &["merge", &id])
+    run_script(&project, &["merge", &id]).map_err(|error| match cancel_left_merge(&project) {
+        Some(reason) => format!("{error}
+{}", reason.split_once(": ").map_or(reason.as_str(), |(_, reason)| reason)),
+        None => error,
+    })
 }
 
 /// Saves the settings of the project of a folder. The steps then show what Apply must change.
@@ -10930,6 +11020,178 @@ if (args[0] === 'agents') {
         assert_eq!(seen.trim(), format!("t-1|{}", project.task_checks_file("t-1").display()), "{seen}");
         assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
         assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    /// Starts the merge verb of a ticket without a wait, with the fake `claude` first on PATH, as
+    /// `run_script_env` runs it.
+    fn spawn_merge(project: &Project, fake: &Path, ticket: &str) -> std::process::Child {
+        let path = format!("{};{}", fake.display(), std::env::var("PATH").unwrap_or_default());
+        Command::new("powershell")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(project.script())
+            .args(["merge", ticket])
+            .env("PATH", path)
+            .env("FAKE_STATE", "done")
+            .env("FAKE_NAME", fake_name(project))
+            .env_remove("CLAUDECODE")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    }
+
+    /// Waits up to 60 s until git has an open merge in the checkout.
+    fn wait_for_merge_head(project: &Project) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_none() {
+            assert!(std::time::Instant::now() < deadline, "the merge did not start");
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    /// Ticket title-auto-merge-left-the-main-checkout: a merge script that is killed while its gate
+    /// runs runs no `finally`, so git keeps the merge open. The next task read finds the marker of the
+    /// merge, cancels the merge, and the card says why; the next Merge works.
+    #[test]
+    fn a_killed_merge_script_leaves_no_open_merge() {
+        let (project, fake, base) = branch_project("branch-killed");
+        let cwd = project.root.to_string_lossy().into_owned();
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        set_merge_gate(cwd.clone(), "ping -n 60 127.0.0.1 >nul\n".to_string()).unwrap();
+        let mut child = spawn_merge(&project, &fake, "t-1");
+        wait_for_merge_head(&project);
+        // A plain kill leaves the cmd.exe of the gate alive: the whole tree goes.
+        Command::new("taskkill").args(["/T", "/F", "/PID", &child.id().to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+        child.wait().unwrap();
+        assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_some(), "the kill left the merge open");
+
+        let branch = listed_branch(&project, "t-1");
+        assert_no_merge_left(&project);
+        assert!(branch.exists && branch.merge.is_empty(), "{branch:?}");
+        assert!(branch.aborted.contains("nothing was merged"), "{branch:?}");
+        assert!(!project.merge_dir().join("open").exists(), "the marker stayed");
+        assert!(!project.merge_dir().join("lock").exists(), "the merge lock stayed");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_none());
+
+        // The next Merge works and clears the reason.
+        set_merge_gate(cwd.clone(), "cmd /c exit 0\n".to_string()).unwrap();
+        let merged = task_merge(cwd, "t-1".to_string()).unwrap();
+        assert!(merged.starts_with("merged task/t-1"), "{merged}");
+        assert!(!project.merge_dir().join("t-1.aborted").exists());
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    /// A process id that never runs on Windows: process ids there are multiples of 4.
+    const NO_PROCESS: u32 = 4_000_000_001;
+
+    /// A branch project whose task t-1 waits for Merge, and a merge of its branch that git keeps
+    /// open, as a merge script leaves it before its gate. Gives the project, the base, and the full
+    /// ids of the tip of the task branch and of the base.
+    fn open_merge(name: &str) -> (Project, String, String, String) {
+        let (project, fake, base) = branch_project(name);
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        let head = git_out(&project, &["rev-parse", "HEAD"]);
+        let tip = git_out(&project, &["rev-parse", "refs/heads/task/t-1"]);
+        git_out(&project, &["merge", "--no-ff", "--no-commit", "task/t-1"]);
+        assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_some());
+        (project, base, tip, head)
+    }
+
+    /// Writes the marker of an open merge as the merge verb of the script writes it.
+    fn write_merge_marker(project: &Project, pid: u32, tip: &str, head: &str) {
+        write_file(&project.merge_dir().join("open"), &format!("{pid}\tt-1\t{tip}\t{head}\t2026-11-19T14:19:00\n")).unwrap();
+    }
+
+    /// Ticket title-auto-merge-left-the-main-checkout: the task read cancels the merge that the marker
+    /// of a merge script names once its process is gone, removes the marker and the stale lock, and
+    /// the card and the repair lines say why. While the process runs, the merge stays.
+    #[test]
+    fn the_task_read_cancels_a_merge_left_by_dispatch() {
+        let (project, _base, tip, head) = open_merge("branch-left-merge");
+        let cwd = project.root.to_string_lossy().into_owned();
+        // The process of the marker still runs (here: this test): the merge is its own.
+        write_merge_marker(&project, std::process::id(), &tip, &head);
+        task_list(cwd.clone()).unwrap();
+        assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_some(), "a running merge was cancelled");
+        assert!(project.merge_dir().join("open").exists());
+
+        // The process is gone: the merge goes, with its marker and its lock.
+        write_merge_marker(&project, NO_PROCESS, &tip, &head);
+        write_file(&project.merge_dir().join("lock"), &format!("{NO_PROCESS}\tt-1\t2026-11-19T14:19:00\n")).unwrap();
+        let list = task_list(cwd).unwrap();
+        assert_no_merge_left(&project);
+        assert_eq!(git_out(&project, &["rev-parse", "HEAD"]), head);
+        assert!(!project.merge_dir().join("open").exists() && !project.merge_dir().join("lock").exists());
+        assert!(list.repairs.iter().any(|line| line.starts_with("t-1: The merge stopped halfway")), "{:?}", list.repairs);
+        let branch = list.tasks.into_iter().find(|task| task.name == "t-1").and_then(|task| task.branch).unwrap();
+        assert!(branch.exists && branch.aborted.starts_with("The merge stopped halfway") && branch.aborted.contains("nothing was merged"), "{branch:?}");
+        // The next read says it no more in the repair lines; the card keeps it until the next Merge.
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        assert!(list.repairs.is_empty(), "{:?}", list.repairs);
+        assert!(!listed_branch(&project, "t-1").aborted.is_empty());
+        clean(&project);
+    }
+
+    /// Ticket title-auto-merge-left-the-main-checkout, user decision 2: a merge that the user started
+    /// with git stays, without a marker and with a marker that names another merge.
+    #[test]
+    fn the_task_read_keeps_a_merge_of_the_user() {
+        let (project, _base, _tip, head) = open_merge("branch-user-merge");
+        let cwd = project.root.to_string_lossy().into_owned();
+        let list = task_list(cwd.clone()).unwrap();
+        assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_some(), "the merge of the user was cancelled");
+        assert!(list.repairs.is_empty(), "{:?}", list.repairs);
+        assert!(listed_branch(&project, "t-1").aborted.is_empty());
+
+        // A marker of an ended script that names another tip: the merge stays, the marker goes.
+        write_merge_marker(&project, NO_PROCESS, &head, &head);
+        task_list(cwd).unwrap();
+        assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_some(), "the merge of the user was cancelled");
+        assert!(!project.merge_dir().join("open").exists(), "the marker of another merge stayed");
+        assert!(!project.merge_dir().join("t-1.aborted").exists());
+        git_out(&project, &["merge", "--abort"]);
+        clean(&project);
+    }
+
+    /// Ticket title-auto-merge-left-the-main-checkout: while a merge is open, Commit to git of Setup,
+    /// the removal of the task files from git and the switch to a task branch stage nothing.
+    #[test]
+    fn nothing_is_staged_during_an_open_merge() {
+        let (project, _base, _tip, _head) = open_merge("branch-no-stage");
+        let fake = fake_claude(project.root.parent().unwrap());
+        let staged = || git_out(&project, &["diff", "--cached", "--name-only"]);
+        let before = staged();
+        let flags = read(&project.plan_flags());
+        write_file(&project.plan_flags(), &format!("{flags}--changed\n")).unwrap();
+        let refused = commit_setup(&project).unwrap_err();
+        assert_eq!(refused, "No commit: a merge or rebase is not finished in this checkout.");
+        assert!(untrack_tasks(&project).unwrap_err().contains("merge or rebase is not finished"));
+        assert!(untrack(&project, ".claude/settings.local.json", "untrack").unwrap_err().contains("merge or rebase is not finished"));
+        assert_eq!(staged(), before, "a file was staged into the open merge");
+        write_file(&project.plan_flags(), &flags).unwrap();
+        // The switch to a task branch refuses before it sets the card files aside.
+        write_file(&project.briefs().join("t-2.md"), "# t-2: a scratch task\n").unwrap();
+        write_file(&project.reports.join("fake-name.txt"), "t-2").unwrap();
+        git_out(&project, &["merge", "--abort"]);
+        let (code, out) = run_script(&project, &fake, "done", &["plan", "t-2"]);
+        assert_eq!(code, 0, "{out}");
+        let head = git_out(&project, &["rev-parse", "HEAD"]);
+        git_out(&project, &["merge", "--no-ff", "--no-commit", "task/t-1"]);
+        let before = staged();
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-2"]);
+        assert_ne!(code, 0, "{out}");
+        assert!(out.contains("the checkout has an unfinished merge"), "{out}");
+        assert_eq!(staged(), before, "the switch staged a file into the open merge");
+        assert!(git(&project.root, &["rev-parse", "--verify", "--quiet", "refs/heads/task/t-2"]).is_none());
+        git_out(&project, &["merge", "--abort"]);
+        assert_eq!(git_out(&project, &["rev-parse", "HEAD"]), head);
         clean(&project);
     }
 
