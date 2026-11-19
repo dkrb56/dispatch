@@ -3903,6 +3903,101 @@ fn stage_lines(out: &mut Vec<String>, stage: &str, evidence: &[crate::core::flow
     out.push(String::new());
 }
 
+/// The EVIDENCE blocks of a log, read back from the text that `stage_lines` writes. The id stays
+/// empty. A block ends at the first fully empty line.
+fn log_evidence(text: &str) -> Vec<crate::core::flow::Evidence> {
+    let mut found: Vec<crate::core::flow::Evidence> = Vec::new();
+    let mut lines = text.replace("\r\n", "\n").lines().map(str::to_string).collect::<Vec<_>>().into_iter().peekable();
+    while let Some(line) = lines.next() {
+        let Some(head) = line.strip_prefix("### EVIDENCE: ") else { continue };
+        let (stage, time) = head.split_once(' ').unwrap_or((head, "unknown"));
+        let Some(first) = lines.peek().and_then(|next| next.strip_prefix("COMMAND: ")).map(str::to_string) else { continue };
+        lines.next();
+        let mut command = vec![first];
+        while let Some(next) = lines.peek() {
+            if next.starts_with("EXIT: ") {
+                break;
+            }
+            let Some(rest) = next.strip_prefix("    ") else { break };
+            command.push(rest.to_string());
+            lines.next();
+        }
+        let Some(exit) = lines.next().and_then(|next| next.strip_prefix("EXIT: ").map(str::to_string)) else { continue };
+        if lines.next().as_deref() != Some("OUTPUT:") {
+            continue;
+        }
+        let mut tail = Vec::new();
+        while let Some(next) = lines.peek() {
+            let Some(rest) = next.strip_prefix("    ") else { break };
+            tail.push(rest.to_string());
+            lines.next();
+        }
+        found.push(crate::core::flow::Evidence {
+            id: String::new(),
+            time: (time != "unknown").then(|| time.to_string()),
+            stage: stage.to_string(),
+            command: command.join("\n"),
+            exit,
+            output_tail: tail,
+        });
+    }
+    found
+}
+
+/// The rows of the token table of a log, read back; a row whose numbers do not parse is skipped.
+fn log_tokens(text: &str) -> Vec<crate::core::flow::ModelUsage> {
+    let mut rows = Vec::new();
+    let mut inside = false;
+    for line in text.replace("\r\n", "\n").lines() {
+        if line.starts_with("### ") {
+            inside = line == "### Token usage";
+            continue;
+        }
+        if !inside || !line.starts_with('|') {
+            continue;
+        }
+        let cells: Vec<&str> = line.trim().trim_matches('|').split('|').map(str::trim).collect();
+        if cells.len() != 6 {
+            continue;
+        }
+        let numbers: Vec<Option<u64>> = cells[1..5].iter().map(|cell| cell.parse().ok()).collect();
+        if let [Some(input), Some(cache_write), Some(cache_read), Some(output)] = numbers[..] {
+            rows.push(crate::core::flow::ModelUsage { model: cells[0].to_string(), input, cache_write, cache_read, output });
+        }
+    }
+    rows
+}
+
+/// The commands and the token rows of a new log: the new ones plus each one of the old log that the
+/// new list lacks (same stage, time and command), so a log never gets shorter. The commands stay in
+/// order of time; per model the row with the larger total stays.
+fn merge_log_parts(
+    old: &str,
+    evidence: &[crate::core::flow::Evidence],
+    tokens: &[crate::core::flow::ModelUsage],
+) -> (Vec<crate::core::flow::Evidence>, Vec<crate::core::flow::ModelUsage>) {
+    let mut merged = evidence.to_vec();
+    for block in log_evidence(old) {
+        if !evidence.iter().any(|item| item.stage == block.stage && item.time == block.time && item.command == block.command) {
+            merged.push(block);
+        }
+    }
+    merged.sort_by(|a, b| a.time.cmp(&b.time));
+    let total = |row: &crate::core::flow::ModelUsage| row.input + row.cache_write + row.cache_read + row.output;
+    let mut rows = tokens.to_vec();
+    for old_row in log_tokens(old) {
+        match rows.iter_mut().find(|row| row.model == old_row.model) {
+            Some(row) => {
+                if total(&old_row) > total(row) {
+                    *row = old_row;
+                }
+            }
+            None => rows.push(old_row),
+        }
+    }
+    (merged, rows)
+}
+
 /// Whether the task list writes the log of a task (ticket task-log), on the modification times in
 /// milliseconds: a first log when the plan is there, a new one when the report or the plan is newer
 /// than the log (user decision 1). Never without a plan, and not when nothing is newer.
@@ -5753,6 +5848,14 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             }
             let newest = plan.into_iter().chain(report).max().unwrap_or(0);
             let date = crate::core::tickets::iso(newest)[..10].to_string();
+            // The old log keeps the commands and the tokens of the other computer (ticket
+            // dispatch-wrote-a-task-log-again-from-the); a log with markers adds nothing.
+            let old_text = fs::read_to_string(&path).unwrap_or_default();
+            let (evidence, tokens) = if has_markers(&old_text) {
+                (task.evidence.clone(), task.tokens.clone())
+            } else {
+                merge_log_parts(&old_text, &task.evidence, &task.tokens)
+            };
             let text = task_log_text(&LogInput {
                 id: &task.name,
                 title: &task.about,
@@ -5762,8 +5865,8 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
                 header: task.header.as_ref(),
                 did: &task.did,
                 questions: &task.questions,
-                evidence: &task.evidence,
-                tokens: &task.tokens,
+                evidence: &evidence,
+                tokens: &tokens,
             });
             if let Err(error) = write_file(&path, &text) {
                 eprintln!("task log not written for {}: {error}", task.name);
@@ -8131,6 +8234,48 @@ pub(crate) mod tests {
             output_tail: tail.iter().map(|line| line.to_string()).collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_log_keeps_old_commands_and_adds_new_ones() {
+        let old_items = [
+            evidence("PLAN", "2026-11-14T10:00:00.000Z", "git status", "0", &["clean", ""]),
+            evidence("WORK", "2026-11-14T10:05:00.000Z", "cd /d/p && cargo test\necho b", "1", &["a", "b"]),
+            evidence("WORK", "2026-11-14T10:06:00.000Z", "echo old", "0", &[]),
+        ];
+        let plan = "# t-1: a log\n\n## Summary\n- One.\n";
+        let make = |items: &[crate::core::flow::Evidence], tokens: &[crate::core::flow::ModelUsage]| {
+            task_log_text(&LogInput { id: "t-1", title: "A", date: "2026-11-14", plan, report: None, header: None, did: "", questions: &[], evidence: items, tokens })
+        };
+        let old_text = make(&old_items, &[]);
+        let parsed = log_evidence(&old_text);
+        assert_eq!(parsed.len(), 3);
+        for (back, item) in parsed.iter().zip(old_items.iter()) {
+            assert_eq!((&back.stage, &back.time, &back.command, &back.exit, &back.output_tail), (&item.stage, &item.time, &item.command, &item.exit, &item.output_tail));
+        }
+        // A new list with one old command and one new one: the old ones stay, the new one is added.
+        let fresh = [old_items[0].clone(), evidence("WORK", "2026-11-14T10:07:00.000Z", "echo new", "0", &[])];
+        let (merged, _) = merge_log_parts(&old_text, &fresh, &[]);
+        let commands: Vec<&str> = merged.iter().map(|item| item.command.as_str()).collect();
+        assert_eq!(commands, ["git status", "cd /d/p && cargo test\necho b", "echo old", "echo new"]);
+        // The same input twice gives the same log text.
+        let (again, _) = merge_log_parts(&make(&merged, &[]), &fresh, &[]);
+        assert_eq!(make(&again, &[]), make(&merged, &[]));
+    }
+
+    #[test]
+    fn the_log_keeps_the_longer_token_row() {
+        let usage = |model: &str, input: u64, output: u64| crate::core::flow::ModelUsage { model: model.to_string(), input, cache_write: 0, cache_read: 5, output };
+        let plan = "# t-1: a log\n\n## Summary\n- One.\n";
+        let old_tokens = [usage("big", 100, 50), usage("only-old", 1, 1)];
+        let old_text = task_log_text(&LogInput { id: "t-1", title: "A", date: "2026-11-14", plan, report: None, header: None, did: "", questions: &[], evidence: &[], tokens: &old_tokens });
+        assert_eq!(log_tokens(&old_text), old_tokens.to_vec());
+        let fresh = [usage("big", 10, 5), usage("only-new", 2, 2)];
+        let (_, merged) = merge_log_parts(&old_text, &[], &fresh);
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged.iter().find(|row| row.model == "big").unwrap().input, 100);
+        assert!(merged.iter().any(|row| row.model == "only-old"));
+        assert!(merged.iter().any(|row| row.model == "only-new"));
     }
 
     #[test]
