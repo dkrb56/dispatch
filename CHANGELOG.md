@@ -2,6 +2,11 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.76 (2026-11-19)
+- The permission card gets Stop; the first click asks, Stop now ends the task, Keep waiting steps back.
+- The phone lists only this computer's projects open in a live window, and the host refuses task_list and ticket_add for every other folder.
+- The New ticket and Edit ticket window no longer blocks Dispatch; its title bar moves it and the place is kept, text behind it can be copied, an open edit stays until it is saved or closed.
+
 ## 0.1.75 (2026-11-19)
 - The Dispatch host now serves a small phone page with only the Overview: project cards with their tasks and tickets, and a box for a new ticket. In Options, under Run the host on this PC, scan the code with an iPhone that has Tailscale, then add the page to the Home Screen. New phone key ends the access of the old code.
 - Focus has a new button in the top bar that stacks the projects as full-width rows. Drag the lower edge of a project to change its height, – makes it a thin bar, and ⤢ gives it the whole height. Dispatch keeps the layout and the heights after a restart.
