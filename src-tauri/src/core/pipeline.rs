@@ -2252,25 +2252,32 @@ function Resume-Run([string]$Run, $Worker, [string]$Text, [string]$State, [strin
   Save-Session $Run $printed
 }
 
+# Starts a plan run as a new session: the verb plan, and a Reject of a plan whose plan run is not on
+# this computer (ticket reject-isnt-working). $Extra goes into the prompt before the measure note.
+function Start-Plan([string]$Extra) {
+  $brief = Join-Path $Reports "briefs\$Id.md"
+  if (-not (Test-Path -LiteralPath $brief)) { Refuse "no brief at $brief" }
+  $plans = Join-Path $Reports 'plans'
+  if (-not (Test-Path -LiteralPath $plans)) { New-Item -ItemType Directory -Path $plans | Out-Null }
+  $plan = Join-Path $plans "$Id.md"
+  $flags = Run-Flags 'plan'
+  $prompt = "Plan ticket $Id. Read the brief $brief. Write the plan to $plan with the sections that the section Background workers in CLAUDE.md names. Edit nothing. Then end your turn."
+  if ($Extra) { $prompt += " $Extra" }
+  # Task branches: the base of the task is the branch of the checkout at the plan run.
+  if (Branches-On) { Ensure-BranchFile | Out-Null }
+  # The scratch folder of an earlier plan run of the ticket goes: its logs belong to that plan.
+  $scratch = Join-Path $Reports "measure\$Id"
+  if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
+  if (Measure-On) { $prompt += " Measure before the plan is on: first run the listed measuring commands as the section Background workers says, and write the section Measured." }
+  Set-State 'planning'
+  $printed = Run-Claude (@($prompt, '--bg', '--name', (Run-Name 'plan')) + $flags)
+  Save-Session 'plan' $printed
+}
+
 switch ($Verb) {
   'plan' {
     Need-Id
-    $brief = Join-Path $Reports "briefs\$Id.md"
-    if (-not (Test-Path -LiteralPath $brief)) { Refuse "no brief at $brief" }
-    $plans = Join-Path $Reports 'plans'
-    if (-not (Test-Path -LiteralPath $plans)) { New-Item -ItemType Directory -Path $plans | Out-Null }
-    $plan = Join-Path $plans "$Id.md"
-    $flags = Run-Flags 'plan'
-    $prompt = "Plan ticket $Id. Read the brief $brief. Write the plan to $plan with the sections that the section Background workers in CLAUDE.md names. Edit nothing. Then end your turn."
-    # Task branches: the base of the task is the branch of the checkout at the plan run.
-    if (Branches-On) { Ensure-BranchFile | Out-Null }
-    # The scratch folder of an earlier plan run of the ticket goes: its logs belong to that plan.
-    $scratch = Join-Path $Reports "measure\$Id"
-    if (Test-Path -LiteralPath $scratch) { Remove-Item -LiteralPath $scratch -Recurse -Force }
-    if (Measure-On) { $prompt += " Measure before the plan is on: first run the listed measuring commands as the section Background workers says, and write the section Measured." }
-    Set-State 'planning'
-    $printed = Run-Claude (@($prompt, '--bg', '--name', (Run-Name 'plan')) + $flags)
-    Save-Session 'plan' $printed
+    Start-Plan ''
   }
   'approve' {
     Need-Id
@@ -2334,6 +2341,13 @@ switch ($Verb) {
     $text = ((($Message -join ' ') -replace '"', "'") -replace "`r?`n", ' ').Trim()
     if (-not $text) { Refuse 'reply needs a message' }
     $run = if ((Get-State) -eq 'planning') { 'plan' } else { 'work' }
+    # A Reject of a plan whose plan run is not on this computer (made on another computer, or its
+    # session is gone): a new plan run starts here and revises the old plan (ticket reject-isnt-working).
+    $oldPlan = Join-Path $Reports "plans\$Id.md"
+    if ($run -eq 'plan' -and (Test-Path -LiteralPath $oldPlan) -and $null -eq (Find-Worker (Get-Workers) $Id 'plan')) {
+      Start-Plan "The user rejected the plan $oldPlan of an earlier plan run: $text Read that plan and revise it."
+      break
+    }
     $worker = Resume-Target $run
     # A reply of the work run brings a new report: the pick of the old one goes (Pick the checks after the work run).
     if ($run -eq 'work' -and (Option-On 'pickChecks')) { Clear-Picks }
@@ -6356,7 +6370,9 @@ fn move_old_task(project: &Project, id: &str, now: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// Sends the plan run back with the reason of the user: the Reject button of the task card.
+/// Sends the plan run back with the reason of the user: the Reject button of the task card. Without
+/// the plan session on this computer the script starts a new plan run; a script older than Dispatch
+/// refuses then, so Dispatch says in plain words that Apply updates it.
 pub fn task_reject(cwd: String, id: String, reason: String) -> Result<String, String> {
     check_ticket(&id)?;
     let reason = reason.trim();
@@ -6365,7 +6381,15 @@ pub fn task_reject(cwd: String, id: String, reason: String) -> Result<String, St
     } else {
         format!("Plan rejected: {reason} Revise the plan.")
     };
-    run_script(&Project::find(&cwd)?, &["reply", &id, &text])
+    let project = Project::find(&cwd)?;
+    run_script(&project, &["reply", &id, &text]).map_err(|error| {
+        let current = fs::read_to_string(project.script()).is_ok_and(|text| text.replace("\r\n", "\n") == WORKER_SCRIPT);
+        if error.contains("no worker named") && !current {
+            "The worker script of this project is older than Dispatch: Setup pipeline > Apply updates it.".to_string()
+        } else {
+            error
+        }
+    })
 }
 
 /// Sends the words of the user to a worker: the answer to a question of its report.
@@ -9909,6 +9933,28 @@ if (args[0] === 'agents') {
         // A follow-up of a run of the other computer: no worker of that name runs here.
         write_file(&clone.reports.join("fake-name.txt"), "t-other").unwrap();
         let (code, text) = run_script(&clone, &fake, "done", &["reply", "t-1", "hello"]);
+        assert_eq!(code, 2, "{text}");
+        assert!(text.contains("another computer"), "{text}");
+
+        // A Reject of a plan of the other computer (ticket reject-isnt-working): a new plan run
+        // starts here with the old plan and the reason, and resumes nothing.
+        let plan = clone.plans().join("t-1.md");
+        assert!(plan.exists());
+        write_file(&clone.reports.join("t-1.state"), "planning\n").unwrap();
+        let (code, text) = run_script_env(&clone, &fake, "done", &["reply", "t-1", "Plan rejected: too big Revise the plan."], &[("FAKE_COPY", "sess-2")]);
+        assert_eq!(code, 0, "{text}");
+        let call = last_call(&fake);
+        assert!(!call.iter().any(|arg| arg == "--resume"), "{call:?}");
+        let at = call.iter().position(|arg| arg == "--name").unwrap();
+        assert_eq!(call[at + 1], "t-1 [plan]", "{call:?}");
+        assert!(call[0].contains(&plan.to_string_lossy().into_owned()), "{call:?}");
+        assert!(call[0].contains("too big"), "{call:?}");
+        assert_eq!(read(&clone.reports.join("t-1.state")).trim(), "planning");
+        assert!(read(&clone.reports.join("t-1.session")).lines().any(|line| line == "plan sess-2"));
+
+        // Without a plan file nothing is revised: the reply refuses as before.
+        fs::remove_file(&plan).unwrap();
+        let (code, text) = run_script(&clone, &fake, "done", &["reply", "t-1", "Plan rejected: too big Revise the plan."]);
         assert_eq!(code, 2, "{text}");
         assert!(text.contains("another computer"), "{text}");
         clean(&project);
