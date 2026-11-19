@@ -4,6 +4,7 @@
 //! project. In the mode "Use a host" the host reads and writes that file in its data folder. The
 //! switch also drives the power request of the program that owns the file (`power`).
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -209,19 +210,28 @@ fn set_workspaces_in(dir: &Path, window: &str, roots: Vec<String>) -> Result<(),
     write_atomic(&dir.join(WORKSPACES_FILE), &serde_json::to_vec_pretty(&Value::Object(windows)).map_err(err)?)
 }
 
-/// The open projects of all windows: each project once by its lower-case path, sorted by folder name.
-fn get_workspaces_in(dir: &Path) -> Vec<String> {
+/// One project has one key: its path in lower case, without a slash at the end.
+fn root_key(root: &str) -> String {
+    root.trim_end_matches(['\\', '/']).to_lowercase()
+}
+
+/// The open projects of the windows in `live` whose folder is on this computer: each project once
+/// by its key, sorted by folder name. The file keeps the entries of closed windows, so that a window
+/// that comes back counts again without sending its list.
+fn get_workspaces_in(dir: &Path, live: &HashSet<String>) -> Vec<String> {
     let windows = {
         let _guard = WORKSPACES_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         read_workspaces(dir)
     };
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     let mut roots: Vec<(String, String, String)> = Vec::new();
-    for root in windows.values().filter_map(Value::as_array).flatten().filter_map(Value::as_str) {
-        let key = root.trim_end_matches(['\\', '/']).to_lowercase();
-        if key.is_empty() || !seen.insert(key.clone()) {
+    let open = windows.iter().filter(|(window, _)| live.contains(*window)).filter_map(|(_, roots)| roots.as_array());
+    for root in open.flatten().filter_map(Value::as_str) {
+        let key = root_key(root);
+        if key.is_empty() || seen.contains(&key) || !Path::new(root).is_dir() {
             continue;
         }
+        seen.insert(key.clone());
         let name = key.rsplit(['\\', '/']).next().unwrap_or_default().to_string();
         roots.push((name, key, root.to_string()));
     }
@@ -234,29 +244,84 @@ pub fn workspaces_set(core: &Core, window: &str, roots: Vec<String>) -> Result<(
     set_workspaces_in(&core.data_dir()?, window, roots)
 }
 
-/// The projects that the windows of this data folder have open.
-pub fn workspaces_get(core: &Core) -> Result<Vec<String>, String> {
-    Ok(get_workspaces_in(&core.data_dir()?))
+/// The projects on this computer that the windows in `live` have open.
+pub fn workspaces_get(core: &Core, live: &HashSet<String>) -> Result<Vec<String>, String> {
+    Ok(get_workspaces_in(&core.data_dir()?, live))
+}
+
+/// The saved spelling of the open project whose key is the key of `folder`. Only a whole key counts:
+/// a subfolder or a path with `..` is no open project.
+fn open_root_in(dir: &Path, live: &HashSet<String>, folder: &str) -> Option<String> {
+    let key = root_key(folder);
+    get_workspaces_in(dir, live).into_iter().find(|root| root_key(root) == key)
+}
+
+/// `open_root_in` for the data folder of the host: the rule of the phone key.
+pub fn open_root(core: &Core, live: &HashSet<String>, folder: &str) -> Result<Option<String>, String> {
+    Ok(open_root_in(&core.data_dir()?, live, folder))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn live(windows: &[&str]) -> HashSet<String> {
+        windows.iter().map(|window| window.to_string()).collect()
+    }
+
+    /// A real project folder below `dir`, as its path.
+    fn project(dir: &Path, name: &str) -> String {
+        let path = dir.join(name);
+        fs::create_dir_all(&path).unwrap();
+        path.to_string_lossy().into_owned()
+    }
+
     #[test]
     fn each_window_keeps_its_own_open_projects() {
         let dir = scratch("workspaces");
-        assert!(get_workspaces_in(&dir).is_empty(), "no file: no project");
-        set_workspaces_in(&dir, "w-1", vec!["D:\\Work\\Zeta".into(), "D:\\Work\\alpha".into()]).unwrap();
-        set_workspaces_in(&dir, "w-2", vec!["d:\\work\\zeta\\".into(), "D:\\Work\\Mid".into()]).unwrap();
-        assert_eq!(get_workspaces_in(&dir), ["D:\\Work\\alpha", "D:\\Work\\Mid", "D:\\Work\\Zeta"], "each project once, by folder name");
-        set_workspaces_in(&dir, "w-1", vec!["D:\\Work\\alpha".into()]).unwrap();
-        assert_eq!(get_workspaces_in(&dir), ["D:\\Work\\alpha", "D:\\Work\\Mid", "d:\\work\\zeta\\"], "w-2 keeps its list");
+        let both = live(&["w-1", "w-2"]);
+        assert!(get_workspaces_in(&dir, &both).is_empty(), "no file: no project");
+        let (zeta, alpha, mid) = (project(&dir, "Zeta"), project(&dir, "alpha"), project(&dir, "Mid"));
+        let zeta_slash = format!("{zeta}/");
+        set_workspaces_in(&dir, "w-1", vec![zeta.clone(), alpha.clone()]).unwrap();
+        set_workspaces_in(&dir, "w-2", vec![zeta_slash.clone(), mid.clone()]).unwrap();
+        assert_eq!(get_workspaces_in(&dir, &both), [alpha.clone(), mid.clone(), zeta.clone()], "each project once, by folder name");
+        set_workspaces_in(&dir, "w-1", vec![alpha.clone()]).unwrap();
+        assert_eq!(get_workspaces_in(&dir, &both), [alpha.clone(), mid.clone(), zeta_slash.clone()], "w-2 keeps its list");
+
+        assert_eq!(get_workspaces_in(&dir, &live(&["w-1"])), [alpha.clone()], "w-2 is not live");
+        assert_eq!(get_workspaces_in(&dir, &live(&["w-2"])), [mid.clone(), zeta_slash.clone()], "w-1 is not live");
+        assert!(get_workspaces_in(&dir, &live(&[])).is_empty(), "no live window: no project");
+        assert!(read_workspaces(&dir).contains_key("w-2"), "the file keeps a window that is not live");
+
+        let gone = dir.join("gone").to_string_lossy().into_owned();
+        set_workspaces_in(&dir, "w-1", vec![alpha.clone(), gone]).unwrap();
+        fs::remove_dir_all(&mid).unwrap();
+        assert_eq!(get_workspaces_in(&dir, &both), [alpha.clone(), zeta_slash], "a folder that does not exist does not count");
+
         set_workspaces_in(&dir, "w-2", Vec::new()).unwrap();
-        assert_eq!(get_workspaces_in(&dir), ["D:\\Work\\alpha"], "an empty list removes the window");
+        assert_eq!(get_workspaces_in(&dir, &both), [alpha], "an empty list removes the window");
         assert!(!read_workspaces(&dir).contains_key("w-2"));
         fs::write(dir.join(WORKSPACES_FILE), "{ broken").unwrap();
-        assert!(get_workspaces_in(&dir).is_empty(), "a broken file counts as none");
+        assert!(get_workspaces_in(&dir, &both).is_empty(), "a broken file counts as none");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_open_project_is_found_with_its_saved_spelling() {
+        let dir = scratch("open-root");
+        let alpha = project(&dir, "Alpha");
+        let sub = project(&dir, "Alpha/sub");
+        let other = project(&dir, "Other");
+        set_workspaces_in(&dir, "w-1", vec![alpha.clone()]).unwrap();
+        let window = live(&["w-1"]);
+        let found = |folder: &str| open_root_in(&dir, &window, folder);
+        assert_eq!(found(&alpha), Some(alpha.clone()));
+        assert_eq!(found(&format!("{}/", alpha.to_uppercase())), Some(alpha.clone()), "another case and a slash at the end give the saved spelling");
+        for folder in [sub.clone(), format!("{sub}/.."), other, dir.to_string_lossy().into_owned(), String::new(), "/".to_string()] {
+            assert_eq!(found(&folder), None, "{folder}");
+        }
+        assert_eq!(open_root_in(&dir, &live(&["w-2"]), &alpha), None, "the window is not live");
         fs::remove_dir_all(&dir).unwrap();
     }
 

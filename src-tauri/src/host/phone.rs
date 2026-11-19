@@ -1,7 +1,9 @@
 //! The phone page (docs/remote-client.md, "The phone page"): a plain HTTP request on the port of the
 //! host gets the files of the page, which `build.rs` embeds. A request that asks for a WebSocket goes
 //! on to the service of `server.rs`. The page connects with the phone key, and that key may use only
-//! the calls of `PHONE_CALLS`.
+//! the calls of `PHONE_CALLS`, and its calls for a project only for an open project (`limit_to_open`).
+
+use serde_json::{Map, Value};
 
 include!(concat!(env!("OUT_DIR"), "/phone_files.rs"));
 
@@ -13,15 +15,32 @@ pub const WINDOW_PREFIX: &str = "phone-";
 pub const NOT_ALLOWED: &str = "the phone may not use this call";
 /// The answer to a binary frame of a phone.
 pub const NO_BINARY: &str = "the phone sends no binary frames";
+/// The answer to a call for a folder that is not an open project of this computer.
+pub const NOT_OPEN: &str = "this project is not open in a Dispatch window";
 
 /// All that a phone may do: read the open projects, their tasks and the workers, and add a ticket.
+/// The calls of `FOLDER_CALLS` work only for an open project.
 const PHONE_CALLS: [&str; 4] = ["workspaces_get", "task_list", "worker_list", "ticket_add"];
+/// The phone calls that name a project folder in `cwd`.
+const FOLDER_CALLS: [&str; 2] = ["task_list", "ticket_add"];
 
 const SECURITY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src ws:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /// Whether the phone key may make the call `command`.
 pub fn phone_call(command: &str) -> bool {
     PHONE_CALLS.contains(&command)
+}
+
+/// Keeps a folder call of a phone to an open project. `open_root` gives the saved folder of an open
+/// project, and that folder replaces the text of the phone, so the call never runs on a spelling that
+/// the phone chose. A missing, non-text or unknown `cwd` gives `NOT_OPEN`. Other calls pass unchanged.
+pub fn limit_to_open(command: &str, args: &mut Map<String, Value>, open_root: impl FnOnce(&str) -> Option<String>) -> Result<(), &'static str> {
+    if !FOLDER_CALLS.contains(&command) {
+        return Ok(());
+    }
+    let root = args.get("cwd").and_then(Value::as_str).and_then(open_root).ok_or(NOT_OPEN)?;
+    args.insert("cwd".to_string(), Value::String(root));
+    Ok(())
 }
 
 /// The length of the request head with its empty last line, when `bytes` holds all of it.
@@ -119,6 +138,28 @@ mod tests {
         for method in ["POST", "PUT", "HEAD", "DELETE"] {
             let head = format!("{method} / HTTP/1.1\r\n\r\n");
             assert!(text(&reply(head.as_bytes())).starts_with("HTTP/1.1 405 "), "{method}");
+        }
+    }
+
+    #[test]
+    fn a_folder_call_reaches_only_an_open_project() {
+        let args = |value: Value| value.as_object().cloned().unwrap();
+        let open = |folder: &str| (folder.to_lowercase() == "d:\\work\\alpha").then(|| "D:\\Work\\Alpha".to_string());
+        for command in ["task_list", "ticket_add"] {
+            let mut known = args(serde_json::json!({ "cwd": "d:\\WORK\\alpha", "text": "x" }));
+            assert_eq!(limit_to_open(command, &mut known, open), Ok(()), "{command}");
+            assert_eq!(known, args(serde_json::json!({ "cwd": "D:\\Work\\Alpha", "text": "x" })), "the saved folder replaces the text of the phone");
+            for bad in [serde_json::json!({ "cwd": "D:\\Work\\Other" }), serde_json::json!({ "cwd": 7 }), serde_json::json!({ "cwd": null }), serde_json::json!({})] {
+                let mut refused = args(bad.clone());
+                assert_eq!(limit_to_open(command, &mut refused, open), Err(NOT_OPEN), "{command}: {bad}");
+                assert_eq!(refused, args(bad), "a refused call stays as it was");
+            }
+        }
+        for command in ["workspaces_get", "worker_list"] {
+            let mut other = args(serde_json::json!({ "cwd": "D:\\Work\\Other" }));
+            let before = other.clone();
+            assert_eq!(limit_to_open(command, &mut other, |_| None), Ok(()), "{command}");
+            assert_eq!(other, before, "{command}");
         }
     }
 

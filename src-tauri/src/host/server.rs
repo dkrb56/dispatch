@@ -21,7 +21,7 @@ use tokio_tungstenite::tungstenite::protocol::{CloseFrame, WebSocketConfig};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
-use dispatch_lib::core::{hostrun, Core};
+use dispatch_lib::core::{hostrun, store, Core};
 
 use crate::calls::{self, Reply};
 use crate::clients::{Clients, Out, Sender};
@@ -250,7 +250,7 @@ fn start_call(
     tx: &Sender,
     id: u32,
     command: String,
-    args: Map<String, Value>,
+    mut args: Map<String, Value>,
     body: Option<Vec<u8>>,
 ) {
     let host = host.clone();
@@ -262,6 +262,11 @@ fn start_call(
         if let Role::Phone { key } = &role {
             if !hostrun::phone_key_ok(&host.data_dir, key) {
                 return Out::Text(protocol::reply_error(id, protocol::WRONG_KEY));
+            }
+            // The host itself keeps the phone key to the open projects of this computer.
+            let open_root = |folder: &str| store::open_root(&host.core, &host.clients.live_windows(), folder).ok().flatten();
+            if let Err(text) = phone::limit_to_open(&command, &mut args, open_root) {
+                return Out::Text(protocol::reply_error(id, text));
             }
         }
         match calls::run(&host.core, &host.clients, &window, &command, &args, body.as_deref()) {

@@ -346,7 +346,7 @@ function draw(): void {
   const els = phoneCards(projects, workers, tools).map(drawCard);
   for (const root of [...cards.keys()]) if (!roots.includes(root)) cards.delete(root);
   if (els.length !== cardsEl.children.length || els.some((el, at) => cardsEl.children[at] !== el)) cardsEl.replaceChildren(...els);
-  showMessage(roots.length === 0 ? "No project is open in a Dispatch window on your computer. Open a project there, and it shows here." : "");
+  showMessage(roots.length === 0 ? "No project of this computer is open in a connected Dispatch window. Open one, and it shows here." : "");
 }
 
 keyForm.addEventListener("submit", (event) => {

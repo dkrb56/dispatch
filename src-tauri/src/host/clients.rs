@@ -36,6 +36,10 @@ use crate::protocol;
 pub const REPLAY_LIMIT: usize = 256 * 1024;
 /// A driver that did not report for this long loses the lease to the next window that reports.
 pub const DRIVER_STALE: Duration = Duration::from_secs(30);
+/// A connected window that did not report for this long no longer counts as open for the phone: a
+/// computer that sleeps or loses its network sends no close. A report can wait for another host
+/// that hangs, so this limit is much longer than `DRIVER_STALE`.
+pub const WINDOW_SILENT: Duration = Duration::from_secs(180);
 
 /// What the writer of a connection sends.
 #[derive(Debug, PartialEq)]
@@ -191,6 +195,21 @@ impl Clients {
             inner.driver = Some(window.to_string());
         }
         inner.driver.as_deref() == Some(window)
+    }
+
+    /// The ids of the connected windows that reported within `WINDOW_SILENT`.
+    pub fn live_windows(&self) -> HashSet<String> {
+        self.live_windows_at(Instant::now())
+    }
+
+    fn live_windows_at(&self, now: Instant) -> HashSet<String> {
+        let inner = self.lock();
+        inner
+            .windows
+            .iter()
+            .filter(|(_, known)| now.saturating_duration_since(known.seen) < WINDOW_SILENT)
+            .map(|(window, _)| window.clone())
+            .collect()
     }
 
     /// `pty_spawn` of `window` for the terminal `id`.
@@ -663,6 +682,27 @@ mod tests {
         let late = start + DRIVER_STALE + Duration::from_secs(1);
         assert!(clients.driver_state_at("w-2", false, late), "w-1 did not report for DRIVER_STALE");
         assert!(!clients.driver_state_at("w-1", false, late), "w-1 comes back without input: w-2 keeps the lease");
+    }
+
+    #[test]
+    fn a_window_counts_while_it_is_connected_and_reports() {
+        let ids = |windows: &[&str]| windows.iter().map(|window| window.to_string()).collect::<HashSet<String>>();
+        let clients = Clients::new("k".into());
+        let (tx1, _rx1) = unbounded_channel();
+        let (tx2, _rx2) = unbounded_channel();
+        let serial1 = clients.register("w-1", tx1, "0.0.0");
+        clients.register("w-2", tx2, "0.0.0");
+        let start = Instant::now();
+        assert_eq!(clients.live_windows_at(start), ids(&["w-1", "w-2"]), "a hello counts as a report");
+        let soon = start + WINDOW_SILENT - Duration::from_secs(2);
+        assert_eq!(clients.live_windows_at(soon), ids(&["w-1", "w-2"]), "a short silence changes nothing");
+        clients.driver_state_at("w-1", false, soon);
+        let late = start + WINDOW_SILENT + Duration::from_secs(1);
+        assert_eq!(clients.live_windows_at(late), ids(&["w-1"]), "w-2 did not report for WINDOW_SILENT");
+        clients.driver_state_at("w-2", false, late);
+        assert_eq!(clients.live_windows_at(late), ids(&["w-1", "w-2"]), "the next report brings w-2 back");
+        clients.unregister("w-1", serial1);
+        assert_eq!(clients.live_windows_at(late), ids(&["w-2"]), "a closed connection leaves at once");
     }
 
     #[test]

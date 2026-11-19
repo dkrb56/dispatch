@@ -156,6 +156,16 @@ test("the workers of another project do not count", () => {
   assert.deepEqual(phoneTasks([worker("z [plan]", "done"), worker("z [work]", "working")], []).map((one) => one.workers.length), [2], "both runs are one task");
 });
 
+test("a window sends each host only the projects of that host", () => {
+  const main = read("../src/main.ts");
+  const start = main.indexOf("async function publishWorkspaces(");
+  assert.ok(start > 0);
+  const body = main.slice(start, main.indexOf("\n}\n", start));
+  assert.ok(body.includes("leaseHosts().map(async (host) =>"), "one list per host");
+  assert.ok(body.includes("refs.filter((ref) => ref.host === host)"), "only the projects of that host");
+  assert.ok(body.includes('call(host, "workspaces_set", { roots })'), "the list goes to that host");
+});
+
 test("the page has no manifest, which would drop the key from the saved address", () => {
   const page = read("../phone.html");
   assert.ok(!/rel=["']?manifest/i.test(page));
