@@ -127,6 +127,16 @@ test("the choice: a waiting approval first, night mode only after the queue, not
   assert.deepEqual(chooseStart({ ...base, auto: true, tasks: skipped }), { task: "f", kind: "auto" }, "a changed plan file is tried again");
 });
 
+test("the choice: nothing starts while the checkout is on the branch of another task", () => {
+  const base: StartFacts = { merging: null, running: null, leased: null, queued: "ignore-tasks", auto: false, night: false, tasks: [candidate(NIGHT_PLAN)] };
+  assert.equal(chooseStart({ ...base, checkout: "t-other" }), null, "queued approval waits");
+  assert.deepEqual(chooseStart({ ...base, checkout: null }), { task: "ignore-tasks", kind: "queued" });
+  assert.deepEqual(chooseStart({ ...base, checkout: "ignore-tasks" }), { task: "ignore-tasks", kind: "queued" }, "its own branch does not hold it");
+  const auto = { ...base, queued: null, auto: true };
+  assert.equal(chooseStart({ ...auto, checkout: "t-other" }), null, "an auto start waits");
+  assert.deepEqual(chooseStart({ ...auto, checkout: null }), { task: NIGHT_PLAN, kind: "auto" });
+});
+
 test("main.ts: approvePlans chooses with chooseStart and every start claims the lease before its call", () => {
   const body = MAIN.slice(MAIN.indexOf("function approvePlans("), MAIN.indexOf("function nextQueued("));
   assert.match(body, /chooseStart\(/);

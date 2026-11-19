@@ -61,7 +61,7 @@ export function holdWait(
       "Do the step yourself, or commit or stash the change. Then the work run starts."
     : "";
   // A pause, a merge or another work run comes first; the step of the decision is named after it.
-  if (facts.paused || facts.merging || facts.editing) return matchFull ? { short: base.short, full: `${base.full}\n\n${matchFull}` } : base;
+  if (facts.paused || facts.merging || facts.editing || facts.checkout) return matchFull ? { short: base.short, full: `${base.full}\n\n${matchFull}` } : base;
   if (match) return { short: `Decision ${match.decision.number} is a step for you: Dispatch does not run it.`, full: matchFull };
   return {
     short: base.short,

@@ -91,6 +91,19 @@ test("paused: the reason comes before the merge, the work run and the changed fi
   assert.ok(words(paused.short) <= 12);
 });
 
+test("the checkout on the branch of another task: the reason names the branches and keeps the note after :\\n", () => {
+  const checkout = { task: "t-other", branch: "task/t-other", base: "main", note: "" };
+  const reason = waitReason({ editing: null, dirty: [" M a.ts"], checkout });
+  assert.ok(reason);
+  assert.match(reason.full, /^Its work run starts/);
+  assert.ok(reason.full.includes("task/t-other") && reason.full.includes("main"));
+  assert.ok(words(reason.short) <= 12);
+  const noted = waitReason({ editing: null, dirty: [], checkout: { ...checkout, note: "The checkout stays on task/t-other." } });
+  assert.ok(noted?.full.includes(":\nThe checkout stays on task/t-other."));
+  assert.equal(waitReason({ editing: "x", dirty: [], checkout })?.short, "Waits for the work run of x.", "a running work run comes first");
+  assert.equal(waitReason({ editing: null, dirty: [], checkout: null }), null);
+});
+
 test("leftovers outside the files of the task: no reason; the card names only the files of the task (ticket leftover-files-block-tasks)", () => {
   // main.ts gives the leftovers of the task, so an empty list is a free task in a project with other changes.
   assert.equal(waitReason({ editing: null, dirty: [] }), null);
@@ -118,7 +131,7 @@ test("an approved task shows the Approved mark in its row, its card and the tick
 // button that opens a window with the changed files of the task and an editable commit message.
 test("the wait reason of a plan card has a Commit files button and its window", () => {
   assert.match(MAIN, /commit\.textContent = "Commit files…";/);
-  assert.match(MAIN, /if \(facts\.dirty\.length > 0 && !facts\.editing && !facts\.merging\) \{/, "only while no other work run and no merge holds the task");
+  assert.match(MAIN, /if \(facts\.dirty\.length > 0 && !facts\.editing && !facts\.merging && !facts\.checkout\) \{/, "only while no other work run, no merge and no other checkout holds the task");
   assert.match(MAIN, /commit\.disabled = busy;/);
   assert.match(MAIN, /call<\{ lines: string\[\]; message: string \}>\(host, "task_commit_preview"/);
   assert.match(MAIN, /call<string>\(host, "task_commit_message"/);

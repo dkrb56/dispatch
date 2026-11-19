@@ -2954,6 +2954,7 @@ function approvePlans(): void {
     const queued = projectBusy(busy) ? undefined : nextQueued(project, tasks);
     const choice = chooseStart({
       ...busy,
+      checkout: otherCheckout(tasks)?.task ?? null,
       queued: queued?.name ?? null,
       auto: project.autoApprove,
       night,
@@ -5123,7 +5124,7 @@ function planCard(task: Task): HTMLElement {
     // Commit files (ticket i-need-a-button-here-which-would-commit): only while no other work run and
     // no merge holds the task, because the checkout can then be on another branch.
     const facts = waitFacts(task);
-    if (facts.dirty.length > 0 && !facts.editing && !facts.merging) {
+    if (facts.dirty.length > 0 && !facts.editing && !facts.merging && !facts.checkout) {
       const commit = document.createElement("button");
       commit.className = "card-commit";
       commit.textContent = "Commit files…";
@@ -5349,13 +5350,22 @@ function holdWaitOf(task: Task, picks?: ReadonlyMap<number, string>) {
  * What holds the work run of a task back: another work run of its project, also one whose start is
  * in flight (the start lease, ticket one-work-run-race), and the uncommitted lines in its files.
  */
+function otherCheckout(tasks: Task[], except?: string): WaitFacts["checkout"] {
+  for (const other of tasks) {
+    const branch = other.info?.branch;
+    if (other.name === except || !branch?.checkedOut || branch.merge) continue;
+    return { task: other.name, branch: branch.name, base: branch.base, note: branch.note };
+  }
+  return null;
+}
+
 function waitFacts(task: Task): WaitFacts {
   const editing = workRun(task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos))?.name ?? startHolder(taskHost(task), taskCwd(task));
   const merging = task.project ? task.project.merging : mergingTask;
   // A paused project queues an Approve click (ticket pause-tasks, user decision 3).
   const paused = task.project?.paused ?? projectTasks.get(tasksFolder)?.paused ?? false;
   // Only the changes in files of the task hold it (ticket leftover-files-block-tasks); an older host gives the whole project.
-  return { editing: editing && editing !== task.name ? editing : null, dirty: task.info?.leftovers ?? task.project?.dirty ?? dirtyLines, merging, paused };
+  return { editing: editing && editing !== task.name ? editing : null, dirty: task.info?.leftovers ?? task.project?.dirty ?? dirtyLines, merging, paused, checkout: otherCheckout(task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos), task.name) };
 }
 
 /**

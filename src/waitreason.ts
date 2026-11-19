@@ -18,6 +18,8 @@ export interface WaitFacts {
   merging?: string | null;
   /** The user paused the project (ticket pause-tasks). */
   paused?: boolean;
+  /** The other task whose branch the main checkout is on, with the note why Dispatch did not switch back. */
+  checkout?: { task: string; branch: string; base: string; note: string } | null;
 }
 
 /** The reason in two lengths. */
@@ -50,6 +52,13 @@ export function waitReason(facts: WaitFacts): WaitReason | null {
     return {
       short: `Waits for the work run of ${facts.editing}.`,
       full: `Its work run starts when the work run of ${facts.editing} ends.`,
+    };
+  }
+  if (facts.checkout) {
+    const { task, branch, base, note } = facts.checkout;
+    return {
+      short: `Waits for the checkout on the branch of ${task}.`,
+      full: `Its work run starts when Dispatch switches the checkout back from ${branch} to ${base}.${note ? ` Dispatch waits for this:\n${note}` : ""}`,
     };
   }
   const dirty = facts.dirty;

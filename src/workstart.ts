@@ -112,6 +112,8 @@ export interface StartFacts extends BusyFacts {
   night: boolean;
   /** The setting "Start plans without decisions" of the project (ticket simpler-process); absent = off. */
   plain?: boolean;
+  /** The other task whose branch the main checkout is on, or null: no start until the switch back. */
+  checkout?: string | null;
   /** The tasks in the order of the task list. */
   tasks: StartCandidate[];
 }
@@ -133,11 +135,13 @@ export type StartKind = "queued" | "night" | "auto" | "plain";
  */
 export function chooseStart(facts: StartFacts): { task: string; kind: StartKind } | null {
   if (projectBusy(facts)) return null;
-  if (facts.queued) return { task: facts.queued, kind: "queued" };
+  // The checkout stays on the branch of another task until Dispatch switches it back; the script refuses a start then.
+  const held = (name: string) => !!facts.checkout && facts.checkout !== name;
+  if (facts.queued) return held(facts.queued) ? null : { task: facts.queued, kind: "queued" };
   const plain = (task: StartCandidate) => !!facts.plain && !!task.plain;
   // A part without the night box does not start by night mode; the other ways start it as by day (ticket subtickets).
   const night = (task: StartCandidate) => facts.night && !task.nightHold;
-  const task = facts.tasks.find((task) => task.ready && !task.hold && !task.busy && !task.blocked && task.planTime !== null && task.tried !== task.planTime && (facts.auto || night(task) || !!task.auto || plain(task)));
+  const task = facts.tasks.find((task) => !held(task.name) && task.ready && !task.hold && !task.busy && !task.blocked && task.planTime !== null && task.tried !== task.planTime && (facts.auto || night(task) || !!task.auto || plain(task)));
   if (!task) return null;
   return { task: task.name, kind: plain(task) ? "plain" : night(task) ? "night" : "auto" };
 }
