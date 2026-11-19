@@ -88,9 +88,9 @@ test("the Setup pipeline window has five tabs, one panel each, and every setting
   assert.equal(panels.length, 5, "no panel without a tab");
   const inside = (at: number) => at >= 0 && panels.some((panel) => at > panel.start && at < panel.end);
   const options = [...dialog.matchAll(/<input type="checkbox" data-option="[^"]+"/g)];
-  assert.equal(options.length, 15, "the 15 switches");
+  assert.equal(options.length, 16, "the 16 switches");
   for (const option of options) assert.ok(inside(option.index), option[0]);
-  for (const id of ["setup-measure-commands", "setup-merge-gate", "setup-checks", "setup-checks-all", "setup-steps", "setup-rules-check", "setup-builds"]) {
+  for (const id of ["setup-measure-commands", "setup-merge-gate", "setup-checks", "setup-checks-all", "setup-full-at", "setup-full-after", "setup-full-last", "setup-steps", "setup-rules-check", "setup-builds"]) {
     assert.ok(inside(dialog.indexOf(`id="${id}"`)), id);
   }
   assert.ok(!inside(dialog.indexOf('id="setup-buttons"')), "Apply, Commit to git and Close stay outside the panels");

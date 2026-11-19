@@ -6,6 +6,7 @@ import { test } from "node:test";
 import {
   type CheckInfo,
   type CheckRunInfo,
+  type FullRunInfo,
   type PickInfo,
   checkResultLines,
   checkRows,
@@ -14,10 +15,13 @@ import {
   choiceNames,
   defaultChoice,
   failedChecks,
+  fullRunLines,
   pickDefault,
   pickRows,
   pickState,
   pickStatusText,
+  timeMinutes,
+  timeText,
   workChosen,
   workDefault,
   workIsAdvice,
@@ -177,4 +181,64 @@ test("the work run takes the advice, the change of the user for the same plan, a
   assert.equal(workIsAdvice(advice, { ...advice }), true);
   assert.equal(workIsAdvice(advice, { model: "opus", effort: "medium" }), false);
   assert.equal(workIsAdvice(null, { model: "", effort: "" }), false);
+});
+
+// Ticket scheduled-full-run-of-all-checks: the time field, the lines of the last full run, and the Setup fields.
+test("the time field turns minutes into HH:MM and back", () => {
+  assert.equal(timeText(0), "00:00");
+  assert.equal(timeText(120), "02:00");
+  assert.equal(timeText(1439), "23:59");
+  assert.equal(timeText(5000), "23:59", "a value past the day stays in the day");
+  assert.equal(timeMinutes("02:00"), 120);
+  assert.equal(timeMinutes("23:59"), 1439);
+  assert.equal(timeMinutes("7:05"), 425);
+  assert.equal(timeMinutes(""), null);
+  assert.equal(timeMinutes("24:00"), null);
+  assert.equal(timeMinutes("12:60"), null);
+  for (const minutes of [0, 61, 720, 1439]) assert.equal(timeMinutes(timeText(minutes)), minutes);
+});
+
+test("the last full run shows its time, each check and the tickets", () => {
+  const when = (millis: number) => `t${millis}`;
+  assert.deepEqual(fullRunLines(null, when), { head: "No full run yet.", checks: [], tickets: [] });
+  const run: CheckRunInfo = {
+    started: "s",
+    ended: "e",
+    place: "full",
+    results: [
+      { name: "ok", command: "run ok", exit: 0, seconds: 3, log: null },
+      { name: "net", command: "run net", exit: 1, seconds: 200, log: { path: "C:/p/.dispatch/checks/full/2.log", kind: "text", modified: 1, size: 9 } },
+    ],
+  };
+  const info: FullRunInfo = { run, started: 5, running: false, tickets: [{ name: "net", id: "full-check-run-the-check-net-fails", new: true }] };
+  const lines = fullRunLines(info, when);
+  assert.equal(lines.head, "Last full run: t5 · 2 checks · 1 failed");
+  assert.deepEqual(lines.checks.map((line) => [line.name, line.exit, line.failed, line.seconds, line.log?.path ?? null]), [
+    ["ok", "exit 0", false, "3 s", null],
+    ["net", "exit 1", true, "3 min", "C:/p/.dispatch/checks/full/2.log"],
+  ]);
+  assert.deepEqual(lines.tickets, ["net: ticket full-check-run-the-check-net-fails opened"]);
+  const again = fullRunLines({ ...info, tickets: [{ name: "net", id: "x", new: false }] }, when);
+  assert.deepEqual(again.tickets, ["net: ticket x still open"]);
+  const passed = fullRunLines({ ...info, run: { ...run, results: [run.results[0]] }, tickets: [] }, when);
+  assert.equal(passed.head, "Last full run: t5 · 1 check · all passed");
+  assert.equal(fullRunLines({ ...info, running: true }, when).head, "Full run running · started t5");
+  assert.deepEqual(fullRunLines({ ...info, running: true }, when).checks, []);
+  assert.equal(fullRunLines({ ...info, run: null, tickets: [] }, when).head, "Last full run: t5 · no results");
+});
+
+test("the page has the fields of the full run and the Help items", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  assert.match(html, /<input type="checkbox" data-option="fullChecksNightly" \/>/);
+  assert.match(html, /<input type="time" id="setup-full-at"/);
+  assert.match(html, /<input type="number" id="setup-full-after" min="0" max="999"/);
+  assert.match(html, /<div id="setup-full-last"/);
+  assert.match(html, /<li><b>Full run of all checks\.<\/b>/);
+  assert.match(html, /<td>Full run of all checks<\/td><td><code>\.dispatch\/checks\/full\/<\/code><\/td>/);
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  assert.match(main, /"full_check_run"/);
+  assert.match(main, /getTimezoneOffset\(\)/);
+  const setup = readFileSync(new URL("../src/pipeline.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  assert.match(setup, /fullChecksAt/);
+  assert.match(setup, /fullChecksAfter/);
 });

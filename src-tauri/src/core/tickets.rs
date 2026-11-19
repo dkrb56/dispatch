@@ -456,6 +456,8 @@ fn slug(title: &str) -> String {
 /// files, reports, plans and briefs).
 fn taken_names(project: &Project, tickets: &[Ticket]) -> HashSet<String> {
     let mut names: HashSet<String> = tickets.iter().map(|ticket| ticket.id.clone()).collect();
+    // The verb `check full` of the worker script runs the scheduled full run, never a ticket.
+    names.insert("full".to_string());
     let dir = project.tickets_file().parent().map(Path::to_path_buf).unwrap_or_default();
     for folder in [dir.clone(), dir.join("plans"), dir.join("briefs")] {
         for entry in fs::read_dir(folder).into_iter().flatten().flatten() {

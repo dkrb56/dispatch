@@ -153,6 +153,13 @@ pub struct Options {
     /// of the list, and the task card shows the picks with reasons before the ticked ones run. Off
     /// at the start; a settings file without the field is off.
     pick_checks: bool,
+    /// The scheduled full run of every check (ticket scheduled-full-run-of-all-checks) runs each night
+    /// at `full_checks_at`. Off at the start; a settings file without the field is off.
+    full_checks_nightly: bool,
+    /// The time of the nightly full run, in minutes since local midnight (0 to 1439).
+    full_checks_at: u16,
+    /// The full run also runs after this many tickets moved to Done since the last one; 0 is off.
+    full_checks_after: u16,
     /// The merge verb pushes the base to its upstream branch after the merge commit, never with
     /// force (ticket simpler-process, change 4). Needs task branches. Off at the start; a settings
     /// file without the field is off.
@@ -176,7 +183,7 @@ pub struct Options {
 // field it does not know, so such a file reads without an error.
 impl Default for Options {
     fn default() -> Self {
-        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, pick_checks: false, push_after_merge: false, auto_merge: false, tickets_start_plans: false, no_triage: false }
+        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, pick_checks: false, full_checks_nightly: false, full_checks_at: 0, full_checks_after: 0, push_after_merge: false, auto_merge: false, tickets_start_plans: false, no_triage: false }
     }
 }
 
@@ -363,6 +370,9 @@ pub struct Plan {
     /// The text of `checks-all.txt`, for the box "Run everything when these files change" (ticket
     /// test-picker-an-agent-picks-the-checks).
     checks_all: String,
+    /// The last scheduled full run of every check (ticket scheduled-full-run-of-all-checks); none
+    /// before the first run.
+    full_checks: Option<FullRunInfo>,
 }
 
 /// The paths of one project.
@@ -627,6 +637,13 @@ impl Project {
     /// `.dispatch/.gitignore`.
     fn checks_dir(&self) -> PathBuf {
         self.reports.join("checks")
+    }
+
+    /// The folder of the scheduled full run (ticket scheduled-full-run-of-all-checks): the list
+    /// `checks`, the results `checked`, the logs `<n>.log`, the times `started` and `since`, and the
+    /// handled tickets `tickets`. Git ignores it with `checks_dir`.
+    fn full_dir(&self) -> PathBuf {
+        self.checks_dir().join("full")
     }
 
     /// The model and the effort of the runs of a task (ticket ticket-form-optional-fields-on-a-new):
@@ -1228,7 +1245,15 @@ fn read_pick(path: &Path) -> Option<PickInfo> {
 /// and its log from the folder of the place (`checks/<ticket>/<n>.log` or `merge/<ticket>-<n>.log`,
 /// `n` the position of the check in `<ticket>.checks`). None without the file.
 fn read_checked(project: &Project, ticket: &str) -> Option<CheckRunInfo> {
-    let text = fs::read_to_string(project.checked_file(ticket)).ok()?;
+    let log_of = |place: &str, at: usize| if place == "merge" { project.merge_dir().join(format!("{ticket}-{}.log", at + 1)) } else { project.checks_dir().join(ticket).join(format!("{}.log", at + 1)) };
+    read_check_run(&project.checked_file(ticket), &project.task_checks_file(ticket), &log_of)
+}
+
+/// Reads a results file of a check run (`checked`), the commands from the list file `list` (a name,
+/// a tab and the command per line), and the log of each check from `log_of(place, n)`, `n` the
+/// position of the check in the list from 0. None without the file.
+fn read_check_run(checked: &Path, list: &Path, log_of: &dyn Fn(&str, usize) -> PathBuf) -> Option<CheckRunInfo> {
+    let text = fs::read_to_string(checked).ok()?;
     let mut lines = text.lines();
     let mut head = lines.next()?.split('\t');
     if head.next()? != "running" {
@@ -1236,7 +1261,7 @@ fn read_checked(project: &Project, ticket: &str) -> Option<CheckRunInfo> {
     }
     let started = head.next().unwrap_or_default().to_string();
     let place = head.next().unwrap_or("run").to_string();
-    let chosen: Vec<(String, String)> = fs::read_to_string(project.task_checks_file(ticket))
+    let chosen: Vec<(String, String)> = fs::read_to_string(list)
         .unwrap_or_default()
         .lines()
         .filter_map(|line| line.split_once('\t').map(|(name, command)| (name.trim().to_string(), command.trim().to_string())))
@@ -1253,9 +1278,7 @@ fn read_checked(project: &Project, ticket: &str) -> Option<CheckRunInfo> {
         let seconds = fields.next().and_then(|value| value.trim().parse().ok()).unwrap_or(0);
         let at = chosen.iter().position(|(known, _)| known.eq_ignore_ascii_case(name));
         let command = at.map(|at| chosen[at].1.clone()).unwrap_or_default();
-        let log = at
-            .map(|at| if info.place == "merge" { project.merge_dir().join(format!("{ticket}-{}.log", at + 1)) } else { project.checks_dir().join(ticket).join(format!("{}.log", at + 1)) })
-            .and_then(|path| file_entry(&path));
+        let log = at.map(|at| log_of(&info.place, at)).and_then(|path| file_entry(&path));
         info.results.push(CheckResult { name: name.to_string(), command, exit, seconds, log });
     }
     Some(info)
@@ -1382,6 +1405,9 @@ Dispatch worker script. Triage starts and resumes a worker only through this fil
                                 with Push after the merge, then push the base to its upstream branch, never with force
   check <ticket-id>             run the picked checks of <ticket-id>.checks in the checkout (Pick the checks after the work run);
                                 the logs go to checks\<ticket-id>\<n>.log, the results to <ticket-id>.checked
+  check full                    run every check of checks\full\checks (the scheduled full run) in the checkout on
+                                the base branch; refused on a task/ branch; the logs go to checks\full\<n>.log,
+                                the results to checks\full\checked
 Exit codes: 0 done, 2 refused (the reason is on stderr), 124 a measuring command stopped at its
 time limit, other: the exit code of claude or of the measuring command.
 The gate command of merge gets DISPATCH_TICKET (the ticket id) and DISPATCH_CHECKS (the path of
@@ -2132,9 +2158,10 @@ function Run-Measured([string]$Command, [string]$Log, [int]$Limit) {
 }
 
 # The lines of <ticket-id>.checks: the name, a tab and the command of each check that runs (Pick the
-# checks after the work run). Empty without the file.
-function Chosen-Checks {
-  $file = Join-Path $Reports "$Id.checks"
+# checks after the work run). $List, when given, is another list file of that form (the full run).
+# Empty without the file.
+function Chosen-Checks([string]$List) {
+  $file = if ($List) { $List } else { Join-Path $Reports "$Id.checks" }
   if (-not (Test-Path -LiteralPath $file)) { return @() }
   @(Get-Content -LiteralPath $file | Where-Object { $_.Trim() -ne '' })
 }
@@ -2152,14 +2179,15 @@ function Clear-Picks {
 # Runs the checks of <ticket-id>.checks one by one with Run-Measured and writes <ticket-id>.checked
 # line by line: "running", the time and the place first, then the name, the exit code and the seconds
 # of each check as it ends, then "done" and the time. $LogOf gives the log path of check n. In the
-# place 'run' each result goes to the console as "<name>: exit <code>", not into the pipeline. With -StopAtFailure the
+# places 'run' and 'full' each result goes to the console as "<name>: exit <code>", not into the pipeline. With -StopAtFailure the
 # run ends at the first failed check and gives its name, exit code, command and log; else it gives
-# $null after every check ran.
-function Run-Checks([string]$Place, [scriptblock]$LogOf, [int]$Limit, [switch]$StopAtFailure) {
-  $checked = Join-Path $Reports "$Id.checked"
+# $null after every check ran. $List and $Checked, when given, replace the list file and the results
+# file of the task (the full run).
+function Run-Checks([string]$Place, [scriptblock]$LogOf, [int]$Limit, [switch]$StopAtFailure, [string]$List, [string]$Checked) {
+  $checked = if ($Checked) { $Checked } else { Join-Path $Reports "$Id.checked" }
   [IO.File]::WriteAllText($checked, "running`t$((Get-Date).ToString('o'))`t$Place`n")
   $n = 0
-  foreach ($line in @(Chosen-Checks)) {
+  foreach ($line in @(Chosen-Checks $List)) {
     $n++
     $parts = $line -split "`t", 2
     $name = $parts[0].Trim()
@@ -2171,7 +2199,7 @@ function Run-Checks([string]$Place, [scriptblock]$LogOf, [int]$Limit, [switch]$S
     $seconds = [int][Math]::Round(((Get-Date) - $started).TotalSeconds)
     [IO.File]::AppendAllText($checked, "$name`t$code`t$seconds`n")
     # The merge verb prints its merge line first: Dispatch reads the first line of its output.
-    if ($Place -eq 'run') { [Console]::Out.WriteLine("$name`: exit $code") }
+    if ($Place -eq 'run' -or $Place -eq 'full') { [Console]::Out.WriteLine("$name`: exit $code") }
     if ($StopAtFailure -and $code -ne 0) {
       [IO.File]::AppendAllText($checked, "done`t$((Get-Date).ToString('o'))`n")
       return [pscustomobject]@{ Name = $name; Code = $code; Command = $command; Log = $log }
@@ -2405,6 +2433,24 @@ switch ($Verb) {
   }
   'check' {
     Need-Id
+    if ($Id -eq 'full') {
+      # The scheduled full run: every check of the list that Dispatch wrote, in the checkout on the
+      # base branch. A task branch in the checkout would test the half-done change of a task.
+      $branch = Current-Branch
+      if ($branch.StartsWith('task/')) { Refuse "the checkout is on the task branch $branch; the full run waits for the base branch" }
+      $folder = Join-Path $Reports 'checks\full'
+      $list = Join-Path $folder 'checks'
+      if (-not (Test-Path -LiteralPath $list)) { Refuse "the full run has no list of checks at $list; Dispatch writes it when the run is due" }
+      Get-ChildItem -LiteralPath $folder -File -ErrorAction SilentlyContinue | Where-Object { $_.Extension -eq '.log' -or $_.Extension -eq '.cmd' } | Remove-Item -Force -ErrorAction SilentlyContinue
+      $limit = Command-Limit 'checks.txt' 14400
+      Enter-Lock (Lock-Path) $limit 'full check run'
+      try {
+        Run-Checks 'full' { param($n) Join-Path $folder "$n.log" } $limit -List $list -Checked (Join-Path $folder 'checked') | Out-Null
+      } finally {
+        Exit-Lock (Lock-Path)
+      }
+      return
+    }
     if (-not (Option-On 'pickChecks')) { Refuse 'Pick the checks after the work run is off in this project; Setup pipeline turns it on' }
     if (-not (Test-Path -LiteralPath (Join-Path $Reports "$Id.checks"))) { Refuse "the task $Id has no chosen checks; Run checks in its task card writes them first" }
     $folder = Join-Path $Reports "checks\$Id"
@@ -2850,7 +2896,7 @@ fn plan(project: &Project) -> Result<Plan, String> {
     let merge_gate = fs::read_to_string(project.merge_gate_file()).unwrap_or_default().replace("\r\n", "\n");
     let checks = if checks_saved { fs::read_to_string(project.checks_file()).unwrap_or_default().replace("\r\n", "\n") } else { found_checks };
     let checks_all = fs::read_to_string(project.checks_all_file()).unwrap_or_default().replace("\r\n", "\n");
-    Ok(Plan { root: show(project.root.clone()), git: project.in_git, options, steps, measure_commands, merge_gate, checks, checks_all })
+    Ok(Plan { root: show(project.root.clone()), git: project.in_git, options, steps, measure_commands, merge_gate, checks, checks_all, full_checks: read_full_run(project) })
 }
 
 /// The tests that Dispatch finds in the files of the project, as lines of the list of checks.
@@ -4117,6 +4163,228 @@ pub fn task_run_checks(cwd: String, id: String) -> Result<String, String> {
     run_script(&project, &["check", &id])
 }
 
+/// A failed check of the last full run and its ticket (ticket scheduled-full-run-of-all-checks):
+/// `new` when the run opened it, else an open ticket of the same check that it found.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FullTicket {
+    name: String,
+    id: String,
+    new: bool,
+}
+
+/// The last scheduled full run of every check, for Setup pipeline.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FullRunInfo {
+    /// The results of the run (`checks/full/checked`); none before the script wrote it.
+    run: Option<CheckRunInfo>,
+    /// When Dispatch started the run, in milliseconds since the Unix epoch; 0 without a run.
+    started: u64,
+    /// The run goes on in this process now.
+    running: bool,
+    /// The tickets of its failed checks.
+    tickets: Vec<FullTicket>,
+}
+
+/// The projects whose full run goes on in this process, by root: a second call gives `running`.
+fn full_runs() -> &'static std::sync::Mutex<std::collections::HashSet<PathBuf>> {
+    static FULL_RUNS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<PathBuf>>> = std::sync::OnceLock::new();
+    FULL_RUNS.get_or_init(Default::default)
+}
+
+/// Takes a project out of `full_runs` when the run ends, also on an error.
+struct FullRunMark(PathBuf);
+
+impl Drop for FullRunMark {
+    fn drop(&mut self) {
+        full_runs().lock().unwrap_or_else(|poison| poison.into_inner()).remove(&self.0);
+    }
+}
+
+/// The time file `started` of the full run: milliseconds since the Unix epoch. None without it.
+fn read_millis(path: &Path) -> Option<u64> {
+    fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// The start time that the tickets file of the full run belongs to. None without the file.
+fn full_tickets_handled(project: &Project) -> Option<u64> {
+    let text = fs::read_to_string(project.full_dir().join("tickets")).ok()?;
+    text.lines().next()?.trim().parse().ok()
+}
+
+/// The results of the last full run: the commands from `checks/full/checks`, the logs `checks/full/<n>.log`.
+fn read_full_checked(project: &Project) -> Option<CheckRunInfo> {
+    let dir = project.full_dir();
+    read_check_run(&dir.join("checked"), &dir.join("checks"), &|_, at| dir.join(format!("{}.log", at + 1)))
+}
+
+/// The last full run of a project. None before its first start.
+fn read_full_run(project: &Project) -> Option<FullRunInfo> {
+    let dir = project.full_dir();
+    let started = read_millis(&dir.join("started")).unwrap_or(0);
+    let run = read_full_checked(project);
+    if started == 0 && run.is_none() {
+        return None;
+    }
+    let running = full_runs().lock().unwrap_or_else(|poison| poison.into_inner()).contains(&project.root);
+    let tickets = if full_tickets_handled(project) == Some(started) {
+        fs::read_to_string(dir.join("tickets"))
+            .unwrap_or_default()
+            .lines()
+            .skip(1)
+            .filter_map(|line| {
+                let mut fields = line.split('\t');
+                let (name, id, state) = (fields.next()?, fields.next()?, fields.next()?);
+                Some(FullTicket { name: name.to_string(), id: id.to_string(), new: state == "new" })
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Some(FullRunInfo { run, started, running, tickets })
+}
+
+/// Decides whether the scheduled full run is due (ticket scheduled-full-run-of-all-checks): `"time"`
+/// when the latest local passing of `at` (minutes since local midnight) at or before `now` lies after
+/// `base`, `"tasks"` when `after` is not 0 and `done_since` tickets moved to Done after `base`, else
+/// none. `offset` is the minutes of JavaScript `getTimezoneOffset` (UTC minus local). All times are
+/// milliseconds since the Unix epoch.
+fn full_run_due(nightly: bool, at: u16, after: u16, base: u64, done_since: usize, now: u64, offset: i32) -> Option<&'static str> {
+    if nightly {
+        const DAY: i64 = 86_400_000;
+        let shift = i64::from(offset) * 60_000;
+        let local = now as i64 - shift;
+        let mut passing = local.div_euclid(DAY) * DAY + i64::from(at.min(1439)) * 60_000;
+        if passing > local {
+            passing -= DAY;
+        }
+        if passing + shift > base as i64 {
+            return Some("time");
+        }
+    }
+    if after > 0 && done_since >= usize::from(after) {
+        return Some("tasks");
+    }
+    None
+}
+
+/// The first line of the ticket of a failed check of the full run. The guard against a second
+/// ticket looks for it at the start of the text of an open ticket.
+fn full_ticket_head(name: &str) -> String {
+    format!("Full check run: the check {name} fails.")
+}
+
+/// Opens one ticket of type fix in New for each failed check of the last full run (user decision 1),
+/// unless an open ticket (not Done, not Canceled) of the same check exists, and writes
+/// `checks/full/tickets`: `started`, then the name, the id and `new` or `open` per failed check.
+fn full_tickets(project: &Project, started: u64) -> Result<Vec<FullTicket>, String> {
+    use crate::core::tickets::{CANCELED, DONE};
+    let dir = project.full_dir();
+    let mut found = Vec::new();
+    if let Some(run) = read_full_checked(project) {
+        let list: Vec<String> = fs::read_to_string(dir.join("checks"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| line.split('\t').next().unwrap_or_default().trim().to_string())
+            .collect();
+        let tickets = crate::core::tickets::list(project);
+        for result in run.failed() {
+            let head = full_ticket_head(&result.name);
+            let open = tickets.iter().find(|ticket| ticket.status != DONE && ticket.status != CANCELED && ticket.summary.starts_with(&head));
+            if let Some(ticket) = open {
+                found.push(FullTicket { name: result.name.clone(), id: ticket.id.clone(), new: false });
+                continue;
+            }
+            let log = list.iter().position(|name| name.eq_ignore_ascii_case(&result.name)).map(|at| dir.join(format!("{}.log", at + 1)));
+            let log_text = log.as_ref().and_then(|path| fs::read(path).ok()).map(|bytes| String::from_utf8_lossy(&bytes).into_owned()).unwrap_or_default();
+            let lines: Vec<&str> = log_text.lines().collect();
+            let tail = lines[lines.len().saturating_sub(40)..].join("\n");
+            let log_line = log.map_or("No log.".to_string(), |path| format!("Log: {}", path.display()));
+            let text = format!("{head}\nExit code {}. Command: {}\n{log_line}\n\nThe last lines of the log:\n```text\n{tail}\n```", result.exit, result.command);
+            let ticket = crate::core::tickets::ticket_add_in(project.root.to_string_lossy().into_owned(), text, Some("fix".to_string()), None, None, Some("new".to_string()))?;
+            found.push(FullTicket { name: result.name.clone(), id: ticket.id, new: true });
+        }
+    }
+    let mut text = format!("{started}\n");
+    for ticket in &found {
+        text.push_str(&format!("{}\t{}\t{}\n", ticket.name, ticket.id, if ticket.new { "new" } else { "open" }));
+    }
+    write_file(&dir.join("tickets"), &text)?;
+    Ok(found)
+}
+
+/// Starts the scheduled full run of every check when it is due (ticket scheduled-full-run-of-all-checks).
+/// The driver loop of the window calls it; `offset` is `getTimezoneOffset` of the window. Gives
+/// `off`, `running`, `waiting`, `held: <reason>` or the summary line of the run.
+pub fn full_check_run(cwd: String, offset: i32) -> Result<String, String> {
+    let project = Project::find(&cwd)?;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
+    full_check_run_at(&project, now, offset)
+}
+
+/// `full_check_run` with the clock as an argument; a test moves it.
+fn full_check_run_at(project: &Project, now: u64, offset: i32) -> Result<String, String> {
+    let options = project.options();
+    let dir = project.full_dir();
+    let checks = project.checks();
+    if !(options.full_checks_nightly || options.full_checks_after > 0) || checks.is_empty() {
+        let _ = fs::remove_file(dir.join("since"));
+        return Ok("off".to_string());
+    }
+    if !full_runs().lock().unwrap_or_else(|poison| poison.into_inner()).insert(project.root.clone()) {
+        return Ok("running".to_string());
+    }
+    let _mark = FullRunMark(project.root.clone());
+    let started = read_millis(&dir.join("started"));
+    // A run that ended before its tickets opened (Dispatch closed during the run) opens them now.
+    if let Some(started) = started {
+        if full_tickets_handled(project) != Some(started) && read_full_checked(project).is_some_and(|run| run.ended.is_some()) {
+            full_tickets(project, started)?;
+        }
+    }
+    // The first sight of a schedule, or of a changed one, starts nothing (user decision 4): the time
+    // and the count start now. `since` holds that moment and the schedule it saw.
+    let schedule = format!("{}\t{}\t{}", options.full_checks_nightly, options.full_checks_at, options.full_checks_after);
+    let since_text = fs::read_to_string(dir.join("since")).unwrap_or_default();
+    let since = match since_text.trim().split_once('\t') {
+        Some((millis, seen)) if seen == schedule => millis.parse::<u64>().ok(),
+        _ => None,
+    };
+    let Some(since) = since else {
+        write_file(&dir.join("since"), &format!("{now}\t{schedule}\n"))?;
+        return Ok("waiting".to_string());
+    };
+    let base = started.unwrap_or(0).max(since);
+    let done_since = crate::core::tickets::list(project).iter().filter(|ticket| ticket.status == crate::core::tickets::DONE && ticket.moved > base).count();
+    let Some(why) = full_run_due(options.full_checks_nightly, options.full_checks_at, options.full_checks_after, base, done_since, now, offset) else {
+        return Ok("waiting".to_string());
+    };
+    if let Some(branch) = current_branch(project).filter(|branch| branch.starts_with("task/")) {
+        return Ok(format!("held: the checkout is on the task branch {branch}"));
+    }
+    ignore_line(project, CHECKS_IGNORE)?;
+    let list: String = checks.iter().map(|check| format!("{}\t{}\n", check.name, check.command)).collect();
+    write_file(&dir.join("checks"), &list)?;
+    write_file(&dir.join("started"), &format!("{now}\n"))?;
+    if let Err(error) = run_script(project, &["check", "full"]) {
+        // The run did not happen: the old start stays the base, so the run comes again.
+        match started {
+            Some(old) => write_file(&dir.join("started"), &format!("{old}\n"))?,
+            None => {
+                let _ = fs::remove_file(dir.join("started"));
+            }
+        }
+        return Err(error);
+    }
+    let tickets = full_tickets(project, now)?;
+    let run = read_full_checked(project);
+    let total = run.as_ref().map_or(0, |run| run.results.len());
+    let failed = run.as_ref().map_or(0, |run| run.failed().len());
+    let opened = tickets.iter().filter(|ticket| ticket.new).count();
+    Ok(format!("full run ({why}): {total} checks, {failed} failed, {opened} tickets opened"))
+}
+
 /// Writes the line of one run (`plan` or `work`) into `<ticket>.models` and keeps the line of the
 /// other run. None, or a choice without a model and an effort, removes the line; the file goes when
 /// it has no line. The values are checked as the options of a session.
@@ -5108,6 +5376,9 @@ pub struct TaskList {
     pick_checks: bool,
     /// The picked checks run at the merge, not in the checkout: the switch and task branches are on.
     checks_at_merge: bool,
+    /// A schedule of the full run of every check is on and the list has checks (ticket
+    /// scheduled-full-run-of-all-checks): the driver loop calls `full_check_run` for the project.
+    full_checks: bool,
     /// When the project got its Dispatch setup: the creation time of the task folder (or of its
     /// oldest state file, see `setup_time`), which the first Apply makes and a later one keeps, in milliseconds since the Unix epoch. The chat
     /// list folds the chats from before it.
@@ -5530,6 +5801,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             paused: options.paused,
             pick_checks: pick_on,
             checks_at_merge: pick_on && options.task_branches,
+            full_checks: (options.full_checks_nightly || options.full_checks_after > 0) && !check_list.is_empty(),
             setup,
             tickets,
             repairs,
@@ -8667,6 +8939,30 @@ if (args[0] === 'agents') {
         assert_eq!(run.results.iter().map(|result| (result.name.as_str(), result.exit, result.log.is_some())).collect::<Vec<_>>(), vec![("one", 0, true), ("two", 3, true)]);
         assert!(run.ended.is_some() && run.place == "run");
         set_pick(&project, false);
+
+        // The verb check full (ticket scheduled-full-run-of-all-checks), with the pick switch off:
+        // refused without the list that Dispatch writes; then every check of the list runs, the
+        // results go to checks/full/checked with the place full, old logs go, and the lock is free.
+        let (code, out) = run_script(&project, &fake, "done", &["check", "full"]);
+        assert!(code == 2 && out.contains("the full run has no list of checks"), "{out}");
+        write_file(&project.full_dir().join("checks"), "one\tcmd /c echo one & exit 0\ntwo\tcmd /c echo two & exit 3\n").unwrap();
+        write_file(&project.full_dir().join("9.log"), "old\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["check", "full"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("one: exit 0") && out.contains("two: exit 3"), "{out}");
+        let full = read(&project.full_dir().join("checked"));
+        assert!(full.starts_with("running\t") && full.contains("\tfull\n"), "{full}");
+        assert!(full.contains("\none\t0\t") && full.contains("\ntwo\t3\t") && full.lines().last().unwrap().starts_with("done\t"), "{full}");
+        assert_eq!(read(&project.full_dir().join("1.log")).trim(), "one");
+        assert_eq!(read(&project.full_dir().join("2.log")).trim(), "two");
+        assert!(!project.full_dir().join("9.log").exists(), "the logs of the last full run go");
+        assert!(!project.reports.join("full.checked").exists(), "the full run writes no task file");
+        assert!(!project.measure_dir().join("lock").exists(), "the full run freed the lock");
+        let run = read_full_checked(&project).unwrap();
+        assert!(run.place == "full" && run.ended.is_some(), "{full}");
+        assert_eq!(run.results.iter().map(|result| (result.name.as_str(), result.command.as_str(), result.exit, result.log.is_some())).collect::<Vec<_>>(), vec![("one", "cmd /c echo one & exit 0", 0, true), ("two", "cmd /c echo two & exit 3", 3, true)]);
+        assert_eq!(read(&project.checked_file("t-1")), checked, "the run of the task stays as it was");
+        fs::remove_dir_all(project.full_dir()).unwrap();
         fs::remove_file(project.checks_file()).unwrap();
         fs::remove_file(project.task_checks_file("t-1")).unwrap();
         fs::remove_file(project.checked_file("t-1")).unwrap();
@@ -9494,6 +9790,111 @@ if (args[0] === 'agents') {
     fn set_pick(project: &Project, on: bool) {
         let options = Options { pick_checks: on, ..project.options() };
         write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
+    }
+
+    const MINUTE: u64 = 60_000;
+    const DAY: u64 = 1_440 * MINUTE;
+
+    /// Ticket scheduled-full-run-of-all-checks: the pure rule of the schedule. The nightly time is due
+    /// once its latest local passing lies after the base; the count is due at the set number of
+    /// finished tasks; without a schedule nothing is due.
+    #[test]
+    fn a_full_run_is_due_when_its_time_passes() {
+        let day = 20_000 * DAY;
+        let at = 120;
+        let due = |base: u64, now: u64| full_run_due(true, at, 0, base, 0, now, 0);
+        // Before the set time: not due; after it: due.
+        assert_eq!(due(day + 60 * MINUTE, day + 90 * MINUTE), None);
+        assert_eq!(due(day + 60 * MINUTE, day + 121 * MINUTE), Some("time"));
+        // A run after the time is not due again until the next night.
+        assert_eq!(due(day + 121 * MINUTE, day + 180 * MINUTE), None);
+        assert_eq!(due(day + 121 * MINUTE, day + DAY + 119 * MINUTE), None);
+        assert_eq!(due(day + 121 * MINUTE, day + DAY + 120 * MINUTE), Some("time"));
+        // Two days closed: one call is due, and after its run the next call is not.
+        let late = day + 3 * DAY + 60 * MINUTE;
+        assert_eq!(due(day + 121 * MINUTE, late), Some("time"));
+        assert_eq!(due(late, late + MINUTE), None);
+        // An offset of -60 minutes (local time one hour ahead of UTC): 02:00 local is 01:00 UTC.
+        assert_eq!(full_run_due(true, at, 0, day + 30 * MINUTE, 0, day + 61 * MINUTE, -60), Some("time"));
+        assert_eq!(full_run_due(true, at, 0, day + 30 * MINUTE, 0, day + 61 * MINUTE, 0), None);
+        // An offset across midnight: 00:30 local with local time 2 hours behind UTC is 02:30 UTC.
+        assert_eq!(full_run_due(true, 30, 0, day, 0, day + 149 * MINUTE, 120), None);
+        assert_eq!(full_run_due(true, 30, 0, day, 0, day + 151 * MINUTE, 120), Some("time"));
+        // The count: 3 finished tasks are due, 2 are not.
+        assert_eq!(full_run_due(false, at, 3, day, 2, day + 5 * DAY, 0), None);
+        assert_eq!(full_run_due(false, at, 3, day, 3, day + 5 * DAY, 0), Some("tasks"));
+        // Both off: never due.
+        assert_eq!(full_run_due(false, at, 0, 0, 99, day + 5 * DAY, 0), None);
+        // A schedule seen for the first time counts from that moment: not due at once.
+        let now = day + 5 * DAY;
+        assert_eq!(full_run_due(true, at, 3, now, 0, now, 0), None);
+    }
+
+    fn set_full(project: &Project, nightly: bool, at: u16) {
+        let options = Options { full_checks_nightly: nightly, full_checks_at: at, ..project.options() };
+        write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
+    }
+
+    /// Ticket scheduled-full-run-of-all-checks: the real script runs every check of the list when the
+    /// set time passed (the test moves the clock), the results file names each check, and a failed
+    /// check opens one fix ticket, never a second one while it is open.
+    #[test]
+    fn a_full_run_comes_at_its_time_and_opens_one_ticket_per_failed_check() {
+        let project = scratch("full-run");
+        apply(&project, &[]).unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        write_file(&project.checks_file(), "ok | cmd /c echo ok & exit 0\nnet | cmd /c echo net down & exit 1\n").unwrap();
+        // Without a schedule the call does nothing.
+        let day1 = 20_000 * DAY;
+        assert_eq!(full_check_run_at(&project, day1, 0).unwrap(), "off");
+        set_full(&project, true, 120);
+        assert!(read_full_run(&project).is_none(), "no run yet");
+        let fix_tickets = || crate::core::tickets::list(&project).into_iter().filter(|ticket| ticket.kind == "fix").collect::<Vec<_>>();
+
+        // Day 1, 01:00: the first sight of the schedule runs nothing; 02:01: the run comes.
+        assert_eq!(full_check_run_at(&project, day1 + 60 * MINUTE, 0).unwrap(), "waiting");
+        assert_eq!(full_check_run_at(&project, day1 + 90 * MINUTE, 0).unwrap(), "waiting");
+        assert!(!project.full_dir().join("checked").exists());
+        let out = full_check_run_at(&project, day1 + 121 * MINUTE, 0).unwrap();
+        assert_eq!(out, "full run (time): 2 checks, 1 failed, 1 tickets opened");
+        let checked = read(&project.full_dir().join("checked"));
+        assert!(checked.contains("\nok\t0\t") && checked.contains("\nnet\t1\t"), "{checked}");
+        assert!(project.full_dir().join("1.log").exists() && project.full_dir().join("2.log").exists());
+        let opened = fix_tickets();
+        assert_eq!(opened.len(), 1, "one ticket for the one failed check");
+        let ticket = &opened[0];
+        assert_eq!(ticket.status, "new");
+        assert!(ticket.title.contains("net"), "{}", ticket.title);
+        assert!(ticket.summary.contains("cmd /c echo net down & exit 1") && ticket.summary.contains("\nnet down") && ticket.summary.contains("Exit code 1."), "{}", ticket.summary);
+        let info = read_full_run(&project).unwrap();
+        assert_eq!(info.started, day1 + 121 * MINUTE);
+        assert!(!info.running && info.run.as_ref().unwrap().results.len() == 2);
+        assert_eq!(info.tickets.iter().map(|found| (found.name.as_str(), found.id.as_str(), found.new)).collect::<Vec<_>>(), vec![("net", ticket.id.as_str(), true)]);
+        // The same night again: not due.
+        assert_eq!(full_check_run_at(&project, day1 + 180 * MINUTE, 0).unwrap(), "waiting");
+
+        // Day 2, 02:01: the run comes again and finds the open ticket.
+        let out = full_check_run_at(&project, day1 + DAY + 121 * MINUTE, 0).unwrap();
+        assert_eq!(out, "full run (time): 2 checks, 1 failed, 0 tickets opened");
+        assert_eq!(fix_tickets().len(), 1, "no second ticket while the first is open");
+        let info = read_full_run(&project).unwrap();
+        assert_eq!(info.tickets.iter().map(|found| (found.id.as_str(), found.new)).collect::<Vec<_>>(), vec![(ticket.id.as_str(), false)]);
+
+        // The ticket is closed: day 3, 02:01 opens a new one.
+        crate::core::tickets::ticket_move(cwd, ticket.id.clone(), "done".to_string(), Vec::new(), None).unwrap();
+        let out = full_check_run_at(&project, day1 + 2 * DAY + 121 * MINUTE, 0).unwrap();
+        assert_eq!(out, "full run (time): 2 checks, 1 failed, 1 tickets opened");
+        let after = fix_tickets();
+        assert_eq!(after.len(), 2);
+        assert_eq!(after.iter().filter(|found| found.status == "new").count(), 1);
+
+        // A changed schedule counts from its first sight again; turned off, the call does nothing.
+        set_full(&project, true, 300);
+        assert_eq!(full_check_run_at(&project, day1 + 4 * DAY + 400 * MINUTE, 0).unwrap(), "waiting");
+        assert_eq!(full_check_run_at(&project, day1 + 4 * DAY + 401 * MINUTE, 0).unwrap(), "waiting");
+        set_full(&project, false, 300);
+        assert_eq!(full_check_run_at(&project, day1 + 9 * DAY, 0).unwrap(), "off");
+        assert!(!crate::core::tickets::list(&project).iter().any(|ticket| ticket.id == "full"));
     }
 
     /// Ticket test-picker-an-agent-picks-the-checks: with the switch on, the checks line of the section

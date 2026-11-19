@@ -2467,6 +2467,8 @@ interface TaskListReply {
   pickChecks?: boolean;
   /** The picked checks run at the merge: the switch and Task branches are on. Absent from an older host. */
   checksAtMerge?: boolean;
+  /** A schedule of the full run of every check is on and the list has checks (ticket scheduled-full-run-of-all-checks). Absent from an older host. */
+  fullChecks?: boolean;
   /** When the project got its Dispatch setup (the reports folder was made); null without one. */
   setup: number | null;
   /** The tickets of the project (ticket tickets), in the order of the file. */
@@ -2510,6 +2512,8 @@ interface ProjectTasks {
   pickChecks: boolean;
   /** The picked checks run at the merge, not on the click "Run checks". */
   checksAtMerge: boolean;
+  /** A schedule of the full run of every check is on: the driver window calls `full_check_run` (ticket scheduled-full-run-of-all-checks). */
+  fullChecks: boolean;
   setup: number | null;
   /** The tickets of the project (ticket tickets). */
   tickets: Ticket[];
@@ -2537,6 +2541,7 @@ function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTa
     paused: reply.paused ?? false,
     pickChecks: reply.pickChecks ?? false,
     checksAtMerge: reply.checksAtMerge ?? false,
+    fullChecks: reply.fullChecks ?? false,
     setup: reply.setup ?? null,
     tickets: reply.tickets ?? [],
     merging: reply.merging ?? null,
@@ -2917,6 +2922,10 @@ function approvePlans(): void {
     // flight holds the project like a running work run. A pause holds every start (ticket pause-tasks).
     // An uncommitted change holds only the task whose files it touches (ticket leftover-files-block-tasks).
     const busy = { merging: project.merging, running: workRun(tasks)?.name ?? null, leased: startHolder(project.host, project.cwd), paused: project.paused };
+    // The scheduled full run of every check waits for a free project, and while it runs no merge and
+    // no work run starts there (ticket scheduled-full-run-of-all-checks, user decision 2).
+    startFullRun(project, projectBusy(busy));
+    if (fullRuns.has(projectKey(project.host, project.cwd))) continue;
     // Night mode merges a finished task when the merge check passes (ticket task-branches-blocked-work,
     // user decision 3), so a task that needs its work goes on at night. One try per report. The merge
     // holds the checkout: nothing else starts in this project at this poll. The switch "Auto-merge
@@ -6709,6 +6718,45 @@ function startPicks(project: ProjectTasks, tasks: Task[]): void {
     pickTried.add(pickKey(task));
     void pickTask(task);
   }
+}
+
+/** The projects whose full run of every check is in flight, by project key (ticket scheduled-full-run-of-all-checks). */
+const fullRuns = new Set<string>();
+/** The time of the last call of `full_check_run` per project key, in milliseconds: at most one call a minute. */
+const fullCalls = new Map<string, number>();
+
+/**
+ * Asks the host whether the full run of every check of a project is due and runs it then
+ * (ticket scheduled-full-run-of-all-checks): only with a schedule, not while the project is busy,
+ * not while a call is in flight, and at most once a minute. Rust decides "due" from the clock and
+ * the time zone offset of this window; the list refreshes after a run.
+ */
+function startFullRun(project: ProjectTasks, busy: boolean): void {
+  if (!project.fullChecks || busy) return;
+  const key = projectKey(project.host, project.cwd);
+  const now = Date.now();
+  if (fullRuns.has(key) || now - (fullCalls.get(key) ?? 0) < 60_000) return;
+  fullCalls.set(key, now);
+  fullRuns.add(key);
+  void (async () => {
+    let ran = false;
+    try {
+      const result = await call<string>(project.host, "full_check_run", { cwd: project.cwd, offset: new Date().getTimezoneOffset() });
+      ran = result.startsWith("full run");
+    } catch (error) {
+      console.error("the full run of the checks failed", error);
+    } finally {
+      fullRuns.delete(key);
+    }
+    if (!ran) return;
+    tasksShown = "";
+    try {
+      await refreshTasks();
+    } catch (error) {
+      console.error("task list refresh failed", error);
+    }
+    renderChats();
+  })();
 }
 
 /** Night mode runs the picked checks of a task that waits for the click, one try per report. */

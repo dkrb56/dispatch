@@ -401,6 +401,11 @@ pub fn task_run_checks(cwd: String, id: String) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
+pub fn full_check_run(cwd: String, offset: i32) -> Result<String, String> {
+    pipeline::full_check_run(cwd, offset)
+}
+
+#[tauri::command(async)]
 pub fn task_take_done(cwd: String, id: String) -> Result<u64, String> {
     pipeline::task_take_done(cwd, id)
 }

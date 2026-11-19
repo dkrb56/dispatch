@@ -220,3 +220,54 @@ export function checkResultLines(run: CheckRunInfo | null | undefined): { name: 
     log: result.log,
   }));
 }
+
+// The scheduled full run of every check (ticket scheduled-full-run-of-all-checks): the time field of
+// Setup pipeline and the lines of the last run.
+
+/** A failed check of the last full run and its ticket (`FullTicket` in pipeline.rs). */
+export interface FullTicket {
+  name: string;
+  id: string;
+  /** The run opened the ticket; false: an open ticket of the check was there already. */
+  new: boolean;
+}
+
+/** The last full run of a project (`FullRunInfo` in pipeline.rs). */
+export interface FullRunInfo {
+  run: CheckRunInfo | null;
+  /** When Dispatch started the run, in milliseconds; 0 without a run. */
+  started: number;
+  running: boolean;
+  tickets: FullTicket[];
+}
+
+/** The text of a time field ("HH:MM") for minutes since midnight. */
+export function timeText(minutes: number): string {
+  const value = Math.min(1439, Math.max(0, Math.floor(minutes)));
+  return `${String(Math.floor(value / 60)).padStart(2, "0")}:${String(value % 60).padStart(2, "0")}`;
+}
+
+/** The minutes since midnight of a time text ("HH:MM"), or null for a text that is no time. */
+export function timeMinutes(text: string): number | null {
+  const match = /^(\d{1,2}):(\d{2})/.exec(text.trim());
+  if (!match) return null;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  return hours < 24 && minutes < 60 ? hours * 60 + minutes : null;
+}
+
+/** The lines of the last full run for Setup pipeline: the head line, one row per check, one line per ticket. */
+export function fullRunLines(
+  info: FullRunInfo | null | undefined,
+  when: (millis: number) => string = (millis) => new Date(millis).toLocaleString(),
+): { head: string; checks: ReturnType<typeof checkResultLines>; tickets: string[] } {
+  if (!info) return { head: "No full run yet.", checks: [], tickets: [] };
+  const checks = info.running ? [] : checkResultLines(info.run);
+  const tickets = info.running ? [] : info.tickets.map((ticket) => `${ticket.name}: ticket ${ticket.id} ${ticket.new ? "opened" : "still open"}`);
+  if (info.running) return { head: `Full run running · started ${when(info.started)}`, checks, tickets };
+  if (!info.run) return { head: `Last full run: ${when(info.started)} · no results`, checks, tickets };
+  const failed = failedChecks(info.run).length;
+  const count = `${checks.length} ${checks.length === 1 ? "check" : "checks"}`;
+  const result = info.run.ended === null ? "ended early" : failed > 0 ? `${failed} failed` : "all passed";
+  return { head: `Last full run: ${when(info.started)} · ${count} · ${result}`, checks, tickets };
+}

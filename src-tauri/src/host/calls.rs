@@ -217,6 +217,7 @@ pub fn run(
         "task_pick_checks" => json(pipeline::task_pick_checks(a.req("cwd")?, a.req("id")?)?),
         "task_pick_choice" => json(pipeline::task_pick_choice(a.req("cwd")?, a.req("id")?, a.req("names")?)?),
         "task_run_checks" => json(pipeline::task_run_checks(a.req("cwd")?, a.req("id")?)?),
+        "full_check_run" => json(pipeline::full_check_run(a.req("cwd")?, a.req("offset")?)?),
         "task_take_done" => json(pipeline::task_take_done(a.req("cwd")?, a.req("id")?)?),
         "task_reject" => json(pipeline::task_reject(a.req("cwd")?, a.req("id")?, a.req("reason")?)?),
         "task_reply" => json(pipeline::task_reply(a.req("cwd")?, a.req("id")?, a.req("text")?)?),

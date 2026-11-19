@@ -97,6 +97,7 @@ pub fn run() {
             commands::task_pick_checks,
             commands::task_pick_choice,
             commands::task_run_checks,
+            commands::full_check_run,
             commands::task_take_done,
             commands::task_reject,
             commands::task_reply,

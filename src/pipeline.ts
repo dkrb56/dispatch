@@ -1,7 +1,8 @@
 import { call, type HostId } from "./backend";
 import { type BuildFolders, cleanable, type CleanResult, cleanText, rowText } from "./builds";
+import { type FullRunInfo, fullRunLines, timeMinutes, timeText } from "./checks";
 import { initDialogTabs } from "./dialogtabs";
-import { openViewer, statFile } from "./files";
+import { type FileEntry, openViewer, statFile } from "./files";
 import { checkText, type Finding, findingElement, optionsText, type RulesCheck, removeAllButton, savedOptions, tick } from "./rulecheck";
 
 /** One change that the setup makes in a project. */
@@ -40,6 +41,12 @@ interface Options {
   checksAtGate: boolean;
   /** An agent picks the checks after the work run from the change, and the task card shows them before they run (ticket test-picker-an-agent-picks-the-checks). Off at the start. */
   pickChecks: boolean;
+  /** Every check runs each night at `fullChecksAt` (ticket scheduled-full-run-of-all-checks). Off at the start. */
+  fullChecksNightly: boolean;
+  /** The time of the nightly full run, in minutes since local midnight. */
+  fullChecksAt: number;
+  /** The full run also comes after this many finished tasks; 0 is off. */
+  fullChecksAfter: number;
   /** Merge pushes the base to its upstream branch after the merge, never with force (ticket simpler-process). Off at the start. */
   pushAfterMerge: boolean;
   /** Dispatch merges a task with a done report by itself after the gate passed (ticket create-project-settings-option-to-auto). Off at the start. */
@@ -66,6 +73,8 @@ interface Plan {
   checks?: string;
   /** The text of `.dispatch/checks-all.txt`: the files whose change runs every check (ticket test-picker-an-agent-picks-the-checks). Absent from an older host. */
   checksAll?: string;
+  /** The last scheduled full run of every check (ticket scheduled-full-run-of-all-checks); null before the first. Absent from an older host. */
+  fullChecks?: FullRunInfo | null;
 }
 
 const dialog = document.querySelector<HTMLDialogElement>("#setup")!;
@@ -91,6 +100,13 @@ const checksEl = document.querySelector<HTMLTextAreaElement>("#setup-checks")!;
 const findChecksEl = document.querySelector<HTMLButtonElement>("#setup-find-checks")!;
 /** The box with the files whose change runs every check, under the switch "Pick the checks after the work run" (ticket test-picker-an-agent-picks-the-checks). */
 const checksAllEl = document.querySelector<HTMLTextAreaElement>("#setup-checks-all")!;
+/** The time of the nightly full run and the count of finished tasks, beside the switch "Each night at" (ticket scheduled-full-run-of-all-checks). */
+const fullAtEl = document.querySelector<HTMLInputElement>("#setup-full-at")!;
+const fullAfterEl = document.querySelector<HTMLInputElement>("#setup-full-after")!;
+/** The last full run: the head line, one row per check with its log, one line per ticket. */
+const fullLastEl = document.querySelector<HTMLElement>("#setup-full-last")!;
+/** The options of the shown plan: a change sends them whole, with the changed values. */
+let shownOptions: Options | null = null;
 
 /** The folder for which the dialog shows the steps, and its host (remote-multi-host). */
 let folder: string | null = null;
@@ -221,12 +237,62 @@ function rulesElement(rules: string[]): HTMLElement {
   return list;
 }
 
+/** Shows the last full run of every check: the head line, the checks with their exit codes and logs, the tickets. */
+function showFullRun(info: FullRunInfo | null | undefined): void {
+  const lines = fullRunLines(info);
+  const head = document.createElement("div");
+  head.className = "full-head";
+  head.textContent = lines.head;
+  const rows = lines.checks.map((line) => {
+    const row = document.createElement("div");
+    row.className = "full-result";
+    const name = document.createElement("span");
+    name.textContent = line.name;
+    const exit = document.createElement("span");
+    exit.className = line.failed ? "exit failed" : "exit";
+    exit.textContent = `${line.exit} · ${line.seconds}`;
+    row.append(name, exit);
+    if (line.log) {
+      const log = line.log;
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "full-log";
+      open.textContent = "log";
+      open.title = `Open the log: ${log.path}`;
+      open.addEventListener("click", () => void openViewer({ ...log, host: folderHost } as FileEntry));
+      row.append(open);
+    }
+    return row;
+  });
+  const tickets = lines.tickets.map((text) => {
+    const line = document.createElement("div");
+    line.textContent = text;
+    return line;
+  });
+  fullLastEl.replaceChildren(head, ...rows, ...tickets);
+}
+
+/** The options to save: the shown ones with the switches and the two fields of the full run as they stand now. */
+function currentOptions(): Options {
+  const options = { ...shownOptions, ...Object.fromEntries(optionEls.map((el) => [el.dataset.option, el.checked])) } as Options;
+  options.fullChecksAt = timeMinutes(fullAtEl.value) ?? shownOptions?.fullChecksAt ?? 0;
+  const after = Math.floor(Number(fullAfterEl.value));
+  options.fullChecksAfter = Number.isFinite(after) ? Math.min(999, Math.max(0, after)) : (shownOptions?.fullChecksAfter ?? 0);
+  return options;
+}
+
 function show(plan: Plan): void {
   projectEl.textContent = plan.root;
+  shownOptions = plan.options;
   for (const option of optionEls) {
-    option.checked = plan.options[option.dataset.option as keyof Options];
+    option.checked = Boolean(plan.options[option.dataset.option as keyof Options]);
     option.disabled = false;
   }
+  if (document.activeElement !== fullAtEl) fullAtEl.value = timeText(plan.options.fullChecksAt ?? 0);
+  fullAtEl.disabled = !plan.options.fullChecksNightly;
+  if (document.activeElement !== fullAfterEl) fullAfterEl.value = String(plan.options.fullChecksAfter ?? 0);
+  fullAfterEl.disabled = false;
+  showFullRun(plan.fullChecks);
   // The box keeps what the user types while it has the focus; it is open only with the switch on.
   if (document.activeElement !== measureEl) measureEl.value = plan.measureCommands ?? "";
   measureEl.disabled = !plan.options.measureBeforePlan;
@@ -290,10 +356,14 @@ export function initPipeline(
     const current = currentFolder();
     open(current.host, current.folder ?? null);
   });
+  // A switch sends the whole options: the two fields of the full run keep their values (ticket scheduled-full-run-of-all-checks).
   for (const option of optionEls) {
-    option.addEventListener("change", () => {
-      const options = Object.fromEntries(optionEls.map((el) => [el.dataset.option, el.checked])) as unknown as Options;
-      void run("set_project_options", options);
+    option.addEventListener("change", () => void run("set_project_options", currentOptions()));
+  }
+  // The time and the count of the full run save when the field changes.
+  for (const field of [fullAtEl, fullAfterEl]) {
+    field.addEventListener("change", () => {
+      if (folder) void run("set_project_options", currentOptions());
     });
   }
   // The list is saved when the box loses the focus, as a file of the project.
@@ -387,6 +457,12 @@ function open(host: HostId, target: string | null): void {
   findChecksEl.disabled = true;
   checksAllEl.value = "";
   checksAllEl.disabled = true;
+  shownOptions = null;
+  fullAtEl.value = "";
+  fullAtEl.disabled = true;
+  fullAfterEl.value = "";
+  fullAfterEl.disabled = true;
+  fullLastEl.replaceChildren();
   checkRun += 1;
   checkStateEl.textContent = "";
   checkListEl.replaceChildren();

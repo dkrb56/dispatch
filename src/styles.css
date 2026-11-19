@@ -1103,6 +1103,76 @@ button.task-head:hover {
   cursor: pointer;
 }
 
+/* The schedule of the full run of all checks in Setup pipeline, and its last run (ticket scheduled-full-run-of-all-checks). */
+#setup .setup-full-head {
+  margin: 10px 0 2px;
+  line-height: 1.45;
+}
+
+#setup .setup-full {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+}
+
+#setup .setup-full label {
+  margin: 2px 0;
+}
+
+#setup .setup-full input[type="time"],
+#setup .setup-full input[type="number"] {
+  padding: 2px 4px;
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+#setup .setup-full input[type="number"] {
+  width: 5em;
+}
+
+#setup .setup-full input:disabled {
+  opacity: 0.5;
+}
+
+#setup .setup-full-last {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 6px 0 2px;
+  font-size: calc(12px * var(--text-scale));
+}
+
+#setup .setup-full-last .full-head {
+  color: var(--muted);
+}
+
+#setup .setup-full-last .full-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#setup .setup-full-last .exit {
+  color: var(--muted);
+}
+
+#setup .setup-full-last .exit.failed {
+  color: var(--danger);
+}
+
+#setup .setup-full-last .full-log {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+}
+
 /* The model and the effort of the work run on the Plan ready card (ticket ticket-form-optional-fields-on-a-new). */
 .task-card .card-work {
   display: flex;
