@@ -74,7 +74,7 @@ import { type WaitFacts, waitReason } from "./waitreason";
 import { HOLD_NOTE, holdWait } from "./holdstep";
 import { triageCard, triagePanesToClose, withoutTriage } from "./notriage";
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
-import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
+import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
 import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
@@ -5593,9 +5593,10 @@ function updateDecisionsFooter(): void {
   // Text in the question box: only Ask may send it, so Approve and Revise wait.
   const asking = questionPending(decisionsAskText().value);
   footerButton("#decisions-approve", busy || asking, asking ? ASK_FIRST : "");
-  // A plan without decisions goes back through Reject on its card, with a reason.
+  // Revise also sends the text of the box. A plan without decisions needs that text.
   const none = (decisionsTask.info?.decisions ?? []).length === 0;
-  footerButton("#decisions-revise", busy || none || asking, none ? "This plan has no decisions. Use Reject on the plan card to send it back with your reason" : asking ? ASK_FIRST : "");
+  const noneWait = none && !asking;
+  footerButton("#decisions-revise", busy || noneWait, noneWait ? "This plan has no decisions. Type a change in the box to send it back, or use Reject on the plan card" : "");
   document.querySelector("#decisions-approve")!.classList.toggle("primary", !asking);
   document.querySelector("#decisions-ask")!.classList.toggle("primary", asking);
   const askProject = projectFor(taskHost(decisionsTask), taskCwd(decisionsTask));
@@ -5985,9 +5986,16 @@ function initDecisions(): void {
   reviseButton.addEventListener("click", () => {
     const task = decisionsTask;
     if (!task || decisionsSending) return;
-    const reason = `Decisions of the user: ${decisionLines(decisionAnswers(task)).join("; ")}. Write them into the plan as decided; no HOLD is left.`;
-    const line = `Plan ${task.name} sent back in Dispatch with the decisions of the user.`;
-    send(reviseButton, "Sending…", () => taskAction(task, "task_reject", { id: task.name, reason }, line));
+    const reason = reviseReason(decisionLines(decisionAnswers(task)), decisionsAskText().value, askDecision);
+    const line = `Plan ${task.name} sent back in Dispatch with the decisions ${questionPending(decisionsAskText().value) ? "and the words " : ""}of the user.`;
+    send(reviseButton, "Sending…", async () => {
+      const done = await taskAction(task, "task_reject", { id: task.name, reason }, line);
+      if (done) {
+        decisionsAskText().value = "";
+        askDecision = undefined;
+      }
+      return done;
+    });
   });
 }
 

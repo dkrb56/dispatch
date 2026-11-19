@@ -21,7 +21,7 @@ export const FOOTER_LABELS = {
 /** The line under each footer button: when to use it and what happens after the click. */
 export const FOOTER_HINTS = {
   ask: "Not sure? Ask first. Triage answers in its chat. Nothing changes.",
-  revise: "The planner writes the plan again with your choices. The card comes back.",
+  revise: "The planner writes the plan again with your choices and your words. The card comes back.",
   approve: "Your choices go into the plan. The work starts.",
 } as const;
 
@@ -65,7 +65,23 @@ export function askChatLine(ticket: string, question: string, decision?: AskDeci
 
 /** The line over the Ask box: what the question is about. */
 export function askAbout(decision?: AskDecision): string {
-  return decision ? `Your question about decision ${decision.number}: ${decision.name}` : "Your question about this plan";
+  return decision ? `Your question or change to decision ${decision.number}: ${decision.name}` : "Your question or change to this plan";
+}
+
+/**
+ * The reason that Revise sends to the planner (task_reject adds "Plan rejected: " before it and
+ * " Revise the plan." after it): the decisions of the user, then the words of the box. Whitespace
+ * collapses to single spaces because the reason goes as one process argument.
+ */
+export function reviseReason(lines: string[], words: string, decision?: AskDecision): string {
+  const parts: string[] = [];
+  if (lines.length > 0) parts.push(`Decisions of the user: ${lines.join("; ")}. Write them into the plan as decided; no HOLD is left.`);
+  const text = words.trim().replace(/\s+/g, " ");
+  if (text !== "") {
+    const about = decision ? ` about decision ${decision.number} (${decision.name})` : "";
+    parts.push(`Change${about} that the user asks for the new plan, in the words of the user: ${text}`);
+  }
+  return parts.join(" ");
 }
 
 /** The tooltip of Approve and Revise while the question box has text. */

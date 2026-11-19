@@ -5,19 +5,20 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ASK_FIRST, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS, askAbout, askBlocked, askChatLine, askLine, questionPending } from "../src/discuss.ts";
+import { ASK_FIRST, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS, askAbout, askBlocked, askChatLine, askLine, questionPending, reviseReason } from "../src/discuss.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = read("../src/main.ts");
 const CSS = read("../src/styles.css");
 
-test("text in the question box greys Approve and Revise and makes Ask the main button", () => {
+test("text in the question box greys Approve, keeps Revise on and makes Ask the main button", () => {
   assert.equal(questionPending(""), false);
   assert.equal(questionPending("   "), false);
   assert.equal(questionPending("x"), true);
   assert.equal(ASK_FIRST, "Send or clear your question first");
   assert.match(MAIN, /footerButton\("#decisions-approve", busy \|\| asking, asking \? ASK_FIRST : ""\)/);
-  assert.match(MAIN, /footerButton\("#decisions-revise", busy \|\| none \|\| asking,/);
+  assert.match(MAIN, /footerButton\("#decisions-revise", busy \|\| noneWait,/);
+  assert.doesNotMatch(MAIN, /footerButton\("#decisions-revise"[^\n]*asking/);
   assert.match(MAIN, /"#decisions-approve"\)!\.classList\.toggle\("primary", !asking\)/);
   assert.match(MAIN, /"#decisions-ask"\)!\.classList\.toggle\("primary", asking\)/);
   assert.match(MAIN, /decisionsAskText\(\)\.addEventListener\("input", updateDecisionsFooter\)/);
@@ -51,8 +52,8 @@ test("the footer has three buttons in the order Ask, Revise, Approve, each with 
 
 test("the footer has the Ask box, and the intro and the Help name the Ask", () => {
   assert.match(FOOTER, /<textarea id="decisions-ask-text"/);
-  assert.match(FOOTER, /<div id="decisions-ask-about">Your question about this plan<\/div>/);
-  assert.equal(askAbout(), "Your question about this plan");
+  assert.match(FOOTER, /<div id="decisions-ask-about">Your question or change to this plan<\/div>/);
+  assert.equal(askAbout(), "Your question or change to this plan");
   const intro = /<p id="decisions-intro">([\s\S]*?)<\/p>/.exec(HTML)?.[1] ?? "";
   assert.match(intro, /Ask about this/);
   for (const words of [FOOTER_LABELS.ask, FOOTER_LABELS.revise, FOOTER_LABELS.approve, "Ask about this", "approves nothing and changes nothing"]) {
@@ -67,7 +68,7 @@ test("a question about one decision names the plan, the decision and the questio
     "Question of the user about plan add-gallery, decision 2 (Where the gallery shows), from the Decisions window of Dispatch: Why not its own page? " +
       "Explain in plain words. Do not approve, revise or reject the plan; the user decides in Dispatch.",
   );
-  assert.equal(askAbout({ number: 2, name: "Where the gallery shows" }), "Your question about decision 2: Where the gallery shows");
+  assert.equal(askAbout({ number: 2, name: "Where the gallery shows" }), "Your question or change to decision 2: Where the gallery shows");
 });
 
 test("a question about a plan without decisions, and an empty box, still ask for an explanation", () => {
@@ -142,4 +143,24 @@ test("no triage: nothing blocks the Ask, and the button names the Chat", () => {
   assert.match(chat, /pane\.term\.paste\(text\);/);
   assert.match(chat, /"pty_write", \{ id: pane\.id, data: KEY_ENTER \}/, "user decision 3: Dispatch sends it");
   assert.doesNotMatch(chat, /approveOrQueue|task_reject|task_approve|taskAction|tellTriage/);
+});
+
+// Ticket plan-form-a-free-message-to-the-planner: Revise also sends the text of the box.
+test("reviseReason: choices only, words only, both, a decision named, newlines collapsed", () => {
+  const lines = ["1. Where: Page", "2. Size: Small"];
+  const choices = "Decisions of the user: 1. Where: Page; 2. Size: Small. Write them into the plan as decided; no HOLD is left.";
+  assert.equal(reviseReason(lines, ""), choices);
+  assert.equal(reviseReason(lines, "   "), choices);
+  const words = reviseReason([], "  Use\n a   new file ");
+  assert.match(words, /in the words of the user: Use a new file$/);
+  assert.doesNotMatch(words, /Decisions of the user/);
+  const both = reviseReason(lines, "Add a test", { number: 2, name: "Size" });
+  assert.ok(both.startsWith(choices + " "));
+  assert.match(both, /Change about decision 2 \(Size\) that the user asks for the new plan, in the words of the user: Add a test$/);
+  for (const one of [choices, words, both]) assert.ok(!/Revise the plan\.$/.test(one) && !/[\r\n]/.test(one), one);
+});
+
+test("the Revise click sends the box text and clears it only on success", () => {
+  assert.match(MAIN, /reviseReason\(decisionLines\(decisionAnswers\(task\)\), decisionsAskText\(\)\.value, askDecision\)/);
+  assert.match(MAIN, /if \(done\) \{\s*decisionsAskText\(\)\.value = "";\s*askDecision = undefined;/);
 });
