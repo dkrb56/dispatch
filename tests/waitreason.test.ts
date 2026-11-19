@@ -133,7 +133,8 @@ test("the wait reason of a plan card has a Commit files button and its window", 
   assert.match(MAIN, /commit\.textContent = "Commit files…";/);
   assert.match(MAIN, /if \(facts\.dirty\.length > 0 && !facts\.editing && !facts\.merging && !facts\.checkout\) \{/, "only while no other work run, no merge and no other checkout holds the task");
   assert.match(MAIN, /commit\.disabled = busy;/);
-  assert.match(MAIN, /call<\{ lines: string\[\]; message: string \}>\(host, "task_commit_preview"/);
+  assert.match(MAIN, /call<\{ lines: string\[\]; message: string; hint: string \}>\(host, "task_commit_preview"/);
+  assert.match(MAIN, /if \(preview\.hint\) intro\.textContent = `\$\{intro\.dataset\.base\} \$\{preview\.hint\}`;/, "the window shows the old-script hint");
   assert.match(MAIN, /call<string>\(host, "task_commit_message"/);
   assert.match(MAIN, /call<string>\(taskHost\(task\), "task_commit", \{ cwd: taskCwd\(task\), id: task\.name, message: message\.value, files: commitLines \}\)/);
   assert.match(MAIN, /if \(!message\.dataset\.typed && !commitSending\) message\.value = text;/, "Claude's message does not replace typed text");
@@ -143,5 +144,6 @@ test("the wait reason of a plan card has a Commit files button and its window", 
   assert.match(HTML, /<textarea id="commit-message"/);
   assert.match(HTML, /Dispatch does not push\./);
   assert.match(HTML, /The <b>Commit files…<\/b> button under that reason opens a window with these files and a suggested commit message/);
+  assert.match(HTML, /With an older worker script in the project, every changed file holds the task and the window lists them all; Setup pipeline &gt; Apply updates the script\./);
   assert.match(CSS, /#commit-files \{[^}]*"Cascadia Mono"/);
 });

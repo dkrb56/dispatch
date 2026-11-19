@@ -5667,6 +5667,9 @@ function openCommit(task: Task): void {
   const error = document.querySelector<HTMLElement>("#commit-error")!;
   const send = document.querySelector<HTMLButtonElement>("#commit-send")!;
   document.querySelector("#commit-title")!.textContent = `Commit files of ${task.name}`;
+  const intro = document.querySelector<HTMLElement>("#commit-intro")!;
+  intro.dataset.base ??= intro.textContent ?? "";
+  intro.textContent = intro.dataset.base;
   files.replaceChildren();
   message.value = "";
   delete message.dataset.typed;
@@ -5677,10 +5680,11 @@ function openCommit(task: Task): void {
   const host = taskHost(task);
   const cwd = taskCwd(task);
   const current = (): boolean => opening === commitOpening && commitDialog.open;
-  call<{ lines: string[]; message: string }>(host, "task_commit_preview", { cwd, id: task.name })
+  call<{ lines: string[]; message: string; hint: string }>(host, "task_commit_preview", { cwd, id: task.name })
     .then((preview) => {
       if (!current()) return;
       commitLines = preview.lines;
+      if (preview.hint) intro.textContent = `${intro.dataset.base} ${preview.hint}`;
       files.replaceChildren(
         ...preview.lines.map((line) => {
           const item = document.createElement("li");

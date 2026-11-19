@@ -6848,6 +6848,7 @@ pub fn pipeline_commit(cwd: String) -> Result<String, String> {
 pub struct TaskCommitPreview {
     lines: Vec<String>,
     message: String,
+    hint: String,
 }
 
 /// The paths of a `git status --porcelain` line: one, or both paths of a rename. Without quotes.
@@ -6871,8 +6872,17 @@ fn task_commit_lines(project: &Project, ticket: &str) -> Result<Vec<String>, Str
     if lines.is_empty() {
         return Ok(Vec::new());
     }
+    // A script of an older version holds the task for every change, as `task_list` shows on the card.
+    if !project_script_current(project) {
+        return Ok(lines);
+    }
     let branch = read_branch_file(&project.branch_file(ticket));
     Ok(task_leftovers(&lines, &task_files(project, ticket, branch.as_ref())))
+}
+
+/// True when the worker script of the project is the script of this version of Dispatch.
+fn project_script_current(project: &Project) -> bool {
+    fs::read_to_string(project.script()).is_ok_and(|text| text.replace("\r\n", "\n") == WORKER_SCRIPT)
 }
 
 /// The fixed commit message of the Commit files window: a subject with the ticket and the number of
@@ -6896,7 +6906,12 @@ pub fn task_commit_preview(cwd: String, id: String) -> Result<TaskCommitPreview,
     let project = Project::find(&cwd)?;
     let lines = task_commit_lines(&project, &id)?;
     let message = task_commit_template(&id, &lines);
-    Ok(TaskCommitPreview { lines, message })
+    let hint = if project_script_current(&project) {
+        String::new()
+    } else {
+        "The worker script of this project is older than Dispatch, so every changed file holds this task. Setup pipeline > Apply updates it; then only the files of the task count.".to_string()
+    };
+    Ok(TaskCommitPreview { lines, message, hint })
 }
 
 /// The longest diff, in characters, that the prompt of the commit message holds.
@@ -9557,6 +9572,8 @@ if (args[0] === 'agents') {
     fn task_commit_takes_only_the_shown_task_files() {
         let project = git_scratch("task-commit-button");
         let root = project.root.clone();
+        // The current worker script: only the task files hold the task.
+        write_file(&project.script(), WORKER_SCRIPT).unwrap();
         let git = |args: &[&str]| run_git(&root, args).unwrap();
         let cwd = root.to_string_lossy().into_owned();
         for file in ["a.txt", "b.txt", "other.txt", "staged.txt"] {
@@ -9578,6 +9595,7 @@ if (args[0] === 'agents') {
         let preview = task_commit_preview(cwd.clone(), "t-1".into()).unwrap();
         assert_eq!(preview.lines, vec![" M a.txt", " M b.txt", "?? new/one.txt", "?? new/two.txt"]);
         assert_eq!(preview.message, "t-1: commit the changes in 4 files before its work run\n\n- a.txt\n- b.txt\n- new/one.txt\n- new/two.txt");
+        assert_eq!(preview.hint, "");
         assert!(task_commit_preview(cwd.clone(), "../t-1".into()).is_err());
 
         // An empty message is refused, and nothing is committed.
@@ -9599,6 +9617,42 @@ if (args[0] === 'agents') {
 
         // Nothing of the shown list is left to commit: an error.
         assert_eq!(task_commit(cwd.clone(), "t-1".into(), "t-1: again".into(), vec![" M a.txt".into()]).unwrap_err(), "Nothing to commit: these files changed in the meantime.");
+        clean(&project);
+    }
+
+    #[test]
+    fn task_commit_with_an_old_script_takes_every_change() {
+        let project = git_scratch("task-commit-old-script");
+        let root = project.root.clone();
+        let git = |args: &[&str]| run_git(&root, args).unwrap();
+        let cwd = root.to_string_lossy().into_owned();
+        for file in ["a.txt", "logs/x.md"] {
+            write_file(&root.join(file), "one\n").unwrap();
+        }
+        git(&["add", "--", "a.txt", "logs/x.md"]);
+        git(&["commit", "-q", "-m", "base"]);
+        write_file(&project.plans().join("t-1.md"), "# Plan t-1\n\n## Files to change\n- `a.txt` — one\n").unwrap();
+        for file in ["a.txt", "logs/x.md"] {
+            write_file(&root.join(file), "two\n").unwrap();
+        }
+
+        // No worker script: an old script holds the task for every change, so the window lists both.
+        let preview = task_commit_preview(cwd.clone(), "t-1".into()).unwrap();
+        assert_eq!(preview.lines, vec![" M a.txt", " M logs/x.md"]);
+        assert!(preview.hint.contains("Setup pipeline > Apply"), "{}", preview.hint);
+        let text = task_commit(cwd.clone(), "t-1".into(), "t-1: all changes".into(), preview.lines.clone()).unwrap();
+        assert!(text.contains("a.txt, logs/x.md"), "{text}");
+        let files = git(&["show", "--name-only", "--format=", "HEAD"]);
+        assert_eq!(files.lines().filter(|line| !line.is_empty()).collect::<Vec<_>>(), vec!["a.txt", "logs/x.md"]);
+
+        // The current script: only the task files count, and there is no hint.
+        for file in ["a.txt", "logs/x.md"] {
+            write_file(&root.join(file), "three\n").unwrap();
+        }
+        write_file(&project.script(), WORKER_SCRIPT).unwrap();
+        let preview = task_commit_preview(cwd.clone(), "t-1".into()).unwrap();
+        assert_eq!(preview.lines, vec![" M a.txt"]);
+        assert_eq!(preview.hint, "");
         clean(&project);
     }
 
