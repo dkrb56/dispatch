@@ -189,6 +189,28 @@ export function fitBoardSize(size: { width: number; height: number }, view: { wi
   return { width: fit(size.width, BOARD_MIN.width, view.width), height: fit(size.height, BOARD_MIN.height, view.height) };
 }
 
+/** The localStorage key of the place of the New ticket window. */
+export const TICKET_ADD_PLACE_KEY = "ticket-add-place";
+
+/** The place of a window from its localStorage text; a broken or missing one gives null. */
+export function parseWindowPlace(text: string | null): { left: number; top: number } | null {
+  if (!text) return null;
+  try {
+    const place = JSON.parse(text) as { left?: unknown; top?: unknown } | null;
+    const { left, top } = place ?? {};
+    if (typeof left !== "number" || typeof top !== "number" || !Number.isFinite(left) || !Number.isFinite(top)) return null;
+    return { left, top };
+  } catch {
+    return null;
+  }
+}
+
+/** A place in whole px that keeps the whole window inside the app window; a larger window starts at 0. */
+export function fitWindowPlace(place: { left: number; top: number }, size: { width: number; height: number }, view: { width: number; height: number }): { left: number; top: number } {
+  const fit = (value: number, length: number, room: number) => Math.max(0, Math.min(Math.round(value), Math.floor(room - length)));
+  return { left: fit(place.left, size.width, view.width), top: fit(place.top, size.height, view.height) };
+}
+
 /** The column of a status; an unknown one, and the old `todo`, is New. */
 export function columnOf(status: string): TicketStatus {
   return COLUMNS.some((column) => column.status === status) ? (status as TicketStatus) : "new";

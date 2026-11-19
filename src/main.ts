@@ -52,7 +52,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, bulkIds, canDrag, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages } from "./tickets";
+import { addedText, bulkIds, canDrag, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
@@ -1161,7 +1161,7 @@ function showChatTab(triage: Pane, tabId: string): void {
   for (const button of triage.barEl.querySelectorAll<HTMLElement>(".view-switch button")) button.classList.remove("active");
   shownChat = { tabId, triage: triage.id };
   for (const pane of tabPanes(tabId)) pane.sideDue = 0;
-  panes.get(tab.focus ?? "")?.term.focus();
+  if (!addTicketHasKeyboard()) panes.get(tab.focus ?? "")?.term.focus();
   renderChatTabs();
 }
 
@@ -6940,6 +6940,11 @@ function openTickets(ref: ProjectRef): void {
   ticketsColumnsEl.replaceChildren();
   applySavedSize(ticketsDialog, TICKETS_SIZE_KEY);
   if (!ticketsDialog.open) ticketsDialog.showModal();
+  // The modal board makes the page behind it inert: an open ticket window moves into the board.
+  if (addTicketDialog.open) {
+    showAddTicketWindow();
+    focusAddTicketGoal();
+  }
   renderTickets();
   // A project that no view reads gets its list now; the task poll reads it while the board shows.
   if (!projectTasks.has(refKey(ref))) {
@@ -7037,16 +7042,21 @@ function initTickets(): void {
   ticketsDialog.addEventListener("close", () => {
     ticketsRef = null;
     renamingTicket = null;
-    focusedPane()?.term.focus();
+    // A ticket window inside the board goes back to the page and keeps the keyboard.
+    if (addTicketDialog.open) {
+      showAddTicketWindow();
+      focusAddTicketGoal();
+    } else focusedPane()?.term.focus();
   });
 }
 
 // ---- The Add ticket window (ticket give-the-app-an-add-ticket-button-that-i) ----------------------
 // A window for one new ticket of one project, without the board: the Goal, the level, the type and
 // the optional fields, each with its label. Add puts the ticket at the end of New and closes the
-// window; the board stays as it is. Esc, × and a click beside the window keep the draft of the
-// project (user decision 2); Cancel and a good Add clear it. The "+ Ticket" button of a project, the
-// Tickets part of an Overview card and New ticket on the board open it.
+// window; the board stays as it is. Esc and × keep the draft of the project (user decision 2); Cancel
+// and a good Add clear it. The "+ Ticket" button of a project, the Tickets part of an Overview card and
+// New ticket on the board open it. The window does not block the app (ticket
+// instead-of-modal-window-this-window): text behind it can be copied, and its title bar moves it.
 
 const addTicketDialog = document.querySelector<HTMLDialogElement>("#ticket-add")!;
 const addTicketProjectEl = document.querySelector<HTMLElement>("#ticket-add-project")!;
@@ -7081,11 +7091,102 @@ interface TicketEdit {
   images: { path: string; url: string }[];
 }
 let addTicketEdit: TicketEdit | null = null;
-/** The New ticket in the Edit ticket window (`${key}\n${id}`), or null: Dispatch does not start it (user decision 1). */
+/** The ticket in the Edit ticket window (`${key}\n${id}`), or null: Dispatch does not start it (user decision 1). */
 let editingTicket: string | null = null;
+/** The place of the open window; null: the middle of the app window, from the CSS. */
+let addTicketPlace: { left: number; top: number } | null = null;
+
+/** The window is open and holds the keyboard: an automatic focus leaves the keyboard there. */
+function addTicketHasKeyboard(): boolean {
+  return addTicketDialog.open && addTicketDialog.contains(document.activeElement);
+}
+
+function focusAddTicketGoal(): void {
+  addTicketBodyEl.querySelector<HTMLTextAreaElement>("#ticket-add-goal")?.focus();
+}
+
+/** Puts the open window at its place, whole inside the app window. */
+function placeAddTicketWindow(): void {
+  if (!addTicketDialog.open) return;
+  const { style } = addTicketDialog;
+  if (!addTicketPlace) {
+    style.left = style.top = style.right = style.bottom = style.margin = "";
+    return;
+  }
+  const place = fitWindowPlace(addTicketPlace, addTicketDialog.getBoundingClientRect(), viewSize());
+  style.left = `${place.left}px`;
+  style.top = `${place.top}px`;
+  style.right = style.bottom = "auto";
+  style.margin = "0";
+}
+
+/**
+ * Shows the window without blocking the app. A modal board makes everything outside it inert, so the
+ * window stands inside an open board and in the page otherwise.
+ */
+function showAddTicketWindow(): void {
+  const parent = ticketsDialog.open ? ticketsDialog : document.body;
+  if (addTicketDialog.parentElement !== parent) parent.append(addTicketDialog);
+  if (!addTicketDialog.open) {
+    try {
+      addTicketPlace = parseWindowPlace(localStorage.getItem(TICKET_ADD_PLACE_KEY));
+    } catch {
+      addTicketPlace = null;
+    }
+    addTicketDialog.show();
+  }
+  placeAddTicketWindow();
+}
+
+/** A drag of the title bar moves the window, and the drop saves the place. A button of the bar stays a button. */
+function dragAddTicketWindow(event: PointerEvent): void {
+  if (event.button !== 0 || (event.target as Element).closest("button")) return;
+  event.preventDefault();
+  const header = event.currentTarget as HTMLElement;
+  header.setPointerCapture(event.pointerId);
+  const box = addTicketDialog.getBoundingClientRect();
+  const grip = { x: event.clientX - box.left, y: event.clientY - box.top };
+  let moved = false;
+  const move = (next: PointerEvent) => {
+    if (!moved && next.clientX === event.clientX && next.clientY === event.clientY) return;
+    moved = true;
+    addTicketPlace = fitWindowPlace({ left: next.clientX - grip.x, top: next.clientY - grip.y }, addTicketDialog.getBoundingClientRect(), viewSize());
+    placeAddTicketWindow();
+  };
+  const end = () => {
+    header.removeEventListener("pointermove", move);
+    header.removeEventListener("pointerup", end);
+    header.removeEventListener("pointercancel", end);
+    if (!moved) return;
+    try {
+      localStorage.setItem(TICKET_ADD_PLACE_KEY, JSON.stringify(addTicketPlace));
+    } catch {
+      // No storage: the place holds until the window closes.
+    }
+  };
+  header.addEventListener("pointermove", move);
+  header.addEventListener("pointerup", end);
+  header.addEventListener("pointercancel", end);
+}
+
+/**
+ * The open window stays as it is while an Add runs or a ticket is under edit: the rest of the app is
+ * usable, and a stray click must not lose the changes (user decision 2). `wanted` is the ticket that
+ * the click asks for; another ticket or a new one gets the request to save or close first.
+ */
+function addTicketWindowStays(wanted: string | null): boolean {
+  if (!addTicketDialog.open || (!addTicketBusy && !addTicketEdit)) return false;
+  if (!addTicketBusy && editingTicket !== wanted) {
+    addTicketError = "Save or close this ticket first.";
+    showAddTicketError();
+  }
+  focusAddTicketGoal();
+  return true;
+}
 
 /** Opens the window with a ticket of Backlog or New to change; the Goal box gets the keyboard. */
 function openEditTicket(key: string, ticket: Ticket): void {
+  if (addTicketWindowStays(`${key}\n${ticket.id}`)) return;
   endTicketEdit();
   const { host, cwd } = projectCwd(key);
   const { paths, words } = splitImages(ticket.summary);
@@ -7097,7 +7198,7 @@ function openEditTicket(key: string, ticket: Ticket): void {
   const edit: TicketEdit = { id: ticket.id, title: ticket.title, draft, images: paths.map((path) => ({ path, url: "" })) };
   addTicketEdit = edit;
   // The hold is in place before the window shows: without triage a plan starts within one tick.
-  if (ticket.status === "new") editingTicket = `${key}\n${ticket.id}`;
+  editingTicket = `${key}\n${ticket.id}`;
   for (const image of edit.images) {
     void imageFileUrl(host, image.path)
       .then((url) => {
@@ -7110,7 +7211,7 @@ function openEditTicket(key: string, ticket: Ticket): void {
   }
   addTicketRef = { host, root: cwd };
   addTicketError = "";
-  if (!addTicketDialog.open) addTicketDialog.showModal();
+  showAddTicketWindow();
   renderAddTicket();
   addTicketBodyEl.querySelector<HTMLTextAreaElement>("#ticket-add-goal")?.focus();
 }
@@ -7137,11 +7238,12 @@ function addTicketDraft(key: string): TicketDraft {
 
 /** Opens the Add ticket window for a project; the Goal box gets the keyboard. The ticket goes to `column`. */
 function openAddTicket(ref: ProjectRef, column: "new" | "backlog" = "new"): void {
+  if (addTicketWindowStays(null)) return;
   endTicketEdit();
   addTicketRef = ref;
   addTicketColumn = column;
   addTicketError = "";
-  if (!addTicketDialog.open) addTicketDialog.showModal();
+  showAddTicketWindow();
   renderAddTicket();
   addTicketBodyEl.querySelector<HTMLTextAreaElement>("#ticket-add-goal")?.focus();
 }
@@ -7393,13 +7495,18 @@ function initAddTicket(): void {
     }
     addTicketDialog.close();
   });
-  addTicketDialog.addEventListener("click", (event) => {
-    if (event.target === addTicketDialog && !addTicketBusy) addTicketDialog.close();
+  // The window is no modal one, so the browser gives it no Esc. Esc waits while an Add runs (user
+  // decision 1), and over the board it closes only this window.
+  addTicketDialog.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.isComposing) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (!addTicketBusy) addTicketDialog.close();
   });
-  // Esc waits while an Add runs (user decision 1).
-  addTicketDialog.addEventListener("cancel", (event) => {
-    if (addTicketBusy) event.preventDefault();
-  });
+  addTicketDialog.querySelector("header")!.addEventListener("pointerdown", dragAddTicketWindow);
+  // A smaller app window or a taller form keeps the whole window in view.
+  window.addEventListener("resize", placeAddTicketWindow);
+  new ResizeObserver(placeAddTicketWindow).observe(addTicketDialog);
   // An image in the clipboard goes to a file on the computer of the project, in any box of the
   // window (user decision 1). A paste with text stays text. The image belongs to the project of the
   // paste, also when the window closed before the file was saved.
@@ -7428,7 +7535,7 @@ function initAddTicket(): void {
         showAddTicketError();
       });
   });
-  // Esc closes the window by itself and keeps the draft (user decision 2).
+  // Esc and × close the window and keep the draft (user decision 2).
   addTicketDialog.addEventListener("close", () => {
     addTicketRef = null;
     addTicketError = "";
@@ -10176,7 +10283,7 @@ function activate(id: string): void {
   for (const other of tabs.values()) other.view.classList.toggle("active", other === tab);
   fitTab(id);
   for (const pane of tabPanes(id)) pane.sideDue = 0;
-  panes.get(tab.focus ?? "")?.term.focus();
+  if (!addTicketHasKeyboard()) panes.get(tab.focus ?? "")?.term.focus();
   renderChats();
   redrawStatusBar();
   // The tab shows: at the start, at a click on the tab, back from Focus or the Map. In Focus the
@@ -10270,7 +10377,7 @@ async function runCommands(host: HostId, project: string, lines: RunLine[]): Pro
   await Promise.race([target.prompted, new Promise((resolve) => setTimeout(resolve, PROMPT_WAIT_MS))]);
   if (!focusOn && activeId !== target.tabId) activate(target.tabId);
   focusPane(target);
-  target.term.focus();
+  if (!addTicketHasKeyboard()) target.term.focus();
   const pane = target;
   pane.sequence = true;
   try {
@@ -10340,7 +10447,7 @@ async function closePane(id: string): Promise<void> {
     updateLabel(tab);
   }
   fitTab(tab.id);
-  if (activeId === tab.id) panes.get(tab.focus ?? "")?.term.focus();
+  if (activeId === tab.id && !addTicketHasKeyboard()) panes.get(tab.focus ?? "")?.term.focus();
   // A joined pane leaves the terminal of the other window: the shared chat keeps running there.
   await call(pane.host, pane.joined ? "pty_leave" : "pty_kill", { id });
   await saveState();
@@ -10858,7 +10965,7 @@ async function openTab(
   for (const pane of created) {
     await startPane(pane, restore, starts?.get(pane.id));
   }
-  if (activeId === id) panes.get(tab.focus ?? "")?.term.focus();
+  if (activeId === id && !addTicketHasKeyboard()) panes.get(tab.focus ?? "")?.term.focus();
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -22,6 +22,7 @@ import {
   endWord,
   FIELDS,
   fitBoardSize,
+  fitWindowPlace,
   goalHint,
   goesStraight,
   LEVELS,
@@ -34,6 +35,7 @@ import {
   nextType,
   orphanTasks,
   parseBoardSize,
+  parseWindowPlace,
   partPlace,
   partProgress,
   partsOf,
@@ -46,6 +48,7 @@ import {
   ticketMessage,
   taskCopyText,
   ticketRoute,
+  TICKET_ADD_PLACE_KEY,
   TICKETS_SIZE_KEY,
   typeName,
   USER_DONE,
@@ -652,9 +655,65 @@ test("the Add ticket window adds to New without the board", () => {
   assert.match(board, /if \(ticketsRef\) openAddTicket\(ticketsRef\);/);
   assert.match(MAIN, /initTickets\(\);\n  initAddTicket\(\);/);
   assert.match(CSS, /#ticket-add \{/);
-  assert.match(CSS, /#ticket-add::backdrop/);
+  assert.ok(!CSS.includes("#ticket-add::backdrop"), "the window leaves the app usable: no dark layer");
   assert.ok(HTML.includes("<li><b>+ Ticket</b> next to Tickets in the buttons of a project, and on each Overview card, opens the window New ticket without the board."));
   assert.ok(read("../README.md").includes('The button "+ Ticket" next to Tickets, and on each Overview card, opens the window New ticket without the board'));
+});
+
+test("the place of the ticket window reads back and stays inside the app window", () => {
+  assert.equal(TICKET_ADD_PLACE_KEY, "ticket-add-place");
+  assert.deepEqual(parseWindowPlace(JSON.stringify({ left: 40, top: 12.5 })), { left: 40, top: 12.5 });
+  for (const broken of [null, "", "x", "null", "[]", '{"left":1}', '{"left":"1","top":2}', '{"left":null,"top":2}']) {
+    assert.equal(parseWindowPlace(broken), null, String(broken));
+  }
+  const size = { width: 680, height: 500 };
+  const view = { width: 1600, height: 1000 };
+  assert.deepEqual(fitWindowPlace({ left: 100, top: 50 }, size, view), { left: 100, top: 50 }, "a place that fits stays");
+  assert.deepEqual(fitWindowPlace({ left: 100.4, top: 49.6 }, size, view), { left: 100, top: 50 }, "whole px");
+  assert.deepEqual(fitWindowPlace({ left: -30, top: -5 }, size, view), { left: 0, top: 0 }, "not past the top left corner");
+  assert.deepEqual(fitWindowPlace({ left: 5000, top: 5000 }, size, view), { left: 920, top: 500 }, "not past the bottom right corner");
+  assert.deepEqual(fitWindowPlace({ left: 5000, top: 800 }, { width: 680.5, height: 500.5 }, view), { left: 919, top: 499 }, "a part px stays inside");
+  assert.deepEqual(fitWindowPlace({ left: 200, top: 200 }, size, { width: 500, height: 300 }), { left: 0, top: 0 }, "a window larger than the app starts at 0");
+});
+
+test("the ticket window leaves the app usable and moves by its title bar", () => {
+  const window = MAIN.slice(MAIN.indexOf("// ---- The Add ticket window"), MAIN.indexOf("// ---- The Ticket details window"));
+  assert.ok(!MAIN.includes("addTicketDialog.showModal"), "the window does not block the app");
+  assert.match(window, /addTicketDialog\.show\(\);/);
+  // A modal board makes everything outside it inert: the window stands inside an open board.
+  assert.match(window, /const parent = ticketsDialog\.open \? ticketsDialog : document\.body;/);
+  const board = MAIN.slice(MAIN.indexOf("function openTickets("), MAIN.indexOf("/** The app window, for `fitBoardSize`. */"));
+  assert.match(board, /if \(addTicketDialog\.open\) \{\n\s+showAddTicketWindow\(\);/);
+  const close = MAIN.slice(MAIN.indexOf('ticketsDialog.addEventListener("close"'), MAIN.indexOf("// ---- The Add ticket window"));
+  assert.match(close, /if \(addTicketDialog\.open\) \{\n\s+showAddTicketWindow\(\);/);
+  // The title bar drags, a button in it does not; the drop saves the place.
+  assert.match(window, /closest\("button"\)/);
+  assert.match(window, /localStorage\.setItem\(TICKET_ADD_PLACE_KEY, JSON\.stringify\(/);
+  assert.match(window, /new ResizeObserver\(/);
+  assert.match(window, /window\.addEventListener\("resize", placeAddTicketWindow\)/);
+  // A click beside the window no longer closes it.
+  assert.ok(!window.includes("event.target === addTicketDialog"));
+  assert.ok(!window.includes('addTicketDialog.addEventListener("cancel"'));
+  // While an edit is open, or an Add runs, the window stays as it is.
+  for (const open of ["function openEditTicket(", "function openAddTicket("]) {
+    assert.match(MAIN.slice(MAIN.indexOf(open), MAIN.indexOf(open) + 200), /if \(addTicketWindowStays\(/, open);
+  }
+  assert.ok(window.includes("Save or close this ticket first."));
+  assert.match(CSS, /#ticket-add \{[^}]*position: fixed;[^}]*z-index: 40;/);
+  assert.match(CSS, /#ticket-add header \{[^}]*flex-wrap: nowrap;[^}]*cursor: move;[^}]*touch-action: none;/);
+  assert.match(HTML, /<dialog id="ticket-add" tabindex="-1"/);
+  assert.ok(!HTML.includes("a click beside the window closes it"));
+  assert.ok(HTML.includes("Drag its title bar to move it"));
+});
+
+test("an automatic terminal focus leaves the keyboard in the ticket window", () => {
+  const guarded = (start: string, length: number, line: string) => assert.ok(MAIN.slice(MAIN.indexOf(start), MAIN.indexOf(start) + length).includes(line), `${start}: ${line}`);
+  const pane = 'if (!addTicketHasKeyboard()) panes.get(tab.focus ?? "")?.term.focus();';
+  guarded("function showChatTab(", 2500, pane);
+  guarded("function activate(id: string)", 500, pane);
+  guarded("async function runCommands(", 2500, "if (!addTicketHasKeyboard()) target.term.focus();");
+  guarded("async function closePane(", 2500, 'if (activeId === tab.id && !addTicketHasKeyboard()) panes.get(tab.focus ?? "")?.term.focus();');
+  assert.ok(MAIN.includes('  if (activeId === id && !addTicketHasKeyboard()) panes.get(tab.focus ?? "")?.term.focus();\n}\n\n// ---------------------------------------------------------------------------------------------\n// Focus mode'));
 });
 
 test("the Add ticket window takes pasted images", () => {
@@ -680,7 +739,7 @@ test("the ticket window locks and shows a spinner while it adds", () => {
   assert.ok(window.includes("function setAddTicketBusy("));
   assert.ok(window.includes("Adding…") && window.includes("Saving…"));
   assert.ok(window.includes("ticket-add-spinner"));
-  assert.match(window, /addTicketDialog\.addEventListener\("cancel"[\s\S]*?addTicketBusy/);
+  assert.match(window, /addTicketDialog\.addEventListener\("keydown"[\s\S]*?"Escape"[\s\S]*?addTicketBusy/);
   assert.ok(window.includes("remove.disabled = addTicketBusy"));
   assert.match(CSS, /\.ticket-add-spinner \{/);
   assert.ok(CSS.includes("@keyframes ticket-add-spin"));
@@ -700,7 +759,9 @@ test("edit and details: ✎ edits a waiting ticket in the ticket window, a close
   assert.match(window, /imageFileUrl\(host, image\.path\)/);
   assert.match(window, /labelled\("Title", title, "ticket-add-title-box"\)/);
   // The hold (user decision 1): set before the window shows, released at the close with a new tick.
-  assert.ok(window.indexOf("editingTicket = `${key}\\n${ticket.id}`") < window.indexOf("addTicketDialog.showModal()", window.indexOf("function openEditTicket(")));
+  assert.ok(window.indexOf("editingTicket = `${key}\\n${ticket.id}`") < window.indexOf("showAddTicketWindow()", window.indexOf("function openEditTicket(")));
+  // A Backlog ticket under edit can be dragged to New behind the window: the hold covers every edit.
+  assert.ok(!window.includes('if (ticket.status === "new") editingTicket'));
   assert.match(window, /editingTicket = null;\n    void dispatchTickets\(\);/);
   const plan = MAIN.slice(MAIN.indexOf("async function startTicketPlan("), MAIN.indexOf("/** A run of `dispatchTickets` is on its way. */"));
   assert.match(plan, /\|\| editingTicket === `\$\{key\}\\n\$\{id\}`;/);

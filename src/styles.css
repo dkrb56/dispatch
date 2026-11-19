@@ -2350,8 +2350,14 @@ button.ticket-level {
    board, a project line under the title, one label above each control, the Goal box first, and Add
    as the accent button in the footer. The body scrolls; the header and the footer stay. */
 #ticket-add {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
   width: min(680px, 94vw);
+  height: fit-content;
   max-height: 86vh;
+  margin: auto;
+  overflow: auto;
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -2366,14 +2372,17 @@ button.ticket-level {
   flex-direction: column;
 }
 
-#ticket-add::backdrop {
-  background: rgb(0 0 0 / 60%);
+#ticket-add:focus {
+  outline: none;
 }
 
 #ticket-add header {
   display: flex;
   flex: none;
+  flex-wrap: nowrap;
   gap: 10px;
+  cursor: move;
+  touch-action: none;
   align-items: flex-start;
   padding: 14px 10px 12px 22px;
   border-bottom: 1px solid var(--hairline);
