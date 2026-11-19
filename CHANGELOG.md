@@ -2,6 +2,10 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.79 (2026-11-19)
+- A terminal of a Windows folder shows SI (0x0F) of the host as one column, as the host console counts it, so the first typed letter stands after the prompt mark and its space and Backspace removes it.
+- In Focus a Below button on the terminal panel puts the terminal under the tickets board with the full width, Beside puts it back; the line between them drags the height (double-click for the usual height); each project keeps the choice and the height.
+
 ## 0.1.78 (2026-11-19)
 - A project switch lets an agent pick the checks after the work run; the task card shows the picks with one reason each as checkboxes, Run checks (or the merge with Task branches) runs the ticked ones through the new verb check and shows each exit code and log; a run-everything list picks every check; a failed check keeps the task open; night mode runs the picks.
 - A click on Run clears the last run of the card and shows a spinner with Starting… on Run until the new run shows.
