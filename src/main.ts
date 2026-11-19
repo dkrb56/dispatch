@@ -78,7 +78,7 @@ import { type AskDecision, askAbout, askBlocked, askChatLine, askLine, CHAT_ASK_
 import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
-import { autoMergeNote, type AutoMergeFacts, mergedWords, outsideLine, pushWords, refusalGoes } from "./merged";
+import { autoMergeNote, type AutoMergeFacts, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
 import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
 import { type CheckInfo, checkRows, checksSentence, checksText, choiceNames, defaultChoice, type SavedWork, type WorkChoice, workChosen, workIsAdvice } from "./checks";
 import { noteStatus, PENDING_MAX_MS, type PendingCard, pendingCard, pendingIndex, pendingLabel, pendingState, restoreCards, settleCards, triageFree } from "./pending";
@@ -2528,6 +2528,9 @@ const projectTasks = new Map<string, ProjectTasks>();
 function storeProjectTasks(key: string, record: ProjectTasks): void {
   const before = projectTasks.get(key);
   for (const info of record.infos) {
+    // A refusal for a missing plan or branch file goes when the file is back (ticket merge-issue).
+    const missing = actionErrors.get(info.name);
+    if (missing && missingFileGone(missing, { plan: Boolean(info.plan), branchFile: Boolean(info.branch) })) actionErrors.delete(info.name);
     const branch = info.branch;
     if (!branch) continue;
     const error = actionErrors.get(info.name);

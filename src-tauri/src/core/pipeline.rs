@@ -1369,16 +1369,73 @@ function Enter-TaskBranch {
   $current = Current-Branch
   if ($current -eq $info.branch) { return '' }
   if ($current.StartsWith('task/')) { Refuse "the checkout is on $current, the branch of another task; Dispatch switches back to the base when that work run has ended" }
+  # Dispatch holds the merge lock while it switches back to the base and copies the task files
+  # (ticket merge-issue), for seconds: the switch waits up to 60 s for it, then reads the branch again.
   $holder = Lock-Holder (Merge-Lock)
+  $deadline = (Get-Date).AddSeconds(60)
+  while ($holder -and (Get-Date) -lt $deadline) {
+    Start-Sleep -Seconds 2
+    $holder = Lock-Holder (Merge-Lock)
+  }
   if ($holder) { Refuse "a merge of this project runs (task $holder); try again when it has ended" }
+  $current = Current-Branch
+  if ($current -eq $info.branch) { return '' }
+  if ($current.StartsWith('task/')) { Refuse "the checkout is on $current, the branch of another task; Dispatch switches back to the base when that work run has ended" }
   $exists = (Invoke-Git @('rev-parse', '--verify', '--quiet', "refs/heads/$($info.branch)")).Code -eq 0
+  $kept = @()
   if ($exists) {
     $aligned = "$(Align-Tasks $info.branch)"
     if ($aligned) { Refuse "the checkout stays on ${current}: $aligned" }
+    # The branch takes the newer commits of the base before the checkout (ticket merge-issue), so it
+    # holds the card files as the base does; a clash leaves it as it was, and Sync-Note tells the
+    # worker after the checkout. The card files that still differ go along by hand.
+    Sync-Base -Before | Out-Null
+    if (-not (Tasks-Local)) { $kept = Set-CardFilesAside $info.branch }
   }
   $result = if ($exists) { Invoke-Git @('checkout', '-q', $info.branch) } else { Invoke-Git @('checkout', '-q', '-b', $info.branch, $info.base) }
+  Put-CardFiles $kept
   if ($result.Code -ne 0) { Refuse "git could not check out $($info.branch): $($result.Text)" }
   $current
+}
+
+# The card files that a checkout of $Target would delete or change (ticket merge-issue): the changed
+# files of .dispatch and the files of .dispatch that differ between HEAD and $Target. Keeps their
+# bytes and times and gives each file the copy of HEAD (a file that HEAD lacks goes from the disk), so
+# git meets no changed card file; Put-CardFiles writes them again after the checkout. Dispatch commits
+# no card file on a task branch, so they stay changes there until the switch back.
+function Set-CardFilesAside([string]$Target) {
+  $paths = @((Invoke-Git @('status', '--porcelain', '--untracked-files=all', '--', '.dispatch')).Lines | Where-Object { $_.Length -gt 3 } | ForEach-Object { $_.Substring(3) -split ' -> ' })
+  $paths += @((Invoke-Git @('diff', '--name-only', '--no-renames', 'HEAD', $Target, '--', '.dispatch')).Lines)
+  $kept = @()
+  foreach ($path in @($paths | ForEach-Object { "$_".Trim().Trim('"') } | Where-Object { $_ } | Select-Object -Unique)) {
+    $file = Join-Path $Project $path
+    if (Test-Path -LiteralPath $file -PathType Leaf) {
+      $kept += [pscustomobject]@{ Path = $path; Bytes = [IO.File]::ReadAllBytes($file); Time = [IO.File]::GetLastWriteTimeUtc($file) }
+    } else {
+      $kept += [pscustomobject]@{ Path = $path; Bytes = $null; Time = $null }
+    }
+  }
+  foreach ($card in $kept) {
+    if ((Invoke-Git @('cat-file', '-e', "HEAD:$($card.Path)")).Code -eq 0) {
+      Invoke-Git @('checkout', '-q', 'HEAD', '--', $card.Path) | Out-Null
+    } else {
+      Invoke-Git @('rm', '-q', '--cached', '--ignore-unmatch', '--', $card.Path) | Out-Null
+      Remove-Item -LiteralPath (Join-Path $Project $card.Path) -Force -ErrorAction SilentlyContinue
+    }
+  }
+  ,$kept
+}
+
+# Writes the card files that Set-CardFilesAside kept onto the disk again, with their times.
+function Put-CardFiles($Kept) {
+  foreach ($card in @($Kept)) {
+    $file = Join-Path $Project $card.Path
+    if ($null -eq $card.Bytes) { Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue; continue }
+    $folder = Split-Path -Parent $file
+    if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
+    [IO.File]::WriteAllBytes($file, $card.Bytes)
+    [IO.File]::SetLastWriteTimeUtc($file, $card.Time)
+  }
 }
 
 # Merges the task branch into the base in the main checkout: git merge --no-ff --no-commit, the gate
@@ -1585,12 +1642,17 @@ function Commit-Own([string[]]$Lines) {
 # keeps the task files current there), a merge commit with both parents, and a fast-forward of the
 # branch. A file outside .dispatch that changed on both sides stops it, and the branch stays as it
 # was. Gives the reason when the base has newer commits that did not come in, else ''.
-function Sync-Base {
+# -Before: the checkout is not on the branch yet (ticket merge-issue); the merge commit then moves the
+# ref of the branch only. Its .dispatch is the one of the base, so `git log <base>..<branch> --
+# .dispatch` does not list it.
+function Sync-Base([switch]$Before) {
   $info = Read-BranchFile $Id
   if ($null -eq $info -or -not $info.branch -or -not $info.base -or $info.merge) { return '' }
-  if ((Current-Branch) -ne $info.branch) { return '' }
+  $on = (Current-Branch) -eq $info.branch
+  if ($on -eq [bool]$Before) { return '' }
   if ((Invoke-Git @('rev-parse', '--verify', '--quiet', "refs/heads/$($info.base)")).Code -ne 0) { return "the branch $($info.base) does not exist" }
   if ((Invoke-Git @('merge-base', '--is-ancestor', $info.base, $info.branch)).Code -eq 0) { return '' }
+  $tip = "$((Invoke-Git @('rev-parse', '--verify', "refs/heads/$($info.branch)")).Lines | Select-Object -Last 1)".Trim()
   $merge = Invoke-Git @('merge-tree', '--write-tree', '--name-only', '--no-messages', $info.branch, $info.base)
   $lines = @($merge.Lines | Where-Object { $_ })
   if (($merge.Code -ne 0 -and $merge.Code -ne 1) -or $lines.Count -eq 0) { return "git merge-tree failed: $($merge.Text)" }
@@ -1611,9 +1673,10 @@ function Sync-Base {
     Remove-Item -LiteralPath $index -Force -ErrorAction SilentlyContinue
   }
   if ($null -eq $tree -or $tree.Code -ne 0) { return 'git could not build the merged tree' }
-  $commit = Invoke-Git @('commit-tree', "$($tree.Lines | Select-Object -Last 1)".Trim(), '-p', $info.branch, '-p', $info.base, '-m', "Merge $($info.base) into $($info.branch) (${Id}: the newer commits of the base)")
+  $commit = Invoke-Git @('commit-tree', "$($tree.Lines | Select-Object -Last 1)".Trim(), '-p', $tip, '-p', $info.base, '-m', "Merge $($info.base) into $($info.branch) (${Id}: the newer commits of the base)")
   if ($commit.Code -ne 0) { return "git could not make the merge commit: $($commit.Text)" }
-  $forward = Invoke-Git @('merge', '--ff-only', '-q', "$($commit.Lines | Select-Object -Last 1)".Trim())
+  $made = "$($commit.Lines | Select-Object -Last 1)".Trim()
+  $forward = if ($on) { Invoke-Git @('merge', '--ff-only', '-q', $made) } else { Invoke-Git @('update-ref', "refs/heads/$($info.branch)", $made, $tip) }
   if ($forward.Code -ne 0) { return "git could not move the branch: $($forward.Text)" }
   ''
 }
@@ -1887,7 +1950,8 @@ switch ($Verb) {
     if ($aligned) { Refuse $aligned }
     $gate ="$(@(Command-Lines 'merge-gate.txt') | Select-Object -First 1)"
     $limit = Command-Limit 'merge-gate.txt' 14400
-    Enter-Lock (Merge-Lock) 0 'merge'
+    # A switch back of Dispatch holds the lock for seconds (ticket merge-issue): the merge waits up to 60 s.
+    Enter-Lock (Merge-Lock) 60 'merge'
     $script:Merged = ''
     try {
       $refusal = "$(Merge-Branch $info $gate $limit)"
@@ -4136,22 +4200,37 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
             }
         }
     }
+    // The merge lock holds the worker script and a merge until the task files are on the base (ticket
+    // merge-issue): on Starminer, night mode switched to the next task branch while this copy still
+    // ran, and its commit "Dispatch: task files of …" landed on that branch. A next read tries again.
+    let Some(_lock) = switch_lock(project, ticket) else {
+        return Ok((false, String::new()));
+    };
+    // The card files that changed on the task branch go along by hand (ticket merge-issue): Dispatch
+    // commits no card file on a task branch, and git refuses a checkout over a changed file that
+    // differs on the base. Local only: git ignores the folder, and the files stay on the disk.
+    let carried = if local { Vec::new() } else { set_card_changes_aside(project)? };
     // Git carries the other changes along, or refuses when a file differs on the base.
     if let Err(error) = run_git(&project.root, &["checkout", "-q", &info.base]) {
+        put_card_changes_back(project, &carried);
         return Err(format!("The checkout stays on {}: {error}", info.name));
     }
+    put_card_changes_back(project, &carried);
     // Local only: the disk holds the only copy of the task files, and no branch has one to take.
     if local {
         return Ok((true, String::new()));
     }
     let mut paths = Vec::new();
     let mut failed = Vec::new();
-    // The newer report first: after a merge by hand the diff below no longer lists it.
+    // The newer report first: after a merge by hand the diff below no longer lists it. A report
+    // that changed on the disk is newer than each commit of it.
     let report_path = format!("{TASKS_DIR}/{ticket}.md");
-    match report_from_branch(project, ticket, info) {
-        Ok(true) => paths.push(report_path.clone()),
-        Ok(false) => {}
-        Err(error) => failed.push(format!("{report_path} ({error})")),
+    if !carried.iter().any(|change| change.path == report_path) {
+        match report_from_branch(project, ticket, info) {
+            Ok(true) => paths.push(report_path.clone()),
+            Ok(false) => {}
+            Err(error) => failed.push(format!("{report_path} ({error})")),
+        }
     }
     // The task files that the branch changed since it left the base. Only `report_from_branch`
     // decides the report: an older copy of the branch never comes over a newer report of the base
@@ -4161,7 +4240,7 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
     for line in changed.lines() {
         let Some((status, path)) = line.split_once('\t') else { continue };
         let path = path.trim().trim_matches('"').to_string();
-        if paths.contains(&path) || path == report_path {
+        if paths.contains(&path) || path == report_path || carried.iter().any(|change| change.path == path) {
             continue;
         }
         if status.starts_with('D') {
@@ -4189,6 +4268,111 @@ fn return_to_base(project: &Project, ticket: &str, info: &BranchInfo) -> Result<
     let mut commit = vec!["commit", "-q", "-m", &message, "--"];
     commit.extend(paths.iter().map(String::as_str));
     run_git(&project.root, &commit).map(|_| (true, note))
+}
+
+/// The merge lock of a project while Dispatch switches back to the base (ticket merge-issue). Its
+/// file has the content of a lock of the worker script (process id, ticket and time), so the script
+/// waits for it as for a merge. The drop removes the file.
+struct SwitchLock(PathBuf);
+
+impl Drop for SwitchLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
+/// Takes the merge lock for the switch back of a ticket, or none while another process that still
+/// runs holds it. A lock of a process that ended goes first.
+fn switch_lock(project: &Project, ticket: &str) -> Option<SwitchLock> {
+    let dir = project.merge_dir();
+    let lock = dir.join("lock");
+    fs::create_dir_all(&dir).ok()?;
+    for _ in 0..2 {
+        match fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
+            Ok(mut file) => {
+                use std::io::Write;
+                let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
+                let written = write!(file, "{}\t{ticket}\t{}\n", std::process::id(), crate::core::tickets::iso(millis));
+                let lock = SwitchLock(lock.clone());
+                return written.ok().map(|_| lock);
+            }
+            Err(_) => {
+                let holder = fs::read_to_string(&lock).unwrap_or_default();
+                let pid = holder.split('\t').next().and_then(|pid| pid.trim().parse::<u32>().ok());
+                // A lock without a process id may be in the middle of its write: it goes only after a minute.
+                let stale = match pid {
+                    Some(pid) => !crate::core::info::parent_pids().contains_key(&pid),
+                    None => fs::metadata(&lock).and_then(|meta| meta.modified()).ok().and_then(|time| time.elapsed().ok()).is_some_and(|age| age.as_secs() > 60),
+                };
+                if !stale {
+                    return None;
+                }
+                let _ = fs::remove_file(&lock);
+            }
+        }
+    }
+    None
+}
+
+/// A card file with an uncommitted change on a task branch (ticket merge-issue): its path, and its
+/// bytes and time on the disk, or none when it is deleted.
+struct CardChange {
+    path: String,
+    content: Option<(Vec<u8>, Option<std::time::SystemTime>)>,
+}
+
+/// Keeps the uncommitted changes of `.dispatch` in memory and gives each file back the copy of HEAD
+/// (a file that HEAD lacks goes from the disk), so the checkout of the base meets no changed card
+/// file. `put_card_changes_back` writes them again after the checkout.
+fn set_card_changes_aside(project: &Project) -> Result<Vec<CardChange>, String> {
+    let status = run_git(&project.root, &["status", "--porcelain", "--untracked-files=all", "--", TASKS_DIR])?;
+    let mut changes: Vec<CardChange> = Vec::new();
+    for path in status.lines().flat_map(porcelain_paths) {
+        if changes.iter().any(|change| change.path == path) {
+            continue;
+        }
+        let file = project.root.join(&path);
+        let content = fs::read(&file).ok().map(|bytes| (bytes, fs::metadata(&file).and_then(|meta| meta.modified()).ok()));
+        changes.push(CardChange { path, content });
+    }
+    for change in &changes {
+        let tracked = git(&project.root, &["cat-file", "-e", &format!("HEAD:{}", change.path)]).is_some();
+        let result = if tracked {
+            run_git(&project.root, &["checkout", "-q", "HEAD", "--", &change.path]).map(|_| ())
+        } else {
+            run_git(&project.root, &["rm", "-q", "--cached", "--ignore-unmatch", "--", &change.path]).map(|_| ()).and_then(|_| match fs::remove_file(project.root.join(&change.path)) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
+                _ => Ok(()),
+            })
+        };
+        if let Err(error) = result {
+            put_card_changes_back(project, &changes);
+            return Err(format!("Dispatch could not set the change of {} aside: {error}", change.path));
+        }
+    }
+    Ok(changes)
+}
+
+/// Writes the card changes that `set_card_changes_aside` kept onto the disk again, with their times.
+/// The next task read commits them on the branch that is checked out, when it is the base.
+fn put_card_changes_back(project: &Project, changes: &[CardChange]) {
+    for change in changes {
+        let file = project.root.join(&change.path);
+        let result = match &change.content {
+            Some((bytes, time)) => file
+                .parent()
+                .map_or(Ok(()), fs::create_dir_all)
+                .and_then(|_| fs::write(&file, bytes))
+                .and_then(|_| time.map_or(Ok(()), |time| fs::File::options().write(true).open(&file)?.set_modified(time))),
+            None => match fs::remove_file(&file) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+                _ => Ok(()),
+            },
+        };
+        if let Err(error) = result {
+            eprintln!("card file {} not written back after the branch switch: {error}", change.path);
+        }
+    }
 }
 
 /// Takes the report of a ticket from its task branch into the checkout of the base when the two
@@ -4755,7 +4939,8 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     // Dispatch commits the task files, but not while a work run may commit itself: a task approved
     // or working without a report. A run of another computer does not hold the commit (ticket
     // second-computer). A failure (an index lock of a git command of the user, no git
-    // identity) is logged, and the next task read tries again.
+    // identity) is logged, and the next task read tries again. A task branch holds the commit too
+    // (ticket merge-issue): the read after the switch back commits on the base.
     let work_live = tasks.iter().any(|task| matches!(task.state.as_str(), "approved" | "working") && task.report.is_none() && !task.elsewhere);
     if !work_live {
         if let Err(error) = keep_tasks_committed(&project) {
@@ -5563,6 +5748,9 @@ fn tasks_message(paths: &[&str], notes: usize) -> String {
 /// Gives the number of changed files, 0 when there was nothing to commit or no git repository.
 /// With "Task files local only" on it commits nothing and gives 0: git ignores the folder, also in
 /// the time between the switch and Apply (ticket ignore-tasks).
+/// On a task branch `task/<ticket>` it commits nothing and gives 0 (ticket merge-issue): a card file
+/// that only the task branch held went from the disk at the switch back to the base. The changes stay
+/// on the disk; git carries them along, and the read after the switch back commits them on the base.
 fn keep_tasks_committed(project: &Project) -> Result<usize, String> {
     if !project.in_git || project.options().ignore_tasks {
         return Ok(0);
@@ -5570,6 +5758,9 @@ fn keep_tasks_committed(project: &Project) -> Result<usize, String> {
     // `git add --all` would stage a conflicted task file with its markers as resolved (ticket
     // board-in-progress, the commit "Dispatch: 86 task files" of Starminer).
     if unfinished_git(project) {
+        return Ok(0);
+    }
+    if current_branch(project).is_some_and(|branch| branch.starts_with("task/")) {
         return Ok(0);
     }
     // "Project notes in git" (ticket project-notes-in-git): the status also names the notes that
@@ -9195,7 +9386,8 @@ if (args[0] === 'agents') {
         let branch = listed_branch(&project, "t-1");
         assert!(branch.exists && !branch.checked_out && branch.note.is_empty(), "{branch:?}");
         assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
-        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", &base]), "Dispatch: task files of t-1");
+        // The card files come onto the base with the read after the switch back (ticket merge-issue).
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", &base]), "Dispatch: brief, plan and report of t-1; settings");
         let tree = git_out(&project, &["ls-tree", "-r", "--name-only", &base, ".dispatch"]);
         for file in [".dispatch/t-1.md", ".dispatch/t-1.state", ".dispatch/t-1.branch", ".dispatch/plans/t-1.md", ".dispatch/briefs/t-1.md"] {
             assert!(tree.lines().any(|line| line == file), "{file} is not on the base: {tree}");
@@ -9215,6 +9407,31 @@ if (args[0] === 'agents') {
         let branch = listed_branch(&project, "t-1");
         assert!(branch.merge.starts_with("done ") && !branch.exists, "{branch:?}");
         assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    #[test]
+    fn the_task_read_commits_no_card_file_on_a_task_branch() {
+        let (project, fake, base) = branch_project("no-card-commit");
+        plan_and_approve(&project, &fake, "t-1");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        // The window of the approve verb: the checkout is on the task branch, the state still says
+        // planning, and the plan of another task is new.
+        write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        write_file(&project.plans().join("t-2.md"), "# t-2: the plan of another task\n").unwrap();
+        task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        let subjects = git_out(&project, &["log", "--format=%s", &format!("{base}..task/t-1"), "--", TASKS_DIR]);
+        assert_eq!(subjects, "", "Dispatch committed card files on the task branch");
+        // The work run ends: the read switches back, and the base gets the card files of both tasks.
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        for file in ["plans/t-2.md", "t-1.branch", "t-1.md"] {
+            let file = format!("{TASKS_DIR}/{file}");
+            assert!(project.root.join(&file).is_file(), "{file} is gone from the disk");
+            assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:{file}")]).is_some(), "{file} is not committed on the base");
+        }
         clean(&project);
     }
 
@@ -9531,6 +9748,13 @@ if (args[0] === 'agents') {
         git_out(project, &["rev-parse", &format!("{rev}:{TASKS_DIR}/{ticket}.md")])
     }
 
+    /// Commits the card files on the task branch that is checked out, as the task read did before
+    /// ticket merge-issue: the report tests start from a branch of that time.
+    fn card_files_on_the_branch(project: &Project) {
+        git_out(project, &["add", "--all", "--", TASKS_DIR]);
+        git_out(project, &["commit", "-q", "-m", "Dispatch: card files on the task branch, as before ticket merge-issue"]);
+    }
+
     /// The task of a ticket in a fresh task list of the project.
     fn listed_task(project: &Project, ticket: &str) -> TaskInfo {
         let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
@@ -9546,6 +9770,7 @@ if (args[0] === 'agents') {
         write_file(&report, GATE_QUESTION).unwrap();
         set_time(&report, 17, 10);
         set_time(&project.reports.join(format!("{ticket}.state")), 16, 33);
+        card_files_on_the_branch(project);
         // The task read switches back and brings the question onto the base.
         let branch = listed_branch(project, ticket);
         assert!(branch.exists && !branch.checked_out && branch.note.is_empty(), "{branch:?}");
@@ -9674,6 +9899,7 @@ if (args[0] === 'agents') {
         write_file(&report, GATE_QUESTION).unwrap();
         set_time(&report, 17, 10);
         set_time(&project.reports.join("t-1.state"), 16, 33);
+        card_files_on_the_branch(project);
         let branch = listed_branch(project, "t-1");
         assert!(!branch.checked_out && branch.note.is_empty(), "{branch:?}");
         let base = branch.base;
@@ -9717,7 +9943,8 @@ if (args[0] === 'agents') {
         let task = listed_task(&project, "t-1");
         assert_eq!(task.header.map(|header| header.state).as_deref(), Some("done"));
         assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()), "the read did not switch back after the report");
-        assert_eq!(report_blob(&project, &base, "t-1"), report_blob(&project, "task/t-1", "t-1"));
+        // The base holds the done report; the task branch holds no commit of it (ticket merge-issue).
+        assert_eq!(git_out(&project, &["show", &format!("{base}:{TASKS_DIR}/t-1.md")]), STOPPED_HERE.trim());
         clean(&project);
     }
 
@@ -9894,6 +10121,134 @@ if (args[0] === 'agents') {
     }
 
     #[test]
+    fn a_reply_keeps_the_card_files_that_only_the_base_has() {
+        let (project, fake, _) = branch_project("reply-keeps-cards");
+        let base = question_then_fix_on_the_base(&project, &fake, "fix.txt", "the fix of another task\n");
+        // The plan of another task comes onto the base while the worker waits for the answer.
+        write_file(&project.plans().join("t-2.md"), "# t-2: the plan of another task\n").unwrap();
+        task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:{TASKS_DIR}/plans/t-2.md")]).is_some());
+        let (code, out) = run_script(&project, &fake, "done", &["reply", "t-1", "Answer to question 1: Run the gate now"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        for file in ["plans/t-2.md", "plans/t-1.md", "briefs/t-1.md", "t-1.branch", "t-1.md", "t-1.state"] {
+            assert!(project.root.join(TASKS_DIR).join(file).is_file(), "the checkout of the reply deleted {file}");
+        }
+        assert!(git(&project.root, &["merge-base", "--is-ancestor", &base, "task/t-1"]).is_some(), "the base commit is not in task/t-1");
+        // The branch holds no commit of card files (ticket merge-issue), only the work.
+        assert_eq!(git_out(&project, &["log", "--format=%s", &format!("{base}..task/t-1"), "--", TASKS_DIR]), "");
+        clean(&project);
+    }
+
+    /// "How to reproduce" of ticket merge-issue (Starminer, 2026-11-19): the work run of t-1 runs on
+    /// task/t-1 while the plan runs of t-2, t-3 and t-4 write their card files; t-1 reports, and night
+    /// mode approves t-2 seconds later, before the merge of t-1. Every card file stays on the disk at
+    /// each switch, no task branch holds a commit in `.dispatch`, and each task merges without a conflict.
+    #[test]
+    fn two_tasks_one_after_the_other_merge_without_a_conflict() {
+        let (project, fake, base) = branch_project("two-tasks");
+        // t-2 had a work run before (f521a585 of 2026-10-28): its branch is older than the card files of the night.
+        git_out(&project, &["branch", "task/t-2"]);
+        let cwd = project.root.to_string_lossy().into_owned();
+        let all = ["t-1", "t-2", "t-3", "t-4"];
+        let cards = |step: &str| {
+            for ticket in all {
+                for file in [format!("briefs/{ticket}.md"), format!("plans/{ticket}.md"), format!("{ticket}.branch"), format!("{ticket}.state")] {
+                    assert!(project.root.join(TASKS_DIR).join(&file).is_file(), "{step}: {file} is gone");
+                }
+            }
+        };
+        // The merge that brings the newer commits of the base into an older branch (ticket
+        // task-branches-blocked-work) takes `.dispatch` as the base has it; the branch adds no card change.
+        let no_card_commits = |ticket: &str| {
+            assert_eq!(git_out(&project, &["log", "--no-merges", "--format=%s", &format!("{base}..task/{ticket}"), "--", TASKS_DIR]), "", "task/{ticket} holds a commit in .dispatch");
+            assert_eq!(git_out(&project, &["diff", "--name-only", &format!("{base}...task/{ticket}"), "--", TASKS_DIR]), "", "task/{ticket} changes a card file");
+        };
+        plan_and_approve(&project, &fake, "t-1");
+        // Several tickets go to New while the work run of t-1 is live: their plan runs write their card files.
+        for ticket in ["t-2", "t-3", "t-4"] {
+            write_file(&project.briefs().join(format!("{ticket}.md")), &format!("# {ticket}: another scratch task\n")).unwrap();
+            write_file(&project.reports.join("fake-name.txt"), ticket).unwrap();
+            let (code, out) = run_script(&project, &fake, "done", &["plan", ticket]);
+            assert_eq!(code, 0, "{out}");
+            write_file(&project.plans().join(format!("{ticket}.md")), &format!("# {ticket}: plan\n")).unwrap();
+        }
+        task_list(cwd.clone()).unwrap();
+        cards("on task/t-1 during its work run");
+        // t-1 reports: the read leaves task/t-1 without a commit of card files and switches back.
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        cards("after the switch back of t-1");
+        no_card_commits("t-1");
+        // A card file changes after the read (its commit failed, as with an index lock); night mode
+        // approves t-2 seconds after the report.
+        write_file(&project.reports.join("t-4.state"), "planning\n").unwrap();
+        write_file(&project.reports.join("fake-name.txt"), "t-2").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-2"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-2"));
+        cards("after the switch to task/t-2");
+        task_list(cwd.clone()).unwrap();
+        cards("on task/t-2 during its work run");
+        write_report(&project, "t-2");
+        assert!(!listed_branch(&project, "t-2").checked_out);
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        cards("after the switch back of t-2");
+        no_card_commits("t-1");
+        no_card_commits("t-2");
+        // Auto-merge merges both, one after the other.
+        for ticket in ["t-1", "t-2"] {
+            let merged = task_merge(cwd.clone(), ticket.to_string());
+            assert!(merged.as_ref().is_ok_and(|text| text.starts_with(&format!("merged task/{ticket}"))), "{merged:?}");
+            cards(&format!("after the merge of {ticket}"));
+            assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-{ticket}.txt")]).is_some(), "the work of {ticket} is not on the base");
+            assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:{TASKS_DIR}/plans/t-3.md")]).is_some(), "the plan of t-3 is not on the base");
+        }
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    /// Starminer, 2026-11-19 04:58: night mode switched to the next task branch while the switch back
+    /// of the task before still copied its files (ticket merge-issue). The switch back holds the merge
+    /// lock; a read waits while another process holds it, and the script waits for it.
+    #[test]
+    fn the_switch_back_holds_the_merge_lock_and_the_script_waits_for_it() {
+        let (project, fake, base) = branch_project("switch-lock");
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        // Another switch holds the lock: the read stays on the task branch, and the next one switches.
+        let lock = switch_lock(&project, "t-9").expect("the lock is free");
+        assert!(switch_lock(&project, "t-8").is_none(), "a second holder got the lock");
+        listed_branch(&project, "t-1");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"), "the read switched back while the lock was held");
+        drop(lock);
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        assert!(!project.merge_dir().join("lock").exists(), "the switch back left its lock");
+        // The approve of the next task waits until the switch back has its files on the base.
+        write_file(&project.briefs().join("t-2.md"), "# t-2: a second scratch task\n").unwrap();
+        write_file(&project.reports.join("fake-name.txt"), "t-2").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["plan", "t-2"]);
+        assert_eq!(code, 0, "{out}");
+        let lock = switch_lock(&project, "t-1").expect("the lock is free");
+        let start = std::time::Instant::now();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            drop(lock);
+        });
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-2"]);
+        release.join().unwrap();
+        assert_eq!(code, 0, "{out}");
+        assert!(start.elapsed() >= std::time::Duration::from_secs(3), "the approve did not wait for the lock");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-2"));
+        // A lock of a process that ended goes at the next try.
+        write_file(&project.merge_dir().join("lock"), "4294967295\tt-7\t2026-11-19T04:58:23Z\n").unwrap();
+        assert!(switch_lock(&project, "t-2").is_some(), "the lock of an ended process held the switch");
+        clean(&project);
+    }
+
+    #[test]
     fn a_clash_with_the_base_leaves_the_branch_and_tells_the_worker() {
         let (project, fake, _) = branch_project("reply-clash");
         let base = question_then_fix_on_the_base(&project, &fake, "work-t-1.txt", "another text of the base\n");
@@ -9902,6 +10257,11 @@ if (args[0] === 'agents') {
         assert_eq!(code, 0, "{out}");
         assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
         assert_eq!(git_out(&project, &["rev-parse", "task/t-1"]), tip, "the clash moved the branch");
+        // The card files came along by hand (ticket merge-issue): none is gone, none is committed on the branch.
+        for file in ["plans/t-1.md", "t-1.branch", "t-1.md", "t-1.state"] {
+            assert!(project.root.join(TASKS_DIR).join(file).is_file(), "the checkout of the reply deleted {file}");
+        }
+        assert_eq!(git_out(&project, &["log", "--format=%s", &format!("{base}..task/t-1"), "--", TASKS_DIR]), "");
         assert_eq!(git_out(&project, &["status", "--porcelain", "--", ".", NOT_TASKS]), "");
         let text = &last_call(&fake)[0];
         assert!(text.starts_with("Answer to question 1: Run the gate now Dispatch could not bring the newer commits of "), "{text}");

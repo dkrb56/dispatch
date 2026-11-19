@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { autoMergeNote, mergedWords, mergeParts, outsideLine, pushWords, refusalGoes } from "../src/merged.ts";
+import { autoMergeNote, mergedWords, mergeParts, missingFileGone, outsideLine, pushWords, refusalGoes } from "../src/merged.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -60,7 +60,7 @@ test("the line for triage names the ticket, the branch, the base and the merge c
 });
 
 test("main.ts: the branch row, the task lists and the refusal rule use the module", () => {
-  assert.match(MAIN, /import \{ autoMergeNote, type AutoMergeFacts, mergedWords, outsideLine, pushWords, refusalGoes \} from "\.\/merged";/);
+  assert.match(MAIN, /import \{ autoMergeNote, type AutoMergeFacts, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes \} from "\.\/merged";/);
   const row = MAIN.slice(MAIN.indexOf("function branchRow("), MAIN.indexOf("function stopRow("));
   assert.match(row, /mergedWords\(branch\.merge\)/);
   const store = MAIN.slice(MAIN.indexOf("function storeProjectTasks("), MAIN.indexOf("/** The last reply of the `task_list` command"));
@@ -80,6 +80,24 @@ test("the new refusal of changes in files of the branch goes when they are gone"
   assert.equal(refusalGoes(TASK_DIRTY, { merged: false, dirty: [" M src/a.ts"] }), false);
   assert.equal(refusalGoes(TASK_DIRTY, { merged: false, dirty: ["?? src/a.ts"] }), false);
   assert.equal(refusalGoes(TASK_DIRTY, { merged: true, dirty: [" M src/a.ts"] }), true);
+});
+
+// Ticket merge-issue: the night of 2026-11-19 left these two lines on the cards after the files were back.
+const NO_PLAN_ERROR = "no plan at D:\\Starminer\\.dispatch/plans/t-20261104T210804000Z-2fae6b07.md: The system cannot find the file specified. (os error 2)";
+const NO_BRANCH_ERROR = "refused: the task t-20261028T030332690Z-f521a585 has no branch file";
+
+test("a refusal for a missing plan or branch file goes when the file is back, and stays while it is missing", () => {
+  assert.equal(missingFileGone(NO_PLAN_ERROR, { plan: false, branchFile: false }), false);
+  assert.equal(missingFileGone(NO_PLAN_ERROR, { plan: true, branchFile: false }), true);
+  assert.equal(missingFileGone(NO_BRANCH_ERROR, { plan: true, branchFile: false }), false);
+  assert.equal(missingFileGone(NO_BRANCH_ERROR, { plan: false, branchFile: true }), true);
+  assert.equal(missingFileGone(GATE, { plan: true, branchFile: true }), false, "another refusal is not about a missing file");
+});
+
+test("main.ts: each task list takes away a refusal whose missing file is back, also for a task without a branch", () => {
+  const store = MAIN.slice(MAIN.indexOf("function storeProjectTasks("), MAIN.indexOf("/** The last reply of the `task_list` command"));
+  const check = store.indexOf("missingFileGone(missing, { plan: Boolean(info.plan), branchFile: Boolean(info.branch) })");
+  assert.ok(check > 0 && check < store.indexOf("if (!branch) continue;"), "the check runs before the tasks without a branch are skipped");
 });
 
 test("main.ts: the card takes the leftovers of the task for an old refusal", () => {

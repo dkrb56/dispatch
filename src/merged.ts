@@ -106,6 +106,21 @@ export function refusalGoes(error: string, facts: { merged: boolean; dirty: read
   return UNCOMMITTED.test(error) && facts.dirty.every((line) => line.startsWith("??") || line.trim() === "");
 }
 
+/** A refusal of Approve, of the plan card or of the merge for a missing file (ticket merge-issue). */
+const NO_PLAN = /\bno plan at /;
+const NO_BRANCH_FILE = /\bhas no branch file\b/;
+
+/**
+ * Whether an old refusal for a missing file goes from the card (ticket merge-issue): "no plan at …"
+ * when the task read finds the plan again, "… has no branch file" when it finds the branch file
+ * again. Any other error gives false here.
+ */
+export function missingFileGone(error: string, facts: { plan: boolean; branchFile: boolean }): boolean {
+  if (NO_PLAN.test(error)) return facts.plan;
+  if (NO_BRANCH_FILE.test(error)) return facts.branchFile;
+  return false;
+}
+
 /**
  * The line for triage when Dispatch finds an outside merge (user decision 4 of the plan), or null
  * for a branch without an outside merge line.
