@@ -2,6 +2,10 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.77 (2026-11-19)
+- Options gets a Phone tab with one button and the code; the phone page keeps its key in the address, so the Home Screen icon stays connected.
+- Card files are never committed on a task branch; each switch between the base and a task branch carries the uncommitted card files and puts them back, so no plan, report or branch file goes missing; the switch back to the base holds the merge lock, and Approve, Reply and Merge wait up to 60 s for it; a "no plan" or "no branch file" error clears when the file is back.
+
 ## 0.1.76 (2026-11-19)
 - The permission card gets Stop; the first click asks, Stop now ends the task, Keep waiting steps back.
 - The phone lists only this computer's projects open in a live window, and the host refuses task_list and ticket_add for every other folder.
