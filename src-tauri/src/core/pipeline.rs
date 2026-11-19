@@ -174,8 +174,9 @@ pub struct Options {
     tickets_start_plans: bool,
     /// No triage session runs in the project: Dispatch starts the plan run of every New ticket
     /// itself, writes no line into a triage chat, and the task cards and the alerts tell the user
-    /// (ticket no-triage-a-project-switch-no-triage-in). Off at the start; a settings file without
-    /// the field is off.
+    /// (ticket no-triage-a-project-switch-no-triage-in). On at the start for a project without a
+    /// settings file (ticket disable-triage-by-default); a settings file without the field is off.
+    #[serde(default)]
     no_triage: bool,
 }
 
@@ -183,7 +184,7 @@ pub struct Options {
 // field it does not know, so such a file reads without an error.
 impl Default for Options {
     fn default() -> Self {
-        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, pick_checks: false, full_checks_nightly: false, full_checks_at: 0, full_checks_after: 0, push_after_merge: false, auto_merge: false, tickets_start_plans: false, no_triage: false }
+        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, pick_checks: false, full_checks_nightly: false, full_checks_at: 0, full_checks_after: 0, push_after_merge: false, auto_merge: false, tickets_start_plans: false, no_triage: true }
     }
 }
 
@@ -738,7 +739,7 @@ impl Project {
         self.reports.join("options.json")
     }
 
-    /// The settings of the project. Without the file, each setting is on.
+    /// The settings of the project. Without the file, each setting has its value of `Default`.
     pub(crate) fn options(&self) -> Options {
         fs::read_to_string(self.options_file())
             .ok()
@@ -6465,6 +6466,12 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
         fs::create_dir_all(project.plans()).map_err(err)?;
         default_flags(project)?;
         join_tickets(project)?;
+        // The choice of No triage stands in the file from the first Apply on (ticket
+        // disable-triage-by-default). A moved file or a choice made before stays.
+        if !project.options_file().exists() {
+            let text = serde_json::to_string_pretty(&project.options()).map_err(err)?;
+            write_file(&project.options_file(), &format!("{text}\n"))?;
+        }
     }
     // After the move of the old folder, which may hold a list. The new list changes the section below.
     let checks_added = !done(11) && !project.checks_file().exists();
@@ -8874,7 +8881,7 @@ if (args[0] === 'agents') {
     #[test]
     fn an_old_project_stays_off_after_the_update() {
         let project = scratch("measure-old");
-        apply(&project, &[0]).unwrap();
+        apply_with_triage(&project);
         // The settings file of 0.1.54: the three settings, no field for measuring.
         write_file(&project.options_file(), "{\n  \"shortReports\": true,\n  \"triageName\": false,\n  \"autoApprove\": true\n}\n").unwrap();
         write_file(&project.triage_prompt(), &triage_prompt(project.options(), &project.reports_text())).unwrap();
@@ -9782,7 +9789,7 @@ if (args[0] === 'agents') {
         assert!(open_steps(&project).contains(&"Task files in git"), "{:?}", open_steps(&project));
         apply(&project, &[]).unwrap();
         assert_eq!(read(&root.join(".gitignore")), format!("node_modules\n{local}"));
-        assert_eq!(git(&["ls-files", "--", ".dispatch"]).lines().count(), tracked + 2, "the new brief and the settings file");
+        assert_eq!(git(&["ls-files", "--", ".dispatch"]).lines().count(), tracked + 1, "the new brief; the first Apply wrote the settings file");
         let subject = git(&["log", "-1", "--format=%s"]);
         assert!(subject.starts_with("Dispatch: ") && subject.contains("brief of t-2"), "{subject}");
         assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
@@ -10302,7 +10309,7 @@ if (args[0] === 'agents') {
     #[test]
     fn an_old_settings_file_has_the_three_new_switches_off() {
         let project = scratch("simpler-old");
-        apply(&project, &[0]).unwrap();
+        apply_with_triage(&project);
         // The settings file of 0.1.67: no field for the three switches of ticket simpler-process.
         write_file(&project.options_file(), "{\n  \"shortReports\": true,\n  \"triageName\": true,\n  \"autoApprove\": false,\n  \"measureBeforePlan\": false,\n  \"taskBranches\": false,\n  \"ignoreTasks\": false,\n  \"notesInGit\": false,\n  \"paused\": false\n}\n").unwrap();
         let files = [project.options_file(), project.plan_flags(), project.work_flags(), project.instructions(), project.triage_prompt(), project.local_settings(), project.settings(), project.script()];
@@ -10372,7 +10379,7 @@ if (args[0] === 'agents') {
     #[test]
     fn an_old_settings_file_has_auto_merge_off() {
         let project = scratch("auto-merge-old");
-        apply(&project, &[0]).unwrap();
+        apply_with_triage(&project);
         // The settings file of the version before: no field for this switch.
         write_file(&project.options_file(), "{\n  \"shortReports\": true,\n  \"triageName\": true,\n  \"autoApprove\": false,\n  \"measureBeforePlan\": false,\n  \"taskBranches\": false,\n  \"ignoreTasks\": false,\n  \"notesInGit\": false,\n  \"paused\": false,\n  \"startPlainPlans\": false,\n  \"checksAtGate\": false,\n  \"pushAfterMerge\": false,\n  \"ticketsStartPlans\": false,\n  \"noTriage\": false\n}\n").unwrap();
         let files = [project.options_file(), project.plan_flags(), project.work_flags(), project.instructions(), project.triage_prompt(), project.local_settings(), project.settings(), project.script()];
@@ -10439,7 +10446,7 @@ if (args[0] === 'agents') {
     #[test]
     fn an_old_settings_file_has_tickets_start_plans_off() {
         let project = scratch("tickets-old");
-        apply(&project, &[0]).unwrap();
+        apply_with_triage(&project);
         // The settings file of 0.1.67 with the three switches of ticket simpler-process: no field for this switch.
         write_file(&project.options_file(), "{\n  \"shortReports\": true,\n  \"triageName\": true,\n  \"autoApprove\": false,\n  \"measureBeforePlan\": false,\n  \"taskBranches\": false,\n  \"ignoreTasks\": false,\n  \"notesInGit\": false,\n  \"paused\": false,\n  \"startPlainPlans\": false,\n  \"checksAtGate\": false,\n  \"pushAfterMerge\": false\n}\n").unwrap();
         assert!(!project.options().tickets_start_plans);
@@ -10454,7 +10461,7 @@ if (args[0] === 'agents') {
     #[test]
     fn tickets_start_plans_changes_only_its_lines() {
         let project = scratch("tickets-section");
-        apply(&project, &[0]).unwrap();
+        apply_with_triage(&project);
         let reports = project.reports_text();
         let script = script_command(&reports);
         let files = [project.script(), project.plan_flags(), project.work_flags()];
@@ -10535,7 +10542,7 @@ if (args[0] === 'agents') {
     #[test]
     fn ticket_plan_refuses_with_the_switch_off() {
         let project = scratch("tickets-off");
-        apply(&project, &[0]).unwrap();
+        apply_with_triage(&project);
         let cwd = project.root.to_string_lossy().into_owned();
         let ticket = crate::core::tickets::ticket_add(cwd, "Make the board faster".to_string(), None, None, None).unwrap();
         let started = std::cell::Cell::new(false);
@@ -10655,10 +10662,18 @@ if (args[0] === 'agents') {
         write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
     }
 
+    /// The first Apply of a project that keeps its triage: "No triage" is off in the settings file
+    /// before it, as in a project of a version before ticket disable-triage-by-default.
+    fn apply_with_triage(project: &Project) {
+        fs::create_dir_all(&project.reports).unwrap();
+        set_no_triage(project, false);
+        apply(project, &[0]).unwrap();
+    }
+
     #[test]
     fn an_old_settings_file_has_no_triage_off() {
         let project = scratch("no-triage-old");
-        apply(&project, &[0]).unwrap();
+        apply_with_triage(&project);
         // The settings file of 0.1.69: no field for this switch.
         write_file(&project.options_file(), "{\n  \"shortReports\": true,\n  \"triageName\": true,\n  \"autoApprove\": false,\n  \"measureBeforePlan\": false,\n  \"taskBranches\": false,\n  \"ignoreTasks\": false,\n  \"notesInGit\": false,\n  \"paused\": false,\n  \"startPlainPlans\": false,\n  \"checksAtGate\": false,\n  \"pushAfterMerge\": false,\n  \"ticketsStartPlans\": false\n}\n").unwrap();
         assert!(!project.options().no_triage);
@@ -10674,15 +10689,15 @@ if (args[0] === 'agents') {
     #[test]
     fn no_triage_changes_only_its_line() {
         let project = scratch("no-triage-section");
-        apply(&project, &[0]).unwrap();
+        apply_with_triage(&project);
         let reports = project.reports_text();
         let script = script_command(&reports);
         let files = [project.script(), project.plan_flags(), project.work_flags()];
         let first: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
         // Off: the section and the role of the version before.
+        set_no_triage(&project, false);
         let before = project.section_body();
         let role_before = triage_prompt(project.options(), &reports);
-        set_no_triage(&project, false);
         assert_eq!(project.section_body(), before);
         assert!(!before.contains("No triage"));
         assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
@@ -10737,9 +10752,44 @@ if (args[0] === 'agents') {
         let project = scratch("no-triage-root");
         apply(&project, &[0]).unwrap();
         let cwd = project.root.to_string_lossy().into_owned();
-        assert_eq!(serde_json::to_value(project_root(cwd.clone()).unwrap()).unwrap()["noTriage"], json!(false));
-        set_no_triage(&project, true);
+        assert_eq!(serde_json::to_value(project_root(cwd.clone()).unwrap()).unwrap()["noTriage"], json!(true));
+        set_no_triage(&project, false);
+        assert_eq!(serde_json::to_value(project_root(cwd).unwrap()).unwrap()["noTriage"], json!(false));
+        clean(&project);
+    }
+
+    #[test]
+    fn a_new_project_starts_with_no_triage() {
+        let project = scratch("no-triage-new");
+        apply(&project, &[0]).unwrap();
+        assert!(project.options().no_triage);
+        let file = read(&project.options_file());
+        assert!(file.contains("\"noTriage\": true"), "{file}");
+        let rule = no_triage_rule(&project.reports_text(), &script_command(&project.reports_text()));
+        assert!(project.section_body().contains(&rule));
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        clean(&project);
+    }
+
+    #[test]
+    fn a_set_up_project_without_settings_has_no_triage() {
+        // User decision 1 of ticket disable-triage-by-default: such a project turns triage off too.
+        let project = scratch("no-triage-set-up");
+        apply(&project, &[0]).unwrap();
+        fs::remove_file(project.options_file()).unwrap();
+        assert!(project.options().no_triage);
+        let cwd = project.root.to_string_lossy().into_owned();
         assert_eq!(serde_json::to_value(project_root(cwd).unwrap()).unwrap()["noTriage"], json!(true));
+        clean(&project);
+    }
+
+    #[test]
+    fn a_choice_before_the_first_apply_stays() {
+        let project = scratch("no-triage-before");
+        fs::create_dir_all(&project.reports).unwrap();
+        set_no_triage(&project, false);
+        apply(&project, &[0]).unwrap();
+        assert!(!project.options().no_triage);
         clean(&project);
     }
 
@@ -11171,7 +11221,7 @@ if (args[0] === 'agents') {
     #[test]
     fn an_old_project_stays_off_after_the_branch_update() {
         let project = scratch("branch-old");
-        apply(&project, &[0]).unwrap();
+        apply_with_triage(&project);
         // The settings file of 0.1.55: four settings, no field for task branches.
         write_file(&project.options_file(), "{\n  \"shortReports\": true,\n  \"triageName\": true,\n  \"autoApprove\": false,\n  \"measureBeforePlan\": false\n}\n").unwrap();
         let files = [project.options_file(), project.plan_flags(), project.work_flags(), project.instructions(), project.triage_prompt(), project.local_settings(), project.settings(), project.script()];

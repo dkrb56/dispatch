@@ -576,7 +576,7 @@ test("no triage: the Setup switch, the Help and the README", () => {
   for (const fact of ["a question too", "<b>Retry</b>", "<b>Open terminal</b>"]) assert.ok(tickets.includes(fact), fact);
   const settings = section("Project settings");
   assert.ok(settings.includes("<li><b>No triage.</b>"));
-  assert.ok(settings.includes("<li><b>No triage</b> is off at the start."));
+  assert.ok(settings.includes("<li><b>No triage</b> is on at the start, also for a project that you set up before"));
   assert.ok(section("What Setup pipeline changes").includes("No triage adds one line too."));
   assert.ok(HTML.includes("With No triage on, a task that is done or failed alerts too, but not in night mode."));
   assert.ok(HTML.includes("With No triage on, the button is <b>Ask about this plan in a Chat</b>"));
