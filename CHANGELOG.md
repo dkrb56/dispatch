@@ -2,6 +2,11 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.78 (2026-11-19)
+- A project switch lets an agent pick the checks after the work run; the task card shows the picks with one reason each as checkboxes, Run checks (or the merge with Task branches) runs the ticked ones through the new verb check and shows each exit code and log; a run-everything list picks every check; a failed check keeps the task open; night mode runs the picks.
+- A click on Run clears the last run of the card and shows a spinner with Starting… on Run until the new run shows.
+- A project can schedule a full run of every check, each night at a set time or after a number of finished tasks; the verb check full runs the list on the base branch under the measure lock, keeps results and logs in .dispatch/checks/full, Setup pipeline shows the last run, and each failed check opens one fix ticket in New while none is open.
+
 ## 0.1.77 (2026-11-19)
 - Options gets a Phone tab with one button and the code; the phone page keeps its key in the address, so the Home Screen icon stays connected.
 - Card files are never committed on a task branch; each switch between the base and a task branch carries the uncommitted card files and puts them back, so no plan, report or branch file goes missing; the switch back to the base holds the merge lock, and Approve, Reply and Merge wait up to 60 s for it; a "no plan" or "no branch file" error clears when the file is back.
