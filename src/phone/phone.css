@@ -73,6 +73,21 @@ body {
   color: var(--text-2);
 }
 
+.hint {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--text);
+}
+
+.hint p {
+  margin: 0;
+}
+
+.hint button {
+  align-self: flex-start;
+}
+
 .cards,
 .key-form,
 .ticket-box {

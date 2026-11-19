@@ -7,7 +7,7 @@ import { COMPACT_KEY, parseCompact } from "./compact";
 import { cleanAddress, DEFAULT_PORT, type HostEntry, hostSettings, setHostSettings, windowCall } from "./backend";
 import { initDialogTabs } from "./dialogtabs";
 import { isOwnHostRow, modeAfterHostStop } from "./hosts";
-import { phoneLink } from "./phonelink";
+import { phoneSetup } from "./phonelink";
 import qrcode from "qrcode-generator";
 
 const dialog = document.querySelector<HTMLDialogElement>("#options")!;
@@ -105,14 +105,22 @@ const runNewKeyEl = document.querySelector<HTMLButtonElement>("#host-run-newkey"
 const runAutostartRow = document.querySelector<HTMLElement>("#host-run-autostart-row")!;
 const runAutostartEl = document.querySelector<HTMLInputElement>("#host-run-autostart")!;
 const runErrorEl = document.querySelector<HTMLElement>("#host-run-error")!;
-const phoneBlockEl = document.querySelector<HTMLElement>("#phone-block")!;
 const phoneNoteEl = document.querySelector<HTMLElement>("#phone-note")!;
+const phoneStartEl = document.querySelector<HTMLButtonElement>("#phone-start")!;
+const phoneErrorEl = document.querySelector<HTMLElement>("#phone-error")!;
 const phoneReadyEl = document.querySelector<HTMLElement>("#phone-ready")!;
 const phoneCodeEl = document.querySelector<HTMLCanvasElement>("#phone-code")!;
 const phoneLinkEl = document.querySelector<HTMLInputElement>("#phone-link")!;
 const phoneNewKeyEl = document.querySelector<HTMLButtonElement>("#phone-newkey")!;
 let lastRun: HostRun | null = null;
 let runBusy = false;
+/** The button of the Phone tab worked: the restart that follows opens Options on that tab again. */
+let phoneTabMark = false;
+
+/** Whether `saveState` must keep the mark for the next start. */
+export function phoneTabWanted(): boolean {
+  return phoneTabMark;
+}
 
 /** The port of the row of this PC in the host list, or the default port. */
 function chosenPort(): number {
@@ -142,13 +150,30 @@ function drawPhoneCode(link: string): void {
   }
 }
 
-/** The block of the phone page: it shows while the host runs. */
+const PHONE_NOTES = {
+  start: "First install Tailscale on the iPhone and sign in to the same account as this computer. Then click the button: Dispatch starts the host and restarts, the terminals of this window end, and the code shows here.",
+  tailscale: "The phone needs the Tailscale address of this computer. Start Tailscale, then start the host again.",
+  connect: "Scan this code with the iPhone camera. Tailscale must run on the phone. The phone lists only the projects of a connected window, so click the button: Dispatch restarts and the terminals of this window end.",
+  scan: "Tailscale must be installed on the iPhone and signed in to the same account. Scan this code with the iPhone camera. The page then shows the last step: Share, then Add to Home Screen.",
+};
+
+/** This window works through the host of this PC, so the phone can list its projects. */
+function windowUsesOwnHost(run: HostRun): boolean {
+  const saved = hostSettings();
+  return saved.mode === "hosts" && saved.hosts.some((entry) => isOwnHostRow(entry, run.key));
+}
+
+/** The Phone tab: the next step of the setup, the code when it can show, and the one button. */
 function drawPhoneBlock(run: HostRun | null): void {
-  phoneBlockEl.hidden = run?.running !== true;
-  const link = run?.running ? phoneLink(run.addresses, run.phoneKey) : null;
+  const setup = run ? phoneSetup(run.running, run.addresses, run.phoneKey, windowUsesOwnHost(run)) : null;
+  const link = setup?.link ?? null;
+  const busy = runBusy || phoneTabMark;
   phoneReadyEl.hidden = link === null;
-  phoneNoteEl.textContent = link ? "Scan this code with the iPhone camera. In Safari tap Share, then Add to Home Screen." : "The phone needs the Tailscale address of this computer. Start Tailscale, then start the host again.";
-  phoneNewKeyEl.disabled = runBusy;
+  phoneNoteEl.textContent = busy ? "Please wait…" : setup ? PHONE_NOTES[setup.step] : "The state of the host is not known.";
+  phoneStartEl.hidden = setup?.step !== "start" && setup?.step !== "connect";
+  phoneStartEl.textContent = setup?.step === "connect" ? "Connect this window" : "Start and show the code";
+  phoneStartEl.disabled = busy;
+  phoneNewKeyEl.disabled = busy;
   if (link && phoneLinkEl.value !== link) {
     phoneLinkEl.value = link;
     drawPhoneCode(link);
@@ -173,6 +198,8 @@ function drawHostRun(run: HostRun | null, error = ""): void {
   runAutostartEl.disabled = runBusy;
   runErrorEl.hidden = error === "";
   runErrorEl.textContent = error;
+  phoneErrorEl.hidden = error === "";
+  phoneErrorEl.textContent = error;
   drawPhoneBlock(run);
   showOwnNote();
 }
@@ -291,6 +318,21 @@ function initHostRun(onHostChange: () => unknown): void {
   });
   // The host keeps running: only the phone needs the new code.
   phoneNewKeyEl.addEventListener("click", () => void hostRunAction("host_run_new_phone_key", {}, async () => {}));
+  // The same switch as Start the host, because the phone lists only the projects of connected windows.
+  phoneStartEl.addEventListener("click", () => {
+    const running = lastRun?.running === true;
+    const port = (running ? lastRun?.port : null) ?? chosenPort();
+    void hostRunAction(running ? "host_run_status" : "host_run_start", running ? {} : { port }, async (run) => {
+      phoneTabMark = true;
+      drawPhoneBlock(run);
+      try {
+        await useHostOfThisPc(run, port, onHostChange);
+      } catch (error) {
+        phoneTabMark = false;
+        throw error;
+      }
+    });
+  });
   runAutostartEl.addEventListener("change", () => {
     const on = runAutostartEl.checked;
     void hostRunAction("host_run_autostart", { on, port: lastRun?.port ?? chosenPort() }, async () => {});
@@ -327,6 +369,13 @@ function save(): void {
   } catch {
     // The switches stay for this run of the app.
   }
+}
+
+let showOptions: ((tab?: string) => void) | null = null;
+
+/** Opens Options on `tab`, or on the first tab. */
+export function openOptions(tab?: string): void {
+  showOptions?.(tab);
 }
 
 /**
@@ -395,12 +444,13 @@ export function initOptions(onClose: () => void, onHostChange: () => unknown): v
       }
     });
   }
-  document.querySelector("#show-options")!.addEventListener("click", () => {
+  showOptions = (tab) => {
     showHostSettings(onHostChange);
     void showHostRun();
-    tabs.show();
+    tabs.show(tab);
     dialog.showModal();
-  });
+  };
+  document.querySelector("#show-options")!.addEventListener("click", () => openOptions());
   document.querySelector("#options-close")!.addEventListener("click", () => dialog.close());
   // A click on the dark area around the dialog closes it.
   dialog.addEventListener("click", (event) => {

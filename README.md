@@ -65,12 +65,13 @@ With several hosts, each project name gets ` · <host name>` after it, so two pr
 The host also serves a small page with only the Overview: one column of project cards with the tasks in work, the newest finished tasks and the tickets. You can add a ticket there.
 
 1. Install Tailscale on the iPhone and sign in to the same tailnet as the computer.
-2. On the computer: Options → **Run the host on this PC** → **Start the host**. Scan the code with the iPhone camera.
-3. In Safari tap Share, then **Add to Home Screen**. The icon opens the page full screen.
+2. On the computer: Options → **Phone** → **Start and show the code**. Dispatch restarts, the terminals of this window end, and the code shows.
+3. Scan the code with the iPhone camera. The address and the key come with the code, so you type nothing.
+4. In Safari tap Share, then **Add to Home Screen**. The icon keeps the key and opens the page full screen.
 
 The phone shows the projects of this computer that are open in a connected Dispatch window, also a window on another computer. A project of another host never shows. A project leaves the phone when its last window closes or disconnects, or after about 3 minutes without contact.
 
-The computer and the host must be on. The phone gives no alerts, and you approve plans and answer questions at the computer. A ticket from the phone starts only while a Dispatch window runs. **New phone key** ends the access of the old code; the host and its terminals keep running.
+The computer and the host must be on. The phone gives no alerts, and you approve plans and answer questions at the computer. A ticket from the phone starts only while a Dispatch window runs. **New phone key** ends the access of the old code and of the old icon; the host and its terminals keep running. Scan the new code and add the page to the Home Screen again.
 
 ## What Setup pipeline changes
 

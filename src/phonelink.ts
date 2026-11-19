@@ -3,11 +3,30 @@
 
 /**
  * The address of the phone page: the first address of the host that another device can reach, with
- * the phone key after `#`, so the key never goes to the host as part of the request. `addresses` are
- * the `<ip>:<port>` texts of `host.json`. Null without a key or without such an address.
+ * the phone key after `#`, so the first request of the code holds no key. The page then moves the key
+ * into its query, so its later requests hold it. `addresses` are the `<ip>:<port>` texts of
+ * `host.json`. Null without a key or without such an address.
  */
 export function phoneLink(addresses: readonly string[], key: string | null | undefined): string | null {
   if (!key) return null;
   const address = addresses.find((one) => one !== "" && !one.startsWith("127."));
   return address ? `http://${address}/#key=${key}` : null;
+}
+
+/** What the Phone tab of Options shows: the next step, and the link once a code can show. */
+export interface PhoneSetup {
+  step: "start" | "tailscale" | "connect" | "scan";
+  link: string | null;
+}
+
+/**
+ * The step of the phone setup: `start` with the host off, `tailscale` when the host has no address
+ * for the phone, `connect` when this window does not use the host (the phone then lists no project of
+ * it), and `scan` when all is ready.
+ */
+export function phoneSetup(running: boolean, addresses: readonly string[], key: string | null | undefined, windowUsesHost: boolean): PhoneSetup {
+  if (!running) return { step: "start", link: null };
+  const link = phoneLink(addresses, key);
+  if (!link) return { step: "tailscale", link: null };
+  return { step: windowUsesHost ? "scan" : "connect", link };
 }

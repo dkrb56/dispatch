@@ -4251,14 +4251,16 @@ button.ticket-level {
   font-size: calc(12px * var(--text-scale));
 }
 
-#host-run .buttons {
+#host-run .buttons,
+#phone-block .buttons {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin: 8px 0;
 }
 
-#host-run .buttons button {
+#host-run .buttons button,
+#phone-block .buttons button {
   height: 28px;
   padding: 0 12px;
   border: 1px solid var(--line);
@@ -4270,27 +4272,24 @@ button.ticket-level {
   cursor: pointer;
 }
 
-#host-run .buttons button:hover:not(:disabled) {
+#host-run .buttons button:hover:not(:disabled),
+#phone-block .buttons button:hover:not(:disabled) {
   border-color: var(--accent-line);
 }
 
-#host-run .buttons button:disabled {
+#host-run .buttons button:disabled,
+#phone-block .buttons button:disabled {
   color: var(--muted);
   cursor: default;
 }
 
-#options #host-run-error {
+#options #host-run-error,
+#options #phone-error {
   color: var(--danger);
   white-space: pre-wrap;
 }
 
-/* The block of the phone page: the code keeps its white ground in every theme. */
-#phone-block {
-  margin-top: 12px;
-  padding-top: 8px;
-  border-top: 1px solid var(--hairline);
-}
-
+/* The tab Phone: the code keeps its white ground in every theme. */
 #phone-code {
   display: block;
   max-width: 100%;

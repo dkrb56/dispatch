@@ -5,13 +5,14 @@
 // context: it uses only the browser features that exist there.
 import "./phone.css";
 import { doneTasks, listedTasks, runStarting } from "../overview";
-import { folderName, keyFromHash, keyFromText, type PhoneCard, phoneCards, type PhoneProject, type PhoneRow, type PhoneTaskList, type PhoneTools, type PhoneWorker } from "../phonemodel";
+import { folderName, homeScreenHint, keyAddress, keyFromAddress, keyFromText, oldKeyText, type PhoneCard, phoneCards, type PhoneProject, type PhoneRow, type PhoneTaskList, type PhoneTools, type PhoneWorker } from "../phonemodel";
 import { countText, type Ticket } from "../tickets";
 import { taskTldr } from "../tldr";
 import { groupCount } from "../topbar";
 
 const PROTOCOL = 1;
 const KEY_STORE = "dispatch-phone-key";
+const HINT_DONE_STORE = "dispatch-phone-hint-done";
 const WRONG_KEY = "the key is wrong";
 const CONNECT_WAIT_MS = 10_000;
 const RETRY_FIRST_MS = 1000;
@@ -50,8 +51,13 @@ keyInput.autocapitalize = "off";
 keyInput.spellcheck = false;
 keyInput.setAttribute("aria-label", "Phone key or link");
 keyForm.append(keyInput, element("button", "", "Connect"));
+const hintEl = element("div", "message hint");
+hintEl.hidden = true;
+const hintDoneEl = element("button", "", "Got it");
+hintDoneEl.type = "button";
+hintEl.append(element("p", "", "Connected. To keep Dispatch on this phone, tap Share, then Add to Home Screen."), hintDoneEl);
 const cardsEl = element("main", "cards");
-app.append(top, messageEl, keyForm, cardsEl);
+app.append(top, messageEl, keyForm, hintEl, cardsEl);
 
 function showMessage(text: string): void {
   messageEl.textContent = text;
@@ -75,9 +81,35 @@ function storeKey(value: string | null): void {
   }
 }
 
-/** The key stays in the address, so that an icon on the Home Screen carries it. */
-let key = keyFromHash(location.hash) ?? readStoredKey();
-if (key) storeKey(key);
+/** True in a Home Screen icon, false in Safari on an iPhone; other browsers do not have it. */
+const standalone = (navigator as Navigator & { standalone?: boolean }).standalone;
+
+function hintDismissed(): boolean {
+  try {
+    return localStorage.getItem(HINT_DONE_STORE) !== null;
+  } catch {
+    return false;
+  }
+}
+
+hintDoneEl.addEventListener("click", () => {
+  hintEl.hidden = true;
+  try {
+    localStorage.setItem(HINT_DONE_STORE, "1");
+  } catch {
+    // The hint then shows again at the next start.
+  }
+});
+
+/**
+ * The key stays in the query of the address, so that an icon on the Home Screen carries it: the icon
+ * has its own storage and only the address that Add to Home Screen saved.
+ */
+let key = keyFromAddress(location.search, location.hash) ?? readStoredKey();
+if (key) {
+  storeKey(key);
+  history.replaceState(null, "", keyAddress(key));
+}
 
 function randomId(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
@@ -106,6 +138,7 @@ function askForKey(text: string): void {
   updatedEl.textContent = "";
   cardsEl.replaceChildren();
   cards.clear();
+  hintEl.hidden = true;
   showMessage(text);
   keyForm.hidden = false;
 }
@@ -140,6 +173,7 @@ function connect(): void {
       keyForm.hidden = true;
       if (key) storeKey(key);
       showMessage("");
+      hintEl.hidden = !homeScreenHint(standalone, hintDismissed());
       void round();
     } else if (frame.type === "reply") {
       const waiting = pending.get(Number(frame.id));
@@ -171,7 +205,7 @@ function connect(): void {
     if (refused === WRONG_KEY) {
       key = null;
       storeKey(null);
-      askForKey("This key does not work any more. On the computer open Options, then Run the host on this PC, and scan the new code.");
+      askForKey(oldKeyText(standalone));
     } else if (refused) {
       showMessage(`The computer refused this phone: ${refused}`);
     } else {
@@ -358,7 +392,7 @@ keyForm.addEventListener("submit", (event) => {
   }
   key = typed;
   storeKey(typed);
-  history.replaceState(null, "", `#key=${typed}`);
+  history.replaceState(null, "", keyAddress(typed));
   keyInput.value = "";
   keyForm.hidden = true;
   retryWait = RETRY_FIRST_MS;
@@ -380,4 +414,4 @@ document.addEventListener("visibilitychange", () => {
 });
 
 if (key) connect();
-else askForKey("Scan the code in Options on your computer, or paste the phone key here.");
+else askForKey("Scan the code in Options, tab Phone, on your computer, or paste the phone key here.");

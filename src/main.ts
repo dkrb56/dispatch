@@ -90,7 +90,7 @@ import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersio
 import { lastRunVersion, newEntries } from "./changelog";
 import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, type Wait, type WorkerEnd } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
-import { alertOptions, compactOn, initOptions, ownHostRuns, pulseOn, stopOwnHost, useOwnHost } from "./options";
+import { alertOptions, compactOn, initOptions, openOptions, ownHostRuns, phoneTabWanted, pulseOn, stopOwnHost, useOwnHost } from "./options";
 import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
 import { GIT_STATE_SIZE_KEY, ageText, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "./gitstate";
@@ -157,6 +157,8 @@ interface SavedState {
   host?: HostSettings;
   /** The version whose news the user saw (changelog-window). Missing in files of 0.1.54 and older. */
   version?: string;
+  /** The button of the Phone tab restarted Dispatch: the next start opens Options on that tab, once. */
+  phoneTab?: boolean;
 }
 
 /** The version for the field `version` of state.json: the old one until the user closes "What's new". */
@@ -10257,7 +10259,7 @@ function saveState(): Promise<void> {
     focus: tab.focus,
   }));
   return windowCall("state_save", {
-    state: { tabs: list, active: activeId, host: hostSettings(), ...(seenVersion ? { version: seenVersion } : {}) },
+    state: { tabs: list, active: activeId, host: hostSettings(), ...(seenVersion ? { version: seenVersion } : {}), ...(phoneTabWanted() ? { phoneTab: true } : {}) },
     paneIds: [...panes.keys()],
   });
 }
@@ -13522,6 +13524,11 @@ async function start(): Promise<void> {
       seenVersion = appVersion;
       saveState().catch((error) => console.error("state save failed", error));
     });
+  }
+  // After the button of the Phone tab: the code shows at once, and this save removes the mark.
+  if (loaded?.phoneTab) {
+    openOptions("phone");
+    saveState().catch((error) => console.error("state save failed", error));
   }
   // The title names the host from the start, before the first worker read.
   updateWorkerAlert();

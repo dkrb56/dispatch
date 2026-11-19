@@ -5,8 +5,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { doneTasks, listedTasks, runStarting } from "../src/overview.ts";
-import { phoneLink } from "../src/phonelink.ts";
-import { keyFromHash, keyFromText, phoneCards, phonePhase, phoneStatus, phoneTasks, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
+import { phoneLink, phoneSetup } from "../src/phonelink.ts";
+import { homeScreenHint, keyAddress, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneCards, phonePhase, phoneStatus, phoneTasks, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
 import { countText, type Ticket } from "../src/tickets.ts";
 import { taskTldr } from "../src/tldr.ts";
 import { groupCount } from "../src/topbar.ts";
@@ -56,6 +56,49 @@ test("the link takes the first address that is not 127.x", () => {
   assert.equal(phoneLink(["127.0.0.1:7470"], KEY), null, "no tailnet address");
   assert.equal(phoneLink([], KEY), null);
   assert.equal(phoneLink(["100.64.0.1:7470"], null), null, "no key");
+});
+
+test("the key of the address: the fragment first, then the query, with the same check", () => {
+  const other = "cd".repeat(32);
+  assert.equal(keyFromAddress("", `#key=${KEY}`), KEY);
+  assert.equal(keyFromAddress(`?key=${KEY}`, ""), KEY);
+  assert.equal(keyFromAddress(`?key=${KEY.toUpperCase()}`, ""), KEY);
+  assert.equal(keyFromAddress(`?a=1&key=${KEY}`, ""), KEY);
+  assert.equal(keyFromAddress(`?key=${other}`, `#key=${KEY}`), KEY, "a new scan wins over the saved address");
+  assert.equal(keyFromAddress(`?key=${KEY}`, "#key=abc"), KEY, "a bad fragment does not hide the query");
+  assert.equal(keyFromAddress("?key=abc", ""), null);
+  assert.equal(keyFromAddress(`?key=${KEY}0`, ""), null, "65 characters");
+  assert.equal(keyFromAddress(`?other=${KEY}`, ""), null);
+  assert.equal(keyFromAddress("", ""), null);
+  assert.equal(keyAddress(KEY), `/?key=${KEY}`);
+  assert.equal(keyFromAddress(keyAddress(KEY).slice(1), ""), KEY, "the address that the page writes gives the key back");
+});
+
+test("the Home Screen hint shows only in Safari on an iPhone, until Got it", () => {
+  assert.equal(homeScreenHint(false, false), true);
+  assert.equal(homeScreenHint(false, true), false, "after Got it");
+  assert.equal(homeScreenHint(true, false), false, "already the icon");
+  assert.equal(homeScreenHint(undefined, false), false, "another browser");
+});
+
+test("a refused key tells an icon to replace itself", () => {
+  assert.ok(oldKeyText(true).includes("Options, tab Phone"));
+  assert.ok(oldKeyText(true).includes("Home Screen again") && oldKeyText(true).includes("delete this icon"));
+  for (const standalone of [false, undefined]) {
+    assert.ok(oldKeyText(standalone).includes("Options, tab Phone"));
+    assert.ok(!oldKeyText(standalone).includes("delete this icon"));
+  }
+});
+
+test("each step of the phone setup", () => {
+  const addresses = ["127.0.0.1:7470", "100.64.0.1:7470"];
+  const link = `http://100.64.0.1:7470/#key=${KEY}`;
+  assert.deepEqual(phoneSetup(false, addresses, KEY, false), { step: "start", link: null }, "host off");
+  assert.deepEqual(phoneSetup(false, addresses, KEY, true), { step: "start", link: null }, "host off, the window still lists it");
+  assert.deepEqual(phoneSetup(true, ["127.0.0.1:7470"], KEY, true), { step: "tailscale", link: null }, "no tailnet address");
+  assert.deepEqual(phoneSetup(true, addresses, null, true), { step: "tailscale", link: null }, "no phone key");
+  assert.deepEqual(phoneSetup(true, addresses, KEY, false), { step: "connect", link }, "this window does not use the host");
+  assert.deepEqual(phoneSetup(true, addresses, KEY, true), { step: "scan", link });
 });
 
 test("each status of a task", () => {

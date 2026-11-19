@@ -137,6 +137,34 @@ export function keyFromHash(hash: string): string | null {
   return found ? found[1].toLowerCase() : null;
 }
 
+/**
+ * The phone key in the address of the page: the fragment of a scanned code first, else the `key`
+ * value of the query, which is where a Home Screen icon keeps it. Null without a valid key.
+ */
+export function keyFromAddress(search: string, hash: string): string | null {
+  const fromHash = keyFromHash(hash);
+  if (fromHash) return fromHash;
+  const found = /^[0-9a-f]{64}$/i.exec(new URLSearchParams(search).get("key")?.trim() ?? "");
+  return found ? found[0].toLowerCase() : null;
+}
+
+/** The address that holds the key after the first load; Add to Home Screen saves this one. */
+export function keyAddress(key: string): string {
+  return `/?key=${key}`;
+}
+
+/** Only Safari on an iPhone reports `false` here; other browsers report nothing and get no hint. */
+export function homeScreenHint(standalone: boolean | undefined, dismissed: boolean): boolean {
+  return standalone === false && !dismissed;
+}
+
+/** What the page says when the host refuses its key. An icon keeps its old address, so it must be replaced. */
+export function oldKeyText(standalone: boolean | undefined): string {
+  return standalone === true
+    ? "This key does not work any more. On the computer open Options, tab Phone, and scan the new code. Add the page to the Home Screen again and delete this icon."
+    : "This key does not work any more. On the computer open Options, tab Phone, and scan the new code.";
+}
+
 /** The phone key in a pasted text: the key alone or the whole link. */
 export function keyFromText(text: string): string | null {
   return KEY.exec(text)?.[0].toLowerCase() ?? null;
