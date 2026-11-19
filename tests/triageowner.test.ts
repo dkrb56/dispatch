@@ -5,7 +5,8 @@
 // Run: node --test tests/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addToTrail, afterAttach, isTerminalReport, JOINED_GONE_MS, leaveJoined, mayDriveChat, maySendTicket, repaintSizes, type TicketWindow, type Trail, triagePlace, triageStart } from "../src/triageowner.ts";
+import xterm from "@xterm/xterm";
+import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, JOINED_GONE_MS, leaveJoined, mayDriveChat, maySendTicket, repaintSizes, type TicketWindow, type Trail, triagePlace, triageStart } from "../src/triageowner.ts";
 
 const CHAT = "5ab0c0de-7e57-4a11-9b0b-000000000001";
 const mine = (...ids: string[]) => (id: string) => ids.includes(id);
@@ -141,4 +142,49 @@ test("the terminal record keeps the newest entries within its limit", () => {
   // One entry larger than the limit stays: it is the newest thing that happened.
   addToTrail(trail, { at: 50, kind: "key", data: "y".repeat(500) }, 100);
   assert.deepEqual(trail.entries.map((entry) => entry.at), [50]);
+});
+
+// on-a-host-project-starminer-in-this-case: the console of a Windows host counts SI (0x0F) as one
+// printed column; xterm prints nothing for it. The frames below have the shape of the host's record
+// (entries 2187 and 2188): the prompt "> ", then ESC[?2004h SI, then the first letter as BS + "g"
+// and an absolute move behind it, then Backspace as BS ESC[K.
+const { Terminal } = xterm;
+async function screen(frames: string[], windows: boolean | null): Promise<{ row: string; x: number }> {
+  const term = new Terminal({ cols: 20, rows: 3, allowProposedApi: true });
+  for (const frame of frames) {
+    const data = windows === null ? frame : hostOutput(frame, windows);
+    await new Promise<void>((done) => term.write(data, done));
+  }
+  const buffer = term.buffer.active;
+  const row = buffer.getLine(buffer.cursorY)?.translateToString(true) ?? "";
+  const x = buffer.cursorX;
+  term.dispose();
+  return { row, x };
+}
+const PROMPT = ["> ", "\x1b[1;3H\x1b[?25h", "\x1b[?2004h\x0f", "\x1b[?25l\bg\x1b[K\x1b[1;4H\x1b[?25h"];
+
+test("a Windows host: the first letter stands after the prompt mark and its space", async () => {
+  // Without the rule the window shows the fault of the ticket: the letter covers the space.
+  assert.deepEqual(await screen(PROMPT, null), { row: ">g", x: 3 });
+  assert.deepEqual(await screen(PROMPT, true), { row: "> g", x: 3 });
+});
+
+test("a Windows host: Backspace removes the first letter", async () => {
+  // Without the rule only the blank behind the letter goes; the letter stays.
+  assert.deepEqual(await screen([...PROMPT, "\b\x1b[K"], null), { row: ">g", x: 2 });
+  assert.deepEqual(await screen([...PROMPT, "\b\x1b[K"], true), { row: "> ", x: 2 });
+});
+
+test("SI counts as one column only for a terminal of a Windows folder", () => {
+  assert.equal(hostOutput("\x1b[?2004h\x0f", true), "\x1b[?2004h ");
+  assert.equal(hostOutput("a\x0fb\x0f", true), "a b ");
+  // A Mac terminal keeps SI: there it switches the character set back and takes no column.
+  assert.equal(hostOutput("\x1b[?2004h\x0f", false), "\x1b[?2004h\x0f");
+  assert.equal(hostOutput("plain text", true), "plain text");
+  assert.equal(isWindowsPath("E:\\gamedev\\git-repos\\Starminer"), true);
+  assert.equal(isWindowsPath("c:/work"), true);
+  assert.equal(isWindowsPath("\\\\server\\share"), true);
+  assert.equal(isWindowsPath("/Users/me/work"), false);
+  assert.equal(isWindowsPath(null), false);
+  assert.equal(isWindowsPath(undefined), false);
 });

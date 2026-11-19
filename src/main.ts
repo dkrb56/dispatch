@@ -73,7 +73,7 @@ import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { HOLD_NOTE, holdWait } from "./holdstep";
 import { triageCard, triagePanesToClose, withoutTriage } from "./notriage";
-import { addToTrail, afterAttach, isTerminalReport, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
+import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { type AskDecision, askAbout, askBlocked, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
 import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
@@ -13655,7 +13655,8 @@ async function start(): Promise<void> {
     const pane = panes.get(payload.id);
     if (!pane || pane.host !== host) return;
     addToTrail(pane.trail, { at: Date.now(), kind: "out", data: payload.data });
-    pane.term.write(payload.data);
+    // The record keeps what the host sent; the screen gets SI of a Windows console as one column.
+    pane.term.write(hostOutput(payload.data, isWindowsPath(pane.project ?? pane.cwd)));
     pane.dirty = true;
   });
   await onEvent<string>("pty-exit", (host, payload) => {

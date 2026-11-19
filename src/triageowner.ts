@@ -118,6 +118,22 @@ export function afterAttach(reply: { cols: number; rows: number } | null | undef
   return fresh ? "repaint" : "none";
 }
 
+/** A folder of Windows: a drive letter (`E:\`, `c:/`) or a share (`\\server`). */
+export function isWindowsPath(path: string | null | undefined): boolean {
+  return !!path && /^([A-Za-z]:[\\/]|\\\\)/.test(path);
+}
+
+/**
+ * The output of a terminal as the window writes it (on-a-host-project-starminer-in-this-case). The
+ * console of some Windows hosts sends SI (0x0F) and counts it as one printed column, then writes the
+ * next typed letter relative to that column (`\b` + letter); xterm prints nothing for SI, so the
+ * letter covers the space after the prompt mark and Backspace misses it. On Windows the window
+ * prints a space for SI. A Mac keeps SI: there it only switches the character set back.
+ */
+export function hostOutput(data: string, windows: boolean): string {
+  return windows && data.includes("\x0f") ? data.replace(/\x0f/g, " ") : data;
+}
+
 /** The two sizes of a full redraw: one column away from the size, then the size again. */
 export function repaintSizes(cols: number, rows: number): [{ cols: number; rows: number }, { cols: number; rows: number }] {
   return [{ cols: cols > 2 ? cols - 1 : cols + 1, rows }, { cols, rows }];
