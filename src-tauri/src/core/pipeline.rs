@@ -3563,6 +3563,31 @@ pub(crate) fn section_lines(text: &str, title: &str) -> Vec<String> {
     lines
 }
 
+/// The lines of a section like `section_lines`, but with the list marks and with the blank lines:
+/// a run of blank lines becomes one, none stands at the start or the end, each line loses its end space.
+pub(crate) fn section_block(text: &str, title: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut in_section = false;
+    for line in text.lines() {
+        if let Some(heading) = line.trim().strip_prefix("## ") {
+            in_section = heading.trim().eq_ignore_ascii_case(title);
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        let line = line.trim_end();
+        if line.is_empty() && lines.last().map_or(true, |last| last.is_empty()) {
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+    while lines.last().is_some_and(|last| last.is_empty()) {
+        lines.pop();
+    }
+    lines
+}
+
 /// A `## ` heading with the title (the case does not matter) stands in the text.
 fn has_heading(text: &str, title: &str) -> bool {
     text.lines().filter_map(|line| line.trim().strip_prefix("## ")).any(|heading| heading.trim().eq_ignore_ascii_case(title))
@@ -5782,7 +5807,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             brief_titles.push((task.name.clone(), about.clone()));
             task.about = about;
         }
-        task.words = section_lines(&text, "The user's words");
+        task.words = section_block(&text, "The user's words");
         task.brief = Some(entry);
     }
     // The tickets (ticket tickets): the planned messages of the old layout become tickets, each
@@ -10758,6 +10783,13 @@ if (args[0] === 'agents') {
         // Empty fields write nothing either.
         let empty = ticket_of(json!({"fields": {"why": " ", "done": "", "keep": "", "context": "", "see": "", "expect": ""}}));
         assert_eq!(ticket_brief(&empty, 0, true, &[]), brief);
+    }
+
+    #[test]
+    fn section_block_keeps_marks_and_blank_lines() {
+        let text = "# t\n\n## The user's words\n\nGoal:  \n- one\n\n\n\n1. Two\n\n## Other\nx\n";
+        assert_eq!(section_block(text, "The user's words"), vec!["Goal:", "- one", "", "1. Two"]);
+        assert!(section_block(text, "Missing").is_empty());
     }
 
     #[test]

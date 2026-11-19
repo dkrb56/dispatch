@@ -24,13 +24,14 @@ test("text in the question box greys Approve, keeps Revise on and makes Ask the 
   assert.match(MAIN, /decisionsAskText\(\)\.addEventListener\("input", updateDecisionsFooter\)/);
 });
 
-test("the help text and the Goal fold behind Show more; your words stay bold", () => {
+test("the help text and the Goal fold behind Show more; your words are normal text with bold headings", () => {
   assert.match(MAIN, /decisions-words/);
   assert.match(MAIN, /decisions-more/);
   assert.match(MAIN, /decisionsDialog\.classList\.remove\("show-more"\)/);
   assert.match(MAIN, /"Show less" : "Show more"/);
   assert.match(CSS, /#decisions:not\(\.show-more\) #decisions-intro,\n#decisions:not\(\.show-more\) \.decisions-more \{\n  display: none;/);
-  assert.match(CSS, /\.decisions-words \{[^}]*font-weight: 600/);
+  assert.doesNotMatch(CSS, /\.decisions-words \{[^}]*font-weight: 600/);
+  assert.match(CSS, /\.ctx-heading \{[^}]*font-weight: 700/);
 });
 const HTML = read("../index.html");
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

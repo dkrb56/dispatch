@@ -2,7 +2,37 @@
 // decisions-tldr). Run: node --test tests/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { contextBlocks, tldrBlock } from "../src/decisions-context.ts";
+import { contextBlocks, formatLines, tldrBlock } from "../src/decisions-context.ts";
+
+test("formatLines sorts each line into its kind", () => {
+  const parts = formatLines(["Goal:", "Level: hard", "", "1. Project rail", "2) Second", "- a bullet: not a field", "• dot", "plain words"]);
+  assert.deepEqual(parts, [
+    { kind: "heading", text: "Goal" },
+    { kind: "field", label: "Level", value: "hard" },
+    { kind: "gap" },
+    { kind: "number", mark: "1.", text: "Project rail" },
+    { kind: "number", mark: "2)", text: "Second" },
+    { kind: "bullet", text: "a bullet: not a field" },
+    { kind: "bullet", text: "dot" },
+    { kind: "text", text: "plain words" },
+  ]);
+});
+
+test("formatLines gives an old flat list headings, fields and text", () => {
+  assert.deepEqual(formatLines(["What I expect:", "Title: Rail", "Make it fast"]), [
+    { kind: "heading", text: "What I expect" },
+    { kind: "field", label: "Title", value: "Rail" },
+    { kind: "text", text: "Make it fast" },
+  ]);
+});
+
+test("formatLines keeps a URL line as text and an empty list empty", () => {
+  assert.deepEqual(formatLines(["https://example.com/a"]), [{ kind: "text", text: "https://example.com/a" }]);
+  assert.deepEqual(formatLines(["This sentence has far too many words to be a label: yes"]), [
+    { kind: "text", text: "This sentence has far too many words to be a label: yes" },
+  ]);
+  assert.deepEqual(formatLines([]), []);
+});
 
 const WORDS = ["\"below this text i want a TLDR version in plain words\""];
 const GOAL = ["The chat view reads the question menu from the terminal screen once a second."];

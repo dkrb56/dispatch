@@ -79,7 +79,7 @@ import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { autoMergeNote, type AutoMergeFacts, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
-import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
+import { type ContextBlock, TLDR_LABEL, contextBlocks, formatLines, tldrBlock } from "./decisions-context";
 import {
   type CheckInfo,
   type CheckRunInfo,
@@ -5360,6 +5360,33 @@ function waitFacts(task: Task): WaitFacts {
   return { editing: editing && editing !== task.name ? editing : null, dirty: task.info?.leftovers ?? task.project?.dirty ?? dirtyLines, merging, paused, checkout: otherCheckout(task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos), task.name) };
 }
 
+/** Fills a text box with one child per part of the lines (headings, labels, numbers, bullets, gaps). */
+function fillFormatted(box: HTMLElement, lines: string[], allBullets = false): void {
+  const make = (className: string, ...children: (Node | string)[]): HTMLElement => {
+    const el = document.createElement("div");
+    el.className = `ctx-${className}`;
+    el.append(...children);
+    return el;
+  };
+  const strong = (text: string): HTMLElement => {
+    const el = document.createElement("strong");
+    el.textContent = text;
+    return el;
+  };
+  box.replaceChildren(
+    ...formatLines(lines).map((part) => {
+      switch (part.kind) {
+        case "gap": return make("gap");
+        case "heading": return make("heading", part.text);
+        case "field": return make("field", strong(`${part.label}:`), ` ${part.value}`);
+        case "number": return make("number", strong(part.mark), ` ${part.text}`);
+        case "bullet": return make("bullet", part.text);
+        default: return make(allBullets ? "bullet" : "text", part.text);
+      }
+    }),
+  );
+}
+
 /**
  * Opens the Decisions window of a task: each decision with its options as buttons and an Other box.
  * With `ask` the cursor goes into the Ask box.
@@ -5386,7 +5413,7 @@ function openDecisions(task: Task, ask = false): void {
     head.textContent = block.label;
     const text = document.createElement("div");
     text.className = "decisions-context-text";
-    text.textContent = block.lines.join("\n");
+    fillFormatted(text, block.lines, block.label === TLDR_LABEL);
     return [head, text];
   };
   for (const block of contextBlocks(task.info)) {
@@ -6117,7 +6144,8 @@ function openQuestionWindow(task: Task): void {
     head.textContent = label;
     const text = document.createElement("div");
     text.className = "decisions-context-text";
-    text.textContent = lines.join("\n");
+    if (label === "Your words") fillFormatted(text, lines);
+    else text.textContent = lines.join("\n");
     context.append(head, text);
   }
   const pane = focusedPane();

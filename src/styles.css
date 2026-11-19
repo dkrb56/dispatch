@@ -5610,10 +5610,41 @@ button.ticket-level {
   white-space: pre-wrap;
 }
 
-/* Decisions window: "Your words" is bold; the help text and the Goal fold behind Show more. */
+/* Decisions window: "Your words" is normal text with bold headings and labels; the help text and
+   the Goal fold behind Show more. */
 .decisions-words {
   color: var(--text);
-  font-weight: 600;
+}
+
+.decisions-context-text .ctx-heading {
+  margin-top: 6px;
+  color: var(--text);
+  font-weight: 700;
+}
+
+.decisions-context-text .ctx-field strong,
+.decisions-context-text .ctx-number strong {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.decisions-context-text .ctx-number {
+  margin-top: 4px;
+}
+
+.decisions-context-text .ctx-bullet {
+  position: relative;
+  padding-left: 14px;
+}
+
+.decisions-context-text .ctx-bullet::before {
+  content: "•";
+  position: absolute;
+  left: 3px;
+}
+
+.decisions-context-text .ctx-gap {
+  height: 0.6em;
 }
 
 #decisions:not(.show-more) #decisions-intro,
