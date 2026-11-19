@@ -16,6 +16,7 @@ import {
   lastRun,
   lastRunText,
   RELEASE_EXAMPLE,
+  runButtonState,
   type RunStep,
   runningCount,
   runReady,
@@ -161,6 +162,22 @@ test("main.ts: the button, the panel, the driver and the approval of an action",
   assert.match(approve, /by the action in Dispatch/);
   assert.match(approve, /advanceActions\(\);\n\}/);
   assert.match(MAIN, /actions: reply\.actions \?\? EMPTY_ACTIONS/);
+  // A click on Run clears the old run at once and shows a spinner with "Starting…".
+  const render = MAIN.slice(MAIN.indexOf("function renderActions("), MAIN.indexOf("function actionCard("));
+  assert.match(render, /\[\.\.\.startingActions\]/);
+  const card = MAIN.slice(MAIN.indexOf("function actionCard("), MAIN.indexOf("function runLook("));
+  assert.match(card, /startingActions\.has\(startKey\)/);
+  assert.match(card, /startingActions\.delete\(startKey\)/);
+  assert.match(card, /"ticket-add-spinner"/);
+  assert.match(card, /"Starting…"/);
+});
+
+test("runButtonState: starting wins, then a running or held run, else ready", () => {
+  assert.equal(runButtonState(undefined, false), "ready");
+  assert.equal(runButtonState(run({ state: "done" }), false), "ready");
+  assert.equal(runButtonState(run({ state: "running" }), false), "busy");
+  assert.equal(runButtonState(run({ state: "held" }), false), "busy");
+  assert.equal(runButtonState(run({ state: "done" }), true), "starting");
 });
 
 test("index.html and styles.css: the dialog, the Help section and the look of the panel", () => {
@@ -173,4 +190,5 @@ test("index.html and styles.css: the dialog, the Help section and the look of th
   assert.match(CSS, /#actions \{/);
   assert.match(CSS, /\.action-output \{[^}]*max-height: 240px/);
   assert.match(CSS, /\.action-chip\.fail \{/);
+  assert.match(CSS, /\.action-run-button\.starting:disabled \{[^}]*cursor: progress/);
 });

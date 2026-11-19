@@ -76,7 +76,7 @@ import { triageCard, triagePanesToClose, withoutTriage } from "./notriage";
 import { addToTrail, afterAttach, isTerminalReport, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { type AskDecision, askAbout, askBlocked, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
 import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
-import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
+import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { autoMergeNote, type AutoMergeFacts, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
 import { type ContextBlock, contextBlocks, tldrBlock } from "./decisions-context";
@@ -8026,6 +8026,8 @@ let deleteArmed: { id: string; until: number } | null = null;
 let actionsShown = "";
 /** The runs whose `action_step` call runs now, by project key and run id. */
 const busyRuns = new Set<string>();
+/** The actions whose `action_run` call runs now, as `<project key>\n<action id>`: their card shows "Starting…". */
+const startingActions = new Set<string>();
 /** The run state at a refused `action_step`, by project key and run id: the same state is not tried again. */
 const refusedRuns = new Map<string, string>();
 
@@ -8125,7 +8127,7 @@ function renderActions(): void {
   if (!actionsRef) return;
   const key = refKey(actionsRef);
   const list = projectTasks.get(key)?.actions ?? EMPTY_ACTIONS;
-  const shown = JSON.stringify([key, list, actionsError, deleteArmed, editingAction !== null]);
+  const shown = JSON.stringify([key, list, actionsError, deleteArmed, editingAction !== null, [...startingActions]]);
   if (shown === actionsShown) return;
   actionsShown = shown;
   actionsTitleEl.textContent = `Actions · ${projectName(actionsRef)}`;
@@ -8155,18 +8157,32 @@ function actionCard(key: string, action: Action, run: ActionRun | undefined, ope
   const head = mapElement("div", "action-head");
   const name = mapElement("strong", "action-name", action.name);
   const steps = mapElement("span", "action-steps", stepSummary(action.steps));
-  const busy = run?.state === "running" || run?.state === "held";
-  const runButton = ticketButton("Run", busy ? "This action runs now" : `Run ${action.name} now`, () => {
-    void actionCall(key, "action_run", { id: action.id });
+  const startKey = `${key}\n${action.id}`;
+  const starting = startingActions.has(startKey);
+  const buttonState = runButtonState(run, starting);
+  const busy = buttonState !== "ready";
+  const runButton = ticketButton("Run", buttonState === "starting" ? "This action starts now" : busy ? "This action runs now" : `Run ${action.name} now`, () => {
+    startingActions.add(startKey);
+    actionsShown = "";
+    renderActions();
+    void actionCall(key, "action_run", { id: action.id }).finally(() => {
+      startingActions.delete(startKey);
+      actionsShown = "";
+      renderActions();
+    });
   }, busy);
   runButton.classList.add("action-run-button");
+  if (starting) {
+    runButton.classList.add("starting");
+    runButton.replaceChildren(mapElement("span", "ticket-add-spinner"), document.createTextNode("Starting…"));
+  }
   const edit = ticketButton("Edit", `Change ${action.name}`, () => {
     editingAction = { id: action.id, name: action.name, steps: action.steps.map((step) => ({ ...step })) };
     actionsEditEl?.remove();
     actionsEditEl = null;
     actionsShown = "";
     renderActions();
-  });
+  }, starting);
   const armed = deleteArmed?.id === action.id && deleteArmed.until > Date.now();
   const remove = ticketButton(armed ? "Delete?" : "Delete", armed ? "Click again to delete this action and its runs" : `Delete ${action.name}`, () => {
     if (armed) {
@@ -8185,11 +8201,11 @@ function actionCard(key: string, action: Action, run: ActionRun | undefined, ope
   head.append(name, steps, runButton, edit, remove);
   card.append(head);
   const line = mapElement("div", "action-run");
-  const chip = mapElement("span", `action-chip ${run ? runLook(run) : ""}`, run ? run.state : "new");
-  line.append(chip, mapElement("span", "", lastRunText(run)));
-  if (run?.note) line.append(mapElement("span", "action-note", run.note));
+  const chip = starting ? mapElement("span", "action-chip wait", "starting") : mapElement("span", `action-chip ${run ? runLook(run) : ""}`, run ? run.state : "new");
+  line.append(chip, mapElement("span", "", starting ? "Starting…" : lastRunText(run)));
+  if (run?.note && !starting) line.append(mapElement("span", "action-note", run.note));
   card.append(line);
-  if (run) {
+  if (run && !starting) {
     const details = mapElement("details", "action-detail");
     details.dataset.run = run.id;
     details.open = open.has(run.id) || run.state === "running" || run.state === "held" || run.state === "failed";

@@ -158,6 +158,12 @@ export function lastRunText(run: ActionRun | undefined, time: (millis: number) =
   return `${time(run.started)} · ${runStateWord(run)}${exitText}`;
 }
 
+/** The Run button of an action: `starting` while the host starts the run, `busy` while the last run runs, else `ready`. */
+export function runButtonState(run: ActionRun | undefined, starting: boolean): "starting" | "busy" | "ready" {
+  if (starting) return "starting";
+  return run?.state === "running" || run?.state === "held" ? "busy" : "ready";
+}
+
 /** What the task list knows of the task of a Claude step. */
 export interface StepTask {
   name: string;

@@ -2972,6 +2972,14 @@ button.ticket-level {
   color: var(--accent);
 }
 
+#actions .action-run-button.starting:disabled {
+  border-color: var(--accent-line);
+  background: var(--accent-bg);
+  color: var(--accent);
+  opacity: 0.85;
+  cursor: progress;
+}
+
 .action-run {
   display: flex;
   flex-wrap: wrap;
