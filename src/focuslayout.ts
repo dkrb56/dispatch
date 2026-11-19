@@ -33,6 +33,22 @@ export function toggleSplit(split: FocusSplit): FocusSplit {
   return split === "rows" ? "columns" : "rows";
 }
 
+/**
+ * Where the terminal of the Open terminal panel stands in a column (ticket
+ * i-need-an-option-to-split-terinal-and): beside the board, or below it with the full width.
+ */
+export type TermSplit = "beside" | "below";
+
+/** The terminal place in a stored value: only `below` stacks; every other value is beside. */
+export function parseTermSplit(value: unknown): TermSplit {
+  return value === "below" ? "below" : "beside";
+}
+
+/** The other terminal place: what a click on the button of the terminal panel gives. */
+export function toggleTermSplit(split: TermSplit): TermSplit {
+  return split === "below" ? "beside" : "below";
+}
+
 /** The field of `focus-sizes` with the share of a project: widths and heights stay apart. */
 export function shareField(split: FocusSplit): "grow" | "rowGrow" {
   return split === "rows" ? "rowGrow" : "grow";

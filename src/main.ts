@@ -29,7 +29,7 @@ import { Terminal } from "@xterm/xterm";
 import { onReturn } from "./chatend";
 import { barHost, markedProject, showMark, watchArea } from "./focusmark";
 import { removeAnswer, removeTexts } from "./removeproject";
-import { type ColumnAction, type ColumnChoice, type FocusSplit, applyAction, columnStates, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, shareField, toggleSplit } from "./focuslayout";
+import { type ColumnAction, type ColumnChoice, type FocusSplit, type TermSplit, applyAction, columnStates, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, parseTermSplit, shareField, toggleSplit, toggleTermSplit } from "./focuslayout";
 import { type FoldPart, type Folds, foldOpen, parseFolds, setFold, splitNewest } from "./focuslists";
 import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode } from "./overview";
 import {
@@ -11471,6 +11471,13 @@ interface FocusColumn {
   termSlotEl: HTMLElement;
   termHandle: HTMLElement;
   termButton: HTMLButtonElement;
+  /**
+   * The wrapper of the terminal, its handle and the board: a row, or with the class `stacked` the
+   * terminal below the board (ticket i-need-an-option-to-split-terinal-and).
+   */
+  workEl: HTMLElement;
+  /** The button in the head of the terminal that puts it below the board or back beside it. */
+  termSplitEl: HTMLButtonElement;
   agentsEl: HTMLElement;
   /** The Workers pane shows below the chat. Closed at the start. */
   workersOpen: boolean;
@@ -11645,6 +11652,10 @@ interface FocusSize {
   side?: number;
   /** The width of the terminal of Open terminal in pixels (ticket when-terminal-is-open-in-focus-mode-it). */
   term?: number;
+  /** The terminal stands below the board instead of beside it (ticket i-need-an-option-to-split-terinal-and). */
+  termSplit?: TermSplit;
+  /** The height of the terminal below the board in pixels. */
+  termHeight?: number;
   /** The column is minimized to a strip or maximized (focus-column-size); none for a normal column. */
   state?: ColumnChoice;
 }
@@ -11656,6 +11667,9 @@ const FOCUS_SIDE_MAX = 640;
 /** The narrowest terminal of Open terminal, and the room that the board keeps beside it. */
 const FOCUS_TERM_MIN = 240;
 const FOCUS_BOARD_MIN = 240;
+/** The lowest terminal below the board, and the height that the board keeps above it. */
+const FOCUS_TERM_MIN_HEIGHT = 160;
+const FOCUS_BOARD_MIN_HEIGHT = 200;
 /**
  * The width of the chat panel in Details that the user dragged, in pixels. It is also the usual width
  * of the left panel of each project in focus mode. In localStorage `chats-width`.
@@ -11684,12 +11698,31 @@ function saveFocusSize(key: string, size: FocusSize): void {
   }
 }
 
-/** Sets the saved share of a column and the width of its left panel. */
-function applyFocusSizes(key: string, el: HTMLElement, sideEl: HTMLElement, termEl: HTMLElement): void {
+/** Sets the saved share of a column, the width of its left panel and the place and size of its terminal. */
+function applyFocusSizes(key: string, el: HTMLElement, sideEl: HTMLElement, workEl: HTMLElement, termEl: HTMLElement, termHandle: HTMLElement, termSplitEl: HTMLButtonElement): void {
   const size = focusSizes()[key] ?? {};
   el.style.flexGrow = String(size[shareField(focusSplit)] ?? 1);
   sideEl.style.width = size.side ? `${size.side}px` : "";
-  termEl.style.width = size.term ? `${size.term}px` : "";
+  showTermSplit(key, workEl, termEl, termHandle, termSplitEl);
+}
+
+/**
+ * Draws the saved place of the terminal of Open terminal (ticket i-need-an-option-to-split-terinal-and):
+ * the class of the wrapper, the width beside or the height below (the size of the other place goes,
+ * or it would squeeze the terminal), the title of the handle and the button in the terminal head.
+ */
+function showTermSplit(key: string, workEl: HTMLElement, termEl: HTMLElement, termHandle: HTMLElement, termSplitEl: HTMLButtonElement): void {
+  const size = focusSizes()[key] ?? {};
+  const below = parseTermSplit(size.termSplit) === "below";
+  workEl.classList.toggle("stacked", below);
+  termEl.style.width = !below && size.term ? `${size.term}px` : "";
+  termEl.style.height = below && size.termHeight ? `${size.termHeight}px` : "";
+  termHandle.title = below
+    ? "Drag to make the terminal taller or shorter; double-click for the usual height"
+    : "Drag to make the terminal wider or narrower; double-click for the usual width";
+  termSplitEl.textContent = below ? "Beside" : "Below";
+  termSplitEl.title = below ? "Put the terminal beside the board again" : "Put the terminal below the board, with the full width";
+  termSplitEl.setAttribute("aria-pressed", String(below));
 }
 
 /** The stored choice of each project of focus mode: minimized, maximized or none (focus-column-size). */
@@ -11817,22 +11850,43 @@ function dragSide(handle: HTMLElement, key: string, sideEl: HTMLElement): void {
   });
 }
 
-/** The handle on the right of the terminal of Open terminal: its width; the board keeps `FOCUS_BOARD_MIN`. */
-function dragTerm(handle: HTMLElement, key: string, termEl: HTMLElement, bodyEl: HTMLElement, sideEl: HTMLElement): void {
-  let width = 0;
+/**
+ * The handle between the terminal of Open terminal and the board. Beside the board it sets the width
+ * of the terminal, and the board keeps `FOCUS_BOARD_MIN`. Below the board (the class `stacked` of the
+ * wrapper) it sets the height: a drag upward makes the terminal taller, and the board keeps
+ * `FOCUS_BOARD_MIN_HEIGHT`.
+ */
+function dragTerm(handle: HTMLElement, key: string, termEl: HTMLElement, workEl: HTMLElement): void {
+  let below = false;
+  let size = 0;
   let max = 0;
   dragFrom(
     handle,
     () => {
-      width = termEl.getBoundingClientRect().width;
-      max = Math.max(FOCUS_TERM_MIN, bodyEl.getBoundingClientRect().width - sideEl.getBoundingClientRect().width - FOCUS_BOARD_MIN);
+      below = workEl.classList.contains("stacked");
+      const term = termEl.getBoundingClientRect();
+      const work = workEl.getBoundingClientRect();
+      size = below ? term.height : term.width;
+      max = below ? Math.max(FOCUS_TERM_MIN_HEIGHT, work.height - FOCUS_BOARD_MIN_HEIGHT) : Math.max(FOCUS_TERM_MIN, work.width - FOCUS_BOARD_MIN);
     },
-    (dx) => (termEl.style.width = `${Math.round(Math.min(max, Math.max(FOCUS_TERM_MIN, width + dx)))}px`),
-    () => saveFocusSize(key, { term: Math.round(termEl.getBoundingClientRect().width) }),
+    (dx, dy) => {
+      if (below) termEl.style.height = `${Math.round(Math.min(max, Math.max(FOCUS_TERM_MIN_HEIGHT, size - dy)))}px`;
+      else termEl.style.width = `${Math.round(Math.min(max, Math.max(FOCUS_TERM_MIN, size + dx)))}px`;
+    },
+    () => {
+      const term = termEl.getBoundingClientRect();
+      if (below) saveFocusSize(key, { termHeight: Math.round(term.height) });
+      else saveFocusSize(key, { term: Math.round(term.width) });
+    },
   );
   handle.addEventListener("dblclick", () => {
-    termEl.style.width = "";
-    saveFocusSize(key, { term: undefined });
+    if (workEl.classList.contains("stacked")) {
+      termEl.style.height = "";
+      saveFocusSize(key, { termHeight: undefined });
+    } else {
+      termEl.style.width = "";
+      saveFocusSize(key, { term: undefined });
+    }
   });
 }
 
@@ -12064,19 +12118,28 @@ function focusColumn(ref: ProjectRef): FocusColumn {
     const pane = projectTerminalPane(ref);
     if (pane) void closePane(pane.id).then(() => renderFocus());
   });
-  termHead.append(mapElement("span", "", "Terminal"), termSpacer, termClose);
+  // The place of the terminal: beside the board or below it (ticket i-need-an-option-to-split-terinal-and).
+  const termSplitEl = mapElement("button", "focus-terminal-split");
+  termHead.append(mapElement("span", "", "Terminal"), termSpacer, termSplitEl, termClose);
   const termSlotEl = mapElement("div", "focus-terminal-slot");
   termEl.append(termHead, termSlotEl);
   const termHandle = resizeHandle("side-resize term-resize", "Drag to make the terminal wider or narrower; double-click for the usual width");
   termHandle.hidden = true;
-  body.append(sideEl, sideHandle, termEl, termHandle, main);
+  // The terminal, its handle and the board share one wrapper; the terminal stays in it at each switch.
+  const workEl = mapElement("div", "focus-work");
+  workEl.append(termEl, termHandle, main);
+  body.append(sideEl, sideHandle, workEl);
   const colHandle = resizeHandle("col-resize", "Drag to give this project or the next one more room; double-click to share it evenly");
   el.append(head, body, colHandle);
-  applyFocusSizes(key, el, sideEl, termEl);
+  applyFocusSizes(key, el, sideEl, workEl, termEl, termHandle, termSplitEl);
+  termSplitEl.addEventListener("click", () => {
+    saveFocusSize(key, { termSplit: toggleTermSplit(parseTermSplit(focusSizes()[key]?.termSplit)) });
+    showTermSplit(key, workEl, termEl, termHandle, termSplitEl);
+  });
   dragSide(sideHandle, key, sideEl);
-  dragTerm(termHandle, key, termEl, body, sideEl);
+  dragTerm(termHandle, key, termEl, workEl);
   dragColumns(colHandle, key, el);
-  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, boardEl, boardCountEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, restoreEl, colHandle };
+  const column: FocusColumn = { host, root, el, dotEl, pathEl, workersEl, sideEl, triageEl, boardEl, boardCountEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, workEl, termSplitEl, agentsEl, workersOpen: false, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, restoreEl, colHandle };
   // A click anywhere on a strip brings the column back; a button or a drag edge keeps its own action.
   el.addEventListener("click", (event) => {
     if (!el.classList.contains("min")) return;

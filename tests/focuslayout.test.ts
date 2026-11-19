@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { applyAction, type ColumnChoices, columnStates, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, shareField, toggleSplit } from "../src/focuslayout.ts";
+import { applyAction, type ColumnChoices, columnStates, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, parseTermSplit, shareField, toggleSplit, toggleTermSplit } from "../src/focuslayout.ts";
 
 const KEYS = ["a", "b", "c"];
 
@@ -99,6 +99,16 @@ test("the layout button switches between the two layouts", () => {
   assert.equal(toggleSplit("rows"), "columns");
 });
 
+test("the terminal place: only a stored below stacks, every other value is beside", () => {
+  assert.equal(parseTermSplit("below"), "below");
+  for (const value of [undefined, null, "", "BELOW", "beside", "above", 1, {}]) assert.equal(parseTermSplit(value), "beside");
+});
+
+test("the terminal button switches between beside and below", () => {
+  assert.equal(toggleTermSplit("beside"), "below");
+  assert.equal(toggleTermSplit("below"), "beside");
+});
+
 test("the share field: widths and heights are stored apart", () => {
   assert.equal(shareField("columns"), "grow");
   assert.equal(shareField("rows"), "rowGrow");
@@ -151,4 +161,25 @@ test("the page: the stacked layout has its rules, its button and its Help item",
   assert.match(main, /size\[shareField\(focusSplit\)\]/);
   assert.match(main, /liftShares\(shares\)/);
   assert.match(main, /localStorage\.getItem\(FOCUS_SPLIT_KEY\)/);
+});
+
+test("the page: the terminal below the board has its wrapper, its button, its drag and its Help", () => {
+  const css = read("../src/styles.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.match(css, /\.focus-work\s*\{[^}]*display:\s*flex[^}]*flex:\s*1[^}]*min-width:\s*0[^}]*min-height:\s*0/);
+  // The DOM order is terminal, handle, board: the reversed column puts the terminal below.
+  assert.match(css, /\.focus-work\.stacked\s*\{[^}]*flex-direction:\s*column-reverse/);
+  assert.match(css, /\.focus-work\.stacked > \.focus-terminal\s*\{[^}]*width:\s*auto/);
+  assert.match(css, /\.focus-work\.stacked > \.term-resize\s*\{[^}]*height:\s*5px[^}]*cursor:\s*row-resize/);
+  // During a drag the panels do not take the pointer, but the handle in the wrapper keeps it.
+  assert.match(css, /body\.resizing \.focus-body :is\(\.focus-side, \.focus-terminal, \.focus-main\)\s*\{[^}]*pointer-events:\s*none/);
+  assert.doesNotMatch(css, /body\.resizing \.focus-body > :not\(\.side-resize\)/);
+  assert.match(css, /#focus\.rows > \.focus-col:not\(\.min\):has\(\.focus-work\.stacked > \.focus-terminal:not\(\[hidden\]\)\)\s*\{[^}]*min-height/);
+  const main = read("../src/main.ts");
+  assert.match(main, /termHead\.append\(mapElement\("span", "", "Terminal"\), termSpacer, termSplitEl, termClose\);/);
+  assert.match(main, /workEl\.classList\.toggle\("stacked", below\);/);
+  assert.match(main, /termSplit: toggleTermSplit\(parseTermSplit\(/);
+  assert.match(main, /saveFocusSize\(key, \{ termHeight: Math\.round\(term\.height\) \}\)/);
+  assert.match(main, /size - dy/);
+  const html = read("../index.html");
+  assert.match(html, /Click <b>Below<\/b> above the terminal to put it below the board[^<]*<b>Beside<\/b> to put it back/);
 });

@@ -6622,8 +6622,13 @@ body.resizing {
   user-select: none;
 }
 
-body.resizing .focus-body > :not(.side-resize) {
+body.resizing .focus-body :is(.focus-side, .focus-terminal, .focus-main) {
   pointer-events: none;
+}
+
+/* The handle between a terminal below the board and the board moves up and down. */
+body.resizing:has(.focus-work.stacked > .term-resize.dragging) {
+  cursor: row-resize;
 }
 
 /* The handle of the chat panel in Tabs: the same drag, for the chat list and the terminals. */
@@ -6811,6 +6816,37 @@ body.chats-sized .focus-side {
   display: none;
 }
 
+/* The terminal, its handle and the board (ticket i-need-an-option-to-split-terinal-and): side by side,
+   or with `stacked` the terminal below the board with the full width. The DOM order is terminal,
+   handle, board, so the stacked order is reversed and the handle stays between them. */
+.focus-work {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.focus-work.stacked {
+  flex-direction: column-reverse;
+}
+
+.focus-work.stacked > .focus-main {
+  min-height: 0;
+}
+
+.focus-work.stacked > .focus-terminal {
+  width: auto;
+  height: calc(300px * var(--text-scale));
+  padding: 0 14px 14px 4px;
+}
+
+.focus-work.stacked > .term-resize {
+  width: auto;
+  height: 5px;
+  margin: -2px 0;
+  cursor: row-resize;
+}
+
 .focus-terminal-head {
   display: flex;
   flex: none;
@@ -6832,6 +6868,21 @@ body.chats-sized .focus-side {
 }
 
 .focus-terminal-close:hover {
+  color: var(--text);
+}
+
+.focus-terminal-split {
+  flex: none;
+  padding: 0 6px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: calc(12px * var(--text-scale));
+  cursor: pointer;
+}
+
+.focus-terminal-split:hover {
   color: var(--text);
 }
 
@@ -7477,6 +7528,11 @@ body:not(.map-mode):not(.overview-mode) #stale-alert {
 
 #focus.rows > .focus-col:not(.min):has(.focus-commands:not([hidden])):has(.focus-agents:not([hidden])) {
   min-height: calc(820px * var(--text-scale));
+}
+
+/* A terminal below the board needs room for both (ticket i-need-an-option-to-split-terinal-and). */
+#focus.rows > .focus-col:not(.min):has(.focus-work.stacked > .focus-terminal:not([hidden])) {
+  min-height: calc(560px * var(--text-scale));
 }
 
 /* The drag handle lies on the lower edge of a row. */

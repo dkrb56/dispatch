@@ -519,7 +519,7 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   // Ticket when-terminal-is-open-in-focus-mode-it: in Focus the terminal stands between the tasks and the board.
   assert.match(MAIN, /const id = await openProjectChat\(ref, true, /);
   assert.match(MAIN, /resizeHandle\("side-resize term-resize"/);
-  assert.match(MAIN, /body\.append\(sideEl, sideHandle, termEl, termHandle, main\);/);
+  assert.match(MAIN, /workEl\.append\(termEl, termHandle, main\);\n  body\.append\(sideEl, sideHandle, workEl\);/);
   assert.match(MAIN, /if \(terminal\) moveInto\(terminal, column\.termSlotEl\);/);
   assert.match(MAIN, /interface FocusSize \{[\s\S]*?term\?: number;/);
   assert.match(CSS, /\.focus-terminal \{/);
