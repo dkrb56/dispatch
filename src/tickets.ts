@@ -150,6 +150,50 @@ export function dropChanges(ticket: Pick<Ticket, "status">, status: TicketStatus
 }
 
 /**
+ * The tickets after a move, as the board shows them before the host answers (ticket
+ * moving-ticket-from-cancelled-to-done): the rule of `ticket_move` in tickets.rs. The ticket `id` gets
+ * the column `status` and its end word (Done: `note` or `USER_DONE`; Canceled: `note` or `canceled`;
+ * else none); the queue of New is the tickets of `ids` in their order, then the other New tickets by
+ * their order, and each gets its place 1..n.
+ */
+export function movedTickets<T extends Pick<Ticket, "id" | "status" | "order" | "created" | "updated" | "note">>(
+  tickets: readonly T[],
+  id: string,
+  status: TicketStatus,
+  ids: readonly string[],
+  note?: string,
+  now = Date.now(),
+): T[] {
+  const moved = tickets.find((ticket) => ticket.id === id);
+  if (!moved) return [...tickets];
+  const queue: T[] = [];
+  for (const named of ids) {
+    const one = tickets.find((ticket) => ticket.id === named && (ticket.status === "new" || ticket.id === id));
+    if (one && !queue.includes(one)) queue.push(one);
+  }
+  queue.push(...queueOrder(tickets.filter((ticket) => ticket.status === "new" && !queue.includes(ticket))));
+  if (status === "new" && !queue.includes(moved)) queue.push(moved);
+  const places = queue.filter((ticket) => status === "new" || ticket.id !== id);
+  const given = note?.trim() ?? "";
+  const word = status === "done" ? given || USER_DONE : status === "canceled" ? given || "canceled" : "";
+  return tickets.map((ticket) => {
+    const at = places.indexOf(ticket);
+    const order = at >= 0 ? at + 1 : ticket.order;
+    if (ticket.id !== id) return order === ticket.order ? ticket : { ...ticket, order };
+    return { ...ticket, status, note: word, order: at >= 0 ? at + 1 : null, updated: now };
+  });
+}
+
+/**
+ * A task read keeps the tickets that the board has (ticket moving-ticket-from-cancelled-to-done): a
+ * move of the board still saves, or the read began before the last ticket change (`changedAt`) and so
+ * holds the tickets of before it.
+ */
+export function keepTickets(readAt: number, changedAt: number | undefined, pending: boolean): boolean {
+  return pending || (changedAt !== undefined && readAt < changedAt);
+}
+
+/**
  * The ids that a head button of a column moves at once (ticket tickets-backlog): the shown cards of
  * the column (`shown`, after the search) in their order, without the tickets in flight.
  */

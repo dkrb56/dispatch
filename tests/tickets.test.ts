@@ -25,10 +25,12 @@ import {
   fitWindowPlace,
   goalHint,
   goesStraight,
+  keepTickets,
   LEVELS,
   levelLabel,
   levelOf,
   movedIds,
+  movedTickets,
   nextLevel,
   nextPlanTicket,
   nextTicket,
@@ -149,6 +151,43 @@ test("Dispatch never sends a Backlog ticket, and the head buttons move the shown
   assert.match(MAIN, /All → Backlog/);
   assert.match(MAIN, /All → New/);
   assert.match(CSS, /repeat\(5, minmax\(180px, 1fr\)\)/);
+});
+
+test("a drop moves the card on the board at once, by the rule of ticket_move (ticket moving-ticket-from-cancelled-to-done)", () => {
+  const card = (id: string, status: Status, order: number | null = null, created = 0, note = "") => ({ ...ticket(id, status, order, created), note });
+  const list = [card("gone", "canceled", null, 1, "canceled"), card("now", "new", 1, 2), card("next", "new", 2, 3), card("later", "backlog", null, 4)];
+  const done = movedTickets(list, "gone", "done", ["now", "next"], USER_DONE, 99);
+  assert.deepEqual(done.find((one) => one.id === "gone"), { id: "gone", status: "done", order: null, created: 1, updated: 99, note: USER_DONE }, "Canceled → Done gets the end word of a drop");
+  assert.deepEqual(ids(queueOrder(done)), ["now", "next"], "the queue of New keeps its order");
+  assert.equal(done.find((one) => one.id === "now"), list[1], "an unchanged ticket stays the same object");
+  assert.equal(movedTickets(list, "gone", "done", [], undefined, 99).find((one) => one.id === "gone")?.note, USER_DONE, "Done without a word: done by hand");
+  assert.equal(movedTickets(list, "now", "canceled", ["next"], undefined, 99).find((one) => one.id === "now")?.note, "canceled", "Canceled without a word: canceled");
+  const canceled = movedTickets(list, "now", "canceled", ["next"], undefined, 99);
+  assert.deepEqual(canceled.find((one) => one.id === "next")?.order, 1, "the queue closes the gap");
+  const back = movedTickets(list, "gone", "new", ["now", "gone", "next"], undefined, 99);
+  assert.deepEqual(ids(queueOrder(back)), ["now", "gone", "next"], "a drop into New gives the orders by the ids");
+  assert.deepEqual(back.map((one) => [one.id, one.order, one.note]), [["gone", 2, ""], ["now", 1, ""], ["next", 3, ""], ["later", null, ""]]);
+  const end = movedTickets(list, "later", "new", ["now", "next"], undefined, 99);
+  assert.deepEqual(ids(queueOrder(end)), ["now", "next", "later"], "a ticket that ids does not name goes to the end of New");
+  assert.deepEqual(movedTickets(list, "missing", "done", [], undefined, 99), list, "an unknown ticket changes nothing");
+});
+
+test("a task read that began before the last ticket change keeps the tickets of the board", () => {
+  assert.equal(keepTickets(100, undefined, false), false, "no change yet: the read gives the tickets");
+  assert.equal(keepTickets(100, 200, false), true, "the read began before the change");
+  assert.equal(keepTickets(300, 200, false), false, "the read began after the change");
+  assert.equal(keepTickets(300, 200, true), true, "a move still saves");
+});
+
+test("the drag of a ticket shows a copy under the pointer and a saving card a spinner", () => {
+  assert.match(MAIN, /card\.closest\("dialog"\) \?\? document\.body/, "the copy goes into the modal Tickets window, else it stays hidden below it");
+  assert.match(MAIN, /ticket-drag-copy/);
+  assert.match(MAIN, /savingTickets/);
+  assert.match(MAIN, /movedTickets\(/);
+  assert.match(MAIN, /keepTickets\(/);
+  assert.match(CSS, /\.ticket-drag-copy \{[^}]*pointer-events: none/, "the copy takes no pointer: the drop finds the column under it");
+  assert.match(CSS, /\.ticket-card\.saving/);
+  assert.match(HTML, /follows the pointer/);
 });
 
 test("a move takes a ticket up, down, to the top and to the end", () => {

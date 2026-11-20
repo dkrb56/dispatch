@@ -52,7 +52,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, bulkIds, canDrag, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages } from "./tickets";
+import { addedText, bulkIds, canDrag, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
@@ -2563,10 +2563,12 @@ const projectTasks = new Map<string, ProjectTasks>();
  * Keeps a new task list of a project, after a look at what changed since the list before it
  * (ticket merged-outside): an old refusal of the Merge button goes by the rule of `refusalGoes`, and
  * a branch that the task read found merged outside Dispatch gets one line for triage. The first list
- * of a project after the start says nothing.
+ * of a project after the start says nothing. A read that began (`readAt`) before the last ticket move
+ * of the board, or while a drop saves, keeps the tickets of the board (`keepTickets`).
  */
-function storeProjectTasks(key: string, record: ProjectTasks): void {
+function storeProjectTasks(key: string, record: ProjectTasks, readAt: number): void {
   const before = projectTasks.get(key);
+  if (before && keepTickets(readAt, ticketsChangedAt.get(key), ticketsSaving(key))) record = { ...record, tickets: before.tickets };
   for (const info of record.infos) {
     // A refusal for a missing plan or branch file goes when the file is back (ticket merge-issue).
     const missing = actionErrors.get(info.name);
@@ -2867,9 +2869,9 @@ async function refreshTasks(poll = false): Promise<void> {
   const host = focused?.host ?? firstBackend();
   if (poll && cwd && !readIsDue(host, `tasks:${projectKey(host, cwd)}`)) return;
   let reply: TaskListReply = { tasks: [], dirty: [], autoApprove: false, setup: null, tickets: [] };
+  // The time the read began: a read that began during a start shows the state before it (ticket one-work-run-race).
+  const readAt = Date.now();
   if (cwd) {
-    // The time the read began: a read that began during a start shows the state before it (ticket one-work-run-race).
-    const readAt = Date.now();
     try {
       reply = await call<TaskListReply>(host, "task_list", { cwd });
       taskReadTimes.set(projectKey(host, cwd), readAt);
@@ -2893,7 +2895,7 @@ async function refreshTasks(poll = false): Promise<void> {
   tasksFolder = projectKey(host, cwd);
   tasksCwd = cwd ?? "";
   tasksHost = host;
-  if (cwd) storeProjectTasks(tasksFolder, tasksRecord(host, cwd, reply));
+  if (cwd) storeProjectTasks(tasksFolder, tasksRecord(host, cwd, reply), readAt);
   requestDraw();
   approvePlans();
   updateAlerts();
@@ -3606,7 +3608,7 @@ async function readProjectTasks(host: HostId, cwd: string): Promise<void> {
   const readAt = Date.now();
   const reply = await call<TaskListReply>(host, "task_list", { cwd });
   tellRepairs(host, cwd, reply);
-  storeProjectTasks(projectKey(host, cwd), tasksRecord(host, cwd, reply));
+  storeProjectTasks(projectKey(host, cwd), tasksRecord(host, cwd, reply), readAt);
   taskReadTimes.set(projectKey(host, cwd), readAt);
 }
 
@@ -3648,7 +3650,15 @@ async function ticketAction(project: string, command: string, args: Record<strin
   const { host, cwd } = projectCwd(project);
   ticketError = "";
   try {
-    await call(host, command, { cwd, ...args });
+    const reply = await call<unknown>(host, command, { cwd, ...args });
+    // A move answers with the tickets of the file (ticket moving-ticket-from-cancelled-to-done): the board
+    // shows them at once, and the full task read runs without a wait; an older read keeps them.
+    if (command === "ticket_move" && Array.isArray(reply)) {
+      setBoardTickets(project, reply as Ticket[]);
+      ticketsChangedAt.set(project, Date.now());
+      readProjectTasks(host, cwd).catch((error) => console.warn("task list read failed", error));
+      return true;
+    }
     await readProjectTasks(host, cwd);
     return true;
   } catch (error) {
@@ -3720,6 +3730,43 @@ ${id}`;
     await call(host, "ticket_claim", { cwd, id, release: true }).catch(() => {});
   }
   return ticketAction(project, "ticket_move", { id, status, ids, note: note ?? null });
+}
+
+/** The tickets whose drop still saves, as `<project key>\n<id>`: their card shows a spinner and does not drag. */
+const savingTickets = new Set<string>();
+
+/** The time of the last ticket move of each project (by its key): a task read that began before it keeps the tickets of the board. */
+const ticketsChangedAt = new Map<string, number>();
+
+/** Puts tickets on the board of a project (by its key) between two task reads; the rest of its task list stays. */
+function setBoardTickets(key: string, tickets: Ticket[]): void {
+  const record = projectTasks.get(key);
+  if (record) record.tickets = tickets;
+}
+
+/** A drop of the project (by its key) still saves. */
+function ticketsSaving(key: string): boolean {
+  for (const mark of savingTickets) if (mark.startsWith(`${key}\n`)) return true;
+  return false;
+}
+
+/**
+ * A drop of a ticket card (ticket moving-ticket-from-cancelled-to-done): the card stands in its new
+ * column at once with a spinner, and the other cards stay usable while the move saves. A failed save
+ * puts the tickets of before the drop back; the error shows at the top of the board.
+ */
+async function dropTicket(project: string, ticket: Ticket, status: TicketStatus, ids: string[], note?: string): Promise<void> {
+  const mark = `${project}\n${ticket.id}`;
+  const before = projectTickets(project);
+  savingTickets.add(mark);
+  // First the save: moveTicket reads the column of before the drop at once, before its first wait.
+  const saving = moveTicket(project, ticket.id, status, ids, note);
+  setBoardTickets(project, movedTickets(before, ticket.id, status, ids, note));
+  renderTickets();
+  const saved = await saving;
+  savingTickets.delete(mark);
+  if (!saved) setBoardTickets(project, before);
+  renderTickets();
 }
 
 /**
@@ -9470,10 +9517,18 @@ function ticketState(project: string, ticket: Ticket, queueIds: string[], record
  */
 function ticketCard(project: string, ticket: Ticket, queueIds: string[], record: ProjectTasks | undefined): HTMLElement {
   const inFlight = projectPending(project).some((card) => card.entry === ticket.id);
-  const draggable = canDrag(ticket, inFlight);
-  const card = mapElement("div", `ticket-card ${ticket.status}${inFlight ? " in-flight" : ""}${draggable ? " draggable" : ""}`);
+  // A dropped card that still saves shows a spinner and does not drag (ticket moving-ticket-from-cancelled-to-done).
+  const saving = savingTickets.has(`${project}\n${ticket.id}`);
+  const draggable = canDrag(ticket, inFlight) && !saving;
+  const card = mapElement("div", `ticket-card ${ticket.status}${inFlight ? " in-flight" : ""}${draggable ? " draggable" : ""}${saving ? " saving" : ""}`);
   card.dataset.ticket = ticket.id;
   const top = mapElement("div", "ticket-top");
+  if (saving) {
+    card.title = "Saving the move…";
+    const spinner = mapElement("span", "ticket-spinner");
+    spinner.setAttribute("aria-label", "Saving the move");
+    top.append(spinner);
+  }
   if (draggable) {
     const grip = mapElement("span", "entry-grip", "⠿");
     grip.title = "Drag the card to Backlog, New, Done or Canceled, or to another place in the queue of New";
@@ -9622,6 +9677,10 @@ function startTicketDrag(event: PointerEvent, card: HTMLElement, project: string
   const from = { x: event.clientX, y: event.clientY };
   let started = false;
   let target = null as { status: TicketStatus; ids: string[] } | null;
+  // A copy of the card follows the pointer (ticket moving-ticket-from-cancelled-to-done). It goes into the
+  // modal Tickets window when the card is there: an element of the body lies below the top layer.
+  let copy: HTMLElement | null = null;
+  let offset = { x: 0, y: 0 };
   const clear = () => {
     // The whole page: the card can come from the Tickets window or from a board of Focus mode.
     for (const one of document.querySelectorAll(".drag-over, .drag-after, .drop-target")) one.classList.remove("drag-over", "drag-after", "drop-target");
@@ -9658,7 +9717,20 @@ function startTicketDrag(event: PointerEvent, card: HTMLElement, project: string
       if (Math.hypot(moved.clientX - from.x, moved.clientY - from.y) < 5) return;
       started = true;
       card.setPointerCapture(moved.pointerId);
+      const box = card.getBoundingClientRect();
+      offset = { x: from.x - box.left, y: from.y - box.top };
+      copy = card.cloneNode(true) as HTMLElement;
+      copy.classList.add("ticket-drag-copy");
+      delete copy.dataset.ticket;
+      copy.removeAttribute("title");
+      copy.setAttribute("aria-hidden", "true");
+      copy.style.width = `${box.width}px`;
+      (card.closest("dialog") ?? document.body).append(copy);
       card.classList.add("dragging");
+    }
+    if (copy) {
+      copy.style.left = `${moved.clientX - offset.x}px`;
+      copy.style.top = `${moved.clientY - offset.y}px`;
     }
     mark(moved.clientX, moved.clientY);
   };
@@ -9667,6 +9739,7 @@ function startTicketDrag(event: PointerEvent, card: HTMLElement, project: string
     window.removeEventListener("pointerup", end);
     window.removeEventListener("pointercancel", end);
     ticketDragging = false;
+    copy?.remove();
     if (!started) {
       // A plain click: its click event comes next and must find the card, so the render waits.
       setTimeout(renderTickets);
@@ -9684,7 +9757,7 @@ function startTicketDrag(event: PointerEvent, card: HTMLElement, project: string
     const drop = target;
     const before = queueOrder(projectTickets(project)).map((one) => one.id);
     if (drop && dropChanges(ticket, drop.status, drop.ids, before)) {
-      void moveTicket(project, ticket.id, drop.status, drop.ids, drop.status === "done" ? USER_DONE : undefined);
+      void dropTicket(project, ticket, drop.status, drop.ids, drop.status === "done" ? USER_DONE : undefined);
     } else {
       renderTickets();
     }
@@ -13374,7 +13447,7 @@ async function refreshFocusTasks(onlyWhenChanged = false): Promise<void> {
       try {
         const reply = await call<TaskListReply>(host, "task_list", { cwd: root });
         tellRepairs(host, root, reply);
-        storeProjectTasks(key, tasksRecord(host, root, reply));
+        storeProjectTasks(key, tasksRecord(host, root, reply), readAt);
         taskReadTimes.set(key, readAt);
         const text = JSON.stringify(reply);
         if (focusReplies.get(key) !== text) {

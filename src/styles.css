@@ -2547,6 +2547,35 @@ button.task-head:hover {
 
 .ticket-card.draggable.dragging {
   cursor: grabbing;
+  opacity: 0.35;
+}
+
+/* The copy of a dragged card under the pointer (ticket moving-ticket-from-cancelled-to-done); it takes no
+   pointer, so the drop finds the column under it. */
+.ticket-drag-copy {
+  position: fixed;
+  z-index: 1000;
+  margin: 0;
+  pointer-events: none;
+  opacity: 0.9;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 45%);
+  cursor: grabbing;
+}
+
+/* A dropped card that still saves: a small spinner at the start of its top line. */
+.ticket-card.saving {
+  cursor: progress;
+}
+
+.ticket-spinner {
+  flex: none;
+  width: 0.8em;
+  height: 0.8em;
+  align-self: center;
+  border: 2px solid var(--accent);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: ticket-add-spin 0.8s linear infinite;
 }
 
 .ticket-card.draggable .ticket-tools {
