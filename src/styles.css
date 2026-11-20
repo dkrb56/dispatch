@@ -96,6 +96,47 @@ summary:focus-visible {
   outline-offset: 1px;
 }
 
+/* The base look of a control without a look of its own (ticket use-stylized-controls-where-styles-are):
+   the look of the New ticket window. :where() has no specificity, so every class or id rule still wins. */
+:root {
+  color-scheme: dark;
+}
+
+:where(button) {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+:where(button:hover:not(:disabled)) {
+  background: var(--card);
+}
+
+:where(button:disabled) {
+  color: var(--muted);
+  cursor: default;
+}
+
+:where(select, input[type="text"], input[type="search"], input[type="number"], input:not([type])) {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+:where(select:focus, input[type="text"]:focus, input[type="search"]:focus, input[type="number"]:focus, input:not([type]):focus) {
+  border-color: var(--accent-line);
+  outline: none;
+}
+
+:where(input[type="checkbox"], input[type="radio"]) {
+  accent-color: var(--accent);
+}
+
 #bar {
   display: flex;
   align-items: center;
@@ -1309,6 +1350,12 @@ button.task-head:hover {
   align-items: center;
   gap: 6px;
   margin-top: 6px;
+}
+
+/* The size of the lists of a pane bar (ticket use-stylized-controls-where-styles-are). */
+.task-card .card-work select {
+  height: 24px;
+  padding: 0 6px;
 }
 
 .task-card .card-work-name,
@@ -2665,6 +2712,7 @@ button.ticket-level {
 .ticket-new .ticket-level-select {
   min-width: 0;
   max-width: 100%;
+  padding: 5px 7px;
 }
 
 .ticket-new .ticket-field {
@@ -10264,6 +10312,18 @@ svg.links {
   background: var(--surface);
 }
 
+/* The size of the footer buttons of the New ticket window (ticket use-stylized-controls-where-styles-are). */
+.plan-toolbar .plan-tool,
+.plan-flow-bar .plan-tool {
+  height: 28px;
+  padding: 0 14px;
+}
+
+.plan-toolbar select {
+  height: 28px;
+  padding: 0 8px;
+}
+
 .plan-project-label {
   color: var(--muted);
 }
@@ -10685,6 +10745,7 @@ svg.links {
 
 .plan-side-button {
   margin-top: 8px;
+  padding: 5px 12px;
 }
 
 .plan-side-actions .plan-side-button {
@@ -10712,6 +10773,7 @@ svg.links {
   box-sizing: border-box;
   width: 100%;
   margin-bottom: 8px;
+  padding: 5px 8px;
 }
 
 .plan-swatches {
@@ -10911,6 +10973,7 @@ svg.links {
 .plan-arrow-select {
   flex: 1;
   min-width: 0;
+  padding: 5px 8px;
 }
 
 .plan-add-form {
@@ -10923,6 +10986,7 @@ svg.links {
 .plan-add-input {
   box-sizing: border-box;
   width: 100%;
+  padding: 5px 8px;
 }
 
 .plan-add-form .plan-side-button,
