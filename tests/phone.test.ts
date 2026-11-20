@@ -8,7 +8,8 @@ import { doneTasks, listedTasks, runStarting } from "../src/overview.ts";
 import { phoneLink, phoneSetup } from "../src/phonelink.ts";
 import { replyText } from "../src/answers.ts";
 import { confirmChoice, confirmQuestion } from "../src/confirm.ts";
-import { homeScreenHint, inProgressPlace, keyAddress, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, phoneBoards, phoneCards, phonePhase, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, reportMark, showAllKey, shownRoots, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
+import { defaultChoice } from "../src/checks.ts";
+import { approvalQueued, homeScreenHint, inProgressPlace, keyAddress, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, phoneApproval, phoneBoards, phoneCards, phonePhase, phonePlan, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, planMark, reportMark, showAllKey, shownRoots, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
 import { boardTickets, type BoardColumn, columnCards, type InProgressView, COLUMNS, countText, type Ticket } from "../src/tickets.ts";
 import { taskTldr } from "../src/tldr.ts";
 import { groupCount } from "../src/topbar.ts";
@@ -31,6 +32,7 @@ const tools: PhoneTools = {
   confirmQuestion,
   replyText,
   confirmChoice,
+  defaultChoice,
 };
 
 function info(name: string, fields: Partial<PhoneTaskInfo> = {}): PhoneTaskInfo {
@@ -405,8 +407,72 @@ test("the reply: the chosen options, the words of a confirm, or any words as wri
   assert.equal(phoneReply(confirm, new Map(), "drop a\nadd b", tools), "Change: drop a add b");
 });
 
-test("the phone sends a reply only with task_reply, and only from a tap", () => {
+test("the phone sends a reply, an approval and a rejection only with its own calls, and only from a tap", () => {
   const code = read("../src/phone/main.ts");
-  assert.ok(code.includes('call("task_reply", { cwd: '), "the reply names the project");
-  for (const word of ["task_approve", "task_reject", "task_decide", "task_stop"]) assert.ok(!code.includes(word), word);
+  for (const call of ["task_reply", "task_approve_queue", "task_approve_cancel", "task_reject"]) assert.ok(code.includes(`call("${call}", { cwd: `), `${call} names the project`);
+  for (const word of ['"task_approve"', "task_decide", "task_checks", "task_work", "task_stop"]) assert.ok(!code.includes(word), word);
+});
+
+// Ticket approve-or-reject-a-plan-from-the-phone: the plan block, the approval and its waiting state.
+const DECISIONS = [
+  { number: 1, title: "Colour", hold: false, options: [{ kind: "default", choice: "Blue", reason: "Recommended: calm." }, { kind: "other", choice: "Red", reason: "Not recommended: loud." }] },
+  { number: 2, title: "Size", hold: true, options: [{ kind: "hold", choice: "Large", reason: "" }, { kind: "other", choice: "Small", reason: "" }] },
+];
+const CHECKS = [
+  { name: "unit", command: "cargo test", always: true, recommended: true, reason: "", chosen: null },
+  { name: "lint", command: "npx tsc", always: false, recommended: false, reason: "no types change", chosen: null },
+];
+const READY = { state: "planning", plan: FILE, summary: ["Adds a colour."], tldr: ["The card gets a colour."], decisions: DECISIONS, checks: CHECKS, workChoice: { model: "opus", effort: "high" } };
+
+test("the plan block: the summary, the plain-words lines, the decisions, the default checks and the work advice", () => {
+  const ready = task(READY);
+  const plan = phonePlan(ready, tools, new Set())!;
+  assert.deepEqual([plan.task, plan.mark, plan.state], ["t", "t:plan:5", "ready"]);
+  assert.deepEqual([plan.summary, plan.tldr], [["Adds a colour."], ["The card gets a colour."]]);
+  assert.deepEqual(plan.decisions.map((one) => one.options.map((option) => option.choice)), [["Blue", "Red"], ["Large", "Small"]]);
+  assert.deepEqual(plan.checks.map((check) => [check.name, check.checked]), [["unit", true], ["lint", false]], "the recommended check starts ticked");
+  assert.deepEqual(plan.work, { model: "opus", effort: "high" });
+  assert.equal(phonePlan(task(READY, [worker("t [plan]", "working")]), tools, new Set()), null, "no block while a worker runs");
+  assert.equal(phonePlan(task({ ...READY, plan: null }), tools, new Set()), null, "no block without a plan");
+  assert.equal(phonePlan(task({ ...READY, state: "working" }), tools, new Set()), null, "no block out of planning");
+  assert.equal(phonePlan(ready, tools, new Set([planMark(ready)]))?.state, "sent", "after a Reject for the same plan");
+  assert.equal(phonePlan(task({ ...READY, plan: { modified: 6 } }), tools, new Set([planMark(ready)]))?.state, "ready", "a new plan asks again");
+  const old = phonePlan(task({ state: "planning", plan: FILE, summary: [] }), tools, new Set())!;
+  assert.deepEqual([old.decisions, old.checks, old.tldr, old.work], [[], [], [], null], "an older host sends no decisions and no checks");
+  const [card] = phoneCards([{ root: ROOT, list: { tasks: [info("t", READY)], tickets: [] }, error: "" }], [], tools);
+  assert.equal(card.inWork[0].plan?.decisions.length, 2, "the Cards view has the same block");
+});
+
+test("an approval of the phone waits only for its own plan, and shows as queued", () => {
+  const queued = task({ ...READY, approved: 5 });
+  assert.ok(approvalQueued(queued));
+  assert.ok(!approvalQueued(task({ ...READY, approved: 4 })), "a marker of another plan time");
+  assert.ok(!approvalQueued(task({ ...READY, approved: null })));
+  assert.ok(!approvalQueued(task(READY)), "an older host sends no marker");
+  assert.ok(!approvalQueued(task({ ...READY, approved: 5 }, [worker("t [work]", "working")])), "the work run started");
+  assert.deepEqual(phoneStatus(queued), { kind: "done", text: "approved · starts when the project is free" });
+  assert.equal(phonePhase(queued), "queued");
+  assert.equal(phonePlan(queued, tools, new Set())?.state, "approved");
+  const tasks = [info("q", { ...READY, approved: 5, about: "Queued" }), info("r", { ...READY, about: "Ready" })];
+  const [card] = phoneCards([{ root: ROOT, list: { tasks, tickets: [] }, error: "" }], [], tools);
+  assert.deepEqual(card.inWork.map((row) => row.name).sort(), ["q", "r"], "a queued approval stays in work");
+  assert.equal(card.count.text, groupCount({ waits: 1, working: 0 }).text, "only the ready plan waits for the user");
+  const tickets = [ticket("q", "in-progress"), ticket("r", "in-progress")];
+  const [board] = phoneBoards([{ root: ROOT, list: { tasks, tickets }, error: "" }], [], tools, viewFromText(null).open);
+  assert.deepEqual(board.columns.find((one) => one.status === "in-progress")!.tickets.map((one) => one.ticket.id), ["q"], "a queued approval stands in Working");
+  assert.deepEqual(board.columns.find((one) => one.status === "waiting")!.tickets.map((one) => one.ticket.id), ["r"]);
+});
+
+test("the approval: a tapped option or own words per decision, and the checked checks in list order", () => {
+  const plan = phonePlan(task(READY), tools, new Set())!;
+  const checked = new Set(["lint", "unit"]);
+  assert.deepEqual(phoneApproval(plan, new Map([[1, "Red"], [2, "Large"]]), new Map(), checked), {
+    decisions: [{ number: 1, answer: "Red", own: false }, { number: 2, answer: "Large", own: false }],
+    checks: ["unit", "lint"],
+  });
+  assert.deepEqual(phoneApproval(plan, new Map([[1, "Red"]]), new Map([[2, " Medium,\nplease "]]), new Set())?.decisions[1], { number: 2, answer: "Medium, please", own: true }, "own words, on one line");
+  assert.equal(phoneApproval(plan, new Map([[1, "Red"], [2, "Large"]]), new Map([[1, "Green"]]), new Set())?.decisions[0].answer, "Green", "words win over the tapped option");
+  assert.equal(phoneApproval(plan, new Map([[1, "Red"]]), new Map([[2, "  "]]), new Set()), null, "a decision without an answer");
+  assert.equal(phoneApproval(plan, new Map([[1, "Red"], [2, "Huge"]]), new Map(), new Set()), null, "an option that the plan does not have");
+  assert.deepEqual(phoneApproval({ ...plan, decisions: [] }, new Map(), new Map(), new Set()), { decisions: [], checks: [] }, "a plan without decisions");
 });

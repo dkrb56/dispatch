@@ -7,8 +7,13 @@
 // The Board view (ticket phone-version-i-need-an-option-to-see) shows the seven columns of the tickets
 // board per project; a column head opens and closes the column. A waiting task takes its answer here
 // with `task_reply`, as the computer sends it; the phone writes no line into a triage chat.
+//
+// A plan that waits for Approve shows its block (ticket approve-or-reject-a-plan-from-the-phone):
+// Approve writes the choices with `task_approve_queue` and leaves a marker; the Dispatch window on
+// the computer starts the work run when the project is free. Reject sends the reason with `task_reject`.
 import "./phone.css";
 import { replyText } from "../answers";
+import { defaultChoice } from "../checks";
 import { CONFIRM_PLACEHOLDER, CONFIRM_TITLE, confirmChoice, confirmQuestion } from "../confirm";
 import { doneTasks, listedTasks, runStarting } from "../overview";
 import {
@@ -24,6 +29,10 @@ import {
   type PhoneCard,
   type PhoneChoices,
   type PhoneLayout,
+  type PhonePlan,
+  PHONE_EFFORTS,
+  PHONE_MODELS,
+  phoneApproval,
   phoneBoards,
   phoneCards,
   type PhoneProject,
@@ -70,6 +79,7 @@ const tools: PhoneTools = {
   confirmQuestion,
   replyText,
   confirmChoice,
+  defaultChoice,
 };
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text = ""): HTMLElementTagNameMap[K] {
@@ -483,12 +493,223 @@ function answerElement(answer: PhoneAnswer, root: string): HTMLElement {
   return block;
 }
 
+/** What the user chose and wrote in a plan block, by plan mark, so a new read keeps it. */
+const planStates = new Map<
+  string,
+  { picks: Map<number, string>; own: Map<number, string>; checked: Set<string>; model: string; effort: string; rejecting: boolean; reason: string; error: string; busy: boolean }
+>();
+
+function planState(plan: PhonePlan) {
+  let state = planStates.get(plan.mark);
+  if (!state) {
+    // The recommended option, the first one, is chosen at first; the pickers start at the advice of the plan.
+    const picks = new Map(plan.decisions.filter((decision) => decision.options.length > 0).map((decision) => [decision.number, decision.options[0].choice]));
+    const checked = new Set(plan.checks.filter((check) => check.checked).map((check) => check.name));
+    state = { picks, own: new Map(), checked, model: plan.work?.model ?? "", effort: plan.work?.effort ?? "", rejecting: false, reason: "", error: "", busy: false };
+    planStates.set(plan.mark, state);
+  }
+  return state;
+}
+
+/** A box whose text a new read keeps: the draw waits while it has the focus. */
+function typingBox(value: string, placeholder: string, label: string, input: (text: string) => void): HTMLTextAreaElement {
+  const box = element("textarea", "answer-box");
+  box.rows = 2;
+  box.value = value;
+  box.placeholder = placeholder;
+  box.setAttribute("aria-label", label);
+  box.addEventListener("input", () => input(box.value));
+  box.addEventListener("blur", () => {
+    if (!drawLater) return;
+    drawLater = false;
+    setTimeout(draw, 0);
+  });
+  return box;
+}
+
+/** A picker of the work run: the empty value means the lists of the computer. */
+function picker(label: string, values: readonly string[], value: string, change: (value: string) => void): HTMLElement {
+  const made = element("label", "plan-picker");
+  const select = element("select");
+  for (const one of values) {
+    const option = element("option", "", one || "As on the computer");
+    option.value = one;
+    select.append(option);
+  }
+  // A value of the plan outside the list still shows.
+  if (!values.includes(value)) {
+    const option = element("option", "", value);
+    option.value = value;
+    select.append(option);
+  }
+  select.value = value;
+  select.addEventListener("change", () => change(select.value));
+  made.append(element("span", "", label), select);
+  return made;
+}
+
+/** The plan block of a task whose plan waits for Approve: summary, decisions, checks, work run, Approve and Reject. */
+function planElement(plan: PhonePlan, root: string): HTMLElement {
+  const block = element("div", "answer plan");
+  if (plan.state === "sent") {
+    block.append(element("p", "answer-sent", "Sent back to the planner. A new plan comes."));
+    return block;
+  }
+  const state = planState(plan);
+  const errorEl = element("p", "answer-error", state.error);
+  errorEl.hidden = state.error === "";
+  const send = (sent: () => Promise<unknown>, done: () => void) => {
+    state.busy = true;
+    state.error = "";
+    draw();
+    sent()
+      .then(() => {
+        done();
+        lastRound = 0;
+        scheduleRound();
+      })
+      .catch((error) => {
+        state.error = `Not sent: ${error}`;
+      })
+      .finally(() => {
+        state.busy = false;
+        draw();
+      });
+  };
+  if (plan.state === "approved") {
+    block.append(element("p", "answer-sent", "Approved. The work run starts when the computer is free."));
+    const cancel = element("button", "", "Cancel approval");
+    cancel.type = "button";
+    cancel.disabled = state.busy;
+    cancel.addEventListener("click", () => send(() => call("task_approve_cancel", { cwd: root, id: plan.task }), () => undefined));
+    block.append(cancel, errorEl);
+    return block;
+  }
+  block.append(element("p", "answer-title", "Plan ready"));
+  if (plan.summary.length > 0) {
+    const summary = element("div", "plan-summary");
+    summary.append(...plan.summary.map((line) => element("p", "", line)));
+    block.append(summary);
+  }
+  if (plan.tldr.length > 0) {
+    const tldr = element("ul", "plan-tldr");
+    tldr.append(...plan.tldr.map((line) => element("li", "", line.replace(/^\s*[-*]\s+/, ""))));
+    block.append(tldr);
+  }
+  for (const decision of plan.decisions) {
+    const part = element("div", "decision");
+    part.append(element("p", "answer-question", `${decision.number}. ${decision.title}`));
+    const options = element("div", "options");
+    const buttons = decision.options.map((option, at) => {
+      const button = element("button", "option");
+      button.type = "button";
+      const text = element("span", "option-text");
+      text.append(element("span", "", option.choice));
+      if (option.reason) text.append(element("span", "option-reason", option.reason));
+      button.append(text);
+      if (at === 0) button.append(element("span", option.kind === "hold" ? "recommended hold" : "recommended", option.kind === "hold" ? "Only you decide" : "Recommended"));
+      button.setAttribute("aria-pressed", String(state.picks.get(decision.number) === option.choice));
+      button.addEventListener("click", () => {
+        state.picks.set(decision.number, option.choice);
+        for (const [other, one] of buttons.entries()) one.setAttribute("aria-pressed", String(decision.options[other].choice === option.choice));
+      });
+      return button;
+    });
+    options.append(...buttons);
+    part.append(
+      options,
+      typingBox(state.own.get(decision.number) ?? "", "Or write your own answer: it replaces the option", `Your own answer to decision ${decision.number}`, (text) => state.own.set(decision.number, text)),
+    );
+    block.append(part);
+  }
+  if (plan.checks.length > 0) {
+    const checks = element("div", "checks");
+    checks.append(element("p", "answer-question", "Checks"));
+    for (const check of plan.checks) {
+      const row = element("label", "check-row");
+      const box = element("input");
+      box.type = "checkbox";
+      box.checked = state.checked.has(check.name);
+      box.addEventListener("change", () => {
+        if (box.checked) state.checked.add(check.name);
+        else state.checked.delete(check.name);
+      });
+      const text = element("span", "option-text");
+      text.append(element("span", "", check.name));
+      if (check.reason) text.append(element("span", "option-reason", check.reason));
+      row.append(box, text);
+      if (check.recommended) row.append(element("span", "recommended", "Recommended"));
+      checks.append(row);
+    }
+    block.append(checks);
+  }
+  const work = element("div", "plan-work");
+  work.append(
+    element("p", "answer-question", "Work run"),
+    element("p", "", plan.work ? `The plan advises ${plan.work.model}, ${plan.work.effort}.` : "The plan gives no advice."),
+    picker("Model", PHONE_MODELS, state.model, (value) => (state.model = value)),
+    picker("Effort", PHONE_EFFORTS, state.effort, (value) => (state.effort = value)),
+  );
+  block.append(work);
+  const actions = element("div", "plan-actions");
+  const approve = element("button", "primary", "Approve");
+  approve.type = "button";
+  approve.disabled = state.busy;
+  approve.addEventListener("click", () => {
+    const approval = phoneApproval(plan, state.picks, state.own, state.checked);
+    if (!approval) {
+      state.error = "Choose an answer for each decision, or write your own.";
+      errorEl.textContent = state.error;
+      errorEl.hidden = false;
+      return;
+    }
+    send(
+      () => call("task_approve_queue", { cwd: root, id: plan.task, ...approval, model: state.model, effort: state.effort }),
+      () => planStates.delete(plan.mark),
+    );
+  });
+  const reject = element("button", "", "Reject");
+  reject.type = "button";
+  reject.disabled = state.busy;
+  reject.setAttribute("aria-expanded", String(state.rejecting));
+  reject.addEventListener("click", () => {
+    state.rejecting = !state.rejecting;
+    draw();
+  });
+  actions.append(approve, reject);
+  block.append(actions);
+  if (state.rejecting) {
+    const back = element("div", "plan-reject");
+    const sendBack = element("button", "primary", "Send back");
+    sendBack.type = "button";
+    sendBack.disabled = state.busy;
+    sendBack.addEventListener("click", () => {
+      const reason = state.reason.replace(/\s*[\r\n]+\s*/g, " ").trim();
+      if (!reason) {
+        state.error = "Write why, and what the plan must change.";
+        errorEl.textContent = state.error;
+        errorEl.hidden = false;
+        return;
+      }
+      send(() => call("task_reject", { cwd: root, id: plan.task, reason }), () => {
+        sentMarks.add(plan.mark);
+        planStates.delete(plan.mark);
+      });
+    });
+    back.append(typingBox(state.reason, "Why, and what the plan must change", `Why you reject the plan of ${plan.task}`, (text) => (state.reason = text)), sendBack);
+    block.append(back);
+  }
+  block.append(errorEl);
+  return block;
+}
+
 function rowElement(row: PhoneRow, root: string): HTMLElement {
   const made = element("article", "task");
   made.append(element("span", `status ${row.kind}`, row.status));
   made.append(element("p", "about", row.about || row.name));
   if (row.now) made.append(element("p", "", row.now));
   if (row.answer) made.append(answerElement(row.answer, root));
+  if (row.plan) made.append(planElement(row.plan, root));
   return made;
 }
 

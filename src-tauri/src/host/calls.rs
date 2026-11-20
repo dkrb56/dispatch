@@ -210,6 +210,8 @@ pub fn run(
         "ticket_night" => json(tickets::ticket_night(a.req("cwd")?, a.req("id")?, a.req("on")?)?),
         "ticket_chain" => json(pipeline::ticket_chain(a.req("cwd")?, a.req("id")?)?),
         "task_approve" => json(pipeline::task_approve(a.req("cwd")?, a.req("id")?)?),
+        "task_approve_queue" => json(pipeline::task_approve_queue(a.req("cwd")?, a.req("id")?, a.req("decisions")?, a.req("checks")?, a.opt("model")?, a.opt("effort")?)?),
+        "task_approve_cancel" => json(pipeline::task_approve_cancel(a.req("cwd")?, a.req("id")?)?),
         "ticket_plan" => json(pipeline::ticket_plan(a.req("cwd")?, a.req("id")?)?),
         "ticket_level_file" => json(pipeline::ticket_level_file(a.req("cwd")?, a.req("id")?)?),
         "task_work" => json(pipeline::task_work(a.req("cwd")?, a.req("id")?, a.req("model")?, a.req("effort")?)?),

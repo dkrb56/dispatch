@@ -4,7 +4,9 @@
 //
 // The status follows `taskStatus` and `taskPhase` of main.ts in their order, without the facts that
 // live only in a desktop window: an approval in its queue, its answered questions and its merge
-// clicks. So a queued plan shows here as waiting, and an answered question until its worker starts.
+// clicks. So a plan queued on the computer shows here as waiting, and an answered question until its
+// worker starts. An approval of the phone (ticket approve-or-reject-a-plan-from-the-phone) is a file
+// of the host, so the phone shows it as queued.
 
 export interface PhoneWorker {
   id: string;
@@ -36,6 +38,68 @@ export interface PhoneTaskInfo {
   unverified?: string[];
   taken?: unknown;
   elsewhere?: boolean;
+  /** The decisions of the plan; an older host does not send them. */
+  decisions?: PhoneDecision[];
+  /** The checks of the project for the task, with the advice of the plan. */
+  checks?: PhoneCheck[];
+  /** The plain-words lines of the plan. */
+  tldr?: string[];
+  /** The advice of the plan for the model and the effort of the work run. */
+  workChoice?: PhoneWork | null;
+  /** The plan time of an approval of the phone that waits for the computer; null else. */
+  approved?: number | null;
+}
+
+/** A decision of a plan, as `task_list` gives it (`Decision` in pipeline.rs). */
+export interface PhoneDecision {
+  number: number;
+  title: string;
+  /** The recommended option is HOLD: only the user takes it. */
+  hold: boolean;
+  options: { kind: string; choice: string; reason: string }[];
+}
+
+/** A check of the project for a task (`CheckInfo` in checks.ts). */
+export interface PhoneCheck {
+  name: string;
+  command: string;
+  always: boolean;
+  recommended: boolean;
+  reason: string;
+  chosen: boolean | null;
+}
+
+/** A model and an effort of the work run; empty: the lists of the computer apply. */
+export interface PhoneWork {
+  model: string;
+  effort: string;
+}
+
+/** The models and the efforts of the pickers of the plan block (`MODELS` and `EFFORTS` of rulecheck.ts). */
+export const PHONE_MODELS: readonly string[] = ["", "fable", "opus", "sonnet", "haiku"];
+export const PHONE_EFFORTS: readonly string[] = ["", "low", "medium", "high", "xhigh", "max"];
+
+/**
+ * The plan block of a task whose plan waits for Approve: the summary, the plain-words lines, the
+ * decisions, the checks with their first choice and the advice for the work run. `state` is `ready`
+ * before a tap, `approved` while the approval of the phone waits for the computer, `sent` after a
+ * Reject from this phone, until the plan changes.
+ */
+export interface PhonePlan {
+  task: string;
+  mark: string;
+  summary: string[];
+  tldr: string[];
+  decisions: PhoneDecision[];
+  checks: (PhoneCheck & { checked: boolean })[];
+  work: PhoneWork | null;
+  state: "ready" | "approved" | "sent";
+}
+
+/** What Approve on the phone sends with `task_approve_queue`. */
+export interface PhoneApproval {
+  decisions: { number: number; answer: string; own: boolean }[];
+  checks: string[];
 }
 
 /** A question of a report, as `task_list` gives it. */
@@ -84,6 +148,7 @@ export type StatusKind = "waits" | "working" | "failed" | "done";
 export type PhonePhase =
   | "planning"
   | "plan-ready"
+  | "queued"
   | "starting"
   | "elsewhere"
   | "working"
@@ -136,6 +201,8 @@ export interface PhoneTools {
   replyText(questions: PhoneQuestion[], choices: ReadonlyMap<number, string>): string | null;
   /** The option of a confirm with the words of its box (`confirmChoice` of confirm.ts). */
   confirmChoice(question: PhoneQuestion, changes: string): string;
+  /** The checks that start checked (`defaultChoice` of checks.ts). */
+  defaultChoice(checks: readonly PhoneCheck[]): Set<string>;
 }
 
 /** How the rules of overview.ts see a task. */
@@ -169,6 +236,8 @@ export interface PhoneRow {
   now: string;
   /** The answer block of a task whose report waits; null else. */
   answer: PhoneAnswer | null;
+  /** The plan block of a task whose plan waits for Approve; null else. */
+  plan: PhonePlan | null;
 }
 
 /** One project card. */
@@ -316,6 +385,12 @@ function planReady(task: PhoneTask): boolean {
   return task.info?.state === "planning" && task.info.plan !== null && !live(task);
 }
 
+/** The approval of the phone waits for the computer: its marker holds the time of this plan. */
+export function approvalQueued(task: PhoneTask): boolean {
+  const approved = task.info?.approved;
+  return planReady(task) && typeof approved === "number" && approved === task.info?.plan?.modified;
+}
+
 function reportWaits(task: PhoneTask): boolean {
   const info = task.info;
   const needs = info?.header?.needs;
@@ -360,6 +435,7 @@ function unverifiedStatus(missing: readonly string[]): string {
 
 /** The state of a task in one word group. `merging` is the task whose branch merges now. */
 export function phoneStatus(task: PhoneTask, merging?: string | null): { kind: StatusKind; text: string } {
+  if (approvalQueued(task)) return { kind: "done", text: "approved · starts when the project is free" };
   if (planReady(task)) return { kind: "waits", text: "plan ready · waits for you" };
   if (reportWaits(task)) return { kind: "waits", text: permissionWaits(task) ? "needs a permission" : "has a question for you" };
   const worker = live(task);
@@ -383,6 +459,7 @@ export function phoneStatus(task: PhoneTask, merging?: string | null): { kind: S
 export function phonePhase(task: PhoneTask): PhonePhase {
   const info = task.info;
   if (!info) return "none";
+  if (approvalQueued(task)) return "queued";
   if (planReady(task)) return "plan-ready";
   if (reportWaits(task)) return permissionWaits(task) ? "permission" : "question";
   const worker = live(task);
@@ -424,7 +501,7 @@ export function phoneTasks(workers: readonly PhoneWorker[], infos: readonly Phon
     task(RUN_NAME.exec(name)?.[1] ?? name).workers.push(worker);
   }
   for (const info of infos) task(info.name).info ??= info;
-  const order = (one: PhoneTask) => (planReady(one) || reportWaits(one) ? 0 : Math.min(2, ...one.workers.map(workerOrder)));
+  const order = (one: PhoneTask) => ((planReady(one) && !approvalQueued(one)) || reportWaits(one) ? 0 : Math.min(2, ...one.workers.map(workerOrder)));
   return [...tasks.values()].sort((a, b) => order(a) - order(b) || taskTime(b) - taskTime(a));
 }
 
@@ -467,6 +544,49 @@ export function phoneReply(answer: PhoneAnswer, choices: ReadonlyMap<number, str
   return tools.replyText(answer.questions, choices);
 }
 
+/** The mark of the plan of a task: a Reject sent for it holds until the plan changes. */
+export function planMark(task: Pick<PhoneTask, "name" | "info">): string {
+  return `${task.name}:plan:${task.info?.plan?.modified ?? 0}`;
+}
+
+/**
+ * The plan block of a task: null unless its plan waits for Approve. `sent` holds the marks of the
+ * plans that this phone sent back with Reject.
+ */
+export function phonePlan(task: PhoneTask, tools: Pick<PhoneTools, "defaultChoice">, sent: ReadonlySet<string>): PhonePlan | null {
+  const info = task.info;
+  if (!info || !planReady(task)) return null;
+  const mark = planMark(task);
+  const checks = info.checks ?? [];
+  const first = tools.defaultChoice(checks);
+  return {
+    task: task.name,
+    mark,
+    summary: info.summary,
+    tldr: info.tldr ?? [],
+    decisions: info.decisions ?? [],
+    checks: checks.map((check) => ({ ...check, checked: first.has(check.name) })),
+    work: info.workChoice ?? null,
+    state: approvalQueued(task) ? "approved" : sent.has(mark) ? "sent" : "ready",
+  };
+}
+
+/**
+ * What Approve sends: per decision the user's own words when its box has words, else the tapped
+ * option; the checked checks in the order of the list. Null when a decision has neither.
+ */
+export function phoneApproval(plan: PhonePlan, picks: ReadonlyMap<number, string>, own: ReadonlyMap<number, string>, checked: ReadonlySet<string>): PhoneApproval | null {
+  const decisions: PhoneApproval["decisions"] = [];
+  for (const decision of plan.decisions) {
+    const words = (own.get(decision.number) ?? "").replace(/\s*[\r\n]+\s*/g, " ").trim();
+    const pick = picks.get(decision.number);
+    if (words !== "") decisions.push({ number: decision.number, answer: words, own: true });
+    else if (pick !== undefined && decision.options.some((option) => option.choice === pick)) decisions.push({ number: decision.number, answer: pick, own: false });
+    else return null;
+  }
+  return { decisions, checks: plan.checks.filter((check) => checked.has(check.name)).map((check) => check.name) };
+}
+
 /** The two short lines and the status of a task. */
 function taskRow(task: PhoneTask, merging: string | null | undefined, tools: PhoneTools, sent: ReadonlySet<string>): PhoneRow {
   const status = phoneStatus(task, merging);
@@ -480,13 +600,13 @@ function taskRow(task: PhoneTask, merging: string | null | undefined, tools: Pho
     run: worker ? (workerRun(task, worker) ?? (task.info?.state === "planning" ? "plan" : "work")) : undefined,
     hasPlan: Boolean(task.info?.plan),
   });
-  return { name: task.name, kind: status.kind, status: status.text, about, now, answer: phoneAnswer(task, tools, sent) };
+  return { name: task.name, kind: status.kind, status: status.text, about, now, answer: phoneAnswer(task, tools, sent), plan: phonePlan(task, tools, sent) };
 }
 
 /** The count of the head of a project: what waits for the user, what works, or paused. */
 function projectCount(tasks: readonly PhoneTask[], mine: readonly PhoneWorker[], list: PhoneTaskList | null, tools: PhoneTools): { text: string; kind: string } {
   return tools.groupCount({
-    waits: tasks.filter((task) => planReady(task) || reportWaits(task)).length,
+    waits: tasks.filter((task) => (planReady(task) && !approvalQueued(task)) || reportWaits(task)).length,
     working: mine.filter((worker) => worker.state === "working").length,
     paused: list?.paused ?? false,
   });
@@ -500,7 +620,7 @@ export function phoneCards(projects: readonly PhoneProject[], workers: readonly 
     const merging = list?.merging;
     const view = (task: PhoneTask): PhoneView => ({
       kind: phoneStatus(task, merging).kind,
-      queued: false,
+      queued: approvalQueued(task),
       starting: tools.runStarting({
         state: task.info?.state ?? "",
         hasPlan: Boolean(task.info?.plan),
@@ -591,6 +711,8 @@ export function phoneBoards(
     const view = (ticket: PhoneTicket): PhoneInProgressView => {
       const task = ticketTask(ticket, tasks);
       if (!task) return "in-progress";
+      // An approval that waits for the project stands in Working, as on the computer.
+      if (approvalQueued(task)) return "in-progress";
       const phase = phonePhase(task);
       if (phase === "question" || phase === "permission" || phase === "prompt" || phase === "plan-ready") return "waiting";
       return task.info?.state === "planning" ? "planning" : "in-progress";

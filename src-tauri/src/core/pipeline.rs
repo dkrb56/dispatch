@@ -678,6 +678,13 @@ impl Project {
         self.reports.join(format!("{ticket}.taken"))
     }
 
+    /// The approval of a plan from the phone (ticket approve-or-reject-a-plan-from-the-phone): one
+    /// line, `approved: <plan millis> <iso time>`. The driver window starts the work run when the
+    /// project is free; the task read drops a marker whose plan changed or left `planning`.
+    fn approved_file(&self, ticket: &str) -> PathBuf {
+        self.reports.join(format!("{ticket}.approved"))
+    }
+
     /// The actions of the Actions panel of the project (ticket project-actions).
     pub(crate) fn actions_file(&self) -> PathBuf {
         self.reports.join("actions.json")
@@ -4341,14 +4348,115 @@ pub fn task_checks(cwd: String, id: String, names: Vec<String>) -> Result<u64, S
     let project = Project::find(&cwd)?;
     let path = project.plans().join(format!("{id}.md"));
     let plan = fs::read_to_string(&path).map_err(|error| format!("no plan at {}: {error}", path.display()))?;
+    write_checks(&project, &id, &plan, &names)?;
+    Ok(file_entry(&path).map_or(0, |entry| entry.modified))
+}
+
+/// The writes of `task_checks` for the plan text `plan` of the task `id`: the section `Checks
+/// chosen` and `<ticket>.checks`. Without the list of the project it writes nothing.
+fn write_checks(project: &Project, id: &str, plan: &str, names: &[String]) -> Result<(), String> {
     let list = project.checks();
     if !list.is_empty() {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
-        let stamp = format!("{} UTC", crate::core::tickets::iso(now)[..16].replace('T', " "));
-        write_file(&path, &with_section(&plan, CHECKS_CHOSEN_HEADING, &checks_chosen_text(&list, &names, &stamp)))?;
-        write_file(&project.task_checks_file(&id), &task_checks_text(&list, &names))?;
+        let stamp = format!("{} UTC", crate::core::tickets::iso(now_millis())[..16].replace('T', " "));
+        write_file(&project.plans().join(format!("{id}.md")), &with_section(plan, CHECKS_CHOSEN_HEADING, &checks_chosen_text(&list, names, &stamp)))?;
+        write_file(&project.task_checks_file(id), &task_checks_text(&list, names))?;
     }
-    Ok(file_entry(&path).map_or(0, |entry| entry.modified))
+    Ok(())
+}
+
+/// The time now in milliseconds since 1970.
+fn now_millis() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64)
+}
+
+/// The answer of the user to one decision of a plan, from the phone (ticket
+/// approve-or-reject-a-plan-from-the-phone): the choice of one of its options, or the user's own words.
+#[derive(Deserialize, Clone, Debug)]
+pub struct DecisionAnswer {
+    number: u32,
+    answer: String,
+    #[serde(default)]
+    own: bool,
+}
+
+/// The name of a decision in the lines of the user decisions: the first sentence of its title,
+/// without a trailing dot (`decisionName` in `src/main.ts`).
+fn decision_name(title: &str) -> &str {
+    let bytes = title.as_bytes();
+    let end = (0..bytes.len()).find(|&at| bytes[at] == b'.' && bytes.get(at + 1).is_some_and(u8::is_ascii_whitespace)).unwrap_or(title.len());
+    title[..end].strip_suffix('.').unwrap_or(&title[..end])
+}
+
+/// Approve from the phone (ticket approve-or-reject-a-plan-from-the-phone): writes the decisions of
+/// the user, the chosen checks and the model and the effort of the work run as the desktop Approve
+/// does, then the marker `<ticket>.approved` with the plan time. It starts no work run: the driver
+/// window queues the approval and starts it when the project is free. Each decision of the plan
+/// needs one answer: one of its options, or the user's own words. Without `model` and `effort`
+/// the advice of the plan applies. Gives the plan time of the marker.
+pub fn task_approve_queue(cwd: String, id: String, decisions: Vec<DecisionAnswer>, checks: Vec<String>, model: Option<String>, effort: Option<String>) -> Result<u64, String> {
+    check_ticket(&id)?;
+    let project = Project::find(&cwd)?;
+    let path = project.plans().join(format!("{id}.md"));
+    let plan = fs::read_to_string(&path).map_err(|error| format!("no plan at {}: {error}", path.display()))?;
+    if fs::read_to_string(project.reports.join(format!("{id}.state"))).unwrap_or_default().trim() != "planning" {
+        return Err(format!("the plan of {id} does not wait for Approve"));
+    }
+    let wanted = parse_decisions(&plan);
+    for answer in &decisions {
+        let Some(decision) = wanted.iter().find(|decision| decision.number == answer.number) else {
+            return Err(format!("the plan of {id} has no decision {}", answer.number));
+        };
+        if answer.answer.trim().is_empty() {
+            return Err(format!("decision {} has no answer", answer.number));
+        }
+        if !answer.own && !decision.options.iter().any(|option| option.choice == answer.answer.trim()) {
+            return Err(format!("decision {} has no option \"{}\"", answer.number, answer.answer.trim()));
+        }
+    }
+    for decision in &wanted {
+        let count = decisions.iter().filter(|answer| answer.number == decision.number).count();
+        if count != 1 {
+            return Err(format!("decision {} needs one answer, not {count}", decision.number));
+        }
+    }
+    let mut text = plan.clone();
+    if !wanted.is_empty() {
+        let stamp = format!("{} UTC", crate::core::tickets::iso(now_millis())[..16].replace('T', " "));
+        let mut lines = vec![
+            format!("The user took these decisions in Dispatch on {stamp}. Each replaces the Default, HOLD and Other options of the decision with the same number."),
+            String::new(),
+        ];
+        for decision in &wanted {
+            let Some(answer) = decisions.iter().find(|answer| answer.number == decision.number) else { continue };
+            let own = if answer.own { " (the user's own words)" } else { "" };
+            lines.push(format!("{}. {}: {}{own}", decision.number, decision_name(&decision.title), answer.answer.trim()));
+        }
+        text = with_user_decisions(&plan, &lines.join("\n"));
+        write_file(&path, &text)?;
+    }
+    // With "Pick the checks after the work run" on, the plan gets no choice, as on the desktop.
+    if !project.options().pick_checks {
+        write_checks(&project, &id, &text, &checks)?;
+    }
+    let choice = match (model, effort) {
+        (None, None) => plan_work_choice(&plan),
+        (model, effort) => Some(Choice { model: model.unwrap_or_default().trim().to_string(), effort: effort.unwrap_or_default().trim().to_string() }),
+    };
+    write_run_choice(&project, &id, "work", choice.as_ref())?;
+    let time = file_entry(&path).map_or(0, |entry| entry.modified);
+    write_file(&project.approved_file(&id), &format!("approved: {time} {}\n", crate::core::tickets::iso(now_millis())))?;
+    Ok(time)
+}
+
+/// Takes back an approval of the phone that waits (ticket approve-or-reject-a-plan-from-the-phone):
+/// removes the marker `<ticket>.approved`. The decisions stay in the plan. Ok without a marker.
+pub fn task_approve_cancel(cwd: String, id: String) -> Result<(), String> {
+    check_ticket(&id)?;
+    let path = Project::find(&cwd)?.approved_file(&id);
+    match fs::remove_file(&path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {error}", path.display())),
+        _ => Ok(()),
+    }
 }
 
 /// Writes the final choice of the picked checks of a task (ticket test-picker-an-agent-picks-the-checks,
@@ -4919,6 +5027,10 @@ pub struct TaskInfo {
     /// or one failed. Its ticket stays In progress.
     #[serde(rename = "checksOpen")]
     checks_open: bool,
+    /// The plan time of an approval from the phone that waits for the driver window (ticket
+    /// approve-or-reject-a-plan-from-the-phone): the marker `<ticket>.approved` of this plan while
+    /// the task is in `planning`. None else.
+    approved: Option<u64>,
 }
 
 /// The decision of the user to take a task as done (ticket take-as-done): the time of the click
@@ -5765,6 +5877,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             picked: None,
             checked: None,
             checks_open: false,
+            approved: None,
         });
         tasks.len() - 1
     }
@@ -5789,6 +5902,19 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         tasks[at].work_choice = plan_work_choice(&text);
         tasks[at].parts = plan_parts(&text);
         tasks[at].plan = Some(entry);
+    }
+    // The approval of the phone holds only for the plan it was given for, while the task waits in
+    // `planning`; a stale marker goes (ticket approve-or-reject-a-plan-from-the-phone).
+    for task in tasks.iter_mut() {
+        let path = project.approved_file(&task.name);
+        let Ok(text) = fs::read_to_string(&path) else { continue };
+        let time = text.trim().strip_prefix("approved:").and_then(|rest| rest.split_whitespace().next()).and_then(|millis| millis.parse::<u64>().ok());
+        match (time, task.plan.as_ref()) {
+            (Some(time), Some(plan)) if task.state == "planning" && plan.modified == time => task.approved = Some(time),
+            _ => {
+                let _ = fs::remove_file(&path);
+            }
+        }
     }
     for (name, path, entry) in files_with(&project.reports, "md") {
         let at = task_at(&mut tasks, &name);
@@ -6259,6 +6385,8 @@ pub fn task_approve(cwd: String, id: String) -> Result<String, String> {
 /// The brief gets the rule for the step lines before the start, because the work run reads it first.
 fn task_approve_with(project: &Project, id: &str, start: &dyn Fn(&Project, &[&str]) -> Result<String, String>) -> Result<String, String> {
     check_ticket(id)?;
+    // The approval of the phone is used now; a failed start drops it, as the desktop drops its own.
+    let _ = fs::remove_file(project.approved_file(id));
     add_step_lines(project, id);
     let output = start(project, &["approve", id])?;
     let plan = fs::read_to_string(project.plans().join(format!("{id}.md"))).unwrap_or_default();
@@ -6452,7 +6580,7 @@ fn ticket_plan_with(project: &Project, id: &str, start: &dyn Fn(&Project, &[&str
 }
 
 /// The kinds of the files `<id>.<kind>` of a task in the task folder.
-const TASK_FILE_KINDS: [&str; 9] = ["md", "state", "session", "models", "branch", "taken", "checks", "picked", "checked"];
+const TASK_FILE_KINDS: [&str; 10] = ["md", "state", "session", "models", "branch", "taken", "checks", "picked", "checked", "approved"];
 
 /// Moves the files of the task `id` into `old/<id>-<yyyyMMdd-HHmmss>/` of the task folder (UTC): its
 /// files `<id>.<kind>`, its brief, its plan and its measure folder, each under its own folder name.
@@ -8038,6 +8166,106 @@ pub(crate) mod tests {
         clean(&project);
     }
 
+    const QUEUE_PLAN: &str = "# t-1: a plan\n\n## Decisions\n1. Colour. It shows on the card.\n   - Default: Blue.\n     Recommended: calm.\n   - Other: Red.\n     Not recommended: loud.\n\n## Checks\n- [x] unit — tests\n- [ ] lint — types\n\n## Work run\nmodel: opus\neffort: high\nThe reason.\n";
+
+    fn phone_answer(number: u32, answer: &str, own: bool) -> DecisionAnswer {
+        DecisionAnswer { number, answer: answer.to_string(), own }
+    }
+
+    /// Ticket approve-or-reject-a-plan-from-the-phone: Approve on the phone writes what the desktop
+    /// writes, then the marker with the plan time; the task list gives that time.
+    #[test]
+    fn a_phone_approval_writes_the_choices_and_a_marker_that_the_task_list_gives() {
+        let project = scratch("approve-queue");
+        let cwd = project.root.to_string_lossy().into_owned();
+        let plan_path = project.plans().join("t-1.md");
+        write_file(&plan_path, QUEUE_PLAN).unwrap();
+        write_file(&project.checks_file(), "unit | cargo test\nlint | npx tsc\n").unwrap();
+        let queue = |answers: Vec<DecisionAnswer>, checks: Vec<String>, model: Option<&str>, effort: Option<&str>| {
+            task_approve_queue(cwd.clone(), "t-1".into(), answers, checks, model.map(str::to_string), effort.map(str::to_string))
+        };
+        // A task that does not wait in planning is refused.
+        assert!(queue(vec![phone_answer(1, "Red", false)], Vec::new(), None, None).unwrap_err().contains("does not wait for Approve"));
+        write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        // Each decision needs one answer: one of its options, or own words.
+        assert!(queue(Vec::new(), Vec::new(), None, None).unwrap_err().contains("decision 1 needs one answer, not 0"));
+        assert!(queue(vec![phone_answer(1, "Red", false), phone_answer(1, "Blue", false)], Vec::new(), None, None).unwrap_err().contains("not 2"));
+        assert!(queue(vec![phone_answer(1, "Green", false)], Vec::new(), None, None).unwrap_err().contains("has no option \"Green\""));
+        assert!(queue(vec![phone_answer(2, "Red", false)], Vec::new(), None, None).unwrap_err().contains("has no decision 2"));
+        assert!(queue(vec![phone_answer(1, " ", true)], Vec::new(), None, None).unwrap_err().contains("has no answer"));
+        assert!(task_approve_queue(cwd.clone(), "t-2".into(), Vec::new(), Vec::new(), None, None).unwrap_err().contains("no plan at"));
+        assert_eq!(read(&plan_path), QUEUE_PLAN);
+        assert!(!project.approved_file("t-1").exists());
+
+        let time = queue(vec![phone_answer(1, "Red", false)], vec!["lint".into()], None, None).unwrap();
+        let text = read(&plan_path);
+        assert!(text.starts_with(&format!("{}\n## User decisions\n\nThe user took these decisions in Dispatch on ", QUEUE_PLAN)), "{text}");
+        assert!(text.contains(" UTC. Each replaces the Default, HOLD and Other options of the decision with the same number.\n\n1. Colour: Red\n\n## Checks chosen\n\n"), "{text}");
+        assert!(text.ends_with("- [ ] unit\n- [x] lint — `npx tsc`\n"), "{text}");
+        assert_eq!(read(&project.task_checks_file("t-1")), "lint\tnpx tsc\n");
+        // Without a choice of the user, the advice of the plan.
+        assert_eq!(read(&project.models_file("t-1")), "work opus high\n");
+        assert_eq!(time, file_entry(&plan_path).unwrap().modified);
+        assert!(read(&project.approved_file("t-1")).starts_with(&format!("approved: {time} ")));
+        assert_eq!(listed_task(&project, "t-1").approved, Some(time));
+
+        // Own words and the pickers of the phone; a second approval replaces the sections.
+        let time = queue(vec![phone_answer(1, "Green, please", true)], Vec::new(), Some("sonnet"), Some("low")).unwrap();
+        let text = read(&plan_path);
+        assert!(text.contains("\n\n1. Colour: Green, please (the user's own words)\n\n## Checks chosen\n"), "{text}");
+        assert_eq!(text.matches("## User decisions").count(), 1, "{text}");
+        assert_eq!(read(&project.models_file("t-1")), "work sonnet low\n");
+        assert_eq!(listed_task(&project, "t-1").approved, Some(time));
+        // Empty pickers: the lists of the computer apply, so the line goes.
+        queue(vec![phone_answer(1, "Blue", false)], Vec::new(), Some(""), Some("")).unwrap();
+        assert!(!project.models_file("t-1").exists());
+
+        // Cancel removes the marker; a second cancel is fine.
+        task_approve_cancel(cwd.clone(), "t-1".into()).unwrap();
+        assert!(!project.approved_file("t-1").exists());
+        assert_eq!(listed_task(&project, "t-1").approved, None);
+        task_approve_cancel(cwd.clone(), "t-1".into()).unwrap();
+        assert!(task_approve_cancel(cwd.clone(), "../x".into()).is_err());
+        clean(&project);
+    }
+
+    /// A marker of another plan time or of a task out of planning goes at the next task read, and
+    /// the start of the work run uses it up, also when the start fails.
+    #[test]
+    fn a_phone_approval_drops_with_a_new_plan_another_state_or_the_start() {
+        let project = scratch("approve-queue-stale");
+        let cwd = project.root.to_string_lossy().into_owned();
+        write_file(&project.plans().join("t-1.md"), QUEUE_PLAN).unwrap();
+        write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        let time = task_approve_queue(cwd.clone(), "t-1".into(), vec![phone_answer(1, "Blue", false)], Vec::new(), None, None).unwrap();
+        let marker = project.approved_file("t-1");
+        // The planner rewrote the plan: the time of the marker is not the plan time.
+        write_file(&marker, &format!("approved: {} 2026-11-21T00:00:00Z\n", time - 1)).unwrap();
+        assert_eq!(listed_task(&project, "t-1").approved, None);
+        assert!(!marker.exists());
+        // The task left planning.
+        write_file(&marker, &format!("approved: {time} 2026-11-21T00:00:00Z\n")).unwrap();
+        write_file(&project.reports.join("t-1.state"), "working\n").unwrap();
+        assert_eq!(listed_task(&project, "t-1").approved, None);
+        assert!(!marker.exists());
+        // A broken marker goes too.
+        write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        write_file(&marker, "approved: soon\n").unwrap();
+        assert_eq!(listed_task(&project, "t-1").approved, None);
+        assert!(!marker.exists());
+        // The start uses the marker up, also when the script refuses.
+        let refused = |_: &Project, _: &[&str]| -> Result<String, String> { Err("refused".to_string()) };
+        write_file(&marker, &format!("approved: {time} 2026-11-21T00:00:00Z\n")).unwrap();
+        assert_eq!(listed_task(&project, "t-1").approved, Some(time));
+        assert!(task_approve_with(&project, "t-1", &refused).is_err());
+        assert!(!marker.exists());
+        let ok = |_: &Project, _: &[&str]| -> Result<String, String> { Ok("started".to_string()) };
+        write_file(&marker, &format!("approved: {time} 2026-11-21T00:00:00Z\n")).unwrap();
+        task_approve_with(&project, "t-1", &ok).unwrap();
+        assert!(!marker.exists());
+        clean(&project);
+    }
+
     #[test]
     fn apply_saves_the_tests_found_and_a_saved_list_stays() {
         let project = scratch("found-checks");
@@ -8773,6 +9001,7 @@ Blockers: none
             picked: None,
             checked: None,
             checks_open: false,
+            approved: None,
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };

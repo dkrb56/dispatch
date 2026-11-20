@@ -362,6 +362,12 @@ pub fn task_approve(cwd: String, id: String) -> Result<String, String> {
     pipeline::task_approve(cwd, id)
 }
 
+/// Takes back an approval of the phone that waits (ticket approve-or-reject-a-plan-from-the-phone).
+#[tauri::command(async)]
+pub fn task_approve_cancel(cwd: String, id: String) -> Result<(), String> {
+    pipeline::task_approve_cancel(cwd, id)
+}
+
 /// Opens a ticket in In progress for a running task without one (ticket board-in-progress).
 #[tauri::command(async)]
 pub fn ticket_adopt(cwd: String, id: String) -> Result<Ticket, String> {

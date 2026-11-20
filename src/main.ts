@@ -2257,6 +2257,8 @@ interface TaskInfo {
   elsewhere?: boolean;
   /** The advice of the plan for the model and the effort of the work run (ticket ticket-form-optional-fields-on-a-new). Null or absent without it. */
   workChoice?: WorkChoice | null;
+  /** The plan time of an approval from the phone that waits (ticket approve-or-reject-a-plan-from-the-phone). Null or absent without one. */
+  approved?: number | null;
   /** The parts of the plan that follow its work run (ticket subtickets); empty for a part. Absent from an older host. */
   parts?: PlanPart[];
   /** A part whose parent did not tick the night box: night mode does not start it (ticket subtickets). Absent from an older host. */
@@ -2826,6 +2828,7 @@ async function refreshTasks(poll = false): Promise<void> {
  * (ticket one-work-run-race), and the work run then holds the others until it ends.
  */
 function approvePlans(): void {
+  adoptPhoneApprovals();
   for (const project of projectTasks.values()) {
     // Only the window that drives the project's host approves by itself (remote-shared-state).
     if (!driverOf(project.host)) continue;
@@ -2895,7 +2898,8 @@ function approvePlans(): void {
     if (choice.kind === "queued") {
       queuedApprovals.delete(queueKey(task));
       saveQueued();
-      void leasedStart(task, () => taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name}, approved earlier by the user in Dispatch: the project is free now, and the work run started.`));
+      const where = phoneApprovals.delete(queueKey(task)) ? "on the phone" : "in Dispatch";
+      void leasedStart(task, () => taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name}, approved earlier by the user ${where}: the project is free now, and the work run started.`));
     } else if (choice.kind === "night") {
       // Night mode: every decision takes its recommended option, and the plan records it.
       const decisions = task.info.decisions ?? [];
@@ -2921,6 +2925,38 @@ function approvePlans(): void {
     }
   }
   advanceActions();
+}
+
+/** The queued approvals by `queueKey` that came from the phone (ticket approve-or-reject-a-plan-from-the-phone). */
+const phoneApprovals = new Set<string>();
+/** The approvals of the phone that the user took back in this window, by `queueKey`, with their plan time: until the next read shows the marker gone. */
+const phoneCancelled = new Map<string, number>();
+
+/**
+ * Takes the approvals of the phone into the queue of the window (ticket
+ * approve-or-reject-a-plan-from-the-phone): the host keeps a marker with the plan time, and the queue
+ * starts the work run when the project is free, as for an approval of this window. An approval of
+ * the phone whose marker went (Cancel approval on the phone) leaves the queue.
+ */
+function adoptPhoneApprovals(): void {
+  let changed = false;
+  for (const project of projectTasks.values()) {
+    for (const task of projectTaskList(project)) {
+      const key = queueKey(task);
+      const time = task.info?.plan?.modified;
+      if (planReady(task) && time !== undefined && task.info?.approved === time && phoneCancelled.get(key) !== time) {
+        phoneApprovals.add(key);
+        if (!queuedApprovals.has(key)) {
+          queuedApprovals.set(key, time);
+          changed = true;
+        }
+      } else if (phoneApprovals.has(key) && planReady(task)) {
+        phoneApprovals.delete(key);
+        changed = queuedApprovals.delete(key) || changed;
+      }
+    }
+  }
+  if (changed) saveQueued();
 }
 
 /**
@@ -5368,6 +5404,15 @@ async function approveOrQueue(task: Task, choices: DecisionAnswer[], how: string
 function cancelQueued(task: Task): void {
   if (!queuedApprovals.delete(queueKey(task))) return;
   saveQueued();
+  phoneApprovals.delete(queueKey(task));
+  // An approval of the phone has its marker on the host: it goes too, or the next poll queues it again.
+  if (task.info?.approved) {
+    phoneCancelled.set(queueKey(task), task.info.approved);
+    call(taskHost(task), "task_approve_cancel", { cwd: taskCwd(task), id: task.name }).catch((error) => {
+      actionErrors.set(task.name, String(error));
+      renderChats();
+    });
+  }
   tellTriage(projectFor(taskHost(task), taskCwd(task)), `Plan ${task.name}: the user took back the approval in Dispatch. The plan waits for Approve again.`);
   renderChats();
 }

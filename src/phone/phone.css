@@ -526,6 +526,103 @@ input {
   color: var(--work);
 }
 
+/* The plan block of a plan that waits for Approve (ticket approve-or-reject-a-plan-from-the-phone). */
+.task .plan p {
+  margin: 0;
+}
+
+.plan-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.plan-tldr {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.decision,
+.checks,
+.plan-work,
+.plan-reject {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--hairline);
+}
+
+.option-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.option-reason {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.recommended.hold {
+  color: var(--wait);
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+}
+
+.check-row input {
+  flex: none;
+  width: 22px;
+  min-height: 22px;
+  height: 22px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.check-row .option-text {
+  flex: 1;
+}
+
+.plan-picker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text-2);
+}
+
+.plan-picker select {
+  min-height: 44px;
+  min-width: 0;
+  max-width: 65%;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+}
+
+.plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.plan .primary,
+.plan-reject .primary {
+  align-self: flex-start;
+}
+
 [hidden] {
   display: none !important;
 }

@@ -90,6 +90,7 @@ pub fn run() {
             commands::ticket_night,
             commands::ticket_chain,
             commands::task_approve,
+            commands::task_approve_cancel,
             commands::ticket_plan,
             commands::ticket_level_file,
             commands::task_work,
