@@ -164,6 +164,7 @@ import { nightButton, nightChanges, nightLines, nightSyncLines } from "./night";
 import { KEY_DOWN, KEY_ENTER, KEY_ESC, rcCommand, rcMenuFocus, rcSettled, rcView, type RcView, type RcWish } from "./remotecontrol";
 import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
 import { answeredLine, chosenCount, questionWaitToOpen, replyText, windowChoices, windowTitle } from "./answers";
+import { CONFIRM_PLACEHOLDER, CONFIRM_TIP, CONFIRM_TITLE, confirmChoice, confirmLine, confirmQuestion, RESULT_LABEL, RESULT_TIP } from "./confirm";
 import { ANSWERED_KEY, type AnsweredQuestion, type AnsweredReport, answeredRecord, parseAnswered, type RepeatAction, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered } from "./repeat";
 
 type Shell = "powershell" | "cmd";
@@ -2188,6 +2189,8 @@ interface TaskInfo {
   report: FileEntry | null;
   header: ReportHeader | null;
   questions: Question[];
+  /** The lines of the section `## Check result` of the report (ticket confirm-a-check-step-s-result-on-the). Absent from an older host. */
+  checkResult?: string[];
   /** The brief that triage wrote, or null. */
   brief: FileEntry | null;
   /** What the task is about: the title of its brief, else the user's words, else the plan title. */
@@ -2363,6 +2366,8 @@ interface TaskListReply {
   noTriage?: boolean;
   /** The setting of the project: Dispatch starts nothing new for it (ticket pause-tasks). Absent from an older host. */
   paused?: boolean;
+  /** The setting of the project: Dispatch confirms the result of a check step itself (ticket confirm-a-check-step-s-result-on-the). Absent from an older host. */
+  confirmResults?: boolean;
   /** The setting of the project: an agent picks the checks after the work run (ticket test-picker-an-agent-picks-the-checks). Absent from an older host. */
   pickChecks?: boolean;
   /** The picked checks run at the merge: the switch and Task branches are on. Absent from an older host. */
@@ -2408,6 +2413,8 @@ interface ProjectTasks {
   noTriage: boolean;
   /** The user paused the project: no ticket goes to triage and no work run starts (ticket pause-tasks). */
   paused: boolean;
+  /** Dispatch confirms the result of a check step with its first option (ticket confirm-a-check-step-s-result-on-the). */
+  confirmResults: boolean;
   /** An agent picks the checks after the work run (ticket test-picker-an-agent-picks-the-checks). */
   pickChecks: boolean;
   /** The picked checks run at the merge, not on the click "Run checks". */
@@ -2439,6 +2446,7 @@ function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTa
     ticketsStartPlans: reply.ticketsStartPlans ?? false,
     noTriage: reply.noTriage ?? false,
     paused: reply.paused ?? false,
+    confirmResults: reply.confirmResults ?? false,
     pickChecks: reply.pickChecks ?? false,
     checksAtMerge: reply.checksAtMerge ?? false,
     fullChecks: reply.fullChecks ?? false,
@@ -2617,6 +2625,8 @@ function markAnswered(task: string, record: AnsweredReport): void {
 const questionChoices = new Map<string, { modified: number; choices: Map<number, string> }>();
 /** The text of the open Reject box of a task. A re-render keeps it. */
 const rejectDrafts = new Map<string, string>();
+/** The text of the box for changes of the confirm card of a task (ticket confirm-a-check-step-s-result-on-the). A re-render keeps it. */
+const confirmDrafts = new Map<string, string>();
 /**
  * The checkboxes of the Plan ready cards that the user changed (ticket task-checks), by project key
  * and task name: the time of the plan file they belong to and the ticked names. A changed plan file
@@ -2812,6 +2822,9 @@ function approvePlans(): void {
     const tasks = projectTaskList(project);
     // A paused project gets no answer of night mode (ticket pause-tasks, user decision 4).
     if (night && !project.paused) nightDefaults(project, tasks);
+    // "Confirm check results automatically" (ticket confirm-a-check-step-s-result-on-the): a check
+    // result that still arrives gets its first option, once per report.
+    if (project.confirmResults) confirmDefaults(project, tasks);
     // The pick of the checks of a done report, once per report (ticket test-picker-an-agent-picks-the-checks);
     // at night the picked checks run without a click, unless they run at the merge.
     startPicks(project, tasks);
@@ -3067,6 +3080,27 @@ function nightDefaults(project: ProjectTasks, tasks: Task[]): void {
       nightDone.add(key);
       tellTriage(triage, `Night mode: ${task.name} needs a permission. It waits for the user; put it under Reminders in the morning file.`);
     }
+  }
+}
+
+/**
+ * Confirms the result of a check step with its first option, without a click, when the project has
+ * "Confirm check results automatically" on (ticket confirm-a-check-step-s-result-on-the). Once per
+ * report time; a busy task waits for the next poll.
+ */
+function confirmDefaults(project: ProjectTasks, tasks: Task[]): void {
+  const folder = projectKey(project.host, project.cwd);
+  for (const task of tasks) {
+    if (busyTasks.has(task.name)) continue;
+    const report = task.info?.report;
+    if (!report) continue;
+    const question = confirmQuestion(task.info?.checkResult ?? [], openQuestions(task));
+    if (!question) continue;
+    const key = `confirm:${folder}:${task.name}:${report.modified}`;
+    if (nightDone.has(key)) continue;
+    nightDone.add(key);
+    const choice = question.options[0];
+    void sendAnswers(task, [question], new Map([[question.number, choice]]), report.modified, confirmLine(task.name, choice, true));
   }
 }
 
@@ -6216,15 +6250,64 @@ function questionCard(task: Task, questions: Question[]): HTMLElement {
 }
 
 /**
+ * The card of a check step whose result waits for the user (ticket confirm-a-check-step-s-result-on-the):
+ * the question, the result lines, a box for changes and Confirm. An empty box keeps the result with
+ * the first option; words go with the second option.
+ */
+function confirmCard(task: Task, question: Question): HTMLElement {
+  const modified = task.info?.report?.modified ?? 0;
+  const busy = busyTasks.has(task.name);
+  const card = document.createElement("div");
+  card.className = "task-card";
+  const title = document.createElement("div");
+  title.className = "card-title";
+  title.textContent = CONFIRM_TITLE;
+  const text = document.createElement("div");
+  text.className = "card-question";
+  text.textContent = `${question.number}. ${question.text}`;
+  const result = document.createElement("div");
+  result.className = "card-result";
+  result.textContent = (task.info?.checkResult ?? []).join("\n");
+  const changes = document.createElement("textarea");
+  changes.placeholder = CONFIRM_PLACEHOLDER;
+  changes.value = confirmDrafts.get(task.name) ?? "";
+  changes.disabled = busy;
+  changes.addEventListener("input", () => confirmDrafts.set(task.name, changes.value));
+  changes.addEventListener("blur", () => {
+    if (!renderSkipped) return;
+    renderSkipped = false;
+    renderChats();
+  });
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const confirm = document.createElement("button");
+  confirm.className = "primary";
+  confirm.textContent = "Confirm";
+  confirm.title = CONFIRM_TIP;
+  confirm.disabled = busy;
+  confirm.addEventListener("click", () => {
+    const choice = confirmChoice(question, changes.value);
+    void sendAnswers(task, [question], new Map([[question.number, choice]]), modified, confirmLine(task.name, choice, false)).then((sent) => {
+      if (sent) confirmDrafts.delete(task.name);
+    });
+  });
+  actions.append(confirm);
+  card.append(title, text, result, changes, actions);
+  const error = actionError(task);
+  if (error) card.append(error);
+  return card;
+}
+
+/**
  * Sends the answers of a report to the worker in one reply, from the card or from the window: one
  * `Answer to question N: <option>` per question and one line for triage. It marks the report as
  * answered and drops the kept choices. A failed send keeps them; the card shows the error. True
  * when the reply went.
  */
-async function sendAnswers(task: Task, questions: Question[], choices: ReadonlyMap<number, string>, modified: number): Promise<boolean> {
+async function sendAnswers(task: Task, questions: Question[], choices: ReadonlyMap<number, string>, modified: number, line?: string): Promise<boolean> {
   const reply = replyText(questions, choices);
   if (reply === null) return false;
-  const line = answeredLine(task.name, questions, choices);
+  line ??= answeredLine(task.name, questions, choices);
   const sent = await taskAction(task, "task_reply", { id: task.name, text: reply }, line);
   if (!sent) return false;
   markAnswered(task.name, answeredRecord(modified, questions, choices, reply));
@@ -6364,6 +6447,35 @@ function updateQuestionsWindow(): void {
   const error = actionErrors.get(task.name) ?? "";
   document.querySelector("#questions-reason")!.textContent = [busy ? "A click of this task is still running." : "", error].filter(Boolean).join("\n");
   document.querySelector<HTMLButtonElement>("#questions-send")!.disabled = busy;
+}
+
+/** The row under the report row that opens the result of a check step in its window. */
+function checkResultRow(task: Task, lines: string[]): HTMLElement {
+  const row = document.createElement("button");
+  row.className = "chat report";
+  row.title = RESULT_TIP;
+  const name = document.createElement("span");
+  name.textContent = RESULT_LABEL;
+  name.prepend(eyeIcon());
+  row.append(name);
+  row.addEventListener("click", () => openCheckResult(task.name, lines));
+  return row;
+}
+
+const checkResultDialog = document.querySelector<HTMLDialogElement>("#check-result")!;
+
+/** Opens the window with the result of a check step of a task. */
+function openCheckResult(name: string, lines: string[]): void {
+  document.querySelector("#check-result-title")!.textContent = `${RESULT_LABEL} · ${name}`;
+  document.querySelector("#check-result-body")!.textContent = lines.join("\n");
+  if (!checkResultDialog.open) checkResultDialog.showModal();
+}
+
+function initCheckResult(): void {
+  document.querySelector("#check-result-close")!.addEventListener("click", () => checkResultDialog.close());
+  checkResultDialog.addEventListener("click", (event) => {
+    if (event.target === checkResultDialog) checkResultDialog.close();
+  });
 }
 
 function initQuestions(): void {
@@ -10119,6 +10231,8 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
       body.append(report);
       const commands = commandsRow(key, task, info);
       if (commands) body.append(commands);
+      // The result of a check step, also after the run went on (ticket confirm-a-check-step-s-result-on-the).
+      if ((info.checkResult ?? []).length > 0) body.append(checkResultRow(task, info.checkResult ?? []));
     }
     // The log of the task: the plan, each command with its output, the report (ticket task-log).
     if (info?.log) body.append(fileRow("Log", info.log, null, null));
@@ -10141,7 +10255,10 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   if (planReady(task) || awayPlan(task)) made.append(planCard(task));
   const questions = openQuestions(task);
   const repeats = repeatedQuestionsOf(task);
+  // A check step whose result waits for the user gets the confirm card (ticket confirm-a-check-step-s-result-on-the).
+  const confirmAsk = confirmQuestion(task.info?.checkResult ?? [], questions);
   if (repeats) made.append(repeatCard(task, repeats));
+  else if (confirmAsk) made.append(confirmCard(task, confirmAsk));
   else if (questions.length > 0) made.append(questionCard(task, questions));
   else if (permissionWaits(task)) made.append(permissionCard(task));
   // The checks picked after the work run (ticket test-picker-an-agent-picks-the-checks): the pick card
@@ -15671,6 +15788,7 @@ async function start(): Promise<void> {
   initCommit();
   initGitState();
   initQuestions();
+  initCheckResult();
   initStale();
   initRemoveProject();
   initTickets();

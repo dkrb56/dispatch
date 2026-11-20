@@ -1474,6 +1474,28 @@ button.task-head:hover {
   word-break: break-all;
 }
 
+/* The result of a check step on the confirm card (ticket confirm-a-check-step-s-result-on-the). */
+.task-card .card-result {
+  margin: 4px 0;
+  color: var(--muted);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(11px * var(--text-scale));
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
+
+/* The window with the result of a check step. */
+#check-result-body {
+  padding: 12px 16px;
+  color: var(--text-2);
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow: auto;
+  max-height: 70vh;
+}
+
 .task-stop .task-stop-text {
   flex-basis: 100%;
   color: var(--muted);
@@ -6507,7 +6529,8 @@ button.ticket-level {
 
 /* The Decisions window of a plan: every decision with its options, and Other for an own answer. It has the frame of the help. */
 #decisions,
-#questions {
+#questions,
+#check-result {
   width: min(92vw, 820px);
   max-height: 86vh;
   padding: 0;
@@ -6520,18 +6543,21 @@ button.ticket-level {
 }
 
 #decisions[open],
-#questions[open] {
+#questions[open],
+#check-result[open] {
   display: flex;
   flex-direction: column;
 }
 
 #decisions::backdrop,
-#questions::backdrop {
+#questions::backdrop,
+#check-result::backdrop {
   background: rgb(0 0 0 / 60%);
 }
 
 #decisions header,
-#questions header {
+#questions header,
+#check-result header {
   display: flex;
   align-items: center;
   padding-left: 20px;
@@ -6539,7 +6565,8 @@ button.ticket-level {
 }
 
 #decisions h2,
-#questions h2 {
+#questions h2,
+#check-result h2 {
   flex: 1;
   margin: 0;
   font-size: calc(16px * var(--text-scale));
@@ -6547,7 +6574,8 @@ button.ticket-level {
 }
 
 #decisions-close,
-#questions-close {
+#questions-close,
+#check-result-close {
   width: 32px;
   height: 32px;
   margin: 8px;
@@ -6562,7 +6590,8 @@ button.ticket-level {
 }
 
 #decisions-close:hover,
-#questions-close:hover {
+#questions-close:hover,
+#check-result-close:hover {
   background: var(--card);
 }
 

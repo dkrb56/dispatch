@@ -55,6 +55,8 @@ interface Options {
   ticketsStartPlans: boolean;
   /** No triage runs: Dispatch starts the plan of every New ticket, writes no line to a triage chat, and the cards and alerts tell the user (ticket no-triage-a-project-switch-no-triage-in). Off at the start. */
   noTriage: boolean;
+  /** A check step whose result a worker would show does not stop the work run, and Dispatch confirms a result that still arrives (ticket confirm-a-check-step-s-result-on-the). Off at the start. */
+  confirmResults: boolean;
 }
 
 /** The reply of the `pipeline_plan`, `pipeline_apply` and `set_project_options` commands. */

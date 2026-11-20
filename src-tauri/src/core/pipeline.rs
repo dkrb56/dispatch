@@ -178,13 +178,17 @@ pub struct Options {
     /// settings file (ticket disable-triage-by-default); a settings file without the field is off.
     #[serde(default)]
     no_triage: bool,
+    /// A check step whose result the user would confirm does not stop the work run, and Dispatch
+    /// confirms a result that still arrives with its first option (ticket
+    /// confirm-a-check-step-s-result-on-the). Off at the start; a settings file without the field is off.
+    confirm_results: bool,
 }
 
 // A settings file of an older version has a field for answers in the triage chat. Serde drops a
 // field it does not know, so such a file reads without an error.
 impl Default for Options {
     fn default() -> Self {
-        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, pick_checks: false, full_checks_nightly: false, full_checks_at: 0, full_checks_after: 0, push_after_merge: false, auto_merge: false, tickets_start_plans: false, no_triage: true }
+        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, pick_checks: false, full_checks_nightly: false, full_checks_at: 0, full_checks_after: 0, push_after_merge: false, auto_merge: false, tickets_start_plans: false, no_triage: true, confirm_results: false }
     }
 }
 
@@ -276,6 +280,13 @@ fn push_rule() -> String {
 /// task branches on and a gate command (ticket create-project-settings-option-to-auto).
 fn auto_merge_rule() -> String {
     "- Auto-merge finished tasks is on in this project: Dispatch merges the branch of a task with a done report by itself, without the Merge click, after the gate command passed on the merged code, one merge at a time. A refused merge merges nothing and waits in the task card with the Merge button. Triage and the workers still never merge.
+".to_string()
+}
+
+/// The line of the "Background workers" section for a project with "Confirm check results
+/// automatically" on (ticket confirm-a-check-step-s-result-on-the).
+fn confirm_rule() -> String {
+    "- Confirm check results automatically is on in this project: a check step whose result the user would confirm does not stop the work run; the run takes the result as it is, writes it into the report under `## Check result` and goes on. A result that still arrives with a question is confirmed by Dispatch with its first option, without a click.
 ".to_string()
 }
 
@@ -928,6 +939,8 @@ impl Project {
         let tickets = if options.tickets_start_plans { tickets_rule(&reports, &script) } else { String::new() };
         // "No triage" (ticket no-triage-a-project-switch-no-triage-in): off, the line is empty.
         let no_triage = if options.no_triage { no_triage_rule(&reports, &script) } else { String::new() };
+        // "Confirm check results automatically" (ticket confirm-a-check-step-s-result-on-the): off, the line is empty.
+        let confirm = if options.confirm_results { confirm_rule() } else { String::new() };
         // The same for "Task files local only" (ticket ignore-tasks): off, the sentence of the version before.
         let tasks_git = if self.options().ignore_tasks {
             format!("git ignores `{reports}/`: the task files stay on this computer, and a clone has none")
@@ -944,7 +957,8 @@ impl Project {
 {plain}- The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It commits only the files that it changed, each by name, never with `git add -A`, `git add .` or `git commit -a`, and leaves every other change as it is. It never pushes or merges. The user decides the push.
 {branches}{push}{auto_merge}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification says in the worker's own words what it ran and what that showed. Dispatch reads the commands of the work run from the transcripts and shows each under the report with its exit code and its last lines. A done report whose work run ran no command, or without a run of a chosen check, counts as working, and its ticket stays open.
 - A worker starts no session and sends no message to a chat. It has no question tool. A question for the user goes into the report under the heading `## Questions`: numbered items, each with its options as list items, the recommended option first. Each option is one short line, because Dispatch shows it as a button and sends it back word for word; the question and each option follow the rule of plain words of the Decisions of a plan; the details stand above the questions. The worker then writes `state: needs-decision` and `needs: decision` and ends its turn, also when the question is about a permission. `needs: permission` means: a refused tool call stopped the work, the report names the refused call and the rule it needs, and the work goes on with a follow-up `Continue` once the user changed the rule. The user answers in the task card of Dispatch, and the answer arrives as a follow-up `Answer to question N: <option>`. An answered question never comes back unchanged: after the answer the worker takes the question out of its report or writes what it decided and did, and ends with `state: done` or a new question. A follow-up `Continue` after an answer means: take the answers as given and go on.
-- A follow-up goes through `{script} reply <ticket-id> \"<message>\"` and quotes the user's words exactly. The script takes the options of the run from `{reports}/<ticket-id>.state`.
+- A check step whose result the user confirms (a step of the project rules that picks or judges something for the user) writes the report with the section `## Check result`: the result as the step gave it, one item per line, a reason after each item where the step gives one. Under `## Questions` it puts one question only, which names the step and asks whether the user agrees, with two options: the first keeps the result as it is, the second changes it. Then it writes `state: needs-decision` and `needs: decision` and ends its turn. Dispatch shows the result on the task card with a box for changes and a Confirm button; the answer arrives as `Answer to question N: <first option>` or `Answer to question N: <second option>: <the user's words>`. The run applies the words and goes on; the final report keeps `## Check result` with the confirmed result, and the task card has a row that opens it.
+{confirm}- A follow-up goes through `{script} reply <ticket-id> \"<message>\"` and quotes the user's words exactly. The script takes the options of the run from `{reports}/<ticket-id>.state`.
 - Triage does no implementation. It classifies, writes briefs, starts the plan run, shows the plan, relays the yes, checks results and reports to the user.
 - The session of a worker is named `<ticket-id> [plan]` in its plan run and `<ticket-id> [work]` in its work run; a worker of an older script has the bare ticket id. Triage checks workers with `claude agents --json --all` or `{script} status`: `done` = finished, `blocked` with `status: waiting` = at a permission prompt, `blocked` with `status: idle` = the turn ended with a question that stands in the report (`{script} status` says `done` then), `failed` or `stopped` = ended badly. It reads the plan or the report file first, `claude logs <id>` second.
 - Triage runs at most 3 workers, and at most one in its work run. Triage does not poll: Dispatch writes one line into the triage chat when a worker is done, blocked or failed, when the user approved or rejected a plan, and when the user answered a question.
@@ -2336,6 +2350,11 @@ switch ($Verb) {
     if (Option-On 'pickChecks') {
       Clear-Picks
       $prompt += " The checks of this project are picked by Dispatch after this run: run the Acceptance commands of the plan, but no check of the list checks.txt beyond them."
+    }
+    # Confirm check results automatically (ticket confirm-a-check-step-s-result-on-the): the run does
+    # not stop at a check step whose result the user would confirm.
+    if (Option-On 'confirmResults') {
+      $prompt += " Confirm check results automatically is on: a check step whose result the user would confirm does not stop this run; take the result as it is, write it into the report under the heading Check result, and go on."
     }
     if (Test-Path -LiteralPath $chosen) {
       $names = @(Get-Content -LiteralPath $chosen | Where-Object { $_.Trim() -ne '' } | ForEach-Object { ($_ -split "`t", 2)[0].Trim() -replace '"', "'" })
@@ -4802,6 +4821,11 @@ pub struct TaskInfo {
     report: Option<FileEntry>,
     header: Option<ReportHeader>,
     questions: Vec<Question>,
+    /// The lines of the section `## Check result` of the report, with marks and blank lines (ticket
+    /// confirm-a-check-step-s-result-on-the): the result of a check step that the user confirms.
+    /// Empty without a report or without the section.
+    #[serde(rename = "checkResult")]
+    check_result: Vec<String>,
     /// The brief that triage wrote for the task, when it exists.
     brief: Option<FileEntry>,
     /// What the task is about in a few words: the title of its brief, else the user's words in
@@ -5583,6 +5607,9 @@ pub struct TaskList {
     no_triage: bool,
     /// The setting of the project: Dispatch starts nothing new for it (ticket pause-tasks).
     paused: bool,
+    /// The setting of the project: Dispatch confirms the result of a check step with its first option
+    /// (ticket confirm-a-check-step-s-result-on-the).
+    confirm_results: bool,
     /// The setting of the project: an agent picks the checks after the work run (ticket
     /// test-picker-an-agent-picks-the-checks). The frontend starts the pick of a done report once.
     pick_checks: bool,
@@ -5708,6 +5735,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             report: None,
             header: None,
             questions: Vec::new(),
+            check_result: Vec::new(),
             brief: None,
             about: String::new(),
             did: String::new(),
@@ -5767,6 +5795,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         tasks[at].header = header;
         tasks[at].questions = questions;
         tasks[at].did = report_gist(&text);
+        tasks[at].check_result = section_block(&text, "Check result");
         tasks[at].report = Some(entry);
     }
     // The checks picked after the work run (ticket test-picker-an-agent-picks-the-checks): with the
@@ -6023,6 +6052,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             tickets_start_plans: options.tickets_start_plans,
             no_triage: options.no_triage,
             paused: options.paused,
+            confirm_results: options.confirm_results,
             pick_checks: pick_on,
             checks_at_merge: pick_on && options.task_branches,
             full_checks: (options.full_checks_nightly || options.full_checks_after > 0) && !check_list.is_empty(),
@@ -8705,6 +8735,7 @@ Blockers: none
             report: None,
             header: None,
             questions: Vec::new(),
+            check_result: Vec::new(),
             brief: None,
             about: String::new(),
             did: String::new(),
@@ -9372,6 +9403,22 @@ if (args[0] === 'agents') {
         assert_eq!(&resume[1..], ["--bg", "--name", "t-1 [work]", "--model", "opus", "--effort", "xhigh", "--permission-mode", "auto", "--tools", "default", "--disallowedTools", "AskUserQuestion,SendMessage"]);
         // claude runs in the project folder, whatever the folder of the caller is.
         assert_eq!(Path::new(read(&fake.join("cwd.txt")).trim()), project.root.as_path());
+
+        // Confirm check results automatically (ticket confirm-a-check-step-s-result-on-the): on, the
+        // prompt tells the run not to stop at a check step; off, the prompt has no such sentence.
+        let confirm_line = " Confirm check results automatically is on: a check step whose result the user would confirm does not stop this run; take the result as it is, write it into the report under the heading Check result, and go on.";
+        set_confirm(&project, true);
+        write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        let confirmed = last_call(&fake);
+        assert!(confirmed[0].ends_with(confirm_line), "{confirmed:?}");
+        set_confirm(&project, false);
+        write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        let plain = last_call(&fake);
+        assert!(!plain[0].contains("Confirm check results automatically"), "{plain:?}");
 
         // Pick the checks after the work run (ticket test-picker-an-agent-picks-the-checks): approve tells
         // the run that the checks come after it, and the files of an earlier pick go.
@@ -10364,6 +10411,11 @@ if (args[0] === 'agents') {
     }
 
     /// Sets "Pick the checks after the work run" (ticket test-picker-an-agent-picks-the-checks) in the settings file.
+    fn set_confirm(project: &Project, on: bool) {
+        let options = Options { confirm_results: on, ..project.options() };
+        write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
+    }
+
     fn set_pick(project: &Project, on: bool) {
         let options = Options { pick_checks: on, ..project.options() };
         write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
@@ -10932,6 +10984,73 @@ if (args[0] === 'agents') {
         for (at, file) in files.iter().enumerate() {
             assert!(fs::read(file).unwrap() == first[at], "{} changed with the switch", file.display());
         }
+        clean(&project);
+    }
+
+    /// Ticket confirm-a-check-step-s-result-on-the: a settings file without the field has the switch off.
+    #[test]
+    fn an_old_settings_file_has_confirm_results_off() {
+        let project = scratch("confirm-old");
+        apply(&project, &[]).unwrap();
+        // The settings file of 0.1.80: no field for this switch.
+        write_file(&project.options_file(), "{\n  \"shortReports\": true,\n  \"triageName\": true,\n  \"autoApprove\": false,\n  \"noTriage\": true\n}\n").unwrap();
+        assert!(!project.options().confirm_results);
+        let shown = serde_json::to_value(&plan(&project).unwrap().options).unwrap();
+        assert_eq!(shown["confirmResults"], json!(false));
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        assert!(!list.confirm_results);
+        assert_eq!(serde_json::to_value(&list).unwrap()["confirmResults"], json!(false));
+        assert!(!Options::default().confirm_results);
+        clean(&project);
+    }
+
+    /// Ticket confirm-a-check-step-s-result-on-the: the switch adds one line after the fixed bullet of
+    /// the check result, and nothing else changes.
+    #[test]
+    fn confirm_results_changes_only_its_line() {
+        let project = scratch("confirm-section");
+        apply(&project, &[0]).unwrap();
+        let files = [project.script(), project.plan_flags(), project.work_flags()];
+        let first: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+        // Off: the section without the line.
+        set_confirm(&project, false);
+        let before = project.section_body();
+        assert!(before.contains("writes the report with the section `## Check result`"), "{before}");
+        assert!(!before.contains("Confirm check results automatically"));
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+
+        // On: one line after the fixed bullet of the check result.
+        set_confirm(&project, true);
+        let body = project.section_body();
+        let rule = confirm_rule();
+        assert!(body.contains(&format!("and the task card has a row that opens it.\n{rule}- A follow-up goes through")), "{body}");
+        assert_eq!(body.replacen(&rule, "", 1), before);
+        assert_eq!(open_steps(&project), vec!["Section in CLAUDE.md"]);
+
+        // Apply closes the step; the script and the options files are the same text with the switch on.
+        apply(&project, &[0]).unwrap();
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        for (at, file) in files.iter().enumerate() {
+            assert!(fs::read(file).unwrap() == first[at], "{} changed with the switch", file.display());
+        }
+        clean(&project);
+    }
+
+    /// Ticket confirm-a-check-step-s-result-on-the: the task read gives the lines of the section
+    /// `## Check result` of the report, with marks and blank lines; a report without it gives none.
+    #[test]
+    fn a_report_gives_its_check_result() {
+        let project = scratch("check-result");
+        apply(&project, &[]).unwrap();
+        let report = "state: needs-decision\nneeds: decision\nfiles: none\nplan: .dispatch/plans/t-1.md\n\n## What changed\nThe overseer picked the cases.\n\n## Check result\nCASE net-join: the join path changed\n\n\nNOT PICKED net-chat: no change\n\n## Questions\n1. Do you agree with the overseer's test cases?\n   - Keep the cases\n   - Change the cases\n";
+        write_file(&project.reports.join("t-1.md"), report).unwrap();
+        write_file(&project.reports.join("t-2.md"), "state: done\nneeds: nothing\nfiles: none\nplan: .dispatch/plans/t-2.md\n\n## What changed\nNothing.\n").unwrap();
+        let task = listed_task(&project, "t-1");
+        assert_eq!(task.check_result, vec!["CASE net-join: the join path changed", "", "NOT PICKED net-chat: no change"]);
+        assert_eq!(task.questions.len(), 1);
+        let json = serde_json::to_value(&task).unwrap();
+        assert_eq!(json["checkResult"], json!(["CASE net-join: the join path changed", "", "NOT PICKED net-chat: no change"]));
+        assert!(listed_task(&project, "t-2").check_result.is_empty());
         clean(&project);
     }
 

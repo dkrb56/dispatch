@@ -142,6 +142,10 @@
                 <span><b>Approve plans automatically</b> Dispatch starts the work run as soon as a plan is ready, no file of the task has uncommitted changes and no other work run runs. A plan with a <code>HOLD:</code> decision waits for your click.</span>
               </label>
               <label class="switch-row">
+                <input type="checkbox" data-option="confirmResults" />
+                <span><b>Confirm check results automatically</b> A check step whose result a worker would show you (for example the picked test cases) does not stop the work run; the run takes the result as it is and goes on. A result that still arrives is confirmed for you. <small>Changes the step "Section in CLAUDE.md".</small></span>
+              </label>
+              <label class="switch-row">
                 <input type="checkbox" data-option="measureBeforePlan" />
                 <span><b>Measure before the plan</b> The plan run may run the commands below first, one at a time, and the plan gets a section "Measured" with what they showed. It can run no other command. <small>Changes the steps "Task files", "Section in CLAUDE.md" and "Measure before the plan".</small></span>
               </label>
@@ -350,6 +354,13 @@
         <div id="questions-reason"></div>
         <button id="questions-send" class="primary" title="Send the selected option of every question to the worker in one reply; the worker goes on">Send the answers</button>
       </footer>
+    </dialog>
+    <dialog id="check-result">
+      <header>
+        <h2 id="check-result-title">Check result</h2>
+        <button id="check-result-close" title="Close (Esc)">&times;</button>
+      </header>
+      <div id="check-result-body"></div>
     </dialog>
     <dialog id="tickets">
       <header>
@@ -981,6 +992,7 @@
             <li>Your answer goes to the worker word for word, with the number of the question in front. With several questions each click is a choice: the chosen option is marked, and another click changes it. When every question has a choice, the answers go to the worker together in one reply.</li>
             <li>When a worker leaves an answered question in its report, the card shows no buttons for it again. It says what you answered and offers <b>Continue</b>, <b>Send the answer again</b> or <b>Stop</b>. Triage hears about your answer once. A changed question or a new question shows its buttons as before.</li>
             <li>A new question also opens a window by itself; <b>Answer in a window</b> in the card opens it again. Click the options, then <b>Send the answers</b>. While Dispatch sends the answers, the button shows a spinner and the window is locked. The window does not open by itself in night mode, at the start of Dispatch, or while another window is open.</li>
+            <li>A worker can stop at a check step and show its result, for example the test cases that a step picked with a reason each. The card then shows the result, a box for changes and <b>Confirm</b>. Leave the box empty to keep the result, or write what to change; Confirm sends your answer to the same work run, which goes on. The row <b>Check result</b> under the report row opens the result at any time later. With <b>Confirm check results automatically</b> on in Setup pipeline, the run does not stop at such a step, and Dispatch confirms a result that still arrives.</li>
             <li>A worker that stopped at a refused step says so in its report, and the task shows <b>Continue</b> and <b>Stop</b>. Change the rule first, then click Continue. If you no longer need the task, click Stop: it asks first, and <b>Stop now</b> ends the task.</li>
             <li><b>Merge.</b> The task shows its branch, the branch it came from, and where it stands. A click merges with a merge commit after the gate command passed, and the Approve of another task waits meanwhile. A failed gate, a conflict in your code or uncommitted changes merge nothing; the card shows why. A failed gate lists the checks that failed, and a click on <b>Gate log</b> opens the whole log. A branch that you merge yourself with git shows as merged at the next check, with its merge commit; Merge and the old refusal go, and Dispatch deletes no branch.</li>
             <li>A conflict only in the task files of <code>.dispatch</code> takes the version of your branch. Dispatch deletes the merged branch and writes one line into the triage chat. It makes no push. A worker that stops with a question first commits its own files on the task branch as "WIP". Uncommitted changes in other files go along with the switch back to your branch. When a file of the task has uncommitted changes, the project stays on the task branch, and the card names the file. When the task branch holds a newer report than your branch, Dispatch takes it onto your branch at the next check and commits it, so a switch of the branch never brings an old question back.</li>
