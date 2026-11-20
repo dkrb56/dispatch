@@ -94,6 +94,7 @@ pub fn run() {
             commands::ticket_adopt,
             commands::plan_groups_load,
             commands::plan_groups_save,
+            commands::plan_confirm,
             commands::task_decide,
             commands::task_checks,
             commands::task_pick_checks,

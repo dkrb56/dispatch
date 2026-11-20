@@ -32,10 +32,14 @@ import { removeAnswer, removeTexts } from "./removeproject";
 import { type ColumnAction, type ColumnChoice, type ColumnTab, type FocusSplit, type TermSplit, applyAction, columnStates, columnTabs, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, parseTab, parseTermSplit, shareField, toggleSplit, toggleTermSplit } from "./focuslayout";
 import { chatSlotStep, type FoldPart, type Folds, foldOpen, parseFolds, setFold, splitNewest } from "./focuslists";
 import {
+  arrowDiff,
   boxHits,
   collapsedTree,
   comesAfter,
   comesBefore,
+  draftChanges,
+  draftTickets,
+  type DraftChange,
   flowTickets,
   GROUP_PREFIX,
   groupBadge,
@@ -43,6 +47,9 @@ import {
   groupCounts,
   groupMembers,
   groupNodeId,
+  layoutTickets,
+  makeDraft,
+  movedArrow,
   notInFlow,
   parsePlanGroups,
   PLAN_BOX_TITLE,
@@ -51,12 +58,21 @@ import {
   planArrows,
   planBadges,
   planLayout,
+  planSort,
   planStateWord,
+  queueMarks,
   standLine,
+  takenOut,
   toggleSelection,
+  turnedArrow,
+  withArrow,
+  withoutArrow,
+  withTicketAfter,
   type PlanArrow,
+  type PlanDraft,
   type PlanGroup,
   type PlanPlace,
+  type PlanTicket,
 } from "./plantree";
 import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode } from "./overview";
 import {
@@ -14442,9 +14458,9 @@ function showOverview(on: boolean): void {
 // ---------------------------------------------------------------------------------------------
 // The Plan view (ticket feature-plan-view-a-tree-of-the-project): the tickets of one project as a
 // tree on the dots of the Overview. An arrow A → B means "B starts when A is done"; the arrows are the
-// field `after` of each ticket. The rules of the tree are in plantree.ts. The arrows are read-only;
-// the selection and the comments and groups (ticket plan-view-selection-comments-and-groups) do not
-// change them, and Plan the flow comes in the next part.
+// field `after` of each ticket. The rules of the tree are in plantree.ts. The selection and the
+// comments and groups (ticket plan-view-selection-comments-and-groups) do not change the arrows; only
+// Plan the flow does, in a draft that Confirm writes (ticket plan-view-plan-the-flow-and-confirm).
 
 const planEl = document.querySelector<HTMLElement>("#plan")!;
 /** The Plan view is on. The choice is in localStorage `view-mode`. */
@@ -14483,6 +14499,28 @@ let planFocusTitle = false;
 /** The names of the four colours of a comment or group: the colours of the app (user decision 1). */
 const PLAN_COLOR_NAMES = ["Blue", "Green", "Amber", "Red"];
 
+// Plan the flow (ticket plan-view-plan-the-flow-and-confirm): the arrows change in a draft until
+// Confirm writes them. Each render reads the board and the draft again, so the state lives here.
+/** The draft of each project, by project key; it lives while Dispatch runs (user decision 3). */
+const planDrafts = new Map<string, PlanDraft>();
+/** The ticket (an id or the key of an added ticket) that an arrow is drawn from; null: no drawing. */
+let planDrawFrom: string | null = null;
+/** The ticket of "Not in the flow" that is placed: the next click picks the ticket that it comes after (user decision 1). */
+let planPlacing: string | null = null;
+/** Why the last change was refused; the flow bar shows it until the next action. */
+let planRefusal = "";
+/** The note of the last Confirm; the toolbar shows it until a selection or the next Plan the flow (user decision 5). */
+let planConfirmNote = "";
+/** The ticket whose side panel shows the box of "+ Ticket after this" (user decision 2). */
+let planAddingAfter: string | null = null;
+/** The next render gives the keyboard to the box of "+ Ticket after this". */
+let planFocusAdd = false;
+/** Confirm saves: its button is off. */
+let planConfirming = false;
+const planFlowButton = mapElement("button", "plan-tool plan-flow-start", "Plan the flow");
+const planNoteEl = mapElement("span", "plan-note");
+const planFlowBarEl = mapElement("div", "plan-flow-bar");
+
 {
   const label = mapElement("label", "plan-project-label", "Project ");
   label.append(planSelectEl);
@@ -14494,15 +14532,23 @@ const PLAN_COLOR_NAMES = ["Blue", "Green", "Amber", "Red"];
     button.addEventListener("click", () => planCollapseAll(collapsed));
     return button;
   };
+  planFlowButton.type = "button";
+  planFlowButton.title = "Edit the arrows in a draft; nothing is saved until you click Confirm";
+  planFlowButton.addEventListener("click", planStartFlow);
   planToolbarEl.append(
     label,
     planCountEl,
+    planFlowButton,
     toolButton("Collapse all", "Collapse every comment and group into its stacked card", true),
     toolButton("Expand all", "Open every group: its tickets show in the tree inside a box", false),
+    planNoteEl,
   );
+  planFlowBarEl.hidden = true;
+  planFlowBarEl.setAttribute("role", "toolbar");
+  planFlowBarEl.setAttribute("aria-label", "Plan the flow");
   const body = mapElement("div", "plan-body");
   body.append(planBoardEl, planSideEl);
-  planEl.append(planToolbarEl, body);
+  planEl.append(planToolbarEl, planFlowBarEl, body);
   // The keys work only while the board has the focus; there is no key handler on the page.
   planBoardEl.tabIndex = 0;
   planBoardEl.addEventListener("keydown", (event) => {
@@ -14513,8 +14559,11 @@ const PLAN_COLOR_NAMES = ["Blue", "Green", "Amber", "Red"];
     if (key === "c" || key === "C") planAddGroup(false);
     else if (key === "g" || key === "G") planAddGroup(true);
     else if (key === "x" || key === "X" || key === "Delete") planRemoveSelectedGroups();
-    else if (key === "Escape") planClearSelection();
-    else return;
+    // Esc ends the drawing of an arrow first, then the selection.
+    else if (key === "Escape") {
+      if (planDrawFrom !== null || planPlacing !== null) planCancelDrawing();
+      else planClearSelection();
+    } else return;
     event.preventDefault();
   });
   // The selection box: a drag with the left button on the empty board.
@@ -14579,6 +14628,11 @@ const PLAN_COLOR_NAMES = ["Blue", "Green", "Amber", "Red"];
     } catch {
       // The choice then applies until the app closes.
     }
+    // The drawing belongs to the project of before; its draft stays (user decision 3).
+    planDrawFrom = null;
+    planPlacing = null;
+    planRefusal = "";
+    planAddingAfter = null;
     renderPlan();
     void refreshFocusTasks();
   });
@@ -14630,6 +14684,9 @@ function planSelect(cards: Iterable<string>, arrow: PlanArrow | null = null, gro
   planSelected = new Set(cards);
   planSelectedArrow = arrow;
   planSelectedGroup = group;
+  planAddingAfter = null;
+  // The note of the last Confirm goes when the user selects something (user decision 5).
+  if (planSelected.size > 0 || arrow || group !== null) planConfirmNote = "";
   renderPlan();
 }
 
@@ -14748,6 +14805,172 @@ function planReveal(id: string): void {
   );
 }
 
+/** The tickets of a project (by its key) in the board order, as the Plan view takes them. */
+function planBoardTickets(key: string): Ticket[] {
+  const record = projectTasks.get(key);
+  return record ? COLUMNS.flatMap((column) => columnTickets(record.tickets, column.status)) : [];
+}
+
+/** Plan the flow: starts the draft of the project of the view with the arrows of the board, or keeps the one that runs. */
+function planStartFlow(): void {
+  const ref = planProject();
+  if (!ref) return;
+  const key = refKey(ref);
+  if (!projectTasks.has(key)) return;
+  if (!planDrafts.has(key)) planDrafts.set(key, makeDraft(planBoardTickets(key)));
+  planConfirmNote = "";
+  planRefusal = "";
+  renderPlan();
+}
+
+/** Ends the drawing of an arrow and the placing of a ticket. */
+function planCancelDrawing(): void {
+  planDrawFrom = null;
+  planPlacing = null;
+  planRefusal = "";
+  renderPlan();
+}
+
+/**
+ * Changes the draft of the project of the view. A refusal keeps the draft and shows its reason in the
+ * flow bar; on success `done` runs before the render. True on success.
+ */
+function planEditDraft(change: (tickets: PlanTicket[], draft: PlanDraft) => PlanDraft | DraftChange, done?: () => void): boolean {
+  const ref = planProject();
+  if (!ref) return false;
+  const key = refKey(ref);
+  const draft = planDrafts.get(key);
+  if (!draft) return false;
+  const result = change(planBoardTickets(key), draft);
+  const next: DraftChange = "draft" in result ? result : { draft: result, refusal: null };
+  planRefusal = next.refusal ?? "";
+  if (!next.refusal) {
+    planDrafts.set(key, next.draft);
+    done?.();
+  }
+  renderPlan();
+  return !next.refusal;
+}
+
+/** A click on a card while an arrow is drawn or a ticket is placed: the arrow goes into the draft, or the bar says why not. */
+function planPickCard(id: string): void {
+  const from = planPlacing === null ? planDrawFrom : id;
+  const to = planPlacing === null ? id : planPlacing;
+  if (from === null || to === null) return;
+  planEditDraft(
+    (tickets, draft) => withArrow(tickets, draft, { from, to }),
+    () => {
+      planDrawFrom = null;
+      planPlacing = null;
+    },
+  );
+}
+
+/** Place of "Not in the flow": starts the draft when needed; the next click picks the ticket that it comes after (user decision 1). */
+function planPlace(id: string): void {
+  planStartFlow();
+  const ref = planProject();
+  if (!ref || !planDrafts.has(refKey(ref))) return;
+  planPlacing = id;
+  planDrawFrom = null;
+  planRefusal = "";
+  renderPlan();
+}
+
+/** Discard: throws the draft away, after a small box when it has changes (user decision 4). */
+function planDiscard(event: MouseEvent): void {
+  const ref = planProject();
+  if (!ref) return;
+  const key = refKey(ref);
+  const draft = planDrafts.get(key);
+  if (!draft) return;
+  const count = draftChanges(planBoardTickets(key), draft).count;
+  const drop = () => {
+    planDrafts.delete(key);
+    planDrawFrom = null;
+    planPlacing = null;
+    planRefusal = "";
+    planAddingAfter = null;
+    renderPlan();
+  };
+  if (count === 0) {
+    drop();
+    return;
+  }
+  const menu = mapElement("div", "ticket-menu plan-discard-box");
+  menu.setAttribute("role", "dialog");
+  menu.setAttribute("aria-label", "Discard");
+  const button = (text: string, title: string, act: () => void) => {
+    const made = mapElement("button", "", text);
+    made.type = "button";
+    made.title = title;
+    made.addEventListener("click", () => {
+      closeBoardMenu();
+      act();
+    });
+    return made;
+  };
+  const keep = button("Keep planning", "Close this box; the draft stays", () => {});
+  menu.append(
+    mapElement("p", "plan-discard-question", `Throw away ${count} change${count === 1 ? "" : "s"}?`),
+    button("Throw away", "Throw the draft away, also the tickets added while planning", drop),
+    keep,
+  );
+  showMenu(menu, event, null);
+  keep.focus();
+}
+
+/**
+ * Confirm and reorder tickets: one call writes the arrows, the added tickets (into Backlog, decision 5
+ * of the parent) and the order of New sorted by the arrows. It changes no column and starts nothing.
+ * The toolbar then says how many New tickets moved (user decision 5).
+ */
+async function planConfirm(): Promise<void> {
+  const ref = planProject();
+  if (!ref || planConfirming) return;
+  const key = refKey(ref);
+  const draft = planDrafts.get(key);
+  const record = projectTasks.get(key);
+  if (!draft || !record) return;
+  const tickets = planBoardTickets(key);
+  if (draftChanges(tickets, draft).count === 0) return;
+  const list = draftTickets(tickets, draft);
+  const before = queueOrder(record.tickets).map((ticket) => ticket.id);
+  const arrows = tickets.flatMap((ticket) => {
+    const now = comesAfter(list, ticket.id);
+    return JSON.stringify(now) === JSON.stringify(comesAfter(tickets, ticket.id)) ? [] : [{ id: ticket.id, after: now }];
+  });
+  const queue = planSort(before, planArrows(list));
+  const added = draft.added.map((one) => ({ key: one.key, text: one.text, after: comesAfter(list, one.key) }));
+  planConfirming = true;
+  planRefusal = "";
+  renderPlan();
+  try {
+    const reply = await call<unknown>(ref.host, "plan_confirm", { cwd: ref.root, arrows, queue, added });
+    if (!Array.isArray(reply)) throw new Error("the host sent no tickets");
+    const after = queueOrder(reply as Ticket[]).map((ticket) => ticket.id);
+    const moved = after.filter((id, at) => before.indexOf(id) !== at).length;
+    // As a move of the board: the reply shows at once, the full task read runs without a wait.
+    setBoardTickets(key, reply as Ticket[]);
+    ticketsChangedAt.set(key, Date.now());
+    readProjectTasks(ref.host, ref.root).catch((error) => console.warn("task list read failed", error));
+    planDrafts.delete(key);
+    planDrawFrom = null;
+    planPlacing = null;
+    planAddingAfter = null;
+    planSelected = new Set();
+    planSelectedArrow = null;
+    planConfirmNote = `Confirmed: ${moved} ticket${moved === 1 ? "" : "s"} moved`;
+  } catch (error) {
+    planRefusal = `Not confirmed: ${String(error)}`;
+    console.error("plan_confirm failed", error);
+  } finally {
+    planConfirming = false;
+    renderPlan();
+    renderChats();
+  }
+}
+
 /**
  * The one save path: the whole list goes to the host, which keeps it in `plan-groups.json` of the
  * project; the last save wins (user decision 3). The view shows the change at once and the reply of
@@ -14861,8 +15084,11 @@ function renderPlan(): void {
   }
   if (ref) planSelectEl.value = refKey(ref);
   planSelectEl.disabled = refs.length === 0;
+  planNoteEl.textContent = planConfirmNote;
   if (!ref) {
     planCountEl.textContent = "";
+    planFlowButton.disabled = true;
+    planFlowBarEl.hidden = true;
     planBoardEl.replaceChildren(mapElement("p", "map-muted map-none", "No project with an open workspace. Click + in the bar and select a project folder, or open a workspace."));
     planSideEl.replaceChildren();
     return;
@@ -14870,6 +15096,8 @@ function renderPlan(): void {
   const record = projectTasks.get(refKey(ref));
   if (!record) {
     planCountEl.textContent = "";
+    planFlowButton.disabled = true;
+    planFlowBarEl.hidden = true;
     planBoardEl.replaceChildren(mapElement("p", "map-muted map-none", "Reading the tickets…"));
     planSideEl.replaceChildren();
     return;
@@ -14880,18 +15108,35 @@ function renderPlan(): void {
   const queueIds = queueOrder(record.tickets).map((ticket) => ticket.id);
   const key = refKey(ref);
   const groups = planGroups.get(key) ?? [];
+  // Plan the flow: the draft gives the arrows; the layout keeps the removed ones, so no card jumps.
+  const draft = planDrafts.get(key) ?? null;
+  if (!draft) {
+    planDrawFrom = null;
+    planPlacing = null;
+    planAddingAfter = null;
+  }
+  const flow: PlanTicket[] = draft ? draftTickets(tickets, draft) : tickets;
+  const layoutList: PlanTicket[] = draft ? layoutTickets(tickets, draft) : tickets;
+  const diff = draft ? arrowDiff(tickets, flow) : { added: [], removed: [] };
+  const arrowKey = (arrow: PlanArrow) => `${arrow.from}\n${arrow.to}`;
+  const addedArrows = new Set(diff.added.map(arrowKey));
+  const removedArrows = new Set(diff.removed.map(arrowKey));
+  const addedOf = (id: string) => draft?.added.find((one) => one.key === id);
+  /** The name of a ticket of the draft: its id, or the words of an added ticket. */
+  const planName = (id: string) => addedOf(id)?.text ?? id;
   // The collapsed groups stand for their tickets; the layout takes the nodes unchanged.
-  const tree = collapsedTree(tickets, groups);
+  const tree = collapsedTree(layoutList, groups);
   const layout = planLayout(tree.nodes);
   planPlaces = layout.cards;
-  const badges = planBadges(tickets);
-  const ticketArrows = planArrows(tickets);
+  const badges = planBadges(flow);
+  const ticketArrows = planArrows(flow);
+  const lineArrows = planArrows(layoutList);
   const nodeOf = (id: string) => tree.hidden.get(id) ?? id;
   const groupOfNode = new Map(groups.map((group) => [groupNodeId(group.id), group]));
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
   const groupError = planGroupsError.get(key);
   planCountEl.textContent = [
-    `${plural(flowTickets(tickets).length, "ticket")} in the flow`,
+    `${plural(flowTickets(flow).length, "ticket")} in the flow`,
     plural(ticketArrows.length, "arrow"),
     groups.length > 0 ? `${groups.length} ${groups.length === 1 ? "comment or group" : "comments and groups"}` : "",
     groupError ?? "",
@@ -14899,6 +15144,41 @@ function renderPlan(): void {
     .filter(Boolean)
     .join(" · ");
   planCountEl.classList.toggle("error", Boolean(groupError));
+  planFlowButton.disabled = draft !== null;
+
+  // The flow bar while planning: the count, the drawing, the refusal, Discard and Confirm. It is
+  // drawn again only when its content changes, so a button keeps the keyboard.
+  const changes = draft ? draftChanges(tickets, draft) : { lines: [], count: 0 };
+  const drawing =
+    planPlacing !== null ? `Placing ${planName(planPlacing)}: click the ticket that comes before it` : planDrawFrom !== null ? `Drawing an arrow from ${planName(planDrawFrom)}` : "";
+  const barState = draft ? JSON.stringify([changes.count, drawing, planRefusal, planConfirming]) : "";
+  planFlowBarEl.hidden = draft === null;
+  if (planFlowBarEl.dataset.state !== barState) {
+    planFlowBarEl.dataset.state = barState;
+    const barButton = (text: string, cls: string, title: string, act: (event: MouseEvent) => void, off = false) => {
+      const button = mapElement("button", `plan-tool ${cls}`, text);
+      button.type = "button";
+      button.title = title;
+      button.disabled = off;
+      button.addEventListener("click", act);
+      return button;
+    };
+    const items: HTMLElement[] = [mapElement("span", "plan-flow-count", plural(changes.count, "change"))];
+    if (drawing) items.push(mapElement("span", "plan-flow-drawing", drawing), barButton("Cancel", "plan-flow-cancel", "Stop drawing (Esc)", planCancelDrawing));
+    if (planRefusal) items.push(mapElement("span", "plan-flow-refusal", planRefusal));
+    items.push(
+      mapElement("span", "plan-flow-gap"),
+      barButton("Discard", "plan-flow-discard", "Throw the draft away, also the tickets added while planning", planDiscard, planConfirming),
+      barButton(
+        planConfirming ? "Confirming…" : "Confirm and reorder tickets",
+        "plan-flow-confirm",
+        "Save the arrows and sort the queue of New by them; no ticket changes its column and nothing starts",
+        () => void planConfirm(),
+        changes.count === 0 || planConfirming,
+      ),
+    );
+    planFlowBarEl.replaceChildren(...(draft ? items : []));
+  }
 
   // The selection keeps only what the tree still shows.
   const shown = new Set(layout.cards.map((card) => card.id));
@@ -14921,8 +15201,10 @@ function renderPlan(): void {
   marker.append(planSvg("path", { d: "M 0 1 L 9 5 L 0 9 z", class: "plan-head" }));
   const markerSelected = planSvg("marker", { id: "plan-head-selected", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: "auto-start-reverse" });
   markerSelected.append(planSvg("path", { d: "M 0 1 L 9 5 L 0 9 z", class: "plan-head selected" }));
+  const markerAdded = planSvg("marker", { id: "plan-head-added", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: "auto-start-reverse" });
+  markerAdded.append(planSvg("path", { d: "M 0 1 L 9 5 L 0 9 z", class: "plan-head added" }));
   const defs = planSvg("defs", {});
-  defs.append(marker, markerSelected);
+  defs.append(marker, markerSelected, markerAdded);
   svg.append(defs);
   const place = new Map(layout.cards.map((card) => [card.id, card]));
   const half = PLAN_CARD_WIDTH / 2;
@@ -14930,7 +15212,7 @@ function renderPlan(): void {
     const card = place.get(id);
     if (card) svg.append(planSvg("path", { class: "plan-root-line", d: planCurve(layout.root.x + half, layout.root.y + PLAN_CARD_HEIGHT, card.x + half, card.y) }));
   }
-  const nodeName = (id: string) => groupOfNode.get(id)?.title || id;
+  const nodeName = (id: string) => groupOfNode.get(id)?.title || planName(id);
   for (const line of tree.arrows) {
     const from = place.get(line.from);
     const to = place.get(line.to);
@@ -14939,14 +15221,24 @@ function renderPlan(): void {
     const merged = line.count > 1;
     const selected = line === selectedLine;
     // A line of one arrow names the tickets; a merged line stands for several and takes no click.
-    const real = merged ? undefined : ticketArrows.find((arrow) => nodeOf(arrow.from) === line.from && nodeOf(arrow.to) === line.to);
-    const text = real ? `${real.to} starts when ${real.from} is done` : `${line.count} arrows: ${nodeName(line.to)} starts when ${nodeName(line.from)} is done`;
-    const path = planSvg("path", { class: `plan-arrow${merged ? " merged" : ""}${selected ? " selected" : ""}`, d, "marker-end": selected ? "url(#plan-head-selected)" : "url(#plan-head)" });
+    const real = merged ? undefined : lineArrows.find((arrow) => nodeOf(arrow.from) === line.from && nodeOf(arrow.to) === line.to);
+    // Plan the flow: a new arrow is green, a removed one faded and dashed and takes no click.
+    const isAdded = real !== undefined && addedArrows.has(arrowKey(real));
+    const isRemoved = real !== undefined && removedArrows.has(arrowKey(real));
+    const named = real ? `${planName(real.to)} starts when ${planName(real.from)} is done` : `${line.count} arrows: ${nodeName(line.to)} starts when ${nodeName(line.from)} is done`;
+    const text = isAdded ? `New arrow: ${named}` : isRemoved ? `Removed arrow: ${named}` : named;
+    const look = `${merged ? " merged" : ""}${selected ? " selected" : ""}${isAdded ? " added" : ""}${isRemoved ? " removed" : ""}`;
+    const tip = selected ? "url(#plan-head-selected)" : isAdded ? "url(#plan-head-added)" : "url(#plan-head)";
+    const path = planSvg("path", { class: `plan-arrow${look}`, d, "marker-end": tip });
+    if (real) {
+      path.dataset.from = real.from;
+      path.dataset.to = real.to;
+    }
     const title = planSvg("title", {});
     title.textContent = text;
     path.append(title);
     svg.append(path);
-    if (!real) continue;
+    if (!real || isRemoved) continue;
     // A wide clear twin on top takes the click; the SVG itself takes no pointer events.
     const hit = planSvg("path", { class: "plan-arrow-hit", d });
     hit.dataset.from = real.from;
@@ -14959,6 +15251,27 @@ function renderPlan(): void {
   }
   canvas.append(svg);
 
+  // A click on a card while an arrow is drawn or a ticket is placed picks it; else it selects.
+  const picking = draft !== null && (planDrawFrom !== null || planPlacing !== null);
+  const cardClick = (id: string) => (event: MouseEvent) => {
+    if (picking) planPickCard(id);
+    else planSelect(toggleSelection(planSelected, id, event.shiftKey || event.ctrlKey || event.metaKey));
+  };
+  // The + under a card while planning: then a click on the ticket that comes after it draws the arrow.
+  const plusButton = (id: string) => {
+    const button = mapElement("button", "plan-plus", "+");
+    button.type = "button";
+    button.title = "Draw an arrow from this ticket: then click the ticket that comes after it";
+    button.setAttribute("aria-label", `Draw an arrow from ${planName(id)}`);
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      planDrawFrom = id;
+      planPlacing = null;
+      planRefusal = "";
+      renderPlan();
+    });
+    return button;
+  };
   const root = mapElement("div", "plan-card plan-root");
   root.style.left = `${layout.root.x}px`;
   root.style.top = `${layout.root.y}px`;
@@ -14997,8 +15310,8 @@ function renderPlan(): void {
     const group = groupOfNode.get(card.id);
     if (group) {
       // A collapsed group: a stacked card with its progress, its counts and its badge.
-      const counts = groupCounts(tickets, group);
-      const progress = groupBadge(tickets, group);
+      const counts = groupCounts(flow, group);
+      const progress = groupBadge(flow, group);
       const el = mapElement("div", `plan-card plan-group plan-color-${group.color}${planSelected.has(card.id) ? " selected" : ""}`);
       el.dataset.group = group.id;
       el.style.left = `${card.x}px`;
@@ -15026,7 +15339,34 @@ function renderPlan(): void {
       bar.append(done, work);
       el.append(top, bar, mapElement("div", "plan-state", countLine));
       if (progress.badge) el.append(mapElement("span", `plan-badge ${progress.badge}`, PLAN_BADGE_TEXT[progress.badge]));
-      el.addEventListener("click", (event) => planSelect(toggleSelection(planSelected, card.id, event.shiftKey || event.ctrlKey || event.metaKey)));
+      el.addEventListener("click", (event) => {
+        // A collapsed group takes no arrow (the brief).
+        if (picking) {
+          planRefusal = "Expand the group first.";
+          renderPlan();
+          return;
+        }
+        planSelect(toggleSelection(planSelected, card.id, event.shiftKey || event.ctrlKey || event.metaKey));
+      });
+      canvas.append(el);
+      continue;
+    }
+    const added = addedOf(card.id);
+    if (added) {
+      // A ticket added while planning: it opens in Backlog at Confirm.
+      const el = mapElement("div", `plan-card plan-ticket backlog plan-added${planSelected.has(card.id) ? " selected" : ""}${planDrawFrom === card.id ? " drawing-from" : ""}`);
+      el.dataset.ticket = card.id;
+      el.addEventListener("click", cardClick(card.id));
+      el.style.left = `${card.x}px`;
+      el.style.top = `${card.y}px`;
+      el.title = `${added.text}\nA new ticket: it opens in Backlog when you confirm`;
+      const top = mapElement("div", "plan-card-top");
+      const dot = mapElement("span", "plan-dot backlog");
+      dot.setAttribute("aria-hidden", "true");
+      top.append(dot, mapElement("span", "plan-name", added.text));
+      const line = mapElement("div", "plan-state", "Backlog · ");
+      line.append(mapElement("span", "plan-mark new", "new"));
+      el.append(top, line, plusButton(card.id));
       canvas.append(el);
       continue;
     }
@@ -15034,9 +15374,9 @@ function renderPlan(): void {
     if (!ticket) continue;
     const state = planCardState(ticket, queueIds, record);
     const badge = badges.get(ticket.id) ?? null;
-    const el = mapElement("div", `plan-card plan-ticket ${ticket.status}${planSelected.has(ticket.id) ? " selected" : ""}`);
+    const el = mapElement("div", `plan-card plan-ticket ${ticket.status}${planSelected.has(ticket.id) ? " selected" : ""}${planDrawFrom === ticket.id ? " drawing-from" : ""}`);
     el.dataset.ticket = ticket.id;
-    el.addEventListener("click", (event) => planSelect(toggleSelection(planSelected, ticket.id, event.shiftKey || event.ctrlKey || event.metaKey)));
+    el.addEventListener("click", cardClick(ticket.id));
     el.style.left = `${card.x}px`;
     el.style.top = `${card.y}px`;
     el.title = ticket.title;
@@ -15054,15 +15394,18 @@ function renderPlan(): void {
     if (badge === "waits") line.append(mapElement("span", "plan-waits", " · waits"));
     el.append(top, line);
     if (badge === "next" || badge === "early") el.append(mapElement("span", `plan-badge ${badge}`, PLAN_BADGE_TEXT[badge]));
+    if (draft) el.append(plusButton(ticket.id));
     canvas.append(el);
   }
   const children: HTMLElement[] = [canvas];
-  if (flowTickets(tickets).length === 0) children.push(mapElement("p", "map-muted plan-empty", "No ticket of this project has an arrow yet."));
+  if (flowTickets(flow).length === 0) children.push(mapElement("p", "map-muted plan-empty", draft ? "No arrow yet: click Place on a ticket of Not in the flow." : "No ticket of this project has an arrow yet."));
   planBoardEl.replaceChildren(...children);
 
-  // The side panel waits while the user types a title; the next render after the blur draws it.
+  // The side panel waits while the user types a title or the words of a new ticket, or picks in a
+  // select; the next render after the blur draws it.
   const active = document.activeElement;
-  if (!planFocusTitle && active instanceof HTMLInputElement && active.classList.contains("plan-title-input") && planSideEl.contains(active)) return;
+  const busy = (active instanceof HTMLInputElement || active instanceof HTMLSelectElement || active instanceof HTMLTextAreaElement) && planSideEl.contains(active);
+  if (!planFocusTitle && !planFocusAdd && busy) return;
 
   // A row of a ticket; a click selects it (and expands the group that hides it).
   const ticketRow = (ticket: Ticket, select: boolean) => {
@@ -15090,8 +15433,8 @@ function renderPlan(): void {
     else button.disabled = true;
     return button;
   };
-  // Plan the flow comes with the next part of the ticket; the shortcut shows but does nothing yet.
-  const planFlow = () => sideButton("Plan the flow", "Comes with the next part", null);
+  // The shortcut to Plan the flow in the side panel of a ticket and of an arrow.
+  const planFlow = () => sideButton("Plan the flow", "Edit the arrows in a draft; nothing is saved until you click Confirm", planStartFlow);
   const head = (title: string, sub = "") => {
     const section = mapElement("section", "plan-side-part plan-side-head");
     section.append(mapElement("h3", "", title));
@@ -15099,6 +15442,41 @@ function renderPlan(): void {
     return section;
   };
   const known = (ids: readonly string[]) => ids.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
+  // A row of a ticket of the draft: a ticket of the board, or a ticket added while planning.
+  const idRow = (id: string) => {
+    const ticket = byId.get(id);
+    if (ticket) return ticketRow(ticket, true);
+    const row = mapElement("div", "plan-side-row plan-side-link");
+    row.title = planName(id);
+    const dot = mapElement("span", "plan-dot backlog");
+    dot.setAttribute("aria-hidden", "true");
+    row.append(dot, mapElement("span", "plan-name", planName(id)), mapElement("span", "plan-side-state", "Backlog"));
+    row.addEventListener("click", () => planSelect([id]));
+    return row;
+  };
+  // Comes after and Comes before; while planning each row has × that removes its arrow.
+  const arrowList = (title: string, ids: readonly string[], none: string, arrowOf: (other: string) => PlanArrow) => {
+    const section = mapElement("section", "plan-side-part");
+    section.append(mapElement("h3", "", `${title} (${ids.length})`));
+    if (ids.length === 0) section.append(mapElement("p", "plan-none", none));
+    for (const other of ids) {
+      const row = idRow(other);
+      if (draft) {
+        const arrow = arrowOf(other);
+        const remove = mapElement("button", "plan-side-remove", "×");
+        remove.type = "button";
+        remove.title = `Remove the arrow ${planName(arrow.from)} → ${planName(arrow.to)}`;
+        remove.setAttribute("aria-label", remove.title);
+        remove.addEventListener("click", (event) => {
+          event.stopPropagation();
+          planEditDraft((board, now) => withoutArrow(board, now, arrow));
+        });
+        row.append(remove);
+      }
+      section.append(row);
+    }
+    return section;
+  };
   const selectedGroup = planSelectedGroup !== null ? groups.find((group) => group.id === planSelectedGroup) : planSelected.size === 1 ? groupOfNode.get([...planSelected][0]) : undefined;
   const parts: HTMLElement[] = [];
   if (selectedGroup) {
@@ -15127,7 +15505,7 @@ function renderPlan(): void {
       swatches.append(swatch);
     });
     top.append(input, swatches);
-    const counts = groupCounts(tickets, group);
+    const counts = groupCounts(flow, group);
     const table = mapElement("dl", "plan-counts");
     const count = (label: string, value: number) => table.append(mapElement("dt", "", label), mapElement("dd", "", String(value)));
     count("Tickets", counts.tickets);
@@ -15151,19 +15529,143 @@ function renderPlan(): void {
     top.append(table, actions);
     parts.push(top, list("Its tickets", groupMembers(tickets, group), "None of its tickets is on the board.", true));
   } else if (planSelectedArrow) {
-    parts.push(head("Arrow", `${planSelectedArrow.to} starts when ${planSelectedArrow.from} is done`), planFlow());
+    const arrow = planSelectedArrow;
+    const top = head("Arrow", `${planName(arrow.to)} starts when ${planName(arrow.from)} is done`);
+    if (!draft) {
+      parts.push(top, planFlow());
+    } else {
+      // While planning: From and To move the arrow; it can turn around or go.
+      const pick = (label: string, value: string, change: (picked: string) => void) => {
+        const wrap = mapElement("label", "plan-side-pick", `${label} `);
+        const select = mapElement("select", "plan-arrow-select");
+        select.dataset.end = label.toLowerCase();
+        for (const one of flow) {
+          const option = mapElement("option", "", planName(one.id));
+          option.value = one.id;
+          select.append(option);
+        }
+        select.value = value;
+        select.addEventListener("change", () => {
+          const picked = select.value;
+          // Off the select first: the side panel waits while a select has the focus.
+          select.blur();
+          change(picked);
+        });
+        wrap.append(select);
+        return wrap;
+      };
+      const move = (from: string, to: string) =>
+        planEditDraft(
+          (board, now) => movedArrow(board, now, arrow, from, to),
+          () => {
+            planSelectedArrow = { from, to };
+          },
+        );
+      const actions = mapElement("div", "plan-side-actions");
+      actions.append(
+        sideButton("Turn it around", "The arrow points the other way", () =>
+          planEditDraft(
+            (board, now) => turnedArrow(board, now, arrow),
+            () => {
+              planSelectedArrow = { from: arrow.to, to: arrow.from };
+            },
+          ),
+        ),
+        sideButton("Remove the arrow", "Take this arrow out of the draft", () =>
+          planEditDraft(
+            (board, now) => withoutArrow(board, now, arrow),
+            () => {
+              planSelectedArrow = null;
+            },
+          ),
+        ),
+      );
+      top.append(
+        pick("From", arrow.from, (from) => move(from, arrow.to)),
+        pick("To", arrow.to, (to) => move(arrow.from, to)),
+        actions,
+      );
+      parts.push(top);
+    }
   } else if (planSelected.size === 1) {
     // One ticket: its state, where it stands, and the tickets before and after it.
-    const ticket = byId.get([...planSelected][0]);
-    if (ticket) {
-      const top = head(ticket.id, ticket.title);
-      top.append(mapElement("p", "plan-side-state-line", `${planCardState(ticket, queueIds, record).word} · ${standLine(tickets, ticket.id)}`));
+    const id = [...planSelected][0];
+    const ticket = byId.get(id);
+    const added = addedOf(id);
+    if (ticket || added) {
+      const top = ticket ? head(ticket.id, ticket.title) : head("New ticket", added?.text ?? id);
+      const word = ticket ? planCardState(ticket, queueIds, record).word : "Opens in Backlog at Confirm";
+      top.append(mapElement("p", "plan-side-state-line", `${word} · ${standLine(flow, id)}`));
       parts.push(
         top,
-        list("Comes after", known(comesAfter(tickets, ticket.id)), "No ticket before it.", true),
-        list("Comes before", known(comesBefore(tickets, ticket.id)), "No ticket after it.", true),
-        planFlow(),
+        arrowList("Comes after", comesAfter(flow, id), "No ticket before it.", (other) => ({ from: other, to: id })),
+        arrowList("Comes before", comesBefore(flow, id), "No ticket after it.", (other) => ({ from: id, to: other })),
       );
+      if (!draft) {
+        parts.push(planFlow());
+      } else {
+        // While planning: a new ticket after this one (user decision 2), and Take out of the flow.
+        if (planAddingAfter === id) {
+          const form = mapElement("div", "plan-add-form");
+          const input = mapElement("input", "plan-add-input");
+          input.type = "text";
+          input.placeholder = "What the new ticket is about";
+          input.setAttribute("aria-label", "The words of the new ticket");
+          const add = () => {
+            const text = input.value.trim();
+            if (!text) {
+              input.focus();
+              return;
+            }
+            input.blur();
+            planEditDraft(
+              (_board, now) => withTicketAfter(now, text, id),
+              () => {
+                planAddingAfter = null;
+                const made = planDrafts.get(key)?.added ?? [];
+                const newest = made[made.length - 1]?.key;
+                if (newest) planSelected = new Set([newest]);
+              },
+            );
+          };
+          input.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") add();
+            else if (event.key === "Escape") {
+              planAddingAfter = null;
+              input.blur();
+              renderPlan();
+            }
+          });
+          form.append(
+            input,
+            sideButton("Add", "Add the ticket after this one in the draft; it opens in Backlog at Confirm", add),
+            sideButton("Cancel", "Close the box", () => {
+              planAddingAfter = null;
+              renderPlan();
+            }),
+          );
+          top.append(form);
+        }
+        const actions = mapElement("div", "plan-side-actions");
+        if (planAddingAfter !== id) {
+          actions.append(
+            sideButton("+ Ticket after this", "Add a new ticket that comes after this one; you write its words in one line", () => {
+              planAddingAfter = id;
+              planFocusAdd = true;
+              renderPlan();
+            }),
+          );
+        }
+        const linked = comesAfter(flow, id).length + comesBefore(flow, id).length > 0;
+        actions.append(
+          sideButton(
+            "Take out of the flow",
+            "Remove its arrows; the tickets before it then come directly before the tickets after it",
+            linked ? () => planEditDraft((board, now) => takenOut(board, now, id)) : null,
+          ),
+        );
+        top.append(actions);
+      }
     }
   } else if (planSelected.size > 1) {
     const chosen = known(planSelectedTickets(groups));
@@ -15197,12 +15699,40 @@ function renderPlan(): void {
       row.append(mark, name, mapElement("span", "plan-side-state", String(groupMembers(tickets, group).length)), toggle);
       section.append(row);
     }
-    parts.push(
-      list("Next up", withBadge("next"), "No ticket is next up."),
-      list("Started early", withBadge("early"), "No ticket started early."),
-      list("Not in the flow", notInFlow(tickets), "Every open ticket has an arrow."),
-      section,
-    );
+    // While planning: the list of the changes and the queue of New as it will be after Confirm.
+    const draftParts: HTMLElement[] = [];
+    if (draft) {
+      const changeList = mapElement("section", "plan-side-part plan-changes");
+      changeList.append(mapElement("h3", "", `Changes (${changes.count})`));
+      if (changes.count === 0) changeList.append(mapElement("p", "plan-none", "No change yet. Click + under a ticket to draw an arrow."));
+      for (const line of changes.lines) changeList.append(mapElement("div", "plan-change", line));
+      const sorted = planSort(queueIds, ticketArrows);
+      const addedKeys = draft.added.map((one) => one.key);
+      const marks = queueMarks(queueIds, [...sorted, ...addedKeys], addedKeys);
+      const queueList = mapElement("section", "plan-side-part plan-queue");
+      queueList.append(mapElement("h3", "", `Queue after Confirm (${sorted.length})`));
+      if (marks.length === 0) queueList.append(mapElement("p", "plan-none", "No ticket waits in New."));
+      marks.forEach((one, at) => {
+        const row = idRow(one.id);
+        row.prepend(mapElement("span", "plan-queue-place", addedKeys.includes(one.id) ? "–" : `#${at + 1}`));
+        if (one.mark) row.append(mapElement("span", `plan-mark ${one.mark.split(" ")[0]}`, one.mark));
+        queueList.append(row);
+      });
+      draftParts.push(changeList, queueList);
+    }
+    // Not in the flow: each ticket has Place, which puts it after the ticket that you click next.
+    const loose = known(notInFlow(flow).map((one) => one.id));
+    const outside = mapElement("section", "plan-side-part plan-not-in-flow");
+    outside.append(mapElement("h3", "", `Not in the flow (${loose.length})`));
+    if (loose.length === 0) outside.append(mapElement("p", "plan-none", "Every open ticket has an arrow."));
+    for (const ticket of loose) {
+      const row = ticketRow(ticket, false);
+      const place = sideButton(planPlacing === ticket.id ? "Placing…" : "Place", "Put this ticket into the flow: then click the ticket that it comes after", () => planPlace(ticket.id));
+      place.classList.add("plan-place");
+      row.append(place);
+      outside.append(row);
+    }
+    parts.push(...draftParts, list("Next up", withBadge("next"), "No ticket is next up."), list("Started early", withBadge("early"), "No ticket started early."), outside, section);
   }
   planSideEl.replaceChildren(...parts);
   if (planFocusTitle) {
@@ -15210,6 +15740,10 @@ function renderPlan(): void {
     const input = planSideEl.querySelector<HTMLInputElement>(".plan-title-input");
     input?.focus();
     input?.select();
+  }
+  if (planFocusAdd) {
+    planFocusAdd = false;
+    planSideEl.querySelector<HTMLInputElement>(".plan-add-input")?.focus();
   }
 }
 

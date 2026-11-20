@@ -5,14 +5,21 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
+  arrowDiff,
+  arrowRefusal,
   boxHits,
   collapsedTree,
   comesAfter,
   comesBefore,
+  draftChanges,
+  draftTickets,
   flowTickets,
   groupBadge,
   groupBox,
   groupCounts,
+  layoutTickets,
+  makeDraft,
+  movedArrow,
   notInFlow,
   openBefore,
   parsePlanGroups,
@@ -28,9 +35,16 @@ import {
   planBadges,
   planLayout,
   planRows,
+  planSort,
   planStateWord,
+  queueMarks,
   standLine,
+  takenOut,
   toggleSelection,
+  turnedArrow,
+  withArrow,
+  withoutArrow,
+  withTicketAfter,
   type PlanGroup,
   type PlanTicket,
 } from "../src/plantree.ts";
@@ -163,6 +177,12 @@ test("the page has the Plan button, its canvas and its Help, and main.ts draws i
   assert.match(main, /"plan_groups_save"/);
   assert.match(css, /\.plan-select-box \{/);
   assert.match(main, /planBoardEl\.addEventListener\("keydown"/);
+  // Ticket plan-view-plan-the-flow-and-confirm: the Help, the host command and the draft styles.
+  assert.match(html, /Plan the flow<\/b> in the toolbar/);
+  assert.doesNotMatch(html, /arrows are still read-only/);
+  assert.match(main, /"plan_confirm"/);
+  assert.match(css, /\.plan-arrow\.added \{/);
+  assert.match(css, /\.plan-arrow\.removed \{[^}]*stroke-dasharray/);
 });
 
 const g = (id: string, tickets: string[], collapsed = true, title = "Group"): PlanGroup => ({ id, title, color: 0, collapsed, tickets });
@@ -299,4 +319,113 @@ test("the selection box hits every card that it touches, in any direction", () =
   assert.deepEqual(boxHits(places, { x: 310, y: 160, width: 50, height: 50 }), []);
   // The edge of a card counts as a touch.
   assert.deepEqual(boxHits(places, { x: 100 + PLAN_CARD_WIDTH, y: 100, width: 10, height: 10 }), ["a"]);
+});
+
+// Plan the flow (ticket plan-view-plan-the-flow-and-confirm).
+
+test("an arrow is refused from a ticket to itself, twice, or into a loop, with the reason", () => {
+  assert.equal(arrowRefusal(TREE, "c", "c"), "An arrow cannot point from a ticket to itself.");
+  assert.equal(arrowRefusal(TREE, "b", "d"), "That arrow exists already.");
+  assert.equal(arrowRefusal(TREE, "e", "a"), "That arrow would make a loop: e already comes after a.");
+  assert.equal(arrowRefusal(TREE, "d", "b"), "That arrow would make a loop: d already comes after b.");
+  assert.equal(arrowRefusal(TREE, "c", "f"), null);
+  assert.equal(arrowRefusal(TREE, "b", "c"), null, "two tickets side by side");
+  // A refused change leaves the draft as it is.
+  const draft = makeDraft(TREE);
+  const refused = withArrow(TREE, draft, { from: "d", to: "a" });
+  assert.equal(refused.draft, draft);
+  assert.match(refused.refusal ?? "", /^That arrow would make a loop: d already comes after a\.$/);
+});
+
+test("the draft adds, removes, turns and moves an arrow, and the board stays", () => {
+  const draft = makeDraft(TREE);
+  const added = withArrow(TREE, draft, { from: "c", to: "f" });
+  assert.equal(added.refusal, null);
+  assert.deepEqual(draftTickets(TREE, added.draft).find((one) => one.id === "f")?.after, ["c"]);
+  assert.deepEqual(TREE[5].after, [], "the board tickets do not change");
+  const removed = withoutArrow(TREE, added.draft, { from: "b", to: "d" });
+  assert.deepEqual(arrowDiff(TREE, draftTickets(TREE, removed)), { added: [{ from: "c", to: "f" }], removed: [{ from: "b", to: "d" }] });
+  const turned = turnedArrow(TREE, removed, { from: "c", to: "f" });
+  assert.equal(turned.refusal, null);
+  assert.deepEqual(arrowDiff(TREE, draftTickets(TREE, turned.draft)).added, [{ from: "f", to: "c" }]);
+  const moved = movedArrow(TREE, draft, { from: "d", to: "e" }, "c", "e");
+  assert.equal(moved.refusal, null);
+  assert.deepEqual(draftTickets(TREE, moved.draft).find((one) => one.id === "e")?.after, ["c"]);
+  // A move into a loop is refused and keeps the old arrow.
+  const loop = movedArrow(TREE, draft, { from: "d", to: "e" }, "d", "b");
+  assert.equal(loop.draft, draft);
+  assert.equal(loop.refusal, "That arrow would make a loop: d already comes after b.");
+  // An arrow that is the only way between its tickets turns.
+  assert.equal(turnedArrow(TREE, draft, { from: "a", to: "c" }).refusal, null);
+  assert.equal(turnedArrow(TREE, draft, { from: "b", to: "d" }).refusal, null);
+  // Turning a → b is refused when b also comes after a by another way.
+  const twoWays = [t("a", "new"), t("m", "new", ["a"]), t("b", "new", ["a", "m"])];
+  assert.equal(turnedArrow(twoWays, makeDraft(twoWays), { from: "a", to: "b" }).refusal, "That arrow would make a loop: b already comes after a.");
+});
+
+test("a ticket added after another and a ticket taken out of the flow", () => {
+  const draft = withTicketAfter(makeDraft(TREE), "  Write the help ", "e");
+  assert.deepEqual(draft.added, [{ key: "new-1", text: "Write the help" }]);
+  const list = draftTickets(TREE, draft);
+  assert.deepEqual(list.at(-1), { id: "new-1", status: "backlog", after: ["e"] });
+  assert.equal(withTicketAfter(draft, "Two", "new-1").added[1].key, "new-2");
+  // Taking d out joins b and c to e, without doubles, and d has no arrow.
+  const out = takenOut(TREE, makeDraft([...TREE.slice(0, 4), t("e", "new", ["d", "b"]), t("f", "new")]), "d");
+  const tickets = draftTickets(TREE, out);
+  assert.deepEqual(tickets.find((one) => one.id === "e")?.after, ["b", "c"]);
+  assert.deepEqual(tickets.find((one) => one.id === "d")?.after, []);
+  assert.deepEqual(comesBefore(tickets, "d"), []);
+  assert.deepEqual(out.out, ["d"]);
+});
+
+test("the layout list keeps a removed arrow, so the card keeps its place", () => {
+  const draft = withoutArrow(TREE, makeDraft(TREE), { from: "d", to: "e" });
+  assert.deepEqual(draftTickets(TREE, draft).find((one) => one.id === "e")?.after, []);
+  assert.deepEqual(layoutTickets(TREE, draft).find((one) => one.id === "e")?.after, ["d"]);
+  assert.equal(planRows(layoutTickets(TREE, draft)).get("e"), 4);
+});
+
+test("the stable sort keeps the queue order where the arrows allow", () => {
+  assert.deepEqual(planSort(["a", "b", "c"], []), ["a", "b", "c"]);
+  // d waits for b, and b stands first already: nothing moves.
+  assert.deepEqual(planSort(["a", "b", "c", "d"], [{ from: "b", to: "d" }]), ["a", "b", "c", "d"]);
+  // b must come after d: b moves behind d, the others keep their place.
+  assert.deepEqual(planSort(["a", "b", "c", "d"], [{ from: "d", to: "b" }]), ["a", "c", "d", "b"]);
+  // A ticket before it that is not in the queue does not hold it.
+  assert.deepEqual(planSort(["a", "b"], [{ from: "x", to: "a" }]), ["a", "b"]);
+  // A chain.
+  assert.deepEqual(planSort(["c", "b", "a"], [{ from: "a", to: "b" }, { from: "b", to: "c" }]), ["a", "b", "c"]);
+  // A loop does not hang: its ids go at the end in queue order.
+  assert.deepEqual(planSort(["a", "b", "c"], [{ from: "a", to: "b" }, { from: "b", to: "a" }]), ["c", "a", "b"]);
+  // A double id counts once.
+  assert.deepEqual(planSort(["a", "a", "b"], []), ["a", "b"]);
+});
+
+test("the marks of the queue after Confirm", () => {
+  assert.deepEqual(queueMarks(["a", "b", "c", "d"], ["a", "c", "d", "b"], []), [
+    { id: "a", mark: "" },
+    { id: "c", mark: "up 1" },
+    { id: "d", mark: "up 1" },
+    { id: "b", mark: "down 2" },
+  ]);
+  assert.deepEqual(queueMarks(["a"], ["new-1", "a"], ["new-1"]), [
+    { id: "new-1", mark: "new" },
+    { id: "a", mark: "down 1" },
+  ]);
+  assert.deepEqual(queueMarks(["a", "b", "c"], ["c", "a", "b"]).map((one) => one.mark), ["up 2", "down 1", "down 1"]);
+});
+
+test("the change list names each change and counts them", () => {
+  assert.deepEqual(draftChanges(TREE, makeDraft(TREE)), { lines: [], count: 0 });
+  let draft = withArrow(TREE, makeDraft(TREE), { from: "c", to: "f" }).draft;
+  draft = withoutArrow(TREE, draft, { from: "b", to: "d" });
+  draft = withTicketAfter(draft, "Write the help", "e");
+  const changes = draftChanges(TREE, draft);
+  assert.deepEqual(changes.lines, ["New ticket: Write the help", "Arrow added: c → f", 'Arrow added: e → "Write the help"', "Arrow removed: b → d"]);
+  assert.equal(changes.count, 4);
+  // Adding an arrow and removing it again is no change.
+  const back = withoutArrow(TREE, withArrow(TREE, makeDraft(TREE), { from: "c", to: "f" }).draft, { from: "c", to: "f" });
+  assert.equal(draftChanges(TREE, back).count, 0);
+  // Taken out.
+  assert.ok(draftChanges(TREE, takenOut(TREE, makeDraft(TREE), "e")).lines.includes("Taken out: e"));
 });

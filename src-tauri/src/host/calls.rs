@@ -214,6 +214,7 @@ pub fn run(
         "ticket_adopt" => json(tickets::ticket_adopt(a.req("cwd")?, a.req("id")?)?),
         "plan_groups_load" => json(plangroups::plan_groups_load(a.req("cwd")?)?),
         "plan_groups_save" => json(plangroups::plan_groups_save(a.req("cwd")?, a.req("groups")?)?),
+        "plan_confirm" => json(tickets::plan_confirm(a.req("cwd")?, a.req("arrows")?, a.req("queue")?, a.req("added")?)?),
         "task_decide" => json(pipeline::task_decide(a.req("cwd")?, a.req("id")?, a.req("text")?)?),
         "task_checks" => json(pipeline::task_checks(a.req("cwd")?, a.req("id")?, a.req("names")?)?),
         "task_pick_checks" => json(pipeline::task_pick_checks(a.req("cwd")?, a.req("id")?)?),

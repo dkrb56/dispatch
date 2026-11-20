@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, State};
 
-use crate::core::tickets::{self, Ticket, TicketFields};
+use crate::core::tickets::{self, PlanAdded, PlanAfter, Ticket, TicketFields};
 use crate::core::actions::{self, Action, ActionList, ActionRun};
 use crate::core::builds::{self, BuildFolders, CleanResult};
 use crate::core::chats::{self, Chat, ChatView, Worker};
@@ -368,6 +368,12 @@ pub fn plan_groups_load(cwd: String) -> Result<PlanGroups, String> {
 #[tauri::command(async)]
 pub fn plan_groups_save(cwd: String, groups: Vec<PlanGroup>) -> Result<PlanGroups, String> {
     plangroups::plan_groups_save(cwd, groups)
+}
+
+/// Confirm of "Plan the flow": writes the arrows, the added tickets and the order of New at once.
+#[tauri::command(async)]
+pub fn plan_confirm(cwd: String, arrows: Vec<PlanAfter>, queue: Vec<String>, added: Vec<PlanAdded>) -> Result<Vec<Ticket>, String> {
+    tickets::plan_confirm(cwd, arrows, queue, added)
 }
 
 /// Starts the plan run of a New ticket without triage (ticket simpler-process-tickets).

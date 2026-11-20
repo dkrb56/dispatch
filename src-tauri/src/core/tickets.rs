@@ -752,6 +752,10 @@ fn open_event(ticket: &Ticket) -> Value {
         line["parent"] = json!(ticket.parent);
         line["part"] = json!(ticket.part);
     }
+    // The arrows of a ticket added while planning (ticket plan-view-plan-the-flow-and-confirm).
+    if !ticket.after.is_empty() {
+        line["after"] = json!(ticket.after);
+    }
     line
 }
 
@@ -1275,6 +1279,145 @@ pub fn ticket_move_all(cwd: String, ids: Vec<String>, status: String) -> Result<
         }
         let mut fields = Map::new();
         fields.insert("order".into(), json!(order));
+        events.push(event("update", &ticket.id, at, fields));
+    }
+    append(&project, &events)?;
+    Ok(read(&project))
+}
+
+/// The full list `after` of one ticket in a Confirm of the Plan view: an existing id or the key of
+/// an added ticket.
+#[derive(Deserialize, Clone, Debug)]
+pub struct PlanAfter {
+    pub id: String,
+    pub after: Vec<String>,
+}
+
+/// A ticket added while planning: the key that the draft gave it, its words and its list `after`.
+#[derive(Deserialize, Clone, Debug)]
+pub struct PlanAdded {
+    pub key: String,
+    pub text: String,
+    pub after: Vec<String>,
+}
+
+/// The first loop of the arrows, as its ids from the start back to the start; none without a loop.
+fn arrow_loop(tickets: &[Ticket]) -> Option<Vec<String>> {
+    // 0: not seen, 1: on the path, 2: done.
+    fn walk(at: usize, tickets: &[Ticket], marks: &mut Vec<u8>, path: &mut Vec<usize>) -> Option<Vec<String>> {
+        marks[at] = 1;
+        path.push(at);
+        for id in &tickets[at].after {
+            let Some(next) = tickets.iter().position(|ticket| &ticket.id == id) else { continue };
+            if marks[next] == 1 {
+                let start = path.iter().position(|one| *one == next).unwrap_or(0);
+                let mut ids: Vec<String> = path[start..].iter().map(|one| tickets[*one].id.clone()).collect();
+                ids.push(tickets[next].id.clone());
+                return Some(ids);
+            }
+            if marks[next] == 0 {
+                if let Some(found) = walk(next, tickets, marks, path) {
+                    return Some(found);
+                }
+            }
+        }
+        path.pop();
+        marks[at] = 2;
+        None
+    }
+    let mut marks = vec![0u8; tickets.len()];
+    for at in 0..tickets.len() {
+        if marks[at] == 0 {
+            if let Some(found) = walk(at, tickets, &mut marks, &mut Vec::new()) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// Confirm of "Plan the flow" (ticket plan-view-plan-the-flow-and-confirm): opens the added tickets
+/// in Backlog with their arrows, writes the list `after` of each ticket whose list changed and the
+/// order of the queue of New (`queue` names the New tickets in their new order; a New ticket that it
+/// does not name keeps its place after them), all in one write. The key of an added ticket in a list
+/// becomes its new id; an unknown id, the own id and a double drop. Refuses the whole write when the
+/// arrows make a loop or an added ticket has no words. Changes no column and starts nothing.
+pub fn plan_confirm(cwd: String, arrows: Vec<PlanAfter>, queue: Vec<String>, added: Vec<PlanAdded>) -> Result<Vec<Ticket>, String> {
+    let project = Project::find(&cwd)?;
+    let before = read(&project);
+    let mut tickets = before.clone();
+    let at = now();
+    // The added tickets, each with an id that the earlier ones do not take.
+    let mut keys: Vec<(String, String)> = Vec::new();
+    let mut made: Vec<usize> = Vec::new();
+    for one in &added {
+        let text = one.text.trim();
+        if text.is_empty() {
+            return Err("a new ticket has no words".to_string());
+        }
+        let ticket = open_ticket(&project, &tickets, text, at, BACKLOG, None);
+        keys.push((one.key.clone(), ticket.id.clone()));
+        made.push(tickets.len());
+        tickets.push(ticket);
+    }
+    let ids: HashSet<String> = tickets.iter().map(|ticket| ticket.id.clone()).collect();
+    let resolve = |id: &str| -> String { keys.iter().find(|(key, _)| key == id).map_or_else(|| id.to_string(), |(_, real)| real.clone()) };
+    let clean = |own: &str, list: &[String]| -> Vec<String> {
+        let mut after: Vec<String> = Vec::new();
+        for id in list.iter().map(|id| resolve(id.trim())) {
+            if id != own && ids.contains(&id) && !after.contains(&id) {
+                after.push(id);
+            }
+        }
+        after
+    };
+    for (one, place) in added.iter().zip(&made) {
+        let own = tickets[*place].id.clone();
+        tickets[*place].after = clean(&own, &one.after);
+    }
+    let mut changed: Vec<String> = Vec::new();
+    for arrow in &arrows {
+        let own = resolve(arrow.id.trim());
+        let after = clean(&own, &arrow.after);
+        let Some(ticket) = tickets.iter_mut().find(|ticket| ticket.id == own) else { continue };
+        ticket.after = after;
+        if !changed.contains(&own) {
+            changed.push(own);
+        }
+    }
+    if let Some(ids) = arrow_loop(&tickets) {
+        return Err(format!("the arrows make a loop: {}", ids.join(" → ")));
+    }
+    let mut events: Vec<Value> = made.iter().map(|place| open_event(&tickets[*place])).collect();
+    for id in &changed {
+        let Some(old) = before.iter().find(|ticket| &ticket.id == id) else { continue };
+        let Some(new) = tickets.iter().find(|ticket| &ticket.id == id) else { continue };
+        if old.after == new.after {
+            continue;
+        }
+        let mut fields = Map::new();
+        fields.insert("after".into(), json!(new.after));
+        events.push(event("update", id, at, fields));
+    }
+    // The queue of New, as in `ticket_move`.
+    let mut order: Vec<&Ticket> = Vec::new();
+    for named in &queue {
+        if let Some(ticket) = before.iter().find(|ticket| &ticket.id == named && ticket.status == NEW) {
+            if !order.iter().any(|one| one.id == ticket.id) {
+                order.push(ticket);
+            }
+        }
+    }
+    let mut rest: Vec<&Ticket> = before.iter().filter(|ticket| ticket.status == NEW && !order.iter().any(|one| one.id == ticket.id)).collect();
+    rest.sort_by_key(|ticket| (ticket.order.is_none(), ticket.order, ticket.created));
+    order.extend(rest);
+    for (place, ticket) in order.iter().enumerate() {
+        let place = place as u32 + 1;
+        if ticket.order == Some(place) {
+            continue;
+        }
+        let mut fields = Map::new();
+        fields.insert("order".into(), json!(place));
         events.push(event("update", &ticket.id, at, fields));
     }
     append(&project, &events)?;
@@ -2677,6 +2820,72 @@ mod tests {
         // A closed parent takes no new part.
         ticket_move(cwd(&project), parent.id.clone(), DONE.into(), vec![], None).unwrap();
         assert!(ticket_add_part(cwd(&project), parent.id.clone(), "One more".into(), None, None, None, None).is_err());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    /// Ticket plan-view-plan-the-flow-and-confirm: Confirm of "Plan the flow".
+    #[test]
+    fn plan_confirm_writes_the_arrows_and_the_order_in_one_write() {
+        let (project, base) = scratch("plan-confirm");
+        let ids: Vec<String> = ["one", "two", "three", "four"].iter().map(|text| ticket_add(cwd(&project), (*text).into(), None, None, None).unwrap().id).collect();
+        let late = ticket_add_in(cwd(&project), "later".into(), None, None, None, Some("backlog".into())).unwrap().id;
+        // The queue of New: one, two, three, four.
+        ticket_move(cwd(&project), ids[0].clone(), NEW.into(), ids.clone(), None).unwrap();
+        let text = || fs::read_to_string(project.tickets_file()).unwrap();
+        let before = read(&project);
+        let lines = text().lines().count();
+        let arrows = vec![
+            PlanAfter { id: ids[0].clone(), after: vec![ids[2].clone(), ids[2].clone(), ids[0].clone(), "gone".into()] },
+            PlanAfter { id: ids[1].clone(), after: vec![] },
+            PlanAfter { id: late.clone(), after: vec!["new-1".into()] },
+        ];
+        let added = vec![PlanAdded { key: "new-1".into(), text: "Write the help".into(), after: vec![ids[3].clone()] }];
+        // The named tickets first, then the unnamed New ones by their order (four).
+        let queue = vec![ids[2].clone(), ids[0].clone(), ids[1].clone()];
+        let after = plan_confirm(cwd(&project), arrows, queue, added).unwrap();
+        let written: Vec<Value> = text().lines().skip(lines).map(|line| serde_json::from_str(line).unwrap()).collect();
+        // One open line, two after lines (one, later; two is unchanged), three order lines (three, one, two).
+        assert_eq!(written.len(), 6, "{written:?}");
+        assert!(written.iter().all(|line| line["op"] == "open" || line["op"] == "update"), "no status or close line");
+        let find = |list: &[Ticket], id: &str| list.iter().find(|ticket| ticket.id == id).unwrap().clone();
+        let new = after.iter().find(|ticket| !before.iter().any(|old| old.id == ticket.id)).unwrap().clone();
+        assert_eq!((new.status.as_str(), new.order, new.title.as_str()), (BACKLOG, None, "Write the help"));
+        assert_eq!(new.after, vec![ids[3].clone()]);
+        assert_eq!(written[0]["after"], json!([ids[3].clone()]));
+        assert_eq!(find(&after, &ids[0]).after, vec![ids[2].clone()], "no double, own id or unknown id");
+        assert_eq!(find(&after, &late).after, vec![new.id.clone()], "the key becomes the new id");
+        assert!(find(&after, &ids[1]).after.is_empty());
+        let order = |id: &str| find(&after, id).order;
+        assert_eq!([order(&ids[2]), order(&ids[0]), order(&ids[1]), order(&ids[3])], [Some(1), Some(2), Some(3), Some(4)]);
+        assert!(!written.iter().any(|line| line["ref"] == json!(ids[3]) && line.get("order").is_some()), "an unchanged place gets no line");
+        for old in &before {
+            assert_eq!(find(&after, &old.id).status, old.status, "no column changes");
+        }
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn plan_confirm_refuses_a_loop_and_an_empty_text_and_writes_nothing() {
+        let (project, base) = scratch("plan-confirm-loop");
+        let a = ticket_add(cwd(&project), "alpha".into(), None, None, None).unwrap().id;
+        let b = ticket_add(cwd(&project), "beta".into(), None, None, None).unwrap().id;
+        ticket_move(cwd(&project), a.clone(), NEW.into(), vec![a.clone(), b.clone()], None).unwrap();
+        let text = || fs::read_to_string(project.tickets_file()).unwrap();
+        let before = text();
+        let arrows = vec![PlanAfter { id: a.clone(), after: vec![b.clone()] }, PlanAfter { id: b.clone(), after: vec!["new-1".into()] }];
+        let added = vec![PlanAdded { key: "new-1".into(), text: "gamma".into(), after: vec![a.clone()] }];
+        let error = plan_confirm(cwd(&project), arrows, vec![], added).unwrap_err();
+        assert!(error.starts_with("the arrows make a loop: "), "{error}");
+        assert_eq!(text(), before, "the file is unchanged");
+        let added = vec![PlanAdded { key: "new-1".into(), text: "  ".into(), after: vec![] }];
+        assert!(plan_confirm(cwd(&project), vec![], vec![], added).is_err());
+        assert_eq!(text(), before);
+        // A Confirm that changes nothing writes nothing; one that removes the arrow of a hand-made loop goes.
+        plan_confirm(cwd(&project), vec![PlanAfter { id: a.clone(), after: vec![] }], vec![a.clone(), b.clone()], vec![]).unwrap();
+        assert_eq!(text(), before);
+        append(&project, &[event("update", &a, now(), Map::from_iter([("after".to_string(), json!([b.clone()]))])), event("update", &b, now(), Map::from_iter([("after".to_string(), json!([a.clone()]))]))]).unwrap();
+        let after = plan_confirm(cwd(&project), vec![PlanAfter { id: b.clone(), after: vec![] }], vec![], vec![]).unwrap();
+        assert!(after.iter().all(|ticket| ticket.id != b || ticket.after.is_empty()));
         let _ = fs::remove_dir_all(base);
     }
 }

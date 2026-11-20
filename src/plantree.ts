@@ -443,3 +443,191 @@ export function boxHits(places: readonly { id: string; x: number; y: number }[],
     .filter((place) => place.x <= right && place.x + PLAN_CARD_WIDTH >= left && place.y <= bottom && place.y + PLAN_CARD_HEIGHT >= top)
     .map((place) => place.id);
 }
+
+// Plan the flow (ticket plan-view-plan-the-flow-and-confirm): the arrows change in a draft, and
+// Confirm writes them and sorts the queue of New by them. These are the pure rules of the draft.
+
+/** A ticket added while planning: `key` is its id in the draft (no real ticket has it); its list `after` is in the draft. */
+export interface PlanAddedTicket {
+  key: string;
+  text: string;
+}
+
+/**
+ * The draft of the arrows. `after` holds the list of each ticket of the draft by its id (an added
+ * ticket by its key); a ticket that it does not hold keeps the list of the board. `out` holds the ids
+ * taken out of the flow, `next` the number of the next key.
+ */
+export interface PlanDraft {
+  after: Record<string, string[]>;
+  added: PlanAddedTicket[];
+  out: string[];
+  next: number;
+}
+
+/** The prefix of the key of an added ticket. */
+export const ADDED_PREFIX = "new-";
+
+/** A draft with the arrows of the board. */
+export function makeDraft(tickets: readonly PlanTicket[]): PlanDraft {
+  const after: Record<string, string[]> = {};
+  for (const ticket of tickets) after[ticket.id] = comesAfter(tickets, ticket.id);
+  return { after, added: [], out: [], next: 1 };
+}
+
+/** The tickets of the draft: the board tickets with the lists of the draft, then one Backlog ticket per added entry. */
+export function draftTickets(tickets: readonly PlanTicket[], draft: PlanDraft): PlanTicket[] {
+  return [
+    ...tickets.map((ticket) => ({ ...ticket, after: draft.after[ticket.id] ?? ticket.after ?? [] })),
+    ...draft.added.map((one) => ({ id: one.key, status: "backlog", after: draft.after[one.key] ?? [] })),
+  ];
+}
+
+/** The added and the removed arrows of the draft against the board. */
+export function arrowDiff(base: readonly PlanTicket[], draftList: readonly PlanTicket[]): { added: PlanArrow[]; removed: PlanArrow[] } {
+  const key = (arrow: PlanArrow) => `${arrow.from}\n${arrow.to}`;
+  const old = planArrows(base);
+  const now = planArrows(draftList);
+  const oldKeys = new Set(old.map(key));
+  const nowKeys = new Set(now.map(key));
+  return { added: now.filter((arrow) => !oldKeys.has(key(arrow))), removed: old.filter((arrow) => !nowKeys.has(key(arrow))) };
+}
+
+/** The tickets of the draft for the layout: the removed arrows count too, so a card keeps its place and the faded arrow has two ends. */
+export function layoutTickets(tickets: readonly PlanTicket[], draft: PlanDraft): PlanTicket[] {
+  const list = draftTickets(tickets, draft);
+  const { removed } = arrowDiff(tickets, list);
+  return list.map((ticket) => {
+    const back = removed.filter((arrow) => arrow.to === ticket.id).map((arrow) => arrow.from);
+    return back.length === 0 ? ticket : { ...ticket, after: [...(ticket.after ?? []), ...back] };
+  });
+}
+
+/** True when `id` comes after `ancestor` through one or more arrows. */
+function comesAfterDeep(tickets: readonly PlanTicket[], id: string, ancestor: string): boolean {
+  const lists = new Map(tickets.map((ticket) => [ticket.id, ticket.after ?? []]));
+  const seen = new Set<string>();
+  const stack = [...(lists.get(id) ?? [])];
+  while (stack.length > 0) {
+    const next = stack.pop()!;
+    if (next === ancestor) return true;
+    if (seen.has(next)) continue;
+    seen.add(next);
+    stack.push(...(lists.get(next) ?? []));
+  }
+  return false;
+}
+
+/** Why the arrow `from` → `to` cannot go into the tickets (the draft list), or null when it can. */
+export function arrowRefusal(tickets: readonly PlanTicket[], from: string, to: string): string | null {
+  if (from === to) return "An arrow cannot point from a ticket to itself.";
+  const target = tickets.find((ticket) => ticket.id === to);
+  if (target?.after?.includes(from)) return "That arrow exists already.";
+  if (comesAfterDeep(tickets, from, to)) return `That arrow would make a loop: ${from} already comes after ${to}.`;
+  return null;
+}
+
+/** The result of a change of the draft: the new draft, or the old one and the reason of the refusal. */
+export interface DraftChange {
+  draft: PlanDraft;
+  refusal: string | null;
+}
+
+/** The list of a ticket in the draft. */
+function listOf(tickets: readonly PlanTicket[], draft: PlanDraft, id: string): string[] {
+  return draft.after[id] ?? [...(tickets.find((ticket) => ticket.id === id)?.after ?? [])];
+}
+
+/** The draft with the arrow `from` → `to`, unless it is refused. */
+export function withArrow(tickets: readonly PlanTicket[], draft: PlanDraft, arrow: PlanArrow): DraftChange {
+  const refusal = arrowRefusal(draftTickets(tickets, draft), arrow.from, arrow.to);
+  if (refusal) return { draft, refusal };
+  return { draft: { ...draft, after: { ...draft.after, [arrow.to]: [...listOf(tickets, draft, arrow.to), arrow.from] } }, refusal: null };
+}
+
+/** The draft without the arrow. */
+export function withoutArrow(tickets: readonly PlanTicket[], draft: PlanDraft, arrow: PlanArrow): PlanDraft {
+  return { ...draft, after: { ...draft.after, [arrow.to]: listOf(tickets, draft, arrow.to).filter((id) => id !== arrow.from) } };
+}
+
+/** The draft with the arrow moved to `from` → `to`; a refusal of the new arrow leaves the draft as it is. */
+export function movedArrow(tickets: readonly PlanTicket[], draft: PlanDraft, arrow: PlanArrow, from: string, to: string): DraftChange {
+  if (from === arrow.from && to === arrow.to) return { draft, refusal: null };
+  const changed = withArrow(tickets, withoutArrow(tickets, draft, arrow), { from, to });
+  return changed.refusal ? { draft, refusal: changed.refusal } : changed;
+}
+
+/** The draft with the arrow turned around. */
+export function turnedArrow(tickets: readonly PlanTicket[], draft: PlanDraft, arrow: PlanArrow): DraftChange {
+  return movedArrow(tickets, draft, arrow, arrow.to, arrow.from);
+}
+
+/** The draft with a new ticket after `after` (an id or a key); its key is the last added one. */
+export function withTicketAfter(draft: PlanDraft, text: string, after: string): PlanDraft {
+  const key = `${ADDED_PREFIX}${draft.next}`;
+  return { ...draft, added: [...draft.added, { key, text: text.trim() }], after: { ...draft.after, [key]: [after] }, next: draft.next + 1 };
+}
+
+/** The draft with a ticket out of the flow: its arrows go, and each ticket before it now comes before each ticket after it. */
+export function takenOut(tickets: readonly PlanTicket[], draft: PlanDraft, id: string): PlanDraft {
+  const list = draftTickets(tickets, draft);
+  const before = listOf(tickets, draft, id);
+  const after: Record<string, string[]> = { ...draft.after, [id]: [] };
+  for (const ticket of list) {
+    const own = ticket.after ?? [];
+    if (!own.includes(id)) continue;
+    const next = own.filter((one) => one !== id);
+    for (const one of before) if (one !== ticket.id && !next.includes(one)) next.push(one);
+    after[ticket.id] = next;
+  }
+  return { ...draft, after, out: draft.out.includes(id) ? draft.out : [...draft.out, id] };
+}
+
+/**
+ * The stable sort of the queue by the arrows: again and again the first id of the queue whose
+ * tickets before it (that stand in the queue) are placed already. A ticket before it that is not in
+ * the queue does not hold it. The ids of a loop go at the end, in the order of the queue.
+ */
+export function planSort(queue: readonly string[], arrows: readonly PlanArrow[]): string[] {
+  const inQueue = new Set(queue);
+  const left = [...inQueue];
+  const placed = new Set<string>();
+  const sorted: string[] = [];
+  const free = (id: string) => arrows.every((arrow) => arrow.to !== id || arrow.from === id || !inQueue.has(arrow.from) || placed.has(arrow.from));
+  for (;;) {
+    const at = left.findIndex(free);
+    if (at < 0) break;
+    const [id] = left.splice(at, 1);
+    sorted.push(id);
+    placed.add(id);
+  }
+  return [...sorted, ...left];
+}
+
+/** The mark of each id of the new queue against the old one: "up N", "down N", "new" (an added ticket or one not there before) or "". */
+export function queueMarks(before: readonly string[], after: readonly string[], addedKeys: readonly string[] = []): { id: string; mark: string }[] {
+  return after.map((id, at) => {
+    const was = before.indexOf(id);
+    if (addedKeys.includes(id) || was < 0) return { id, mark: "new" };
+    if (was > at) return { id, mark: `up ${was - at}` };
+    if (was < at) return { id, mark: `down ${at - was}` };
+    return { id, mark: "" };
+  });
+}
+
+/** The lines of the change list of the draft and their count: the new tickets, the tickets taken out, the added and the removed arrows. */
+export function draftChanges(tickets: readonly PlanTicket[], draft: PlanDraft): { lines: string[]; count: number } {
+  const list = draftTickets(tickets, draft);
+  const name = (id: string) => {
+    const added = draft.added.find((one) => one.key === id);
+    return added ? `"${added.text}"` : id;
+  };
+  const diff = arrowDiff(tickets, list);
+  const lines = [
+    ...draft.added.map((one) => `New ticket: ${one.text}`),
+    ...draft.out.filter((id) => comesAfter(list, id).length === 0 && comesBefore(list, id).length === 0).map((id) => `Taken out: ${name(id)}`),
+    ...diff.added.map((arrow) => `Arrow added: ${name(arrow.from)} → ${name(arrow.to)}`),
+    ...diff.removed.map((arrow) => `Arrow removed: ${name(arrow.from)} → ${name(arrow.to)}`),
+  ];
+  return { lines, count: lines.length };
+}

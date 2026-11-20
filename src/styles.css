@@ -11042,3 +11042,178 @@ body.plan-mode .chat-tabs {
 .plan-count.error {
   color: var(--danger);
 }
+
+/* Plan the flow (ticket plan-view-plan-the-flow-and-confirm): the draft of the arrows. A new arrow
+   is green, a removed one faded and dashed. */
+.plan-arrow.added {
+  stroke: var(--work);
+  stroke-width: 2.5;
+}
+
+.plan-head.added {
+  fill: var(--work);
+}
+
+.plan-arrow.removed {
+  stroke-dasharray: 6 5;
+  opacity: 0.45;
+}
+
+.plan-flow-bar {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--work-line);
+  background: var(--work-bg);
+}
+
+.plan-flow-bar[hidden] {
+  display: none;
+}
+
+.plan-flow-count {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.plan-flow-drawing {
+  color: var(--work);
+}
+
+.plan-flow-refusal {
+  color: var(--danger);
+}
+
+.plan-flow-gap {
+  flex: 1;
+}
+
+.plan-note {
+  color: var(--work);
+  font-size: calc(12px * var(--text-scale));
+}
+
+/* The + under a card: then a click on the ticket that comes after it draws the arrow. */
+.plan-plus {
+  position: absolute;
+  bottom: -11px;
+  left: 50%;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--work-line);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--work);
+  line-height: 18px;
+  transform: translateX(-50%);
+  cursor: pointer;
+}
+
+.plan-plus:hover,
+.plan-plus:focus-visible {
+  background: var(--work-bg);
+}
+
+.plan-ticket.drawing-from {
+  outline: 2px dashed var(--work);
+  outline-offset: 2px;
+}
+
+/* A ticket added while planning: it opens in Backlog at Confirm. */
+.plan-ticket.plan-added {
+  border-style: dashed;
+  border-color: var(--work-line);
+}
+
+.plan-side-remove {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  line-height: 20px;
+  cursor: pointer;
+}
+
+.plan-side-remove:hover,
+.plan-side-remove:focus-visible {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.plan-mark {
+  flex: none;
+  font-size: calc(11px * var(--text-scale));
+}
+
+.plan-mark.up {
+  color: var(--work);
+}
+
+.plan-mark.down {
+  color: var(--wait);
+}
+
+.plan-mark.new {
+  color: var(--accent);
+}
+
+.plan-queue-place {
+  flex: none;
+  min-width: 24px;
+  color: var(--faint);
+  font-size: calc(11px * var(--text-scale));
+}
+
+.plan-change {
+  padding: 2px 0;
+  color: var(--text);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.plan-side-pick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+  color: var(--muted);
+}
+
+.plan-arrow-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.plan-add-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.plan-add-input {
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.plan-add-form .plan-side-button,
+.plan-side-row .plan-place {
+  margin-top: 0;
+}
+
+.plan-side-row .plan-place {
+  flex: none;
+}
+
+.plan-discard-question {
+  margin: 4px 8px 6px;
+  color: var(--text);
+}
