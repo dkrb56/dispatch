@@ -2802,6 +2802,8 @@ const stopArmed = new Set<string>();
 const repeatStopArmed = new Set<string>();
 /** The tasks whose Stop of the permission card waits for the second click, with the report time of that click. A newer report disarms it. */
 const permissionStopArmed = new Map<string, number>();
+/** Plan cards whose Cancel waits for its second click: the task name and the plan time; a new plan file disarms it. */
+const planCancelArmed = new Map<string, number>();
 /** The tasks whose click runs now. Their buttons stay grey across re-renders. */
 const busyTasks = new Set<string>();
 /** The last failure of a click per task, shown in its card until the next click. */
@@ -5071,7 +5073,7 @@ function checksRow(checks: CheckInfo[]): HTMLElement | null {
 }
 
 /**
- * The card of a plan that waits for the user: the summary of the plan, Approve and Reject. Its
+ * The card of a plan that waits for the user: the summary of the plan, Approve, Reject and Cancel. Its
  * state lives outside the card.
  */
 function planCard(task: Task): HTMLElement {
@@ -5156,7 +5158,49 @@ function planCard(task: Task): HTMLElement {
   ask.addEventListener("click", () => openDecisions(task, true));
   actions.append(ask);
   actions.append(reject);
+  // Cancel ends the task at Plan ready: two clicks, the second through the stop step of the script.
+  const canCancel = planReady(task) && !queued;
+  const planTime = task.info?.plan?.modified ?? 0;
+  const cancelArmed = canCancel && planCancelArmed.get(task.name) === planTime;
+  if (canCancel && !cancelArmed) {
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    cancel.title = "End this task. Its ticket goes to Canceled. A second click confirms";
+    cancel.disabled = busy;
+    cancel.addEventListener("click", () => {
+      planCancelArmed.set(task.name, planTime);
+      renderChats();
+    });
+    actions.append(cancel);
+  }
   card.append(actions);
+  if (cancelArmed) {
+    const row = document.createElement("div");
+    row.className = "task-stop";
+    const text = document.createElement("span");
+    text.className = "task-stop-text";
+    text.textContent = "Cancel this task? Its ticket goes to Canceled, and the plan stays readable.";
+    const now = document.createElement("button");
+    now.className = "danger";
+    now.textContent = "Cancel now";
+    now.title = "End this task now";
+    now.disabled = busy;
+    now.addEventListener("click", () => {
+      planCancelArmed.delete(task.name);
+      const line = `Task ${task.name} canceled in Dispatch: the user canceled it at Plan ready. The task is ended.`;
+      void taskAction(task, "task_stop", { id: task.name }, line);
+    });
+    const keep = document.createElement("button");
+    keep.textContent = "Keep the plan";
+    keep.title = "Keep this task and its plan";
+    keep.disabled = busy;
+    keep.addEventListener("click", () => {
+      planCancelArmed.delete(task.name);
+      renderChats();
+    });
+    row.append(text, now, keep);
+    card.append(row);
+  }
   // The script refuses an approval while a file of the task has uncommitted changes, and one work run
   // edits at a time, counted from the start of its call (the start lease). An Approve then waits;
   // the card says for what.

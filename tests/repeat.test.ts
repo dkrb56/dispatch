@@ -151,3 +151,15 @@ test("the Help says that a task that needs a permission can be stopped", () => {
   assert.match(line, /<b>Stop<\/b>/);
   assert.match(line, /<b>Stop now<\/b>/);
 });
+
+test("the plan card has a Cancel with a confirm that stops the task", () => {
+  const card = mainFunction("planCard");
+  for (const text of ['"Cancel"', '"Cancel now"', '"Keep the plan"', "planReady(task)", "planCancelArmed"]) assert.ok(card.includes(text), text);
+  assert.equal(card.split('"task_stop"').length - 1, 1);
+  assert.ok(card.indexOf('"Cancel now"') < card.indexOf('"task_stop"'));
+});
+
+test("the Help describes the Cancel of the plan card", () => {
+  const line = HTML.split("\n").find((text) => text.includes("<b>Cancel</b> ends a task")) ?? "";
+  assert.match(line, /<b>Cancel now<\/b>/);
+});

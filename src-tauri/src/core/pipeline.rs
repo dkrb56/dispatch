@@ -2507,9 +2507,13 @@ switch ($Verb) {
   'stop' {
     Need-Id
     $worker = Find-Worker (Get-Workers) $Id
-    if ($null -eq $worker) { Refuse "no worker named $Id" }
-    & claude stop $worker.id
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    # A finished plan run whose session is no longer listed has nothing to stop: only the state is written.
+    if ($null -eq $worker) {
+      if ((Get-State) -ne 'planning') { Refuse "no worker named $Id" }
+    } else {
+      & claude stop $worker.id
+      if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
     Set-State 'stopped'
   }
   'resume' {
