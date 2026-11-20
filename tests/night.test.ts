@@ -1,24 +1,19 @@
-// Tests of night mode (src/night.ts, ticket nightmode-switch-sync): the state of the switch after a
-// start, the lines Dispatch sends at a change, the lines at a start or a new triage chat, and the
+// Tests of night mode (src/night.ts, ticket nightmode-switch-sync): the Night button of a project
+// and the read of the shared file (ticket i-need-per-project-nightmode-option), the lines Dispatch sends at a change, the lines at a start or a new triage chat, and the
 // Help text of index.html. Run: node --test tests/
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { NIGHT_OFF_LINE, NIGHT_ON_LINE, nightAfterRead, nightAtStart, nightLines, nightLookOf, nightSyncLines } from "../src/night.ts";
+import { NIGHT_OFF_LINE, NIGHT_ON_LINE, nightButton, nightChanges, nightLines, nightSyncLines } from "../src/night.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
-test("the switch after a start: state.json first, the old browser value once, else off", () => {
-  assert.equal(nightAtStart(true, null), true, "saved on");
-  assert.equal(nightAtStart(false, null), false, "saved off");
-  assert.equal(nightAtStart(undefined, "true"), true, "no saved value, old value on");
-  assert.equal(nightAtStart(undefined, "false"), false, "no saved value, old value off");
-  assert.equal(nightAtStart(undefined, null), false, "nothing saved");
-  assert.equal(nightAtStart(null, undefined), false, "a null field");
-  assert.equal(nightAtStart(false, "true"), false, "the saved value wins over the old value");
-  assert.equal(nightAtStart(true, "false"), true, "the saved value wins over the old value");
-  assert.equal(nightAtStart("true", null), false, "a field that is not a boolean is no saved value");
+test("the Night button of a project says its state", () => {
+  assert.equal(nightButton(true).text, "Night on");
+  assert.equal(nightButton(false).text, "Night");
+  assert.match(nightButton(true).title, /Click to end it/);
+  assert.match(nightButton(false).title, /Other projects stay as they are/);
 });
 
 test("a change sends the skill command, then the Dispatch line", () => {
@@ -62,50 +57,38 @@ function pollReadsThisPC(): boolean {
   return read >= 0 && read < body.indexOf("if (!usesHosts()) return;");
 }
 
-test("this PC and one host: the switch follows a change of this PC's saved file", () => {
-  // The memory of the window after the start: this PC and Host 1 are on.
-  const known: Record<string, boolean> = { local: true, host: true };
-  // Another Dispatch program with the same data folder wrote "night": false into this PC's file.
-  const files: Record<string, boolean> = { local: false, host: true };
-  // One poll: it rereads the hosts, and this PC when the code does so.
-  const reads = pollReadsThisPC() ? ["local", "host"] : ["host"];
-  const after = { ...known };
-  for (const id of reads) after[id] = nightAfterRead(known[id], files[id]);
-  const look = nightLookOf([{ on: after.local, reachable: true }, { on: after.host, reachable: true }]);
-  assert.equal(after.local, false, "the window knows that this PC has night mode off");
-  assert.equal(look, "mixed", "this PC off and the host on show mixed, not on");
-});
-
-test("the look of the switch with this PC and one host", () => {
-  assert.equal(nightLookOf([{ on: false, reachable: true }, { on: true, reachable: true }]), "mixed", "this PC off, host on");
-  assert.equal(nightLookOf([{ on: true, reachable: true }, { on: false, reachable: true }]), "mixed", "this PC on, host off");
-  assert.equal(nightLookOf([{ on: true, reachable: true }, { on: true, reachable: true }]), "on", "both on");
-  assert.equal(nightLookOf([{ on: false, reachable: true }, { on: false, reachable: true }]), "off", "both off");
-  assert.equal(nightLookOf([{ on: false, reachable: true }, { on: true, reachable: false }]), "off", "a host that is not reachable is left out");
-  assert.equal(nightLookOf([{ on: true, reachable: false }, { on: true, reachable: false }]), "on", "none reachable: all count");
-  assert.equal(nightLookOf([]), "off", "no backend");
-});
-
-test("a read of a shared file: the saved value wins, no read keeps the known value", () => {
-  assert.equal(nightAfterRead(true, false), false);
-  assert.equal(nightAfterRead(false, true), true);
-  assert.equal(nightAfterRead(true, null), true);
-  assert.equal(nightAfterRead(false, null), false);
-});
-
-test("after a restart the switch shows the saved state", () => {
-  const look = (local: boolean, host: boolean) =>
-    nightLookOf([{ on: nightAtStart(local, null), reachable: true }, { on: nightAtStart(host, null), reachable: true }]);
-  assert.equal(look(false, true), "mixed");
-  assert.equal(look(true, true), "on");
-  assert.equal(look(false, false), "off");
-});
-
-test("main.ts shows the look of nightLookOf and the word mixed", () => {
-  const look = MAIN.slice(MAIN.indexOf("function nightLook("), MAIN.indexOf("/** Night mode is on for at least one backend. */"));
-  assert.match(look, /nightLookOf\(/);
-  const show = MAIN.slice(MAIN.indexOf("function showNight("), MAIN.indexOf("function setNight("));
-  assert.match(show, /Nightmode: mixed/);
-  // The poll takes only the night field of this PC, never its triage records.
+test("the poll rereads the night mode of this PC's projects, also without hosts", () => {
+  assert.ok(pollReadsThisPC(), "the poll reads the shared file of this PC before the hosts");
+  // The poll takes only the night mode of this PC, never its triage records.
   assert.doesNotMatch(pollBody(), /takeTriageRecords\(LOCAL/);
+});
+
+// Ticket i-need-per-project-nightmode-option: a click on PC B turned on night mode of every project
+// of PC A, because the switch was one value per computer.
+
+test("a read of a shared file: each project follows the file, a missing project is off", () => {
+  assert.deepEqual(nightChanges(new Set(["a"]), { a: true }), { on: [], off: [] }, "no change");
+  assert.deepEqual(nightChanges(new Set(), { a: true }), { on: ["a"], off: [] }, "another window turned a on");
+  assert.deepEqual(nightChanges(new Set(["a", "b"]), { b: true }), { on: [], off: ["a"] }, "another window turned a off");
+  assert.deepEqual(nightChanges(new Set(["a"]), { b: true }), { on: ["b"], off: ["a"] });
+});
+
+test("two windows on one host: a project of the other window turns on, this window's project stays off", () => {
+  // The window on PC A shows project p of the host; the window on PC B turns on its project q.
+  const known = new Set<string>();
+  const file: Record<string, true> = { "d:\\q": true };
+  const after = new Set(known);
+  for (const key of nightChanges(known, file).on) after.add(key);
+  assert.equal(after.has("d:\\p"), false, "project p of PC A stays off");
+  assert.equal(after.has("d:\\q"), true, "only project q is on");
+});
+
+test("main.ts: night mode per project, no switch of a whole computer", () => {
+  assert.match(MAIN, /function nightOf\(host: HostId, root: string \| null \| undefined\): boolean/);
+  assert.doesNotMatch(MAIN, /shared_set", \{ night:/, "no write of the old switch");
+  assert.match(MAIN, /shared_set", \{ nights: \{ \[path\]: on \} \}/, "a click writes only its own project");
+  assert.doesNotMatch(MAIN, /#night-mode/, "the switch of the top bar is gone");
+  assert.doesNotMatch(HTML, /id="night-mode"/, "the switch of the top bar is gone");
+  // The Night button stands right after Pause in the buttons of a project.
+  assert.match(MAIN, /el\.append\(tickets, addTicket, tokensButton, actions, pause, night, /);
 });

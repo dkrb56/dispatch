@@ -8412,77 +8412,21 @@ body.resizing:has(#focus.rows .col-resize.dragging) {
   color: var(--wait);
 }
 
-/* Night mode: a switch in the bar, green while it is on. */
-#bar #night-mode {
-  gap: 8px;
-  color: var(--muted);
-}
-
-#night-mode .switch {
-  position: relative;
-  flex: none;
-  width: 34px;
-  height: 20px;
-  border-radius: 10px;
-  background: var(--line);
-  transition: background 0.15s;
-}
-
-#night-mode .knob {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 14px;
-  height: 14px;
-  border-radius: 7px;
-  background: var(--text);
-  transition: left 0.15s;
-}
-
-#bar #night-mode[aria-checked="true"] {
+/* The Night button of a project with night mode on (ticket i-need-per-project-nightmode-option):
+   pressed, in the green of a switch that is on. */
+.project-tool.project-night[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--switch-on) 35%, transparent);
   color: var(--text);
 }
 
-#night-mode[aria-checked="true"] .switch {
-  background: var(--switch-on);
-}
-
-#night-mode[aria-checked="true"] .knob {
-  left: 17px;
-  background: var(--text);
-}
-
-/* The hosts differ (remote-multi-host): the knob stands in the middle, on half the colour of on. */
-#bar #night-mode[aria-checked="mixed"] {
-  color: var(--text);
-}
-
-#night-mode[aria-checked="mixed"] .switch {
-  background: color-mix(in srgb, var(--switch-on) 50%, var(--line));
-}
-
-#night-mode[aria-checked="mixed"] .knob {
-  left: 10px;
-}
-
-/* The Nightmode switch stands right before the pane buttons and takes their push to the right. */
-#bar #night-mode {
-  margin-left: auto;
-  margin-right: 6px;
-}
-
-/* In Details Chats stands at the right edge before Nightmode and takes the push (topbar-one-row);
-   the other views hide Chats, so Nightmode keeps it there. */
+/* In Details Chats stands at the right edge before the pane buttons and takes the push (topbar-one-row);
+   the other views hide Chats, so the pane buttons keep it there. */
 body:not(.focus-mode):not(.map-mode):not(.overview-mode) #bar #toggle-chats {
   margin-left: auto;
 }
 
-body:not(.focus-mode):not(.map-mode):not(.overview-mode) #bar #night-mode {
+body:not(.focus-mode):not(.map-mode):not(.overview-mode) #bar #pane-tools {
   margin-left: 6px;
-}
-
-#night-mode + #pane-tools {
-  margin-left: 0;
 }
 
 /* A code block of a chat message, with its buttons at the top right: ▶ runs a one-line shell

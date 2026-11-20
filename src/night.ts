@@ -1,7 +1,8 @@
-// Night mode (ticket nightmode-switch-sync): the switch of Dispatch is the one state, kept in
-// state.json next to the tabs, and the triage chats follow it. This module holds the texts that
-// Dispatch sends and the rules that decide the state after a start and the lines of a change. No
-// DOM, no imports: tests/night.test.ts imports it in Node.
+// Night mode (ticket nightmode-switch-sync): the switch of Dispatch is the one state, and the
+// triage chats follow it. Each project has its own switch, the Night button next to Pause, kept in
+// `shared.json` of the program that does the work (ticket i-need-per-project-nightmode-option).
+// This module holds the texts that Dispatch sends, the look of the button and the rules of the
+// lines of a change. No DOM, no imports: tests/night.test.ts imports it in Node.
 
 /** What Dispatch tells triage when night mode starts: what it approves and answers by itself. */
 export const NIGHT_ON_LINE =
@@ -13,16 +14,6 @@ export const NIGHT_ON_LINE =
   "Tell the user this when they ask what happens overnight.";
 /** What Dispatch tells triage when night mode ends. */
 export const NIGHT_OFF_LINE = "Dispatch: night mode is off in Dispatch. Plans wait for the user's Approve click again, and questions of workers wait for the user.";
-
-/**
- * The state of the switch after a start. A boolean saved in state.json wins; else the value of
- * the old browser store (`localStorage` key `night-mode`, before this ticket) gives on when it is
- * `"true"`; else off.
- */
-export function nightAtStart(saved: unknown, legacy: string | null | undefined): boolean {
-  if (typeof saved === "boolean") return saved;
-  return legacy === "true";
-}
 
 /** The lines for the triage chat at a change of the switch: the skill command, then the Dispatch line. */
 export function nightLines(on: boolean): string[] {
@@ -40,25 +31,31 @@ export function nightSyncLines(switchOn: boolean, file: boolean | null): string[
   return nightLines(switchOn);
 }
 
-/**
- * The look of the one switch of the top bar from every backend that does the work: the reachable
- * ones, or all of them when none is reachable (a host that is gone keeps its switch and is left out).
- * On when all are on, off when all are off or with no backend, else mixed.
- */
-export function nightLookOf(entries: readonly { on: boolean; reachable: boolean }[]): "on" | "off" | "mixed" {
-  const reached = entries.filter((entry) => entry.reachable);
-  const shown = reached.length > 0 ? reached : entries;
-  if (shown.length === 0) return "off";
-  if (shown.every((entry) => entry.on)) return "on";
-  if (shown.every((entry) => !entry.on)) return "off";
-  return "mixed";
+/** The text and the tooltip of the Night button of a project. */
+export function nightButton(on: boolean): { text: string; title: string } {
+  return on
+    ? {
+        text: "Night on",
+        title:
+          "Night mode is on for this project: its decisions take their recommended default, HOLD items and permissions wait for you. Click to end it and get the morning list. " +
+          "The computer that does the work of this project stays awake while one of its projects has night mode on (the display may turn off).",
+      }
+    : {
+        text: "Night",
+        title:
+          "Turn on night mode for this project when you go away: work goes on with the recommended default for each decision, and you get a morning list. " +
+          "Other projects stay as they are. The setting is kept over a restart, and the triage chat of the project follows it.",
+      };
 }
 
 /**
- * The night state of a backend after a read of its shared file (ticket
- * title-nightmode-switch-shows-on-but-this): the saved value when the read gave one, else the
- * known value. Another Dispatch program with the same data folder can change the file of this PC.
+ * The projects of one backend whose night mode a read of its shared file changed (ticket
+ * title-nightmode-switch-shows-on-but-this: another window or Dispatch program can change the
+ * file). `known` and `saved` hold the path keys of the projects that are on; a key missing in the
+ * file is off.
  */
-export function nightAfterRead(known: boolean, saved: boolean | null): boolean {
-  return saved ?? known;
+export function nightChanges(known: ReadonlySet<string>, saved: Readonly<Record<string, true>>): { on: string[]; off: string[] } {
+  const on = Object.keys(saved).filter((key) => !known.has(key));
+  const off = [...known].filter((key) => saved[key] !== true);
+  return { on, off };
 }

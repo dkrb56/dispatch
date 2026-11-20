@@ -30,10 +30,6 @@
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M6 3v10" /></svg>
         Chats
       </button>
-      <button id="night-mode" role="switch" aria-checked="false" title="Nightmode is off. Turn it on when you go away: work goes on with the recommended default for each decision, and you get a morning list. Dispatch keeps the switch over a restart, and the triage chats follow it. While it is on, the PC that does the work does not go to sleep.">
-        <span>Nightmode</span>
-        <span class="switch" aria-hidden="true"><span class="knob"></span></span>
-      </button>
       <div id="pane-tools" role="group" aria-label="Panes">
         <button id="split-right" title="Split the focused pane to the right" aria-label="Split right">
           <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="10" rx="2" /><path d="M8 3v10" /></svg>
@@ -854,22 +850,21 @@
         <h3>Night mode</h3>
         <p class="tldr">The work goes on while you are away.</p>
         <ul>
-          <li>Turn on the <b>Nightmode</b> switch in the bar when you go away. It is green while night mode is on.</li>
-          <li>Dispatch approves plans and answers questions with their recommended option. A HOLD decision and a permission still wait for you.</li>
-          <li>The computer that does the work stays awake while the switch is on.</li>
+          <li>Each project has its own <b>Night</b> button, next to <b>Pause</b> with the buttons of the project. Click it when you go away. It reads "Night on" and is green while night mode is on for that project.</li>
+          <li>Dispatch approves plans and answers questions with their recommended option, only in the projects with night mode on. A HOLD decision and a permission still wait for you.</li>
+          <li>The computer that does the work stays awake while at least one of its projects has night mode on.</li>
           <li>In the morning, <b>Morning</b> at the top of a column shows the defaults that night mode took.</li>
         </ul>
         <details class="help-more">
           <summary>Details</summary>
           <ul>
-            <li>The switch is the one state of night mode. The program that does the work keeps it: Dispatch in the mode This PC does the work, each host in the mode Use hosts. In the mode This PC and hosts, Dispatch keeps the switch of this PC and each host keeps its own; the one switch in the bar shows them together. So a restart brings it back as you left it, and every window of a host shows the same switch.</li>
-            <li><b>With several hosts</b> each host has its own switch. The switch in the bar is on when every host is on, and off when every host is off. When the hosts differ, the knob stands in the middle; its tooltip names the hosts that are on and off. A click on that look turns night mode on for every host.</li>
-            <li>A host that is not reachable keeps its own switch and is left out of the look until it is back.</li>
-            <li>When this PC and a host differ, the switch reads <b>Nightmode: mixed</b>. The window reads the saved switch of this PC every few seconds, so a change by another Dispatch program on this PC shows too.</li>
-            <li>The display may turn off. When the switch goes off, or the program ends (also at a crash), the computer sleeps as before. A computer that only shows a window may sleep.</li>
+            <li>The Night button of a project is the one state of its night mode. A click changes only that project; other projects, also those of another window or another computer, stay as they are. The program that does the work of the project keeps it: Dispatch in the mode This PC does the work, the host in the mode Use hosts, and each of them in the mode This PC and hosts. So a restart brings it back as you left it, and every window that shows the project shows the same state.</li>
+            <li>After the update to night mode per project, every project starts with night mode off; the old switch of a whole computer turns no project on.</li>
+            <li>The window reads the saved night mode of the projects of this PC every few seconds, and of each host at each poll, so a change in another window or by another Dispatch program on this PC shows too.</li>
+            <li>The display may turn off. When the last project of a computer turns night mode off, or the program ends (also at a crash), the computer sleeps as before. A computer that only shows a window may sleep.</li>
             <li>Keep a window open on a computer that stays awake, because the automatic actions of night mode run in a window. The window on the host's PC takes over within about 30 s when the other window sleeps. On a Mac, Dispatch runs the system tool <code>caffeinate</code>.</li>
-            <li>On and off send <code>/nightmode start</code> and <code>/nightmode end</code> and a Dispatch line to the triage chat of each project with a workspace. Triage keeps the list of the defaults and writes the morning file (your <code>nightmode</code> skill).</li>
-            <li>The triage chat follows the switch. At each start and each new triage chat, Dispatch compares the switch with the night file of the chat (<code>.claude/state/night/night-mode.json</code>) and sends the command again when the chat is behind. The chat never changes the switch.</li>
+            <li>On and off send <code>/nightmode start</code> and <code>/nightmode end</code> and a Dispatch line to the triage chat of that project, when it has a workspace. Triage keeps the list of the defaults and writes the morning file (your <code>nightmode</code> skill).</li>
+            <li>The triage chat follows the switch of its project. At each start and each new triage chat, Dispatch compares the switch with the night file of the chat (<code>.claude/state/night/night-mode.json</code>) and sends the command again when the chat is behind. The chat never changes the switch.</li>
             <li>With <b>Push after the merge</b> on, a merge of night mode also pushes; a failed push shows on the task card in the morning. With <b>Start plans without decisions</b> on, a plan without decisions starts as it does by day. With <b>Tickets start their plan</b> on, the New tickets start their plans at night too; with both switches on, a ticket can run to its report without a click.</li>
             <li><b>Parts at night.</b> A plan card with parts has the box "At night, the parts may start their work without my click". It starts unticked: then the plan of each part waits for your click at night, as a plan with a HOLD decision. Tick it, and night mode approves the plans of the parts like any plan.</li>
             <li>Dispatch writes the chosen defaults into the plan, and triage hears each default. A plan with a HOLD decision and a report that needs a permission wait; triage puts them under Reminders.</li>
@@ -974,7 +969,7 @@
             <li><b>A host that is gone.</b> A bar below the top bar shows one row for each host that is not reachable. Dispatch tries again after 1, 2, 4, 8 and 10 seconds. The other hosts keep working. Typing into a terminal of the gone host goes nowhere, and nothing on that computer stops. When the host is back, a terminal that still runs there continues.</li>
             <li><b>A host that refused the window</b>, for example with "the key is wrong", gets a row with its reason and <b>Try again</b>. Correct the key in Options and start Dispatch again.</li>
             <li><b>What travels between the computers.</b> Only the window and its hosts talk, only on the tailnet, and Tailscale encrypts the traffic. The window sends the key, the versions and its id first. Then your keystrokes, the terminal output, the chats, the task files, the shown files and pasted images travel.</li>
-            <li>The window keeps its tabs, saved screens, theme and other choices on its own computer. The host keeps the terminals of a closed window, the Nightmode switch and the triage chats of its projects. A file of a host opens in the viewer only.</li>
+            <li>The window keeps its tabs, saved screens, theme and other choices on its own computer. The host keeps the terminals of a closed window, the night mode and the triage chats of its projects. A file of a host opens in the viewer only.</li>
             <li><b>Two windows, one triage chat.</b> When a second window of the same host opens a project, it shows the triage chat that the first window runs, and you can type in either window. The size of that terminal follows the first window. Closing the chat in the second window leaves it running. When the first window closes, the chat keeps running on the host and the second window keeps showing it. When the chat ends, the second window shows <b>Start triage</b> again; one click continues the same chat.</li>
             <li><b>A minimized window.</b> A minimized window that you have not used for 1 minute, and that does not do the automatic work of the host, updates its lists about every 30 seconds. A window that you can see keeps its normal speed, also when you only watch it. When you restore a window or press a key in it, it catches up within a few seconds.</li>
             <li><b>One send per ticket.</b> Before a window sends a New ticket to triage, it puts a mark into the data folder of the host. A ticket with a mark does not go again from another window.</li>

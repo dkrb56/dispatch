@@ -111,10 +111,20 @@ const SHARED_FILE: &str = "shared.json";
 /// thread): a read and its write happen under this lock, so no change is lost.
 static SHARED_LOCK: Mutex<()> = Mutex::new(());
 
-/// `night` as a boolean and `triage` as an object of `{ chat, role }` records; a missing or broken
-/// field takes `false` and `{}`, and a record without a `chat` string is dropped.
+/// `nights` as an object of project keys with the value `true` (night mode of each project, ticket
+/// i-need-per-project-nightmode-option) and `triage` as an object of `{ chat, role }` records; a
+/// missing or broken field takes `{}`, an entry that is not `true` and a record without a `chat`
+/// string are dropped. The old switch `night` of the whole data folder no longer counts: it stays
+/// `false`, so that an older window reads it as off.
 fn clean_shared(value: &Value) -> Value {
-    let night = value.get("night").and_then(Value::as_bool).unwrap_or(false);
+    let mut nights = Map::new();
+    if let Some(entries) = value.get("nights").and_then(Value::as_object) {
+        for (key, on) in entries {
+            if on.as_bool() == Some(true) {
+                nights.insert(key.clone(), Value::Bool(true));
+            }
+        }
+    }
     let mut triage = Map::new();
     if let Some(records) = value.get("triage").and_then(Value::as_object) {
         for (key, record) in records {
@@ -123,7 +133,7 @@ fn clean_shared(value: &Value) -> Value {
             triage.insert(key.clone(), json!({ "chat": chat, "role": role }));
         }
     }
-    json!({ "night": night, "triage": triage })
+    json!({ "night": false, "nights": nights, "triage": triage })
 }
 
 fn read_json(path: &Path) -> Option<Value> {
@@ -142,12 +152,18 @@ fn load_in(dir: &Path) -> Result<Value, String> {
     Ok(shared)
 }
 
-/// Puts `night` when given and each record of `triage` (a `null` record removes the project).
-fn set_in(dir: &Path, night: Option<bool>, triage: Option<Map<String, Value>>) -> Result<Value, String> {
+/// Puts each entry of `nights` (`true` turns night mode of the project on, `false` or `null` turns it
+/// off) and each record of `triage` (a `null` record removes the project).
+fn set_in(dir: &Path, nights: Option<Map<String, Value>>, triage: Option<Map<String, Value>>) -> Result<Value, String> {
     let _guard = SHARED_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut shared = load_in(dir)?;
-    if let Some(night) = night {
-        shared["night"] = Value::Bool(night);
+    for (key, on) in nights.unwrap_or_default() {
+        let entries = shared["nights"].as_object_mut().expect("clean_shared gives an object");
+        if on.as_bool() == Some(true) {
+            entries.insert(key, Value::Bool(true));
+        } else {
+            entries.remove(&key);
+        }
     }
     for (key, record) in triage.unwrap_or_default() {
         let records = shared["triage"].as_object_mut().expect("clean_shared gives an object");
@@ -162,16 +178,21 @@ fn set_in(dir: &Path, night: Option<bool>, triage: Option<Map<String, Value>>) -
     Ok(shared)
 }
 
-/// The program keeps the computer awake while the shared switch is on (ticket night-keep-awake). A
-/// failure goes to stderr: the switch must still reach the file and the triage chats.
+/// The computer stays awake while at least one project of this data folder has night mode on.
+fn awake_wanted(shared: &Value) -> bool {
+    shared["nights"].as_object().is_some_and(|nights| !nights.is_empty())
+}
+
+/// The program keeps the computer awake while a project has night mode on (ticket night-keep-awake).
+/// A failure goes to stderr: the switch must still reach the file and the triage chats.
 fn follow_night(shared: &Value) {
-    let on = shared["night"].as_bool().unwrap_or(false);
+    let on = awake_wanted(shared);
     if let Err(error) = power::keep_awake(on) {
         eprintln!("keep awake ({on}) failed: {error}");
     }
 }
 
-/// The Nightmode switch and the triage chats that every window of this data folder shares.
+/// Night mode of each project and the triage chats that every window of this data folder shares.
 pub fn shared_load(core: &Core) -> Result<Value, String> {
     let dir = core.data_dir()?;
     let shared = {
@@ -183,8 +204,8 @@ pub fn shared_load(core: &Core) -> Result<Value, String> {
 }
 
 /// Changes the shared state and gives it back.
-pub fn shared_set(core: &Core, night: Option<bool>, triage: Option<Map<String, Value>>) -> Result<Value, String> {
-    let shared = set_in(&core.data_dir()?, night, triage)?;
+pub fn shared_set(core: &Core, nights: Option<Map<String, Value>>, triage: Option<Map<String, Value>>) -> Result<Value, String> {
+    let shared = set_in(&core.data_dir()?, nights, triage)?;
     follow_night(&shared);
     Ok(shared)
 }
@@ -338,20 +359,21 @@ mod tests {
         let old = r#"{"tabs":[],"active":null,"night":true,"triage":{"d:\\p":{"chat":"X","role":"r1"},"d:\\q":{"chat":"Y"}}}"#;
         fs::write(dir.join("state.json"), old).unwrap();
         let shared = load_in(&dir).unwrap();
-        assert_eq!(shared, json!({ "night": true, "triage": { "d:\\p": { "chat": "X", "role": "r1" }, "d:\\q": { "chat": "Y", "role": null } } }));
+        let triage = json!({ "d:\\p": { "chat": "X", "role": "r1" }, "d:\\q": { "chat": "Y", "role": null } });
+        assert_eq!(shared, json!({ "night": false, "nights": {}, "triage": triage }), "the old switch turns no project on");
         assert_eq!(read_json(&dir.join(SHARED_FILE)).unwrap(), shared, "the file is written");
         // From now on the file counts, not state.json.
-        fs::write(dir.join("state.json"), r#"{"night":false}"#).unwrap();
-        assert_eq!(load_in(&dir).unwrap()["night"], true);
+        fs::write(dir.join("state.json"), r#"{"triage":{}}"#).unwrap();
+        assert_eq!(load_in(&dir).unwrap()["triage"], triage);
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn without_any_file_the_switch_is_off_and_no_chat_is_known() {
         let dir = scratch("empty");
-        assert_eq!(load_in(&dir).unwrap(), json!({ "night": false, "triage": {} }));
+        assert_eq!(load_in(&dir).unwrap(), json!({ "night": false, "nights": {}, "triage": {} }));
         fs::write(dir.join(SHARED_FILE), "{ broken").unwrap();
-        assert_eq!(load_in(&dir).unwrap(), json!({ "night": false, "triage": {} }), "a broken file counts as none");
+        assert_eq!(load_in(&dir).unwrap(), json!({ "night": false, "nights": {}, "triage": {} }), "a broken file counts as none");
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -360,13 +382,37 @@ mod tests {
         let dir = scratch("merge");
         let records = |value: Value| value.as_object().cloned();
         set_in(&dir, None, records(json!({ "a": { "chat": "1", "role": null } }))).unwrap();
-        set_in(&dir, Some(true), None).unwrap();
+        set_in(&dir, records(json!({ "a": true })), None).unwrap();
         let shared = set_in(&dir, None, records(json!({ "b": { "chat": "2", "role": "m" } }))).unwrap();
-        assert_eq!(shared, json!({ "night": true, "triage": { "a": { "chat": "1", "role": null }, "b": { "chat": "2", "role": "m" } } }));
-        let shared = set_in(&dir, Some(false), records(json!({ "a": null, "c": { "role": "no chat" } }))).unwrap();
-        assert_eq!(shared, json!({ "night": false, "triage": { "b": { "chat": "2", "role": "m" } } }));
+        assert_eq!(shared, json!({ "night": false, "nights": { "a": true }, "triage": { "a": { "chat": "1", "role": null }, "b": { "chat": "2", "role": "m" } } }));
+        let shared = set_in(&dir, records(json!({ "a": false })), records(json!({ "a": null, "c": { "role": "no chat" } }))).unwrap();
+        assert_eq!(shared, json!({ "night": false, "nights": {}, "triage": { "b": { "chat": "2", "role": "m" } } }));
         assert_eq!(load_in(&dir).unwrap(), shared);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn night_mode_is_set_and_removed_per_project() {
+        let dir = scratch("nights");
+        let entries = |value: Value| value.as_object().cloned();
+        let shared = set_in(&dir, entries(json!({ "d:\\p": true, "d:\\q": true })), None).unwrap();
+        assert_eq!(shared["nights"], json!({ "d:\\p": true, "d:\\q": true }));
+        let shared = set_in(&dir, entries(json!({ "d:\\p": false })), None).unwrap();
+        assert_eq!(shared["nights"], json!({ "d:\\q": true }), "false removes only that project");
+        let shared = set_in(&dir, entries(json!({ "d:\\q": null, "d:\\r": "yes" })), None).unwrap();
+        assert_eq!(shared["nights"], json!({}), "null removes a project and a value that is not true counts as off");
+        fs::write(dir.join(SHARED_FILE), r#"{"night":true,"nights":{"a":true,"b":1,"c":false},"triage":{}}"#).unwrap();
+        assert_eq!(load_in(&dir).unwrap(), json!({ "night": false, "nights": { "a": true }, "triage": {} }), "only true entries stay");
+        fs::write(dir.join(SHARED_FILE), r#"{"night":true,"triage":{}}"#).unwrap();
+        assert_eq!(load_in(&dir).unwrap()["nights"], json!({}), "an old file with the switch on turns no project on");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_computer_stays_awake_while_one_project_has_night_mode() {
+        assert!(awake_wanted(&json!({ "night": false, "nights": { "d:\\p": true }, "triage": {} })));
+        assert!(!awake_wanted(&json!({ "night": false, "nights": {}, "triage": {} })));
+        assert!(!awake_wanted(&clean_shared(&json!({ "night": true }))), "the old switch keeps no computer awake");
     }
 
     #[test]

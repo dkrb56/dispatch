@@ -117,7 +117,7 @@ import { GIT_STATE_SIZE_KEY, ageText, diffRows, headLine, refChips, statusLetter
 import { initRules, openRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
 import { terminalTheme, themeName, themeTokens } from "./theme";
-import { nightAfterRead, nightAtStart, nightLines, nightLookOf, nightSyncLines } from "./night";
+import { nightButton, nightChanges, nightLines, nightSyncLines } from "./night";
 import { KEY_DOWN, KEY_ENTER, KEY_ESC, rcCommand, rcMenuFocus, rcSettled, rcView, type RcView, type RcWish } from "./remotecontrol";
 import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
 import { answeredLine, chosenCount, questionWaitToOpen, replyText, windowChoices, windowTitle } from "./answers";
@@ -2050,7 +2050,7 @@ function checkSwitch(pane: Pane, session: NonNullable<PaneInfo["session"]>, stat
   // Two windows can show one chat: only the window that drives the host closes it (why-are-there-two-chats).
   if (!mayDriveChat(driverOf(pane.host))) return hold("Another Dispatch window drives this host; it starts the new chat.");
   if (state.failedTokens === tokens) return hold("The last try did not close the chat; the next try comes after the next turn of triage.");
-  const reason = nightOf(pane.host)
+  const reason = nightOf(pane.host, pane.project)
     ? "Night mode is on; the new chat starts after it ends."
     : compactRuns(key)
       ? "A compaction of the chat runs."
@@ -2912,7 +2912,7 @@ function approvePlans(): void {
   for (const project of projectTasks.values()) {
     // Only the window that drives the project's host approves by itself (remote-shared-state).
     if (!driverOf(project.host)) continue;
-    const night = nightOf(project.host);
+    const night = nightOf(project.host, project.cwd);
     const tasks = projectTaskList(project);
     // A paused project gets no answer of night mode (ticket pause-tasks, user decision 4).
     if (night && !project.paused) nightDefaults(project, tasks);
@@ -3083,35 +3083,48 @@ function taskLeftovers(project: ProjectTasks, info: TaskInfo | null | undefined)
 // file. Dispatch takes the defaults that wait in its cards: a plan whose decisions all have a
 // default is approved (above), a question of a worker gets its recommended option. A HOLD plan and
 // a report that needs a permission stay for the user; triage hears of them once.
-// The switch is the one state (nightmode-switch-sync): it is kept in state.json next to the tabs,
-// and at each start and each new triage chat Dispatch compares it with the chat's night file and
-// sends the skill command when the chat is behind. The texts and rules are in src/night.ts.
+// Each project has its own switch, the Night button next to Pause (ticket
+// i-need-per-project-nightmode-option): a click in one window never turns on a project that it
+// does not show. At each start and each new triage chat Dispatch compares the switch of the project
+// with the chat's night file and sends the skill command when the chat is behind. The texts and
+// rules are in src/night.ts.
 
 /**
- * Night mode of each backend: in its shared file (`shared.json`), field `night`. Each host keeps its
- * own switch (remote-multi-host); the one switch of the top bar shows them together.
+ * Night mode of each project, by backend: the path keys of the projects that are on, from the
+ * shared file (`shared.json`, field `nights`) of the program that does the work. A project that is
+ * missing is off.
  */
-const nightStates = new Map<HostId, boolean>();
+const nightStates = new Map<HostId, Set<string>>();
 
-/** Whether night mode is on for the projects of a backend. */
-function nightOf(host: HostId): boolean {
-  return nightStates.get(host) ?? false;
+/** Whether night mode is on for a project of a backend. */
+function nightOf(host: HostId, root: string | null | undefined): boolean {
+  return nightStates.get(host)?.has(pathKey(root)) ?? false;
 }
 
-/** The backends that the switch shows: the reachable ones; a host that is gone keeps its switch. */
-function nightHosts(): HostId[] {
-  const shown = backends().filter(reachable);
-  return shown.length > 0 ? shown : backends();
+/** The projects that this window shows: each workspace and each Focus column, each once. */
+function nightShownRefs(): ProjectRef[] {
+  const refs = new Map<string, ProjectRef>();
+  for (const ref of workspaceRefs()) refs.set(refKey(ref), ref);
+  for (const column of focusColumns.values()) refs.set(refKey(column), { host: column.host, root: column.root });
+  return [...refs.values()];
 }
 
-/** The look of the one switch: on, off, or mixed when the backends differ (the rule of nightLookOf in src/night.ts). */
-function nightLook(): "on" | "off" | "mixed" {
-  return nightLookOf(backends().map((host) => ({ on: nightOf(host), reachable: reachable(host) })));
-}
-
-/** Night mode is on for at least one backend. */
+/** Night mode is on for at least one project of this window. */
 function nightAny(): boolean {
-  return backends().some(nightOf);
+  return nightShownRefs().some((ref) => nightOf(ref.host, ref.root));
+}
+
+/**
+ * Takes the night mode of each project of one backend from its shared file: a project missing in
+ * the file is off. Gives true when a project turned on. Sends no line to triage: the window of the
+ * click sends the lines.
+ */
+function takeNights(host: HostId, saved: Readonly<Record<string, true>>): boolean {
+  const { on, off } = nightChanges(nightStates.get(host) ?? new Set(), saved);
+  if (on.length === 0 && off.length === 0) return false;
+  nightStates.set(host, new Set(Object.keys(saved)));
+  showNightButtons();
+  return on.length > 0;
 }
 /** The questions and held points that night mode handled, by task and report or plan time. */
 const nightDone = new Set<string>();
@@ -3168,43 +3181,38 @@ function nightProjects(host: HostId): string[] {
   return [...keys];
 }
 
-function showNight(): void {
-  const button = document.querySelector<HTMLButtonElement>("#night-mode")!;
-  const look = nightLook();
-  button.setAttribute("aria-checked", look === "mixed" ? "mixed" : String(look === "on"));
-  // The word says mixed too: the knob in the middle alone was read as on (title-nightmode-switch-shows-on-but-this).
-  button.querySelector("span")!.textContent = look === "mixed" ? "Nightmode: mixed" : "Nightmode";
-  if (look === "mixed") {
-    const shown = nightHosts();
-    const on = shown.filter(nightOf).map(backendName);
-    const off = shown.filter((host) => !nightOf(host)).map(backendName);
-    button.title = `Nightmode differs between the hosts: on for ${on.join(", ")}, off for ${off.join(", ")}. Click to turn it on for every host.`;
-    return;
+/** The Night button of each project: its text, tooltip and pressed state. */
+function showNightButtons(): void {
+  for (const button of document.querySelectorAll<HTMLButtonElement>(".project-night")) {
+    const on = nightOf(button.dataset.host ?? LOCAL, button.dataset.root);
+    const look = nightButton(on);
+    button.textContent = look.text;
+    button.title = look.title;
+    button.setAttribute("aria-pressed", String(on));
   }
-  button.title = look === "on"
-    ? "Nightmode is on: decisions take their recommended default, HOLD items and permissions wait for you. Click to end it and get the morning list. Dispatch keeps the switch over a restart, and the triage chats follow it. This PC stays awake while it is on (the display may turn off); with a host, the host's PC stays awake."
-    : "Nightmode is off. Turn it on when you go away: work goes on with the recommended default for each decision, and you get a morning list. Dispatch keeps the switch over a restart, and the triage chats follow it. While it is on, the PC that does the work does not go to sleep.";
 }
 
 /**
- * Sets night mode of every reachable backend (remote-multi-host). A backend that has it already
- * gets no line; a host that is gone keeps its own switch.
+ * Sets night mode of one project. Only this project changes, also on a host that other windows
+ * use; a project that has it already gets no line.
  */
-function setNight(on: boolean): void {
-  const changed = nightHosts().filter((host) => nightOf(host) !== on);
-  if (changed.length === 0) return;
-  for (const host of changed) {
-    nightStates.set(host, on);
-    // The switch is kept in the shared file of the host, so every window shows it (remote-shared-state).
-    void call(host, "shared_set", { night: on }).catch((error) => console.error("save of the night switch failed", error));
-    for (const project of nightProjects(host)) {
-      // Triage knows only its rule "only the Approve click of the user starts a work run" (2026-11-09:
-      // it told the user that nothing gets built overnight). The line after the skill command says
-      // what Dispatch does itself while night mode is on.
-      for (const line of nightLines(on)) tellTriage(project, line);
-    }
+function setProjectNight(ref: ProjectRef, on: boolean): void {
+  if (nightOf(ref.host, ref.root) === on) return;
+  const path = pathKey(ref.root);
+  const keys = nightStates.get(ref.host) ?? new Set<string>();
+  if (on) keys.add(path);
+  else keys.delete(path);
+  nightStates.set(ref.host, keys);
+  // The switch is kept in the shared file of the host, so every window shows it (remote-shared-state).
+  void call(ref.host, "shared_set", { nights: { [path]: on } }).catch((error) => console.error("save of the night switch failed", error));
+  const project = refKey(ref);
+  if (nightProjects(ref.host).includes(project)) {
+    // Triage knows only its rule "only the Approve click of the user starts a work run" (2026-11-09:
+    // it told the user that nothing gets built overnight). The line after the skill command says
+    // what Dispatch does itself while night mode is on.
+    for (const line of nightLines(on)) tellTriage(project, line);
   }
-  showNight();
+  showNightButtons();
   if (on) approvePlans();
 }
 
@@ -3220,7 +3228,7 @@ async function syncNight(host: HostId, root: string): Promise<void> {
     const file = await call<boolean | null>(host, "night_state", { root });
     const project = projectKey(host, root);
     // The start check and the new-chat check can meet: a line that already waits is not queued twice.
-    const lines = nightSyncLines(nightOf(host), file ?? null);
+    const lines = nightSyncLines(nightOf(host, root), file ?? null);
     if (lines.every((text) => triageQueue.some((line) => line.project === project && line.text === text))) return;
     for (const line of lines) tellTriage(project, line);
   } catch (error) {
@@ -4375,21 +4383,18 @@ function claimDriver(): void {
 }
 
 /**
- * The shared state of a host that another window may have changed: the switch shows its new state
- * without a line for triage (the window of the click sends the lines), and each triage chat of the
- * shared file replaces the one of this window.
+ * The shared state of a host that another window may have changed: the Night buttons show the new
+ * state of each project without a line for triage (the window of the click sends the lines), and
+ * each triage chat of the shared file replaces the one of this window.
  */
 function applyShared(host: HostId, state: SharedState): void {
-  if (state.night !== nightOf(host)) {
-    nightStates.set(host, state.night);
-    showNight();
-  }
+  takeNights(host, state.nights);
   takeTriageRecords(host, state.triage);
 }
 
 /**
- * At each worker poll: reads the night field of this PC when it does work, and in the mode "Use
- * hosts" the shared state of every host, then reports for its lease.
+ * At each worker poll: reads the night mode of the projects of this PC when it does work, and in
+ * the mode "Use hosts" the shared state of every host, then reports for its lease.
  */
 async function pollShared(): Promise<void> {
   // The night field of this PC is read at each poll too: another Dispatch program with the same data
@@ -4397,12 +4402,7 @@ async function pollShared(): Promise<void> {
   // Only the night field: the triage records of this PC stay those of this window.
   if (localWorks()) {
     try {
-      const night = nightAfterRead(nightOf(LOCAL), parseShared(await call(LOCAL, "shared_load")).night);
-      if (night !== nightOf(LOCAL)) {
-        nightStates.set(LOCAL, night);
-        showNight();
-        if (night) approvePlans();
-      }
+      if (takeNights(LOCAL, parseShared(await call(LOCAL, "shared_load")).nights)) approvePlans();
     } catch (error) {
       console.warn("shared state read failed", backendName(LOCAL), error);
     }
@@ -4425,8 +4425,6 @@ async function pollShared(): Promise<void> {
       }
     }),
   );
-  // A host that came back or went away changes the look of the switch.
-  showNight();
 }
 
 /** A line for the triage chat of a project. It waits until triage can take it. */
@@ -7267,7 +7265,7 @@ function taskAttentionWait(task: Task): AttentionWait | null {
   const key = `${projectKey(task.project?.host ?? LOCAL, task.project?.cwd ?? "")}|${task.name}`;
   if (approvalQueued(task)) return null;
   // A part without the night box waits for the click of the user at night, as a HOLD plan (ticket subtickets).
-  const holds = !!info?.hold || (!!info?.nightHold && nightOf(task.project?.host ?? LOCAL));
+  const holds = !!info?.hold || (!!info?.nightHold && nightOf(task.project?.host ?? LOCAL, task.project?.cwd));
   if (planReady(task) && info?.plan) return { key, kind: holds ? "hold" : "plan", stamp: String(info.plan.modified) };
   const report = String(info?.report?.modified ?? "");
   if (repeatedQuestionsOf(task)) return { key, kind: "repeat", stamp: report };
@@ -9037,6 +9035,7 @@ function showPauseButtons(): void {
     button.title = look.title;
     button.setAttribute("aria-pressed", String(paused));
   }
+  showNightButtons();
   for (const el of document.querySelectorAll<HTMLElement>(".auto-switch")) {
     const paused = projectPaused(el.dataset.project ?? "");
     const look = autoSwitch(paused);
@@ -10143,7 +10142,7 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
       const base = { key: `${key}|${task.name}`, scope, name: task.name, project: projectName({ host: project.host, root: project.cwd }), text: taskStatus(task).text };
       if (planReady(task) && !approvalQueued(task) && info?.plan) {
         // A part without the night box waits for the click of the user at night (ticket subtickets).
-        const holds = info.hold || (!!info.nightHold && nightOf(project.host));
+        const holds = info.hold || (!!info.nightHold && nightOf(project.host, project.cwd));
         waits.push({ ...base, kind: holds ? "hold" : "plan", stamp: String(info.plan.modified) });
       } else if (openQuestions(task).length > 0 && info?.report) {
         waits.push({ ...base, kind: "question", stamp: String(info.report.modified) });
@@ -11802,7 +11801,7 @@ const FOLDER_ICON =
   '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" /></svg>';
 
 /**
- * The buttons of one project (topbar-projects): Tickets (ticket tickets), Tokens (ticket token-usage), Actions (ticket project-actions), Pause, Rules, Setup, Git state (ticket add-git-state-button-to-the-project), "N old" and the folder button. They
+ * The buttons of one project (topbar-projects): Tickets (ticket tickets), Tokens (ticket token-usage), Actions (ticket project-actions), Pause, Night (ticket i-need-per-project-nightmode-option), Rules, Setup, Git state (ticket add-git-state-button-to-the-project), "N old" and the folder button. They
  * stand in the head row above the workspace in Details and in the head of the column in Focus. Each acts on
  * this project, not on the focused terminal. "N old" is hidden while the project has no old session.
  */
@@ -11843,6 +11842,12 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   const pause = tool("Pause", "", () => void setPaused(ref, !projectPaused(key)));
   pause.classList.add("project-pause");
   pause.dataset.project = key;
+  // Night mode of this project only (ticket i-need-per-project-nightmode-option): `showNightButtons` sets the text and the pressed state.
+  const night = tool("Night", "", () => setProjectNight(ref, !nightOf(ref.host, ref.root)));
+  night.classList.add("project-night");
+  night.dataset.project = key;
+  night.dataset.host = ref.host;
+  night.dataset.root = ref.root;
   const rules = tool("Rules", `Show the rules that Claude Code gets in ${name}`, () => openRules(ref.host, ref.root));
   const setup = tool("Setup", `Prepare ${name} for triage and workers: the Setup pipeline window`, () => {
     calmSetup(key);
@@ -11863,7 +11868,7 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   // The Git state window (ticket add-git-state-button-to-the-project): history, branch and uncommitted files; it changes nothing.
   const gitState = tool("Git state", `See the commit history and the uncommitted files of ${name}; the window changes nothing`, () => openGitState(ref));
   gitState.classList.add("project-git-state");
-  el.append(tickets, addTicket, tokensButton, actions, pause, rules, setup, gitState, oldEl, folder);
+  el.append(tickets, addTicket, tokensButton, actions, pause, night, rules, setup, gitState, oldEl, folder);
   showOldButton(oldEl, key);
   showTicketButtons();
   markSetupButton(setup, key, name);
@@ -13434,7 +13439,7 @@ async function refreshFocusTasks(onlyWhenChanged = false): Promise<void> {
     if (waitingTickets(key).length > 0 || projectPending(key).length > 0) roots.set(key, { host: pane.host, root: pane.project });
   }
   for (const pane of panes.values()) {
-    if (pane.role === "triage" && pane.project && nightOf(pane.host)) roots.set(paneKey(pane), { host: pane.host, root: pane.project });
+    if (pane.role === "triage" && pane.project && nightOf(pane.host, pane.project)) roots.set(paneKey(pane), { host: pane.host, root: pane.project });
   }
   if (roots.size === 0) return;
   let changed = false;
@@ -14594,10 +14599,8 @@ async function start(): Promise<void> {
   );
   initHostMode(reattach);
   initOwnHostBar(ownHostRuns, () => useOwnHost(() => saveState()), () => stopOwnHost(() => saveState()));
-  // After a lost connection the host may have a newer switch and newer triage chats (remote-shared-state).
-  // A host that goes or comes changes the look of the switch (remote-multi-host).
+  // After a lost connection the host may have newer night switches and newer triage chats (remote-shared-state).
   onConnection((host, connection) => {
-    showNight();
     if (connection.state !== "connected" || connection.first) return;
     void call(host, "shared_load")
       .then((reply) => applyShared(host, parseShared(reply)))
@@ -14688,7 +14691,7 @@ async function start(): Promise<void> {
   // Night mode and the triage chats come from the shared file of each backend (remote-shared-state,
   // remote-multi-host), before the tabs open, so the first task reads see the switch and each triage
   // pane continues its chat. Its first read takes both from state.json of today's format. Without a
-  // reply (the host is not reachable) its switch starts off, and a later connection brings the values.
+  // reply (the host is not reachable) its projects start off, and a later connection brings the values.
   const shared = await Promise.all(
     backends().map(async (host) => {
       try {
@@ -14699,17 +14702,9 @@ async function start(): Promise<void> {
       }
     }),
   );
-  // The old browser value (before nightmode-switch-sync) counts only in the mode "This PC does the
-  // work", and only when the shared file gives no value.
-  let legacyNight: string | null = null;
-  try {
-    if (localWorks()) legacyNight = localStorage.getItem("night-mode");
-  } catch {
-    // No old value: the switch takes the shared value or starts off.
-  }
-  // The old browser value belongs to this PC only (remote-mixed-mode).
-  for (const [host, state] of shared) nightStates.set(host, nightAtStart(state?.night, host === LOCAL ? legacyNight : null));
-  showNight();
+  // Night mode of each project (ticket i-need-per-project-nightmode-option): the old switch of a
+  // whole PC and the old browser value turn no project on.
+  for (const [host, state] of shared) nightStates.set(host, new Set(Object.keys(state?.nights ?? {})));
   loadTriageRecords(shared.map(([host, state]) => [host, state?.triage] as const));
   for (const saved of loaded?.tabs ?? []) {
     const tab = "layout" in saved ? saved : { id: saved.id, layout: saved, focus: saved.id };
@@ -14736,7 +14731,7 @@ async function start(): Promise<void> {
   if (usesHosts()) {
     await Promise.all(leaseHosts().map((host) => reportDriver(host, false).catch((error) => console.warn("report for the lease failed", backendName(host), error))));
   }
-  // The resumed triage chats follow the switch of their host: each gets the skill command when its night file differs.
+  // The resumed triage chats follow the switch of their project: each gets the skill command when its night file differs.
   for (const ref of workspaceRefs()) {
     if ([...panes.values()].some((pane) => pane.role === "triage" && paneKey(pane) === refKey(ref))) void syncNight(ref.host, ref.root);
   }
@@ -14749,10 +14744,7 @@ async function start(): Promise<void> {
   }
   focusAddEl.addEventListener("click", () => void addFocusProject().catch((error) => console.error("focus project failed", error)));
   focusSplitEl.addEventListener("click", () => setFocusSplit(toggleSplit(focusSplit)));
-  // Night mode: the click of the switch (its state came from state.json above).
   loadQueued();
-  // A click on "on" turns every host off; on "off" or on the mixed look it turns every host on (remote-multi-host).
-  document.querySelector("#night-mode")!.addEventListener("click", () => setNight(nightLook() !== "on"));
   let mode = "tabs";
   try {
     mode = localStorage.getItem("view-mode") ?? "tabs";

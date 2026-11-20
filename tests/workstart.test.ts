@@ -355,5 +355,5 @@ test("subtickets: night mode does not start a part without the night box; by day
   assert.deepEqual(chooseStart(facts(true, false, [{ ...held, nightHold: false }])), { task: "t-part", kind: "night" }, "the box is ticked");
   const body = MAIN.slice(MAIN.indexOf("function approvePlans("), MAIN.indexOf("function nextQueued("));
   assert.match(body, /nightHold: !!task\.info\?\.nightHold,/);
-  assert.match(MAIN, /const holds = info\.hold \|\| \(!!info\.nightHold && nightOf\(project\.host\)\);/);
+  assert.match(MAIN, /const holds = info\.hold \|\| \(!!info\.nightHold && nightOf\(project\.host, project\.cwd\)\);/);
 });

@@ -268,9 +268,9 @@ pub fn run(
         "build_folders" => json(builds::build_folders(a.req("cwd")?)?),
         "build_clean" => json(builds::build_clean(a.req("cwd")?)?),
         "dir_list" => json(info::dir_list(core, a.opt("path")?)?),
-        // The Nightmode switch and the triage chats that all windows share (remote-shared-state).
+        // Night mode of each project and the triage chats that all windows share (remote-shared-state).
         "shared_load" => json(store::shared_load(core)?),
-        "shared_set" => json(store::shared_set(core, a.opt("night")?, a.opt("triage")?)?),
+        "shared_set" => json(store::shared_set(core, a.opt("nights")?, a.opt("triage")?)?),
         // The open projects of each window: the phone page shows the union of the live windows.
         "workspaces_set" => json(store::workspaces_set(core, window, a.req("roots")?)?),
         "workspaces_get" => json(store::workspaces_get(core, &clients.live_windows())?),

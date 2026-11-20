@@ -99,17 +99,18 @@ test("the bar rule: a project without a workspace is never the open group", () =
   assert.deepEqual(barItems([], new Set(), null), []);
 });
 
-test("the page has no tab strip, and Chats stands directly before Nightmode", () => {
+test("the page has no tab strip, and Chats stands directly before the pane buttons", () => {
   const html = read("../index.html");
   const main = read("../src/main.ts");
   assert.doesNotMatch(html, /id="tabs"/);
   assert.doesNotMatch(main, /tabsEl/);
   assert.doesNotMatch(main, /className = "tab"/);
-  // Between Chats and Nightmode stand only the hidden alert buttons.
-  const between = html.match(/<button id="toggle-chats"[\s\S]*?<\/button>([\s\S]*?)<button id="night-mode"/);
-  assert.ok(between, "Chats stands before Nightmode");
+  // Between Chats and the pane buttons stand only the hidden alert buttons (the Nightmode switch of the
+  // bar is gone: each project has its own Night button, ticket i-need-per-project-nightmode-option).
+  const between = html.match(/<button id="toggle-chats"[\s\S]*?<\/button>([\s\S]*?)<div id="pane-tools"/);
+  assert.ok(between, "Chats stands before the pane buttons");
   const ids = [...between[1].matchAll(/<(\w+) id="([^"]+)"/g)].map((m) => m[2]);
-  assert.ok(ids.every((id) => id.endsWith("-alert")), `only alerts between Chats and Nightmode: ${ids.join(", ")}`);
+  assert.ok(ids.every((id) => id.endsWith("-alert")), `only alerts between Chats and the pane buttons: ${ids.join(", ")}`);
 });
 
 test("a waiting pill has no orange frame, and the buttons of Details stand in the head above the workspace", () => {

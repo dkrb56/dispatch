@@ -89,8 +89,8 @@ pub fn shared_load(core: State<Core>) -> Result<Value, String> {
 }
 
 #[tauri::command]
-pub fn shared_set(core: State<Core>, night: Option<bool>, triage: Option<Map<String, Value>>) -> Result<Value, String> {
-    store::shared_set(&core, night, triage)
+pub fn shared_set(core: State<Core>, nights: Option<Map<String, Value>>, triage: Option<Map<String, Value>>) -> Result<Value, String> {
+    store::shared_set(&core, nights, triage)
 }
 
 #[tauri::command(async)]

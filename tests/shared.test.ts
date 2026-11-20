@@ -4,14 +4,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DRIVER_CLAIM_MS, parseShared, SHARED_POLL_MS } from "../src/shared.ts";
 
-test("a full reply keeps the switch and each triage chat", () => {
-  const reply = { night: true, triage: { "d:\\p": { chat: "X", role: "r1" }, "d:\\q": { chat: "Y", role: null } } };
+test("a full reply keeps the night mode of each project and each triage chat", () => {
+  const reply = { nights: { "d:\\p": true as const }, triage: { "d:\\p": { chat: "X", role: "r1" }, "d:\\q": { chat: "Y", role: null } } };
   assert.deepEqual(parseShared(reply), reply);
 });
 
-test("a reply without fields gives off and no chat", () => {
-  for (const reply of [null, undefined, {}, "text", 3]) assert.deepEqual(parseShared(reply), { night: false, triage: {} }, String(reply));
-  assert.equal(parseShared({ night: "true" }).night, false, "only the boolean true is on");
+test("a reply without fields gives no project in night mode and no chat", () => {
+  for (const reply of [null, undefined, {}, "text", 3]) assert.deepEqual(parseShared(reply), { nights: {}, triage: {} }, String(reply));
+});
+
+test("night mode per project: only the boolean true is on, and the old switch of the PC counts no more", () => {
+  assert.deepEqual(parseShared({ nights: { a: true, b: "true", c: 1, d: false, e: null } }).nights, { a: true });
+  assert.deepEqual(parseShared({ nights: ["d:\\p"] }).nights, {}, "a list is no map");
+  assert.deepEqual(parseShared({ nights: "d:\\p" }).nights, {}, "a text is no map");
+  assert.deepEqual(parseShared({ night: true }).nights, {}, "the old switch turns no project on");
 });
 
 test("a broken record is dropped and a missing role is null", () => {
