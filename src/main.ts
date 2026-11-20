@@ -12063,13 +12063,24 @@ function dragFrom(handle: HTMLElement, start: () => void, move: (dx: number, dy:
   });
 }
 
-/** The handle on the right of a left panel: its width. */
+/**
+ * The handle on the right of a left panel: its width. The board keeps `FOCUS_BOARD_MIN`, and a terminal
+ * beside the board keeps `FOCUS_TERM_MIN`.
+ */
 function dragSide(handle: HTMLElement, key: string, sideEl: HTMLElement): void {
   let width = 0;
+  let max = FOCUS_SIDE_MAX;
   dragFrom(
     handle,
-    () => (width = sideEl.getBoundingClientRect().width),
-    (dx) => (sideEl.style.width = `${Math.round(Math.min(FOCUS_SIDE_MAX, Math.max(FOCUS_SIDE_MIN, width + dx)))}px`),
+    () => {
+      width = sideEl.getBoundingClientRect().width;
+      const body = sideEl.parentElement;
+      const termBeside = body?.querySelector(".focus-work:not(.stacked) > .focus-terminal:not([hidden])");
+      // The board needs its padding (18px) and each handle about 1px of the row.
+      const room = (body?.getBoundingClientRect().width ?? 0) - FOCUS_BOARD_MIN - 18 - (termBeside ? FOCUS_TERM_MIN + 1 : 0) - 1;
+      max = Math.max(FOCUS_SIDE_MIN, Math.min(FOCUS_SIDE_MAX, room));
+    },
+    (dx) => (sideEl.style.width = `${Math.round(Math.min(max, Math.max(FOCUS_SIDE_MIN, width + dx)))}px`),
     () => saveFocusSize(key, { side: Math.round(sideEl.getBoundingClientRect().width) }),
   );
   handle.addEventListener("dblclick", () => {
@@ -12186,7 +12197,9 @@ function dragColumns(handle: HTMLElement, key: string, el: HTMLElement): void {
       };
       sizes = [size(el), size(next)];
       // The lowest height of a row depends on the text size and on its open panels: the styles hold it.
-      const least = (box: HTMLElement | null) => (stacked ? (box ? parseFloat(getComputedStyle(box).minHeight) || 0 : 0) : FOCUS_COL_MIN);
+      // The lowest width of a column depends on its open panels too (side panel, board, terminal).
+      const least = (box: HTMLElement | null) =>
+        stacked ? (box ? parseFloat(getComputedStyle(box).minHeight) || 0 : 0) : box ? parseFloat(getComputedStyle(box).minWidth) || FOCUS_COL_MIN : FOCUS_COL_MIN;
       mins = [least(el), least(next)];
       total = Number(el.style.flexGrow || 1) + Number(next?.style.flexGrow || 1);
     },

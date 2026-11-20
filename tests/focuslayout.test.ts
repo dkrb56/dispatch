@@ -228,3 +228,19 @@ test("the page: the column tabs and the Details switch of the terminal have thei
   assert.match(html, /The <b>Details<\/b> switch above the terminal shows its side panel with Environment, Context and Outputs[^<]*off at each start/);
   assert.doesNotMatch(html, /<b>Workers<\/b> in the head of a column/);
 });
+
+test("a narrow column keeps room for its board: panel and terminal shrink first, then the row scrolls", () => {
+  const css = read("../src/styles.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.match(css, /\n\.focus-side\s*\{[^}]*flex:\s*0 1 auto[^}]*min-width:\s*180px/);
+  assert.match(css, /\.focus-work:not\(\.stacked\) > \.focus-terminal\s*\{[^}]*flex:\s*0 1 auto[^}]*min-width:\s*240px/);
+  assert.match(css, /\.focus-col:not\(\.min\)\s*\{[^}]*min-width:\s*\d+px/);
+  assert.match(css, /\.focus-col:not\(\.min\):has\(\.focus-work:not\(\.stacked\) > \.focus-terminal:not\(\[hidden\]\)\)\s*\{[^}]*min-width:\s*\d+px/);
+  assert.doesNotMatch(css, /\n\.focus-main\s*\{[^}]*min-width:\s*0/);
+  const main = read("../src/main.ts");
+  // A drag of a column edge stops at the room that the panels of the column need.
+  assert.match(main, /parseFloat\(getComputedStyle\(box\)\.minWidth\) \|\| FOCUS_COL_MIN/);
+  // A drag of the panel edge leaves the board (and a terminal beside it) its room.
+  assert.match(main, /function dragSide[\s\S]*?FOCUS_BOARD_MIN[\s\S]*?FOCUS_TERM_MIN[\s\S]*?\n\}/);
+  const html = read("../index.html");
+  assert.match(html, /When the projects do not fit side by side, the task panel and the terminal get narrower first, then the row scrolls sideways\./);
+});

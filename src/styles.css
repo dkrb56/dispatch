@@ -6929,7 +6929,9 @@ body.focus-mode #chats {
   display: none;
 }
 
-/* Each column takes its share (flex-grow, set by a drag) of the width; below 360px the row scrolls. */
+/* Each column takes its share (flex-grow, set by a drag) of the width; a column keeps room for its
+   panels, and when the columns do not fit the row scrolls (ticket i-added-fourth-project-to-the-focus-mode).
+   A column never clips, so without this room a board would paint over the next column. */
 .focus-col {
   position: relative;
   display: flex;
@@ -6937,6 +6939,17 @@ body.focus-mode #chats {
   flex-direction: column;
   min-width: 360px;
   border-right: 1px solid var(--hairline);
+}
+
+/* The room of a normal column: the left panel at FOCUS_SIDE_MIN (180px), the board at FOCUS_BOARD_MIN
+   (240px) with its padding (18px), the handles and the border; with the terminal beside the board also
+   FOCUS_TERM_MIN (240px) and its handle. Keep these numbers equal to the constants in src/main.ts. */
+.focus-col:not(.min) {
+  min-width: 450px;
+}
+
+.focus-col:not(.min):has(.focus-work:not(.stacked) > .focus-terminal:not([hidden])) {
+  min-width: 690px;
 }
 
 /* The drag handles: on the right edge of a column (not the last), and between the left panel and the chat. */
@@ -7072,11 +7085,12 @@ body.chats-sized .focus-side {
 /* The left column of a project: its triage chat and its tasks, like the chat panel. */
 .focus-side {
   display: flex;
-  flex: none;
+  flex: 0 1 auto;
   flex-direction: column;
   gap: 2px;
   box-sizing: border-box;
   width: calc(248px * var(--text-scale));
+  min-width: 180px; /* FOCUS_SIDE_MIN in src/main.ts: the panel gets narrower before the board does */
   padding: 4px 8px 12px;
   overflow-y: auto;
   border-right: 1px solid var(--hairline);
@@ -7095,7 +7109,7 @@ body.chats-sized .focus-side {
   flex: 1;
   flex-direction: column;
   gap: 6px;
-  min-width: 0;
+  min-width: 240px; /* FOCUS_BOARD_MIN in src/main.ts */
   padding: 6px;
 }
 
@@ -7224,6 +7238,13 @@ body.chats-sized .focus-side {
 
 .focus-terminal[hidden] {
   display: none;
+}
+
+/* Beside the board the terminal gets narrower than its width down to FOCUS_TERM_MIN (src/main.ts)
+   when the column is narrow; it gets its width back when there is room. */
+.focus-work:not(.stacked) > .focus-terminal {
+  flex: 0 1 auto;
+  min-width: 240px;
 }
 
 /* The terminal, its handle and the board (ticket i-need-an-option-to-split-terinal-and): side by side,
