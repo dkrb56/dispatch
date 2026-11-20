@@ -1504,12 +1504,21 @@ function Get-Workers {
 
 # Claude Code marks a session that ended its turn with a question as blocked, like a session at a
 # permission prompt. Only the prompt waits (status waiting); the question is in the report, and
-# the session is done: a resume of it is no copy.
+# the session is done: a resume of it is no copy. Claude Code can also keep a session at working
+# after its turn ended (status idle). A run "<ticket> [plan]" or "<ticket> [work]" that is idle and
+# wrote its plan or report at or after its start is done. Busy and shell still run.
 function Worker-State($Worker) {
   if ($null -eq $Worker) { return '' }
   $state = "$($Worker.state)"
   if (-not $state) { return "$($Worker.status)" }
   if ($state -eq 'blocked' -and "$($Worker.status)" -ne 'waiting') { return 'done' }
+  if ($state -eq 'working' -and "$($Worker.status)" -eq 'idle' -and "$($Worker.name)" -match '^(.+) \[(plan|work)\]$') {
+    $file = if ($Matches[2] -eq 'plan') { Join-Path (Join-Path $Reports 'plans') "$($Matches[1]).md" } else { Join-Path $Reports "$($Matches[1]).md" }
+    if (Test-Path -LiteralPath $file -PathType Leaf) {
+      $written = [DateTimeOffset]::new((Get-Item -LiteralPath $file).LastWriteTimeUtc).ToUnixTimeMilliseconds()
+      if ($Worker.startedAt -and $written -ge [int64]$Worker.startedAt) { return 'done' }
+    }
+  }
   $state
 }
 
@@ -9334,6 +9343,26 @@ if (args[0] === 'agents') {
         assert_eq!(&last_call(&fake)[1..6], ["--resume", "sess-1", "--bg", "--name", "t-1 [work]"]);
         let (code, out) = run_script(&project, &fake, "done", &["status"]);
         assert!(code == 0 && out.contains("t-1\tworking\tdone"), "{out}");
+        // Claude Code can keep a run at working after its turn ended (ticket
+        // title-task-card-shows-working-after-the): idle with the report of this run is done, idle
+        // without a report still works. The fake run starts at 1 ms, so any report is newer.
+        let report = project.reports.join("t-1.md");
+        let kept = fs::read_to_string(&report).ok();
+        if kept.is_some() {
+            fs::remove_file(&report).unwrap();
+        }
+        let (code, out) = run_script(&project, &fake, "working/idle", &["status"]);
+        assert!(code == 0 && out.contains("t-1\tworking\tworking"), "{out}");
+        write_file(&report, "state: done\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "working/idle", &["status"]);
+        assert!(code == 0 && out.contains("t-1\tworking\tdone"), "{out}");
+        // A session that still runs stays working, also with a report.
+        let (code, out) = run_script(&project, &fake, "working/busy", &["status"]);
+        assert!(code == 0 && out.contains("t-1\tworking\tworking"), "{out}");
+        match kept {
+            Some(text) => write_file(&report, &text).unwrap(),
+            None => fs::remove_file(&report).unwrap(),
+        }
         fs::remove_file(project.reports.join("fake-name.txt")).unwrap();
 
         // The model and the effort of the task (ticket ticket-form-optional-fields-on-a-new): the line of

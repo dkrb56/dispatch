@@ -336,7 +336,7 @@ test("steps after the run: the last started step ends with the report, else with
   assert.equal(stepRows(steps, false, ms(50), null)[3].state, "waiting");
 });
 
-test("steps: time order decides, and a skipped step stays without a time", () => {
+test("steps: time order decides, and a skipped step before a started one is done without a time", () => {
   const rows = stepRows(
     [
       { number: 1, text: "One", startedAt: at(20) },
@@ -350,11 +350,29 @@ test("steps: time order decides, and a skipped step stays without a time", () =>
   );
   assert.deepEqual(shape(rows), [
     [1, "current", null],
-    [2, "waiting", null],
+    [2, "done", null],
     [3, "done", 15_000],
     [4, "waiting", null],
   ]);
+  assert.equal(rows[1].since, null);
   assert.deepEqual(stepRows([], true, null, null), []);
+});
+
+test("steps: unannounced steps of a finished run are done (ticket title-task-card-shows-working-after-the)", () => {
+  // The run of title-project-rail-focus-as-the-only: steps 6 and 7 got no line of their own, step 8 did.
+  const run = [1, 2, 3, 4, 5, 6, 7, 8].map((number) => ({
+    number,
+    text: `Step ${number}`,
+    startedAt: number === 6 || number === 7 ? null : at(number * 10),
+  }));
+  const rows = stepRows(run, false, ms(100), null);
+  assert.deepEqual(shape(rows).slice(4), [
+    [5, "done", 30_000],
+    [6, "done", null],
+    [7, "done", null],
+    [8, "done", 20_000],
+  ]);
+  assert.deepEqual([rows[5].since, rows[6].since], [null, null]);
 });
 
 test("steps: two steps with one start time keep the order of the plan", () => {

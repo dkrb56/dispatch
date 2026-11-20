@@ -180,6 +180,17 @@ impl Worker {
             self.waiting_for = None;
         }
     }
+
+    /// Claude Code can keep a session at `working` after its turn ended (ticket
+    /// title-task-card-shows-working-after-the: job 73d83b4a stayed `working` for 30 minutes after
+    /// its last line). The session is then `idle`. A run of the pipeline that is idle and wrote its
+    /// result (the plan or the report) in this run is done. `busy` and `shell` still run: a
+    /// background command can go on by itself. `held` stays: Claude Code still holds the session.
+    fn settle_turn_end(&mut self, result_written: bool) {
+        if self.state.as_deref() == Some("working") && self.status.as_deref() == Some("idle") && result_written {
+            self.state = Some("done".to_string());
+        }
+    }
 }
 
 /// An agent counts as active when Claude Code wrote to its transcript in this time.
@@ -325,12 +336,23 @@ pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
                 .filter_map(|(_, _, other)| other.filter(|other| *other > start))
                 .min()
         });
-        let modified = |ticket: &str, plan: bool| {
+        let mut modified = |ticket: &str, plan: bool| {
             let project = found.entry(cwd.clone()).or_insert_with(|| crate::core::pipeline::Project::find(&cwd).ok()).as_ref()?;
             let file = if plan { project.plans().join(format!("{ticket}.md")) } else { project.reports.join(format!("{ticket}.md")) };
             let time = fs::metadata(file).ok()?.modified().ok()?;
             Some(time.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64)
         };
+        // A run that is idle but still `working` ended when it wrote its result in this run.
+        if worker.state.as_deref() == Some("working") && worker.status.as_deref() == Some("idle") {
+            let run = worker.name.as_deref().and_then(run_of).zip(worker.started_at);
+            let written = run.is_some_and(|((ticket, plan), start)| from_run(modified(ticket, plan), start, next_start));
+            worker.settle_turn_end(written);
+            // The first loop reads the end only for a worker that does not run.
+            if worker.state.as_deref() == Some("done") {
+                worker.ended_at = claude.as_deref().and_then(|claude| worker_end(claude, &worker.id)).map(|(at, _)| at);
+                worker.agents_active = 0;
+            }
+        }
         worker.result = run_result(worker.state.as_deref(), worker.name.as_deref(), worker.started_at, next_start, modified);
     }
     Ok(workers)
@@ -471,6 +493,26 @@ mod worker_tests {
         // The other states stay.
         assert_eq!(worker("working", Some("idle"), None).state.as_deref(), Some("working"));
         assert_eq!(worker("stopped", None, None).state.as_deref(), Some("stopped"));
+    }
+
+    #[test]
+    fn an_idle_working_run_with_its_result_is_done() {
+        let ended = |state: &str, status: Option<&str>, written: bool| {
+            let mut worker = worker(state, status, None);
+            worker.settle_turn_end(written);
+            (worker.state, worker.held)
+        };
+        // Job 73d83b4a: the turn ended, the list kept working, the report of this run exists. Done,
+        // and Claude Code still holds the session.
+        assert_eq!(ended("working", Some("idle"), true), (Some("done".to_string()), true));
+        // Idle without a result of this run: it stays working.
+        assert_eq!(ended("working", Some("idle"), false).0.as_deref(), Some("working"));
+        // A session that still runs, or runs a background command, stays working with a result too.
+        for status in [Some("busy"), Some("shell"), None] {
+            assert_eq!(ended("working", status, true).0.as_deref(), Some("working"), "{status:?}");
+        }
+        // A permission prompt stays blocked.
+        assert_eq!(ended("blocked", Some("waiting"), true).0.as_deref(), Some("blocked"));
     }
 
     /// A worker as the list gives it, with a process when `pid` is set, after `settle`.

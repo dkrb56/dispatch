@@ -129,7 +129,8 @@ export interface StepRow {
  * The lines of the step list. A step ends where the next started step begins, in the order of time.
  * The step that started last is the current one while the run goes on; after the run it ends with
  * the report, else with the end of the worker, else it has no duration. A step without a start stays
- * without a time, also when a later step has one.
+ * without a time, also when a later step has one; it counts as done when a step after it in the plan
+ * started, because the worker did not announce every step (ticket title-task-card-shows-working-after-the).
  */
 export function stepRows(steps: WorkStep[], running: boolean, reportAt: number | null, endedAt: string | null): StepRow[] {
   const rows: StepRow[] = steps.map((step) => ({ number: step.number, text: step.text, state: "waiting", since: null, ms: null }));
@@ -145,6 +146,10 @@ export function stepRows(steps: WorkStep[], running: boolean, reportAt: number |
     rows[at].since = time;
     rows[at].state = !next && running ? "current" : "done";
     rows[at].ms = rows[at].state === "done" && until !== null ? until - time : null;
+  });
+  const lastStarted = Math.max(-1, ...started.map(({ at }) => at));
+  rows.forEach((row, at) => {
+    if (row.since === null && at < lastStarted) row.state = "done";
   });
   return rows;
 }
