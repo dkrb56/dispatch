@@ -22,6 +22,7 @@ use crate::core::status::{self, StatusInfo, UsageInfo};
 use crate::core::tokens::{self, TokenReport, UsageHistory};
 use crate::core::update::{self, Update};
 use crate::core::hostrun::{self, HostRun};
+use crate::core::plangroups::{self, PlanGroup, PlanGroups};
 use crate::core::{pty, store, Core};
 
 #[tauri::command]
@@ -355,6 +356,18 @@ pub fn task_approve(cwd: String, id: String) -> Result<String, String> {
 #[tauri::command(async)]
 pub fn ticket_adopt(cwd: String, id: String) -> Result<Ticket, String> {
     tickets::ticket_adopt(cwd, id)
+}
+
+/// The comments and groups of the Plan view (ticket plan-view-selection-comments-and-groups).
+#[tauri::command(async)]
+pub fn plan_groups_load(cwd: String) -> Result<PlanGroups, String> {
+    plangroups::plan_groups_load(cwd)
+}
+
+/// Writes the comments and groups of the Plan view; the last save wins.
+#[tauri::command(async)]
+pub fn plan_groups_save(cwd: String, groups: Vec<PlanGroup>) -> Result<PlanGroups, String> {
+    plangroups::plan_groups_save(cwd, groups)
 }
 
 /// Starts the plan run of a New ticket without triage (ticket simpler-process-tickets).

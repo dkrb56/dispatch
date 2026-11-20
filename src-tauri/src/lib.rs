@@ -92,6 +92,8 @@ pub fn run() {
             commands::ticket_level_file,
             commands::task_work,
             commands::ticket_adopt,
+            commands::plan_groups_load,
+            commands::plan_groups_save,
             commands::task_decide,
             commands::task_checks,
             commands::task_pick_checks,

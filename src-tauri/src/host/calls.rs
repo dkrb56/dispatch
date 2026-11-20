@@ -9,7 +9,7 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use dispatch_lib::core::{actions, builds, chats, context, flow, info, pipeline, pty, rules, rules_check, status, store, tickets, tokens, Core};
+use dispatch_lib::core::{actions, builds, chats, context, flow, info, pipeline, plangroups, pty, rules, rules_check, status, store, tickets, tokens, Core};
 
 use crate::clients::{Clients, Spawn};
 
@@ -212,6 +212,8 @@ pub fn run(
         "ticket_level_file" => json(pipeline::ticket_level_file(a.req("cwd")?, a.req("id")?)?),
         "task_work" => json(pipeline::task_work(a.req("cwd")?, a.req("id")?, a.req("model")?, a.req("effort")?)?),
         "ticket_adopt" => json(tickets::ticket_adopt(a.req("cwd")?, a.req("id")?)?),
+        "plan_groups_load" => json(plangroups::plan_groups_load(a.req("cwd")?)?),
+        "plan_groups_save" => json(plangroups::plan_groups_save(a.req("cwd")?, a.req("groups")?)?),
         "task_decide" => json(pipeline::task_decide(a.req("cwd")?, a.req("id")?, a.req("text")?)?),
         "task_checks" => json(pipeline::task_checks(a.req("cwd")?, a.req("id")?, a.req("names")?)?),
         "task_pick_checks" => json(pipeline::task_pick_checks(a.req("cwd")?, a.req("id")?)?),

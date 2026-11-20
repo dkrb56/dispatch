@@ -10768,3 +10768,277 @@ body.plan-mode .chat-tabs {
   margin: 0;
   color: var(--faint);
 }
+
+/* The selection, the comments and the groups (ticket plan-view-selection-comments-and-groups). */
+#plan .plan-board:focus {
+  outline: none;
+}
+
+#plan .plan-board:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.plan-canvas {
+  user-select: none;
+}
+
+.plan-ticket,
+.plan-group {
+  cursor: pointer;
+}
+
+.plan-ticket.selected,
+.plan-group.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.plan-arrow.merged {
+  stroke-width: 3;
+}
+
+.plan-arrow.selected {
+  stroke: var(--accent);
+  stroke-width: 2.5;
+}
+
+.plan-head.selected {
+  fill: var(--accent);
+}
+
+.plan-arrow-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 12;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.plan-select-box {
+  position: absolute;
+  z-index: 5;
+  box-sizing: border-box;
+  border: 1px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  pointer-events: none;
+}
+
+/* The four colours of a comment or group: the colours of the app (user decision 1). */
+.plan-color-0 {
+  --plan-color: var(--accent);
+}
+
+.plan-color-1 {
+  --plan-color: var(--work);
+}
+
+.plan-color-2 {
+  --plan-color: var(--wait);
+}
+
+.plan-color-3 {
+  --plan-color: var(--danger);
+}
+
+/* An open comment or group: a box behind its cards; only its title bar takes the pointer. */
+.plan-group-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px solid color-mix(in srgb, var(--plan-color) 55%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--plan-color) 6%, transparent);
+  pointer-events: none;
+}
+
+.plan-group-box.selected {
+  border-color: var(--plan-color);
+  border-width: 2px;
+}
+
+.plan-group-title {
+  display: flex;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 0 10px;
+  border-radius: 12px 12px 0 0;
+  background: color-mix(in srgb, var(--plan-color) 16%, transparent);
+  font-size: calc(12px * var(--text-scale));
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.plan-group-name {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-group-count {
+  flex: none;
+  color: var(--muted);
+}
+
+.plan-group-toggle {
+  flex: none;
+  margin-left: auto;
+  padding: 0 6px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.plan-group-toggle:hover {
+  color: var(--text);
+}
+
+/* A collapsed group: a stack of cards in its colour. */
+.plan-group {
+  gap: 2px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+  border-color: var(--plan-color);
+  box-shadow:
+    3px 3px 0 -1px var(--surface),
+    3px 3px 0 0 color-mix(in srgb, var(--plan-color) 60%, transparent),
+    6px 6px 0 -1px var(--surface),
+    6px 6px 0 0 color-mix(in srgb, var(--plan-color) 35%, transparent);
+}
+
+.plan-group .plan-card-top {
+  font-size: calc(12px * var(--text-scale));
+}
+
+.plan-group .plan-state {
+  font-size: calc(11px * var(--text-scale));
+}
+
+.plan-progress {
+  display: flex;
+  flex: none;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--hairline);
+}
+
+.plan-progress-done {
+  background: var(--accent);
+}
+
+.plan-progress-work {
+  background: var(--work);
+}
+
+/* The side panel of a selection. */
+.plan-side-sub {
+  margin: 0 0 6px;
+  color: var(--muted);
+}
+
+.plan-side-state-line {
+  margin: 0;
+  color: var(--text);
+}
+
+.plan-side-link {
+  cursor: pointer;
+}
+
+.plan-side-link:hover .plan-name {
+  color: var(--accent);
+}
+
+.plan-side-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.plan-side-button {
+  margin-top: 8px;
+}
+
+.plan-side-actions .plan-side-button {
+  margin-top: 0;
+}
+
+.plan-side-title {
+  overflow: hidden;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.plan-side-title:hover {
+  color: var(--accent);
+}
+
+.plan-title-input {
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: 8px;
+}
+
+.plan-swatches {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.plan-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: var(--plan-color);
+  cursor: pointer;
+}
+
+.plan-swatch[aria-pressed="true"] {
+  border-color: var(--text);
+}
+
+.plan-swatch-mark {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--plan-color);
+}
+
+.plan-counts {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 12px;
+  margin: 0;
+  font-size: calc(12px * var(--text-scale));
+}
+
+.plan-counts dt {
+  color: var(--muted);
+}
+
+.plan-counts dd {
+  margin: 0;
+  color: var(--text);
+  text-align: right;
+}
+
+.plan-count.error {
+  color: var(--danger);
+}

@@ -211,3 +211,235 @@ export function planStateWord(status: string, phase: string | null): string {
   if (phase === "plan-ready" || phase === "queued") return "Plan ready";
   return "Work run";
 }
+
+// Comments and groups (ticket plan-view-selection-comments-and-groups). A comment is an open box
+// around some cards; a group is the same set collapsed into one stacked card that stands for its
+// tickets in the tree. Dispatch keeps them in `plan-groups.json` of the task folder of the project.
+
+/** One comment (open) or group (collapsed), as the host keeps it. `color` is 0 to 3. */
+export interface PlanGroup {
+  id: string;
+  title: string;
+  color: number;
+  collapsed: boolean;
+  tickets: string[];
+}
+
+/** The node id of a collapsed group in the tree; the prefix keeps it apart from every ticket id. */
+export const GROUP_PREFIX = "group:";
+
+export function groupNodeId(id: string): string {
+  return GROUP_PREFIX + id;
+}
+
+/** The padding of an open box around its cards, and the height of its title bar. */
+export const PLAN_BOX_PAD = 12;
+export const PLAN_BOX_TITLE = 22;
+
+/** A safe read of the reply of `plan_groups_load` or `plan_groups_save`: an unknown shape gives no groups. */
+export function parsePlanGroups(value: unknown): PlanGroup[] {
+  const list = Array.isArray(value) ? value : value && typeof value === "object" ? (value as { groups?: unknown }).groups : undefined;
+  if (!Array.isArray(list)) return [];
+  const groups: PlanGroup[] = [];
+  const ids = new Set<string>();
+  for (const item of list) {
+    if (!item || typeof item !== "object") continue;
+    const raw = item as Record<string, unknown>;
+    const id = typeof raw.id === "string" ? raw.id.trim() : "";
+    if (id === "" || ids.has(id)) continue;
+    ids.add(id);
+    const color = typeof raw.color === "number" && Number.isFinite(raw.color) ? Math.min(3, Math.max(0, Math.round(raw.color))) : 0;
+    const tickets = Array.isArray(raw.tickets) ? [...new Set(raw.tickets.filter((one): one is string => typeof one === "string" && one !== ""))] : [];
+    groups.push({ id, title: typeof raw.title === "string" ? raw.title : "", color, collapsed: raw.collapsed === true, tickets });
+  }
+  return groups;
+}
+
+/** An arrow of the collapsed tree; `count` is the number of arrows of the tickets that it stands for. */
+export interface PlanNodeArrow extends PlanArrow {
+  count: number;
+}
+
+/** The tree when the collapsed groups stand for their tickets. */
+export interface CollapsedTree {
+  /** The tickets that show and one node per collapsed group, with their arrows in `after`; `planLayout` takes them. */
+  nodes: PlanTicket[];
+  /** A hidden ticket → the node id of the group card that stands for it. */
+  hidden: Map<string, string>;
+  /** The arrows between the nodes; two or more arrows of one pair of nodes are one, with their count. */
+  arrows: PlanNodeArrow[];
+}
+
+/**
+ * The nodes of the tree with the collapsed groups. A ticket in two collapsed groups goes into the
+ * first of the list. The node of a group stands where its first ticket stands in the list; it takes
+ * the arrows of its tickets, and an arrow between two of its tickets goes. An open group (a comment)
+ * changes nothing.
+ */
+export function collapsedTree(tickets: readonly PlanTicket[], groups: readonly PlanGroup[]): CollapsedTree {
+  const known = new Set(tickets.map((ticket) => ticket.id));
+  const hidden = new Map<string, string>();
+  for (const group of groups) {
+    if (!group.collapsed) continue;
+    for (const id of group.tickets) if (known.has(id) && !hidden.has(id)) hidden.set(id, groupNodeId(group.id));
+  }
+  const node = (id: string) => hidden.get(id) ?? id;
+  const counts = new Map<string, PlanNodeArrow>();
+  for (const arrow of planArrows(tickets)) {
+    const from = node(arrow.from);
+    const to = node(arrow.to);
+    if (from === to) continue;
+    const key = `${from}\n${to}`;
+    const seen = counts.get(key);
+    if (seen) seen.count += 1;
+    else counts.set(key, { from, to, count: 1 });
+  }
+  const arrows = [...counts.values()];
+  const after = (id: string) => arrows.filter((arrow) => arrow.to === id).map((arrow) => arrow.from);
+  const states = new Map<string, string[]>();
+  for (const ticket of tickets) {
+    const group = hidden.get(ticket.id);
+    if (group) states.set(group, [...(states.get(group) ?? []), ticket.status]);
+  }
+  const nodes: PlanTicket[] = [];
+  const placed = new Set<string>();
+  for (const ticket of tickets) {
+    const id = node(ticket.id);
+    if (placed.has(id)) continue;
+    placed.add(id);
+    if (id === ticket.id) {
+      nodes.push({ ...ticket, after: after(id) });
+      continue;
+    }
+    // A group node is done when all its tickets are; in work when one is; else it waits.
+    const list = states.get(id) ?? [];
+    const status = list.every(planDone) ? "done" : list.includes("in-progress") ? "in-progress" : "new";
+    nodes.push({ id, status, after: after(id) });
+  }
+  return { nodes, hidden, arrows };
+}
+
+/** A rectangle on the canvas. */
+export interface PlanRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/**
+ * The box of an open group around the cards of its tickets: the padding on each side and the title
+ * bar above, the top `PLAN_BOX_TITLE` px of the box. A hidden ticket counts at the place of its group
+ * card. No card of the group on the canvas gives no box.
+ */
+export function groupBox(
+  places: readonly { id: string; x: number; y: number }[],
+  ids: readonly string[],
+  hidden: ReadonlyMap<string, string> = new Map(),
+): PlanRect | null {
+  const at = new Map(places.map((place) => [place.id, place]));
+  const cards = [...new Set(ids.map((id) => hidden.get(id) ?? id))].flatMap((id) => {
+    const place = at.get(id);
+    return place ? [place] : [];
+  });
+  if (cards.length === 0) return null;
+  const left = Math.min(...cards.map((card) => card.x)) - PLAN_BOX_PAD;
+  const top = Math.min(...cards.map((card) => card.y)) - PLAN_BOX_PAD - PLAN_BOX_TITLE;
+  const right = Math.max(...cards.map((card) => card.x)) + PLAN_CARD_WIDTH + PLAN_BOX_PAD;
+  const bottom = Math.max(...cards.map((card) => card.y)) + PLAN_CARD_HEIGHT + PLAN_BOX_PAD;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/** The counts of a group for its card and the side panel. Only the tickets of the list count. */
+export interface GroupCounts {
+  tickets: number;
+  /** Done or Canceled: out of the way. */
+  done: number;
+  inWork: number;
+  nextUp: number;
+  waiting: number;
+  early: number;
+  arrowsIn: number;
+  arrowsOut: number;
+}
+
+/** The tickets of a group that the list has, in the order of the group. */
+export function groupMembers<T extends PlanTicket>(tickets: readonly T[], group: PlanGroup): T[] {
+  const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]));
+  return group.tickets.flatMap((id) => {
+    const ticket = byId.get(id);
+    return ticket ? [ticket] : [];
+  });
+}
+
+export function groupCounts(tickets: readonly PlanTicket[], group: PlanGroup): GroupCounts {
+  const inside = groupMembers(tickets, group);
+  const ids = new Set(inside.map((ticket) => ticket.id));
+  const badges = planBadges(tickets);
+  const arrows = planArrows(tickets);
+  const badged = (badge: PlanBadge) => inside.filter((ticket) => badges.get(ticket.id) === badge).length;
+  return {
+    tickets: inside.length,
+    done: inside.filter((ticket) => planDone(ticket.status)).length,
+    inWork: inside.filter((ticket) => ticket.status === "in-progress").length,
+    nextUp: badged("next"),
+    waiting: badged("waits"),
+    early: badged("early"),
+    arrowsIn: arrows.filter((arrow) => ids.has(arrow.to) && !ids.has(arrow.from)).length,
+    arrowsOut: arrows.filter((arrow) => ids.has(arrow.from) && !ids.has(arrow.to)).length,
+  };
+}
+
+/** The badge of a group card (next up before started early) and the numbers of its progress bar. */
+export function groupBadge(tickets: readonly PlanTicket[], group: PlanGroup): { badge: "next" | "early" | null; done: number; inWork: number; total: number } {
+  const counts = groupCounts(tickets, group);
+  const badge = counts.nextUp > 0 ? "next" : counts.early > 0 ? "early" : null;
+  return { badge, done: counts.done, inWork: counts.inWork, total: counts.tickets };
+}
+
+/** The ids that a ticket comes after, by the arrows of the list. */
+export function comesAfter(tickets: readonly PlanTicket[], id: string): string[] {
+  return before(planArrows(tickets), id);
+}
+
+/** The ids that come after a ticket, by the arrows of the list. */
+export function comesBefore(tickets: readonly PlanTicket[], id: string): string[] {
+  return planArrows(tickets)
+    .filter((arrow) => arrow.from === id)
+    .map((arrow) => arrow.to);
+}
+
+/** Where a ticket stands, in one line for the side panel. */
+export function standLine(tickets: readonly PlanTicket[], id: string): string {
+  const ticket = tickets.find((one) => one.id === id);
+  if (!ticket) return "";
+  if (ticket.status === "done") return "Done";
+  if (ticket.status === "canceled") return "Canceled";
+  const open = openBefore(tickets, id);
+  if (ticket.status === "in-progress") {
+    if (open.length === 0) return "In work";
+    return `Started before ${open.join(", ")} ${open.length === 1 ? "was" : "were"} done`;
+  }
+  if (open.length > 0) return `Waits for ${open.join(", ")}`;
+  return flowTickets(tickets).some((one) => one.id === id) ? "Next up" : "Not in the flow";
+}
+
+/** A plain click selects one card; with Shift or Ctrl (`extend`) it adds the card or takes it out. */
+export function toggleSelection(selected: ReadonlySet<string>, id: string, extend: boolean): Set<string> {
+  if (!extend) return new Set([id]);
+  const next = new Set(selected);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  return next;
+}
+
+/** The ids whose card touches the selection box; the box may be drawn in any direction. */
+export function boxHits(places: readonly { id: string; x: number; y: number }[], rect: PlanRect): string[] {
+  const left = Math.min(rect.x, rect.x + rect.width);
+  const right = Math.max(rect.x, rect.x + rect.width);
+  const top = Math.min(rect.y, rect.y + rect.height);
+  const bottom = Math.max(rect.y, rect.y + rect.height);
+  return places
+    .filter((place) => place.x <= right && place.x + PLAN_CARD_WIDTH >= left && place.y <= bottom && place.y + PLAN_CARD_HEIGHT >= top)
+    .map((place) => place.id);
+}

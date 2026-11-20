@@ -4,7 +4,36 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { flowTickets, notInFlow, openBefore, PLAN_CARD_WIDTH, PLAN_COLUMN_STEP, PLAN_GRID, PLAN_PAD, PLAN_ROW_STEP, planArrows, planBadges, planLayout, planRows, planStateWord, type PlanTicket } from "../src/plantree.ts";
+import {
+  boxHits,
+  collapsedTree,
+  comesAfter,
+  comesBefore,
+  flowTickets,
+  groupBadge,
+  groupBox,
+  groupCounts,
+  notInFlow,
+  openBefore,
+  parsePlanGroups,
+  PLAN_BOX_PAD,
+  PLAN_BOX_TITLE,
+  PLAN_CARD_HEIGHT,
+  PLAN_CARD_WIDTH,
+  PLAN_COLUMN_STEP,
+  PLAN_GRID,
+  PLAN_PAD,
+  PLAN_ROW_STEP,
+  planArrows,
+  planBadges,
+  planLayout,
+  planRows,
+  planStateWord,
+  standLine,
+  toggleSelection,
+  type PlanGroup,
+  type PlanTicket,
+} from "../src/plantree.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -128,4 +157,146 @@ test("the page has the Plan button, its canvas and its Help, and main.ts draws i
   assert.ok(/#plan \.plan-board \{[^}]*\}/.exec(css)?.[0].includes(dots), "the Plan board has the dots of the Overview");
   // No global key handler for the view.
   assert.doesNotMatch(main, /document\.addEventListener\("keydown",[^\n]*plan/i);
+  // Ticket plan-view-selection-comments-and-groups: the Help, the two host commands and the box.
+  assert.match(html, /Collapse all/);
+  assert.match(main, /"plan_groups_load"/);
+  assert.match(main, /"plan_groups_save"/);
+  assert.match(css, /\.plan-select-box \{/);
+  assert.match(main, /planBoardEl\.addEventListener\("keydown"/);
+});
+
+const g = (id: string, tickets: string[], collapsed = true, title = "Group"): PlanGroup => ({ id, title, color: 0, collapsed, tickets });
+
+test("the host reply of the groups is read safely", () => {
+  assert.deepEqual(parsePlanGroups(null), []);
+  assert.deepEqual(parsePlanGroups({ groups: "x" }), []);
+  const groups = parsePlanGroups({
+    groups: [{ id: "g-1", title: "Login", color: 7, collapsed: true, tickets: ["a", "a", 3, "b"] }, { id: "" }, { id: "g-1" }, "x", { id: "g-2", color: -1 }],
+  });
+  assert.deepEqual(groups, [
+    { id: "g-1", title: "Login", color: 3, collapsed: true, tickets: ["a", "b"] },
+    { id: "g-2", title: "", color: 0, collapsed: false, tickets: [] },
+  ]);
+});
+
+test("a collapsed group stands for its tickets, takes their arrows and merges a pair", () => {
+  // TREE: a → b, a → c, b → d, c → d, d → e. Collapse b and c.
+  const tree = collapsedTree(TREE, [g("g", ["b", "c"])]);
+  assert.deepEqual(
+    tree.nodes.map((node) => node.id),
+    ["a", "group:g", "d", "e", "f"],
+    "the node stands where its first ticket stands",
+  );
+  assert.equal(tree.hidden.get("b"), "group:g");
+  assert.deepEqual(tree.arrows, [
+    { from: "a", to: "group:g", count: 2 },
+    { from: "group:g", to: "d", count: 2 },
+    { from: "d", to: "e", count: 1 },
+  ]);
+  assert.deepEqual(tree.nodes.find((node) => node.id === "d")?.after, ["group:g"]);
+  assert.equal(tree.nodes.find((node) => node.id === "group:g")?.status, "in-progress");
+  // An arrow inside the group goes.
+  const inner = collapsedTree(TREE, [g("g", ["a", "b"])]);
+  assert.ok(!inner.arrows.some((arrow) => arrow.from === arrow.to));
+  assert.deepEqual(
+    inner.arrows.map((arrow) => `${arrow.from}>${arrow.to}:${arrow.count}`),
+    ["group:g>c:1", "group:g>d:1", "c>d:1", "d>e:1"],
+  );
+  // The layout takes the nodes unchanged.
+  const layout = planLayout(tree.nodes);
+  assert.deepEqual(
+    layout.cards.map((card) => card.id),
+    ["a", "group:g", "d", "e"],
+  );
+});
+
+test("a ticket in two collapsed groups shows in the first; an open group changes nothing", () => {
+  const tree = collapsedTree(TREE, [g("one", ["b"]), g("two", ["b", "c"])]);
+  assert.equal(tree.hidden.get("b"), "group:one");
+  assert.equal(tree.hidden.get("c"), "group:two");
+  const open = collapsedTree(TREE, [g("o", ["b", "c"], false)]);
+  assert.deepEqual(
+    open.nodes.map((node) => node.id),
+    TREE.map((ticket) => ticket.id),
+  );
+  assert.equal(open.hidden.size, 0);
+  assert.ok(open.arrows.every((arrow) => arrow.count === 1));
+  // A group of unknown ids makes no node.
+  assert.equal(collapsedTree(TREE, [g("x", ["gone"])]).nodes.length, TREE.length);
+});
+
+test("a collapse that closes a loop still gives finite rows", () => {
+  // x → a, b → x; collapse a and b: x → group and group → x.
+  const list = [t("a", "new"), t("x", "new", ["a"]), t("b", "new", ["x"])];
+  const tree = collapsedTree(list, [g("g", ["a", "b"])]);
+  const rows = planRows(tree.nodes);
+  assert.equal(rows.size, 2);
+  for (const row of rows.values()) assert.ok(Number.isFinite(row) && row >= 1);
+  assert.equal(planLayout(tree.nodes).cards.length, 2);
+});
+
+test("the box of an open group: padding, title bar, a hidden ticket and no card", () => {
+  const places = [
+    { id: "a", x: 100, y: 200 },
+    { id: "b", x: 350, y: 350 },
+    { id: "group:g", x: 600, y: 200 },
+  ];
+  assert.deepEqual(groupBox(places, ["a", "b"]), {
+    x: 100 - PLAN_BOX_PAD,
+    y: 200 - PLAN_BOX_PAD - PLAN_BOX_TITLE,
+    width: 350 + PLAN_CARD_WIDTH - 100 + 2 * PLAN_BOX_PAD,
+    height: 350 + PLAN_CARD_HEIGHT - 200 + 2 * PLAN_BOX_PAD + PLAN_BOX_TITLE,
+  });
+  // A hidden ticket counts at its group card.
+  const box = groupBox(places, ["a", "c"], new Map([["c", "group:g"]]));
+  assert.equal(box?.x, 100 - PLAN_BOX_PAD);
+  assert.equal(box?.width, 600 + PLAN_CARD_WIDTH - 100 + 2 * PLAN_BOX_PAD);
+  assert.equal(groupBox(places, ["gone"]), null);
+});
+
+test("the counts and the badge of a group", () => {
+  // TREE: a done, b in work, c next up, d and e wait.
+  const counts = groupCounts(TREE, g("g", ["b", "c", "d", "gone"]));
+  assert.deepEqual(counts, { tickets: 3, done: 0, inWork: 1, nextUp: 1, waiting: 1, early: 0, arrowsIn: 2, arrowsOut: 1 });
+  assert.deepEqual(groupBadge(TREE, g("g", ["b", "c", "d"])), { badge: "next", done: 0, inWork: 1, total: 3 });
+  const early = [t("a", "new"), t("b", "in-progress", ["a"]), t("c", "done")];
+  assert.equal(groupBadge(early, g("g", ["b", "c"])).badge, "early");
+  assert.equal(groupBadge(TREE, g("g", ["a", "d"])).badge, null);
+  assert.equal(groupBadge(TREE, g("g", ["a", "d"])).done, 1);
+});
+
+test("the stand line and the lists before and after a ticket", () => {
+  assert.equal(standLine(TREE, "a"), "Done");
+  assert.equal(standLine(TREE, "b"), "In work");
+  assert.equal(standLine(TREE, "c"), "Next up");
+  assert.equal(standLine(TREE, "d"), "Waits for b, c");
+  assert.equal(standLine(TREE, "f"), "Not in the flow");
+  assert.equal(standLine([t("a", "canceled")], "a"), "Canceled");
+  assert.equal(standLine([t("a", "new"), t("b", "in-progress", ["a"])], "b"), "Started before a was done");
+  assert.equal(standLine([t("a", "new"), t("c", "new"), t("b", "in-progress", ["a", "c"])], "b"), "Started before a, c were done");
+  assert.deepEqual(comesAfter(TREE, "d"), ["b", "c"]);
+  assert.deepEqual(comesBefore(TREE, "a"), ["b", "c"]);
+  assert.deepEqual(comesBefore(TREE, "e"), []);
+});
+
+test("a click selects one card; Shift or Ctrl adds or takes out", () => {
+  const one = toggleSelection(new Set(["a", "b"]), "c", false);
+  assert.deepEqual([...one], ["c"]);
+  const more = toggleSelection(one, "d", true);
+  assert.deepEqual([...more].sort(), ["c", "d"]);
+  assert.deepEqual([...toggleSelection(more, "c", true)], ["d"]);
+  assert.deepEqual([...one], ["c"], "the old set stays");
+});
+
+test("the selection box hits every card that it touches, in any direction", () => {
+  const places = [
+    { id: "a", x: 100, y: 100 },
+    { id: "b", x: 400, y: 100 },
+    { id: "c", x: 100, y: 300 },
+  ];
+  assert.deepEqual(boxHits(places, { x: 90, y: 90, width: 20, height: 20 }), ["a"]);
+  assert.deepEqual(boxHits(places, { x: 410, y: 310, width: -400, height: -300 }), ["a", "b", "c"]);
+  assert.deepEqual(boxHits(places, { x: 310, y: 160, width: 50, height: 50 }), []);
+  // The edge of a card counts as a touch.
+  assert.deepEqual(boxHits(places, { x: 100 + PLAN_CARD_WIDTH, y: 100, width: 10, height: 10 }), ["a"]);
 });

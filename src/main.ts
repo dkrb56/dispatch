@@ -31,7 +31,33 @@ import { barHost, markedProject, showMark, watchArea } from "./focusmark";
 import { removeAnswer, removeTexts } from "./removeproject";
 import { type ColumnAction, type ColumnChoice, type ColumnTab, type FocusSplit, type TermSplit, applyAction, columnStates, columnTabs, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, parseTab, parseTermSplit, shareField, toggleSplit, toggleTermSplit } from "./focuslayout";
 import { chatSlotStep, type FoldPart, type Folds, foldOpen, parseFolds, setFold, splitNewest } from "./focuslists";
-import { flowTickets, notInFlow, PLAN_CARD_HEIGHT, PLAN_CARD_WIDTH, planBadges, planLayout, planStateWord } from "./plantree";
+import {
+  boxHits,
+  collapsedTree,
+  comesAfter,
+  comesBefore,
+  flowTickets,
+  GROUP_PREFIX,
+  groupBadge,
+  groupBox,
+  groupCounts,
+  groupMembers,
+  groupNodeId,
+  notInFlow,
+  parsePlanGroups,
+  PLAN_BOX_TITLE,
+  PLAN_CARD_HEIGHT,
+  PLAN_CARD_WIDTH,
+  planArrows,
+  planBadges,
+  planLayout,
+  planStateWord,
+  standLine,
+  toggleSelection,
+  type PlanArrow,
+  type PlanGroup,
+  type PlanPlace,
+} from "./plantree";
 import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode } from "./overview";
 import {
   allowanceLine,
@@ -13523,8 +13549,16 @@ async function refreshFocusTasks(onlyWhenChanged = false): Promise<void> {
   }
   if (roots.size === 0) return;
   let changed = false;
-  await Promise.all(
-    [...roots.values()].map(async ({ host, root }) => {
+  // The comments and groups of the Plan view, beside the task reads (ticket plan-view-selection-comments-and-groups).
+  const groupsRead =
+    planned && (!onlyWhenChanged || readIsDue(planned.host, `plan-groups:${refKey(planned)}`))
+    ? loadPlanGroups(planned).then((groupsChanged) => {
+        if (groupsChanged) changed = true;
+      })
+    : undefined;
+  await Promise.all([
+    groupsRead,
+    ...[...roots.values()].map(async ({ host, root }) => {
       // The time the read began (ticket one-work-run-race).
       const readAt = Date.now();
       const key = projectKey(host, root);
@@ -13546,7 +13580,7 @@ async function refreshFocusTasks(onlyWhenChanged = false): Promise<void> {
         changed = true;
       }
     }),
-  );
+  ]);
   // First the old sessions per project: their count stands in the columns and the pills.
   updateStaleAlert();
   // The old sessions whose delay ran out end without a wait of the poll (ticket old-sessions-auto-end).
@@ -14408,8 +14442,9 @@ function showOverview(on: boolean): void {
 // ---------------------------------------------------------------------------------------------
 // The Plan view (ticket feature-plan-view-a-tree-of-the-project): the tickets of one project as a
 // tree on the dots of the Overview. An arrow A → B means "B starts when A is done"; the arrows are the
-// field `after` of each ticket. The rules of the tree are in plantree.ts. This step is read-only:
-// the selection, the comments and groups and Plan the flow come in the parts after it.
+// field `after` of each ticket. The rules of the tree are in plantree.ts. The arrows are read-only;
+// the selection and the comments and groups (ticket plan-view-selection-comments-and-groups) do not
+// change them, and Plan the flow comes in the next part.
 
 const planEl = document.querySelector<HTMLElement>("#plan")!;
 /** The Plan view is on. The choice is in localStorage `view-mode`. */
@@ -14423,14 +14458,121 @@ const planSideEl = mapElement("aside", "plan-side");
 const PLAN_PROJECT_KEY = "plan-project";
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+// The selection, the comments and the groups (ticket plan-view-selection-comments-and-groups). A
+// render runs every few seconds, so the state lives here and each render reads it.
+/** The selected cards: ticket ids and group node ids (`group:<id>`). */
+let planSelected = new Set<string>();
+/** The selected arrow, as the arrow of the tickets that it stands for. */
+let planSelectedArrow: PlanArrow | null = null;
+/** The id of the selected comment or group: a click on its title bar or its row in the side panel. */
+let planSelectedGroup: string | null = null;
+/** The comments and groups of each project, by project key. */
+const planGroups = new Map<string, PlanGroup[]>();
+/** Why the comments and groups of a project could not be read or saved; the toolbar count shows it. */
+const planGroupsError = new Map<string, string>();
+/** The projects whose file of comments and groups could not be read: a save would overwrite it. */
+const planGroupsBroken = new Set<string>();
+/** The time of the last save of each project: a read that began before it is old. */
+const planGroupsSavedAt = new Map<string, number>();
+/** A selection box is drawn: a render waits, so the box stays. */
+let planBoxDragging = false;
+/** The places of the cards of the last render, on the canvas; the selection box hits them. */
+let planPlaces: PlanPlace[] = [];
+/** The next render gives the keyboard to the title box of the selected group (user decision 2). */
+let planFocusTitle = false;
+/** The names of the four colours of a comment or group: the colours of the app (user decision 1). */
+const PLAN_COLOR_NAMES = ["Blue", "Green", "Amber", "Red"];
+
 {
   const label = mapElement("label", "plan-project-label", "Project ");
   label.append(planSelectEl);
   planSelectEl.title = "The project whose tickets the tree shows";
-  planToolbarEl.append(label, planCountEl);
+  const toolButton = (text: string, title: string, collapsed: boolean): HTMLButtonElement => {
+    const button = mapElement("button", "plan-tool", text);
+    button.type = "button";
+    button.title = title;
+    button.addEventListener("click", () => planCollapseAll(collapsed));
+    return button;
+  };
+  planToolbarEl.append(
+    label,
+    planCountEl,
+    toolButton("Collapse all", "Collapse every comment and group into its stacked card", true),
+    toolButton("Expand all", "Open every group: its tickets show in the tree inside a box", false),
+  );
   const body = mapElement("div", "plan-body");
   body.append(planBoardEl, planSideEl);
   planEl.append(planToolbarEl, body);
+  // The keys work only while the board has the focus; there is no key handler on the page.
+  planBoardEl.tabIndex = 0;
+  planBoardEl.addEventListener("keydown", (event) => {
+    const target = event.target;
+    if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    const key = event.key;
+    if (key === "c" || key === "C") planAddGroup(false);
+    else if (key === "g" || key === "G") planAddGroup(true);
+    else if (key === "x" || key === "X" || key === "Delete") planRemoveSelectedGroups();
+    else if (key === "Escape") planClearSelection();
+    else return;
+    event.preventDefault();
+  });
+  // The selection box: a drag with the left button on the empty board.
+  let start: { x: number; y: number; pointer: number; extend: boolean } | null = null;
+  let boxEl: HTMLElement | null = null;
+  const canvasOf = () => planBoardEl.querySelector<HTMLElement>(".plan-canvas");
+  const at = (event: PointerEvent) => {
+    const rect = canvasOf()?.getBoundingClientRect();
+    return { x: event.clientX - (rect?.left ?? 0), y: event.clientY - (rect?.top ?? 0) };
+  };
+  planBoardEl.addEventListener("pointerdown", (event) => {
+    const canvas = canvasOf();
+    if (event.button !== 0 || !canvas || (event.target !== planBoardEl && event.target !== canvas)) return;
+    planBoardEl.focus({ preventScroll: true });
+    start = { ...at(event), pointer: event.pointerId, extend: event.shiftKey || event.ctrlKey || event.metaKey };
+    planBoardEl.setPointerCapture(event.pointerId);
+  });
+  planBoardEl.addEventListener("pointermove", (event) => {
+    if (!start || event.pointerId !== start.pointer) return;
+    const now = at(event);
+    if (!planBoxDragging && Math.hypot(now.x - start.x, now.y - start.y) < 4) return;
+    planBoxDragging = true;
+    if (!boxEl) {
+      boxEl = mapElement("div", "plan-select-box");
+      canvasOf()?.append(boxEl);
+    }
+    boxEl.style.left = `${Math.min(start.x, now.x)}px`;
+    boxEl.style.top = `${Math.min(start.y, now.y)}px`;
+    boxEl.style.width = `${Math.abs(now.x - start.x)}px`;
+    boxEl.style.height = `${Math.abs(now.y - start.y)}px`;
+  });
+  const finish = (event: PointerEvent, cancel: boolean) => {
+    if (!start || event.pointerId !== start.pointer) return;
+    const begin = start;
+    start = null;
+    boxEl?.remove();
+    boxEl = null;
+    const dragged = planBoxDragging;
+    planBoxDragging = false;
+    if (cancel) {
+      renderPlan();
+      return;
+    }
+    if (!dragged) {
+      // A click on the empty board clears the selection.
+      planClearSelection();
+      return;
+    }
+    const now = at(event);
+    const hits = boxHits(planPlaces, { x: begin.x, y: begin.y, width: now.x - begin.x, height: now.y - begin.y });
+    planSelected = begin.extend ? new Set([...planSelected, ...hits]) : new Set(hits);
+    planSelectedArrow = null;
+    planSelectedGroup = null;
+    renderPlan();
+    if (planSelected.size > 0) planSelectionMenu(event);
+  };
+  planBoardEl.addEventListener("pointerup", (event) => finish(event, false));
+  planBoardEl.addEventListener("pointercancel", (event) => finish(event, true));
   planSelectEl.addEventListener("change", () => {
     try {
       localStorage.setItem(PLAN_PROJECT_KEY, planSelectEl.value);
@@ -14476,6 +14618,183 @@ function showPlan(on: boolean): void {
   }
   renderPlan();
   void refreshFocusTasks();
+}
+
+/** The comments and groups of the project of the view. */
+function planGroupsOf(ref: ProjectRef): PlanGroup[] {
+  return planGroups.get(refKey(ref)) ?? [];
+}
+
+/** Selects one thing of the tree, or nothing: cards, an arrow or a comment or group. */
+function planSelect(cards: Iterable<string>, arrow: PlanArrow | null = null, group: string | null = null): void {
+  planSelected = new Set(cards);
+  planSelectedArrow = arrow;
+  planSelectedGroup = group;
+  renderPlan();
+}
+
+function planClearSelection(): void {
+  closeBoardMenu();
+  planSelect([]);
+}
+
+/** The ticket ids of the selected cards; a selected group card gives its tickets. */
+function planSelectedTickets(groups: readonly PlanGroup[]): string[] {
+  const ids: string[] = [];
+  for (const id of planSelected) {
+    if (!id.startsWith(GROUP_PREFIX)) ids.push(id);
+    else ids.push(...(groups.find((group) => groupNodeId(group.id) === id)?.tickets ?? []));
+  }
+  return [...new Set(ids)];
+}
+
+/** The small menu after a selection box, at the pointer. */
+function planSelectionMenu(event: MouseEvent): void {
+  const menu = mapElement("div", "ticket-menu");
+  menu.setAttribute("role", "menu");
+  const item = (label: string, title: string, act: () => void): HTMLButtonElement => {
+    const button = mapElement("button", "", label);
+    button.type = "button";
+    button.title = title;
+    button.setAttribute("role", "menuitem");
+    button.addEventListener("click", () => {
+      closeBoardMenu();
+      planBoardEl.focus({ preventScroll: true });
+      act();
+    });
+    return button;
+  };
+  menu.append(
+    item("Add comment (C)", "Draw an open box with a title around the selected tickets", () => planAddGroup(false)),
+    item("Group and collapse (G)", "Put the selected tickets into a group that stands as one card in the tree", () => planAddGroup(true)),
+    item("Clear selection (Esc)", "Select nothing", planClearSelection),
+  );
+  showMenu(menu, event, null);
+}
+
+/**
+ * Adds a comment (open) or a group (collapsed) around the selected tickets. It goes first in the
+ * list, so it shows over an older group of the same tickets; the side panel opens it with its title
+ * ready to type (user decision 2).
+ */
+function planAddGroup(collapsed: boolean): void {
+  const ref = planProject();
+  if (!ref) return;
+  const groups = planGroupsOf(ref);
+  const tickets = planSelectedTickets(groups);
+  if (tickets.length === 0) return;
+  const group: PlanGroup = { id: `g-${Date.now().toString(36)}`, title: collapsed ? "Group" : "Comment", color: 0, collapsed, tickets };
+  planSelected = new Set();
+  planSelectedArrow = null;
+  planSelectedGroup = group.id;
+  planFocusTitle = true;
+  void planSetGroups(ref, [group, ...groups]);
+}
+
+/** X or Del: removes the selected comment or group and the selected group cards; the tickets and arrows stay. */
+function planRemoveSelectedGroups(): void {
+  const ref = planProject();
+  if (!ref) return;
+  const groups = planGroupsOf(ref);
+  const gone = (group: PlanGroup) => group.id === planSelectedGroup || planSelected.has(groupNodeId(group.id));
+  if (!groups.some(gone)) return;
+  planSelected = new Set([...planSelected].filter((id) => !id.startsWith(GROUP_PREFIX)));
+  planSelectedGroup = null;
+  void planSetGroups(
+    ref,
+    groups.filter((group) => !gone(group)),
+  );
+}
+
+/** Collapse all and Expand all of the toolbar. */
+function planCollapseAll(collapsed: boolean): void {
+  const ref = planProject();
+  if (!ref) return;
+  const groups = planGroupsOf(ref);
+  if (groups.every((group) => group.collapsed === collapsed)) return;
+  void planSetGroups(
+    ref,
+    groups.map((group) => ({ ...group, collapsed })),
+  );
+}
+
+/** Changes one comment or group of the project of the view. */
+function planChangeGroup(id: string, change: Partial<PlanGroup>): void {
+  const ref = planProject();
+  if (!ref) return;
+  void planSetGroups(
+    ref,
+    planGroupsOf(ref).map((group) => (group.id === id ? { ...group, ...change } : group)),
+  );
+}
+
+/** Expands every collapsed group that hides a ticket, then selects the ticket. */
+function planReveal(id: string): void {
+  const ref = planProject();
+  if (!ref) return;
+  const groups = planGroupsOf(ref);
+  const hides = (group: PlanGroup) => group.collapsed && group.tickets.includes(id);
+  if (!groups.some(hides)) {
+    planSelect([id]);
+    return;
+  }
+  // The selection first, without a render: the render of the save then shows the ticket selected.
+  planSelected = new Set([id]);
+  planSelectedArrow = null;
+  planSelectedGroup = null;
+  void planSetGroups(
+    ref,
+    groups.map((group) => (hides(group) ? { ...group, collapsed: false } : group)),
+  );
+}
+
+/**
+ * The one save path: the whole list goes to the host, which keeps it in `plan-groups.json` of the
+ * project; the last save wins (user decision 3). The view shows the change at once and the reply of
+ * the host after it. A file that could not be read is not overwritten.
+ */
+async function planSetGroups(ref: ProjectRef, groups: PlanGroup[]): Promise<void> {
+  const key = refKey(ref);
+  if (planGroupsBroken.has(key)) {
+    renderPlan();
+    return;
+  }
+  planGroupsSavedAt.set(key, Date.now());
+  planGroups.set(key, groups);
+  renderPlan();
+  try {
+    const reply = await call<unknown>(ref.host, "plan_groups_save", { cwd: ref.root, groups });
+    planGroups.set(key, parsePlanGroups(reply));
+    planGroupsError.delete(key);
+  } catch (error) {
+    planGroupsError.set(key, `Comments and groups not saved: ${String(error)}`);
+  }
+  planGroupsSavedAt.set(key, Date.now());
+  renderPlan();
+}
+
+/** Reads the comments and groups of a project; true when they changed. A read that began before a save is old. */
+async function loadPlanGroups(ref: ProjectRef): Promise<boolean> {
+  const key = refKey(ref);
+  const readAt = Date.now();
+  let groups: PlanGroup[] = [];
+  let error = "";
+  try {
+    groups = parsePlanGroups(await call<unknown>(ref.host, "plan_groups_load", { cwd: ref.root }));
+  } catch (failure) {
+    error = `Comments and groups not read: ${String(failure)}`;
+  }
+  if ((planGroupsSavedAt.get(key) ?? 0) >= readAt) return false;
+  const before = JSON.stringify([planGroups.get(key) ?? [], planGroupsError.get(key) ?? ""]);
+  planGroups.set(key, groups);
+  if (error) {
+    planGroupsError.set(key, error);
+    planGroupsBroken.add(key);
+  } else {
+    planGroupsError.delete(key);
+    planGroupsBroken.delete(key);
+  }
+  return JSON.stringify([groups, error]) !== before;
 }
 
 /** What a card of the Plan view shows of a ticket: the state word, the detail, and the colour of its dot. */
@@ -14524,7 +14843,8 @@ const PLAN_BADGE_TEXT: Record<"next" | "early", string> = { next: "Next up", ear
 
 /** Draws the toolbar, the tree and the side panel of the project of the view. */
 function renderPlan(): void {
-  if (!planOn) return;
+  // A render would take away the selection box that the user draws.
+  if (!planOn || planBoxDragging) return;
   const refs = planProjects();
   const ref = planProject();
   // The select changes only when the projects change, so an open select stays open.
@@ -14558,10 +14878,40 @@ function renderPlan(): void {
   const tickets = COLUMNS.flatMap((column) => columnTickets(record.tickets, column.status));
   const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]));
   const queueIds = queueOrder(record.tickets).map((ticket) => ticket.id);
-  const layout = planLayout(tickets);
+  const key = refKey(ref);
+  const groups = planGroups.get(key) ?? [];
+  // The collapsed groups stand for their tickets; the layout takes the nodes unchanged.
+  const tree = collapsedTree(tickets, groups);
+  const layout = planLayout(tree.nodes);
+  planPlaces = layout.cards;
   const badges = planBadges(tickets);
+  const ticketArrows = planArrows(tickets);
+  const nodeOf = (id: string) => tree.hidden.get(id) ?? id;
+  const groupOfNode = new Map(groups.map((group) => [groupNodeId(group.id), group]));
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
-  planCountEl.textContent = `${plural(layout.cards.length, "ticket")} in the flow · ${plural(layout.arrows.length, "arrow")}`;
+  const groupError = planGroupsError.get(key);
+  planCountEl.textContent = [
+    `${plural(flowTickets(tickets).length, "ticket")} in the flow`,
+    plural(ticketArrows.length, "arrow"),
+    groups.length > 0 ? `${groups.length} ${groups.length === 1 ? "comment or group" : "comments and groups"}` : "",
+    groupError ?? "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  planCountEl.classList.toggle("error", Boolean(groupError));
+
+  // The selection keeps only what the tree still shows.
+  const shown = new Set(layout.cards.map((card) => card.id));
+  planSelected = new Set([...planSelected].filter((id) => shown.has(id)));
+  if (planSelectedGroup !== null && !groups.some((group) => group.id === planSelectedGroup)) planSelectedGroup = null;
+  // A selected arrow is an arrow of the tickets whose line in the tree is not merged.
+  const lineOf = (arrow: PlanArrow) => tree.arrows.find((line) => line.from === nodeOf(arrow.from) && line.to === nodeOf(arrow.to));
+  if (planSelectedArrow) {
+    const wanted = planSelectedArrow;
+    const line = lineOf(wanted);
+    if (!ticketArrows.some((arrow) => arrow.from === wanted.from && arrow.to === wanted.to) || !line || line.count > 1) planSelectedArrow = null;
+  }
+  const selectedLine = planSelectedArrow ? lineOf(planSelectedArrow) : undefined;
 
   const canvas = mapElement("div", "plan-canvas");
   canvas.style.width = `${layout.width}px`;
@@ -14569,8 +14919,10 @@ function renderPlan(): void {
   const svg = planSvg("svg", { class: "plan-wires", width: layout.width, height: layout.height, "aria-hidden": "true" });
   const marker = planSvg("marker", { id: "plan-head", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: "auto-start-reverse" });
   marker.append(planSvg("path", { d: "M 0 1 L 9 5 L 0 9 z", class: "plan-head" }));
+  const markerSelected = planSvg("marker", { id: "plan-head-selected", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: "auto-start-reverse" });
+  markerSelected.append(planSvg("path", { d: "M 0 1 L 9 5 L 0 9 z", class: "plan-head selected" }));
   const defs = planSvg("defs", {});
-  defs.append(marker);
+  defs.append(marker, markerSelected);
   svg.append(defs);
   const place = new Map(layout.cards.map((card) => [card.id, card]));
   const half = PLAN_CARD_WIDTH / 2;
@@ -14578,15 +14930,32 @@ function renderPlan(): void {
     const card = place.get(id);
     if (card) svg.append(planSvg("path", { class: "plan-root-line", d: planCurve(layout.root.x + half, layout.root.y + PLAN_CARD_HEIGHT, card.x + half, card.y) }));
   }
-  for (const arrow of layout.arrows) {
-    const from = place.get(arrow.from);
-    const to = place.get(arrow.to);
+  const nodeName = (id: string) => groupOfNode.get(id)?.title || id;
+  for (const line of tree.arrows) {
+    const from = place.get(line.from);
+    const to = place.get(line.to);
     if (!from || !to) continue;
-    const path = planSvg("path", { class: "plan-arrow", d: planCurve(from.x + half, from.y + PLAN_CARD_HEIGHT, to.x + half, to.y - 2), "marker-end": "url(#plan-head)" });
+    const d = planCurve(from.x + half, from.y + PLAN_CARD_HEIGHT, to.x + half, to.y - 2);
+    const merged = line.count > 1;
+    const selected = line === selectedLine;
+    // A line of one arrow names the tickets; a merged line stands for several and takes no click.
+    const real = merged ? undefined : ticketArrows.find((arrow) => nodeOf(arrow.from) === line.from && nodeOf(arrow.to) === line.to);
+    const text = real ? `${real.to} starts when ${real.from} is done` : `${line.count} arrows: ${nodeName(line.to)} starts when ${nodeName(line.from)} is done`;
+    const path = planSvg("path", { class: `plan-arrow${merged ? " merged" : ""}${selected ? " selected" : ""}`, d, "marker-end": selected ? "url(#plan-head-selected)" : "url(#plan-head)" });
     const title = planSvg("title", {});
-    title.textContent = `${arrow.to} starts when ${arrow.from} is done`;
+    title.textContent = text;
     path.append(title);
     svg.append(path);
+    if (!real) continue;
+    // A wide clear twin on top takes the click; the SVG itself takes no pointer events.
+    const hit = planSvg("path", { class: "plan-arrow-hit", d });
+    hit.dataset.from = real.from;
+    hit.dataset.to = real.to;
+    const hitTitle = planSvg("title", {});
+    hitTitle.textContent = text;
+    hit.append(hitTitle);
+    hit.addEventListener("click", () => planSelect([], real));
+    svg.append(hit);
   }
   canvas.append(svg);
 
@@ -14596,13 +14965,78 @@ function renderPlan(): void {
   root.title = ref.root;
   root.append(mapElement("span", "plan-root-name", projectName(ref)), mapElement("span", "plan-state", plural(tickets.length, "ticket")));
   canvas.append(root);
+  // The open comments and groups: a box around their cards, behind them, with a title bar above.
+  for (const group of groups) {
+    if (group.collapsed) continue;
+    const box = groupBox(layout.cards, group.tickets, tree.hidden);
+    if (!box) continue;
+    const el = mapElement("div", `plan-group-box plan-color-${group.color}${planSelectedGroup === group.id ? " selected" : ""}`);
+    el.dataset.group = group.id;
+    el.style.left = `${box.x}px`;
+    el.style.top = `${box.y}px`;
+    el.style.width = `${box.width}px`;
+    el.style.height = `${box.height}px`;
+    const bar = mapElement("div", "plan-group-title");
+    bar.style.height = `${PLAN_BOX_TITLE}px`;
+    bar.title = "Select this comment or group";
+    bar.append(mapElement("span", "plan-group-name", group.title || "Untitled"), mapElement("span", "plan-group-count", plural(groupMembers(tickets, group).length, "ticket")));
+    const collapse = mapElement("button", "plan-group-toggle", "▴");
+    collapse.type = "button";
+    collapse.title = "Collapse: one stacked card stands for these tickets";
+    collapse.setAttribute("aria-label", "Collapse");
+    collapse.addEventListener("click", (event) => {
+      event.stopPropagation();
+      planChangeGroup(group.id, { collapsed: true });
+    });
+    bar.append(collapse);
+    bar.addEventListener("click", () => planSelect([], null, group.id));
+    el.append(bar);
+    canvas.append(el);
+  }
   for (const card of layout.cards) {
+    const group = groupOfNode.get(card.id);
+    if (group) {
+      // A collapsed group: a stacked card with its progress, its counts and its badge.
+      const counts = groupCounts(tickets, group);
+      const progress = groupBadge(tickets, group);
+      const el = mapElement("div", `plan-card plan-group plan-color-${group.color}${planSelected.has(card.id) ? " selected" : ""}`);
+      el.dataset.group = group.id;
+      el.style.left = `${card.x}px`;
+      el.style.top = `${card.y}px`;
+      const open = counts.tickets - counts.done - counts.inWork;
+      const countLine = `${plural(counts.tickets, "ticket")} · ${counts.done} done · ${counts.inWork} in work · ${open} open`;
+      el.title = `${group.title || "Untitled"}: ${countLine}\n${group.tickets.join(", ")}`;
+      const top = mapElement("div", "plan-card-top");
+      top.append(mapElement("span", "plan-group-name", group.title || "Untitled"));
+      const expand = mapElement("button", "plan-group-toggle", "▾");
+      expand.type = "button";
+      expand.title = "Expand: show its tickets in the tree";
+      expand.setAttribute("aria-label", "Expand");
+      expand.addEventListener("click", (event) => {
+        event.stopPropagation();
+        planChangeGroup(group.id, { collapsed: false });
+      });
+      top.append(expand);
+      const bar = mapElement("div", "plan-progress");
+      const share = (part: number) => `${progress.total === 0 ? 0 : (part / progress.total) * 100}%`;
+      const done = mapElement("span", "plan-progress-done");
+      done.style.width = share(progress.done);
+      const work = mapElement("span", "plan-progress-work");
+      work.style.width = share(progress.inWork);
+      bar.append(done, work);
+      el.append(top, bar, mapElement("div", "plan-state", countLine));
+      if (progress.badge) el.append(mapElement("span", `plan-badge ${progress.badge}`, PLAN_BADGE_TEXT[progress.badge]));
+      el.addEventListener("click", (event) => planSelect(toggleSelection(planSelected, card.id, event.shiftKey || event.ctrlKey || event.metaKey)));
+      canvas.append(el);
+      continue;
+    }
     const ticket = byId.get(card.id);
     if (!ticket) continue;
     const state = planCardState(ticket, queueIds, record);
     const badge = badges.get(ticket.id) ?? null;
-    const el = mapElement("div", `plan-card plan-ticket ${ticket.status}`);
+    const el = mapElement("div", `plan-card plan-ticket ${ticket.status}${planSelected.has(ticket.id) ? " selected" : ""}`);
     el.dataset.ticket = ticket.id;
+    el.addEventListener("click", (event) => planSelect(toggleSelection(planSelected, ticket.id, event.shiftKey || event.ctrlKey || event.metaKey)));
     el.style.left = `${card.x}px`;
     el.style.top = `${card.y}px`;
     el.title = ticket.title;
@@ -14626,28 +15060,157 @@ function renderPlan(): void {
   if (flowTickets(tickets).length === 0) children.push(mapElement("p", "map-muted plan-empty", "No ticket of this project has an arrow yet."));
   planBoardEl.replaceChildren(...children);
 
-  // The side panel without a selection: Next up, Started early, Not in the flow.
-  const list = (title: string, items: readonly Ticket[], none: string) => {
+  // The side panel waits while the user types a title; the next render after the blur draws it.
+  const active = document.activeElement;
+  if (!planFocusTitle && active instanceof HTMLInputElement && active.classList.contains("plan-title-input") && planSideEl.contains(active)) return;
+
+  // A row of a ticket; a click selects it (and expands the group that hides it).
+  const ticketRow = (ticket: Ticket, select: boolean) => {
+    const row = mapElement("div", `plan-side-row${select ? " plan-side-link" : ""}`);
+    row.title = ticket.title;
+    const state = planCardState(ticket, queueIds, record);
+    const dot = mapElement("span", `plan-dot ${state.dot}`);
+    dot.setAttribute("aria-hidden", "true");
+    row.append(dot, mapElement("span", "plan-name", ticket.id), mapElement("span", "plan-side-state", state.word));
+    if (select) row.addEventListener("click", () => planReveal(ticket.id));
+    return row;
+  };
+  const list = (title: string, items: readonly Ticket[], none: string, select = false) => {
     const section = mapElement("section", "plan-side-part");
     section.append(mapElement("h3", "", `${title} (${items.length})`));
     if (items.length === 0) section.append(mapElement("p", "plan-none", none));
-    for (const ticket of items) {
-      const row = mapElement("div", "plan-side-row");
-      row.title = ticket.title;
-      const state = planCardState(ticket, queueIds, record);
-      const dot = mapElement("span", `plan-dot ${state.dot}`);
-      dot.setAttribute("aria-hidden", "true");
-      row.append(dot, mapElement("span", "plan-name", ticket.id), mapElement("span", "plan-side-state", state.word));
-      section.append(row);
-    }
+    for (const ticket of items) section.append(ticketRow(ticket, select));
     return section;
   };
-  const withBadge = (wanted: "next" | "early") => tickets.filter((ticket) => badges.get(ticket.id) === wanted);
-  planSideEl.replaceChildren(
-    list("Next up", withBadge("next"), "No ticket is next up."),
-    list("Started early", withBadge("early"), "No ticket started early."),
-    list("Not in the flow", notInFlow(tickets), "Every open ticket has an arrow."),
-  );
+  const sideButton = (text: string, title: string, act: (() => void) | null) => {
+    const button = mapElement("button", "plan-side-button", text);
+    button.type = "button";
+    button.title = title;
+    if (act) button.addEventListener("click", act);
+    else button.disabled = true;
+    return button;
+  };
+  // Plan the flow comes with the next part of the ticket; the shortcut shows but does nothing yet.
+  const planFlow = () => sideButton("Plan the flow", "Comes with the next part", null);
+  const head = (title: string, sub = "") => {
+    const section = mapElement("section", "plan-side-part plan-side-head");
+    section.append(mapElement("h3", "", title));
+    if (sub) section.append(mapElement("p", "plan-side-sub", sub));
+    return section;
+  };
+  const known = (ids: readonly string[]) => ids.flatMap((id) => (byId.has(id) ? [byId.get(id)!] : []));
+  const selectedGroup = planSelectedGroup !== null ? groups.find((group) => group.id === planSelectedGroup) : planSelected.size === 1 ? groupOfNode.get([...planSelected][0]) : undefined;
+  const parts: HTMLElement[] = [];
+  if (selectedGroup) {
+    // One comment or group: its title, colour, counts, Collapse or Expand, Remove and its tickets.
+    const group = selectedGroup;
+    const top = head(group.collapsed ? "Group" : "Comment");
+    const input = mapElement("input", "plan-title-input");
+    input.type = "text";
+    input.value = group.title;
+    input.placeholder = "Title";
+    input.setAttribute("aria-label", "Title");
+    input.addEventListener("change", () => planChangeGroup(group.id, { title: input.value.trim() }));
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") input.blur();
+    });
+    const swatches = mapElement("div", "plan-swatches");
+    swatches.setAttribute("role", "group");
+    swatches.setAttribute("aria-label", "Colour");
+    PLAN_COLOR_NAMES.forEach((name, color) => {
+      const swatch = mapElement("button", `plan-swatch plan-color-${color}`);
+      swatch.type = "button";
+      swatch.title = name;
+      swatch.setAttribute("aria-label", name);
+      swatch.setAttribute("aria-pressed", String(group.color === color));
+      swatch.addEventListener("click", () => planChangeGroup(group.id, { color }));
+      swatches.append(swatch);
+    });
+    top.append(input, swatches);
+    const counts = groupCounts(tickets, group);
+    const table = mapElement("dl", "plan-counts");
+    const count = (label: string, value: number) => table.append(mapElement("dt", "", label), mapElement("dd", "", String(value)));
+    count("Tickets", counts.tickets);
+    count("Done", counts.done);
+    count("In work", counts.inWork);
+    count("Next up", counts.nextUp);
+    count("Waiting", counts.waiting);
+    count("Started early", counts.early);
+    count("Arrows in", counts.arrowsIn);
+    count("Arrows out", counts.arrowsOut);
+    const actions = mapElement("div", "plan-side-actions");
+    actions.append(
+      group.collapsed
+        ? sideButton("Expand", "Show its tickets in the tree inside a box", () => planChangeGroup(group.id, { collapsed: false }))
+        : sideButton("Collapse", "One stacked card stands for its tickets", () => planChangeGroup(group.id, { collapsed: true })),
+      sideButton("Remove", "Remove this comment or group; its tickets and arrows stay (X or Del)", () => {
+        planSelect([], null, group.id);
+        planRemoveSelectedGroups();
+      }),
+    );
+    top.append(table, actions);
+    parts.push(top, list("Its tickets", groupMembers(tickets, group), "None of its tickets is on the board.", true));
+  } else if (planSelectedArrow) {
+    parts.push(head("Arrow", `${planSelectedArrow.to} starts when ${planSelectedArrow.from} is done`), planFlow());
+  } else if (planSelected.size === 1) {
+    // One ticket: its state, where it stands, and the tickets before and after it.
+    const ticket = byId.get([...planSelected][0]);
+    if (ticket) {
+      const top = head(ticket.id, ticket.title);
+      top.append(mapElement("p", "plan-side-state-line", `${planCardState(ticket, queueIds, record).word} · ${standLine(tickets, ticket.id)}`));
+      parts.push(
+        top,
+        list("Comes after", known(comesAfter(tickets, ticket.id)), "No ticket before it.", true),
+        list("Comes before", known(comesBefore(tickets, ticket.id)), "No ticket after it.", true),
+        planFlow(),
+      );
+    }
+  } else if (planSelected.size > 1) {
+    const chosen = known(planSelectedTickets(groups));
+    const top = head(`${plural(chosen.length, "ticket")} selected`);
+    const actions = mapElement("div", "plan-side-actions");
+    actions.append(
+      sideButton("Add comment", "Draw an open box with a title around them (C)", () => planAddGroup(false)),
+      sideButton("Group and collapse", "Put them into a group that stands as one card (G)", () => planAddGroup(true)),
+      sideButton("Clear selection", "Select nothing (Esc)", planClearSelection),
+    );
+    top.append(actions);
+    parts.push(top, list("Selected", chosen, "No ticket.", true));
+  }
+  if (parts.length === 0) {
+    // Nothing selected: Next up, Started early, Not in the flow, and the comments and groups.
+    const withBadge = (wanted: "next" | "early") => tickets.filter((ticket) => badges.get(ticket.id) === wanted);
+    const section = mapElement("section", "plan-side-part");
+    section.append(mapElement("h3", "", `Comments and groups (${groups.length})`));
+    if (groups.length === 0) section.append(mapElement("p", "plan-none", "Select tickets and press C or G."));
+    for (const group of groups) {
+      const row = mapElement("div", "plan-side-row");
+      const mark = mapElement("span", `plan-swatch-mark plan-color-${group.color}`);
+      mark.setAttribute("aria-hidden", "true");
+      const name = mapElement("button", "plan-side-title", group.title || "Untitled");
+      name.type = "button";
+      name.title = "Select this comment or group";
+      name.addEventListener("click", () => planSelect([], null, group.id));
+      const toggle = group.collapsed
+        ? sideButton("Expand", "Show its tickets in the tree", () => planChangeGroup(group.id, { collapsed: false }))
+        : sideButton("Collapse", "One stacked card stands for its tickets", () => planChangeGroup(group.id, { collapsed: true }));
+      row.append(mark, name, mapElement("span", "plan-side-state", String(groupMembers(tickets, group).length)), toggle);
+      section.append(row);
+    }
+    parts.push(
+      list("Next up", withBadge("next"), "No ticket is next up."),
+      list("Started early", withBadge("early"), "No ticket started early."),
+      list("Not in the flow", notInFlow(tickets), "Every open ticket has an arrow."),
+      section,
+    );
+  }
+  planSideEl.replaceChildren(...parts);
+  if (planFocusTitle) {
+    planFocusTitle = false;
+    const input = planSideEl.querySelector<HTMLInputElement>(".plan-title-input");
+    input?.focus();
+    input?.select();
+  }
 }
 
 /** The duration of a running worker moves on this often. */
