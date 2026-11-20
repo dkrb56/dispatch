@@ -163,7 +163,7 @@ import { terminalTheme, themeName, themeTokens } from "./theme";
 import { nightButton, nightChanges, nightLines, nightSyncLines } from "./night";
 import { KEY_DOWN, KEY_ENTER, KEY_ESC, rcCommand, rcMenuFocus, rcSettled, rcView, type RcView, type RcWish } from "./remotecontrol";
 import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
-import { answeredLine, chosenCount, questionWaitToOpen, replyText, windowChoices, windowTitle } from "./answers";
+import { answerable, answeredLine, chosenCount, holdReason, questionWaitToOpen, replyText, windowChoices, windowTitle } from "./answers";
 import { CONFIRM_PLACEHOLDER, CONFIRM_TIP, CONFIRM_TITLE, confirmChoice, confirmLine, confirmQuestion, RESULT_LABEL, RESULT_TIP } from "./confirm";
 import { ANSWERED_KEY, type AnsweredQuestion, type AnsweredReport, answeredRecord, parseAnswered, type RepeatAction, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered } from "./repeat";
 
@@ -6223,12 +6223,13 @@ function questionCard(task: Task, questions: Question[]): HTMLElement {
     questionChoices.set(task.name, saved);
   }
   const choices = saved.choices;
-  const several = questions.length > 1;
+  const real = answerable(questions);
+  const several = real.length > 1;
   const card = document.createElement("div");
   card.className = "task-card";
   const title = document.createElement("div");
   title.className = "card-title";
-  title.textContent = several ? `The worker has ${questions.length} questions · ${chosenCount(questions, choices)}` : "The worker has a question";
+  title.textContent = several ? `The worker has ${real.length} questions · ${chosenCount(questions, choices)}` : "The worker has a question";
   card.append(title);
   for (const question of questions) {
     const text = document.createElement("div");
@@ -6267,6 +6268,13 @@ function questionCard(task: Task, questions: Question[]): HTMLElement {
   open.addEventListener("click", () => openQuestionWindow(task));
   more.append(open);
   card.append(more);
+  const hold = holdReason(questions, choices);
+  if (hold) {
+    const reason = document.createElement("div");
+    reason.className = "card-reason";
+    reason.textContent = hold;
+    card.append(reason);
+  }
   const error = actionError(task);
   if (error) card.append(error);
   return card;
@@ -6518,7 +6526,8 @@ function initQuestions(): void {
     const questions = openQuestions(task);
     const answers = questionAnswers();
     if (replyText(questions, answers) === null) {
-      document.querySelector("#questions-reason")!.textContent = "A question has no selected option. Answer it in the report's chat.";
+      document.querySelector("#questions-reason")!.textContent =
+        holdReason(questions, answers) ?? "A question has no selected option. Answer it in the report's chat.";
       return;
     }
     questionsSending = true;

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { answeredLine, chosenCount, questionWaitToOpen, replyText, windowChoices, windowTitle } from "../src/answers.ts";
+import { answeredLine, chosenCount, holdReason, questionWaitToOpen, replyText, windowChoices, windowTitle } from "../src/answers.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -69,6 +69,28 @@ test("a question without options gets no choice, so no reply goes", () => {
   const empty = [{ number: 1, text: "Why?", options: [] }];
   assert.equal(windowChoices(empty, new Map()).size, 0);
   assert.equal(replyText(empty, windowChoices(empty, new Map())), null);
+  assert.match(holdReason(empty, new Map()) ?? "", /Answer in the report's chat/);
+});
+
+const SEVEN = [
+  ...[1, 2, 3, 4, 5, 6].map((number) => ({ number, text: `Step ${number}`, options: [] as string[] })),
+  { number: 7, text: "Done?", options: ["Done, the mockup is saved", "Not yet"] },
+];
+
+test("items without options never block the send of the one real question", () => {
+  const choices = new Map([[7, "Done, the mockup is saved"]]);
+  assert.equal(replyText(SEVEN, choices), "Answer to question 7: Done, the mockup is saved");
+  assert.equal(chosenCount(SEVEN, choices), "1 of 1 chosen");
+  assert.equal(holdReason(SEVEN, choices), null);
+  assert.equal(windowTitle("T-1", SEVEN), "Question of T-1");
+  assert.equal(answeredLine("T-1", SEVEN, choices), "Question 7 of T-1 answered in Dispatch: Done, the mockup is saved");
+});
+
+test("several real questions with one choice give no reply and the hold text names the other", () => {
+  const choices = new Map([[1, "Use a file"]]);
+  assert.equal(replyText(TWO, choices), null);
+  assert.equal(holdReason(TWO, choices), "Choose an answer for question 2 too; then all answers go to the worker.");
+  assert.equal(holdReason(TWO, new Map()), null);
 });
 
 test("the reply of the window with the recommended options is the reply of the card", () => {
