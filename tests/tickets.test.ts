@@ -871,6 +871,17 @@ test("a right-click on the board adds a ticket to New or Backlog", () => {
   assert.ok(read("../README.md").includes("a right-click on the board offers a new ticket in New or in Backlog"));
 });
 
+test("a right-click on selected text in a terminal opens the New ticket window with it (ticket i-want-to-allow-terminal-inside-the)", () => {
+  const start = MAIN.slice(MAIN.indexOf("async function startPane("), MAIN.indexOf("type HostSize = "));
+  assert.match(start, /term\.element\?\.addEventListener\("contextmenu", /);
+  assert.match(start, /if \(!text \|\| !root\) return;/);
+  assert.ok(start.includes('mapElement("button", "", "New ticket from selection")'));
+  assert.match(start, /openTicketFromText\(\{ host: pane\.host, root \}, text\)/);
+  assert.match(MAIN, /function openTicketFromText\(ref: ProjectRef, text: string\): void \{/);
+  assert.ok(HTML.includes("A right-click on selected text in a terminal opens a menu with <b>New ticket from selection</b>"));
+  assert.ok(HTML.includes("it writes them into <code>.dispatch/new-tickets/</code>, and they appear at the end of New at the next refresh."));
+});
+
 test("a ticket that comes back into New loses its send marks (ticket i-cant-dragged-canceled-ticket-back-to)", () => {
   assert.equal(reentersNew("canceled", "new"), true);
   assert.equal(reentersNew("backlog", "new"), true);

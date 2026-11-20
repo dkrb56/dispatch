@@ -605,6 +605,77 @@ fn migrate_backlog(project: &Project) -> Result<usize, String> {
     Ok(entries.len())
 }
 
+/// One take of the drop folder of the chats at a time, in this process.
+static TAKE: Mutex<()> = Mutex::new(());
+
+/// Each Markdown file of `.dispatch/new-tickets/` (ticket i-want-to-allow-terminal-inside-the): a chat
+/// writes the tickets of the user there in the form of the section Parts of a plan. Each numbered item
+/// becomes a ticket at the end of New with its title, type, level, Goal and fields; a file without
+/// items becomes one ticket of its whole text. A file is first renamed to `<name>.taking`: a second
+/// read finds it gone and takes nothing twice. The file and the empty folder go. Gives the count.
+fn take_new_tickets(project: &Project) -> Result<usize, String> {
+    let dir = project.new_tickets_dir();
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    let _guard = TAKE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut files: Vec<std::path::PathBuf> = fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("md")))
+        .collect();
+    files.sort();
+    let mut tickets = read(project);
+    let mut order = tickets.iter().filter(|ticket| ticket.status == NEW).filter_map(|ticket| ticket.order).max().unwrap_or(0);
+    let (mut count, mut errors) = (0, Vec::new());
+    for path in files {
+        let mut taking = path.clone().into_os_string();
+        taking.push(".taking");
+        let taking = std::path::PathBuf::from(taking);
+        // A failed rename: another read took the file.
+        if fs::rename(&path, &taking).is_err() {
+            continue;
+        }
+        let text = match fs::read_to_string(&taking) {
+            Ok(text) => text.trim_start_matches('\u{feff}').replace("\r\n", "\n"),
+            Err(error) => {
+                errors.push(format!("{}: {error}", taking.display()));
+                continue;
+            }
+        };
+        let at = now();
+        let items = crate::core::pipeline::part_items(text.lines());
+        let mut made: Vec<Ticket> = Vec::new();
+        if items.is_empty() && !text.trim().is_empty() {
+            order += 1;
+            let ticket = open_ticket(project, &tickets, &text, at, NEW, Some(order));
+            tickets.push(ticket.clone());
+            made.push(ticket);
+        }
+        for item in &items {
+            let title: String = item.title.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(RENAME_MAX).collect();
+            let mut ticket = new_part(project, &tickets, "", 0, &title, &item.goal, &item.kind, &item.level, &item.fields, at);
+            order += 1;
+            ticket.status = NEW.to_string();
+            ticket.order = Some(order);
+            tickets.push(ticket.clone());
+            made.push(ticket);
+        }
+        if let Err(error) = append(project, &made.iter().map(open_event).collect::<Vec<_>>()) {
+            // The file goes back: the next read tries again.
+            let _ = fs::rename(&taking, &path);
+            return Err(error);
+        }
+        count += made.len();
+        fs::remove_file(&taking).map_err(|e| format!("{}: {e}", taking.display()))?;
+    }
+    // A folder that still holds another file stays.
+    let _ = fs::remove_dir(&dir);
+    if errors.is_empty() { Ok(count) } else { Err(errors.join("; ")) }
+}
+
 /// A new ticket of a message.
 fn open_ticket(project: &Project, tickets: &[Ticket], text: &str, at: u64, status: &str, order: Option<u32>) -> Ticket {
     let title = title_of(text);
@@ -660,6 +731,9 @@ fn open_event(ticket: &Ticket) -> Value {
 pub(crate) fn list(project: &Project) -> Vec<Ticket> {
     if let Err(error) = migrate_backlog(project) {
         eprintln!("planned messages not moved into tickets: {error}");
+    }
+    if let Err(error) = take_new_tickets(project) {
+        eprintln!("new tickets of the chats not taken: {error}");
     }
     read(project)
 }
@@ -1497,6 +1571,78 @@ mod tests {
         assert_eq!(parse_ts(Some(&json!("2026-08-25T08:28:58Z"))), parse_ts(Some(&json!("2026-08-25T08:28:58.000Z"))));
         assert_eq!(parse_ts(Some(&json!(5))), Some(5));
         assert_eq!(parse_ts(Some(&json!("yesterday"))), None);
+    }
+
+    /// Ticket i-want-to-allow-terminal-inside-the: a drop file of a chat with two items.
+    #[test]
+    fn new_tickets_of_a_file_with_two_items_go_to_the_end_of_new() {
+        let (project, base) = scratch("new-tickets-two");
+        write_file(&project.tickets_file(), "{\"op\":\"open\",\"id\":\"old\",\"title\":\"Old\",\"status\":\"triage\",\"order\":3}\n").unwrap();
+        let dir = project.new_tickets_dir();
+        let text = "\u{feff}# Tickets\r\n\r\n1. **Fix the `clock`**\r\n- Level: Hard\r\n- Type: `fix`\r\n- Goal: The clock shows the wrong hour\r\n  after a restart.\r\n- Why: The user reads it.\r\n- Done when: It shows the hour.\r\n- Do not change: The head.\r\n- Context: Since the update.\r\n- What I see: 3 o'clock.\r\n- What I expect: 4 o'clock.\r\n\r\n2. Add a dark map\r\n- Level: simple\r\n- Type: feature\r\n- Goal: A dark map.\r\n- What I see: Not kept on a feature.\r\n";
+        write_file(&dir.join("a.md"), text).unwrap();
+
+        let tickets = list(&project);
+        assert_eq!(tickets.len(), 3);
+        let fix = &tickets[1];
+        assert_eq!((fix.id.as_str(), fix.title.as_str(), fix.kind.as_str(), fix.level.as_str()), ("fix-the-clock", "Fix the clock", "fix", "hard"));
+        assert_eq!((fix.status.as_str(), fix.order, fix.summary.as_str()), (NEW, Some(4), "The clock shows the wrong hour after a restart."));
+        let fields = TicketFields {
+            why: "The user reads it.".into(),
+            done: "It shows the hour.".into(),
+            keep: "The head.".into(),
+            context: "Since the update.".into(),
+            see: "3 o'clock.".into(),
+            expect: "4 o'clock.".into(),
+        };
+        assert_eq!(fix.fields, fields);
+        assert!(fix.parent.is_empty() && fix.part == 0 && !fix.renamed);
+        let map = &tickets[2];
+        assert_eq!((map.title.as_str(), map.kind.as_str(), map.level.as_str(), map.status.as_str(), map.order), ("Add a dark map", "feature", "simple", NEW, Some(5)));
+        assert_eq!(map.fields, TicketFields::default(), "What I see only on a fix");
+        assert!(!dir.exists(), "the file, its claim and the folder go");
+        assert_eq!(list(&project).len(), 3, "a second read takes nothing");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn new_tickets_of_a_file_without_items_give_one_ticket_of_its_text() {
+        let (project, base) = scratch("new-tickets-plain");
+        write_file(&project.new_tickets_dir().join("note.md"), "The board should scroll. It jumps now.\n").unwrap();
+        let tickets = list(&project);
+        let ticket: Vec<(&str, &str, &str, Option<u32>)> = tickets.iter().map(|t| (t.title.as_str(), t.summary.as_str(), t.status.as_str(), t.order)).collect();
+        assert_eq!(ticket, [("The board should scroll", "The board should scroll. It jumps now.", NEW, Some(1))]);
+        assert!(!project.new_tickets_dir().exists());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn new_tickets_of_an_empty_file_are_none_and_the_file_goes() {
+        let (project, base) = scratch("new-tickets-empty");
+        write_file(&project.new_tickets_dir().join("empty.md"), "\n  \n").unwrap();
+        assert!(list(&project).is_empty());
+        assert!(!project.new_tickets_dir().exists());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn new_tickets_with_an_unknown_type_or_level_fall_back() {
+        let (project, base) = scratch("new-tickets-unknown");
+        write_file(&project.new_tickets_dir().join("x.md"), "1. Broken save\n- Level: extreme\n- Type: chore\n- Goal: The save crashes.\n").unwrap();
+        let tickets = list(&project);
+        assert_eq!(tickets.len(), 1);
+        assert_eq!((tickets[0].kind.as_str(), tickets[0].level.as_str()), ("fix", MEDIUM), "the guess of the Goal and Medium");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn new_tickets_leave_a_stale_taking_file_alone() {
+        let (project, base) = scratch("new-tickets-stale");
+        let stale = project.new_tickets_dir().join("old.md.taking");
+        write_file(&stale, "1. Taken already\n- Goal: Another read took it.\n").unwrap();
+        assert!(list(&project).is_empty());
+        assert!(stale.is_file(), "a claimed file stays, and so does its folder");
+        let _ = fs::remove_dir_all(base);
     }
 
     #[test]

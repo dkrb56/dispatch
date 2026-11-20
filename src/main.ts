@@ -7747,6 +7747,17 @@ function openAddTicket(ref: ProjectRef, column: "new" | "backlog" = "new"): void
   addTicketBodyEl.querySelector<HTMLTextAreaElement>("#ticket-add-goal")?.focus();
 }
 
+/**
+ * Opens the New ticket window of a project with a text in its Goal box (ticket
+ * i-want-to-allow-terminal-inside-the): the selection of a terminal. A draft keeps its text, and the new text follows it.
+ */
+function openTicketFromText(ref: ProjectRef, text: string): void {
+  if (addTicketWindowStays(null)) return;
+  const draft = addTicketDraft(refKey(ref));
+  draft.text = draft.text.trim() ? `${draft.text.trimEnd()}\n\n${text}` : text;
+  openAddTicket(ref, "new");
+}
+
 /** Draws the window of the open project: the project line, the note, the error and the form. */
 function renderAddTicket(): void {
   if (!addTicketRef || !addTicketDialog.open) return;
@@ -11359,6 +11370,33 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
     },
     true,
   );
+
+  // A right-click on selected text (ticket i-want-to-allow-terminal-inside-the, user decision 2) opens
+  // a menu with New ticket from selection; without a selection the terminal keeps its normal menu.
+  term.element?.addEventListener("contextmenu", (event) => {
+    const text = term
+      .getSelection()
+      .split(/\r?\n/)
+      .map((line) => line.trimEnd())
+      .join("\n")
+      .trim();
+    const root = pane.project ?? pane.cwd;
+    if (!text || !root) return;
+    event.preventDefault();
+    closeBoardMenu();
+    const menu = mapElement("div", "ticket-menu");
+    menu.setAttribute("role", "menu");
+    const item = mapElement("button", "", "New ticket from selection");
+    item.type = "button";
+    item.title = "Open the New ticket window with the selected text in the Goal box";
+    item.setAttribute("role", "menuitem");
+    item.addEventListener("click", () => {
+      closeBoardMenu();
+      openTicketFromText({ host: pane.host, root }, text);
+    });
+    menu.append(item);
+    showMenu(menu, event, pane.el.closest("dialog"));
+  });
 
   // Let the webview do the paste, and the copy when text is selected.
   term.attachCustomKeyEventHandler((event) => {

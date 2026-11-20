@@ -450,6 +450,12 @@ impl Project {
         self.reports.join("backlog")
     }
 
+    /// The drop folder of the chats (ticket i-want-to-allow-terminal-inside-the): a chat writes its
+    /// tickets into a Markdown file here, and the task read makes each item a ticket in New.
+    pub(crate) fn new_tickets_dir(&self) -> PathBuf {
+        self.reports.join("new-tickets")
+    }
+
     /// The tickets of the project (ticket tickets): one JSON event per line.
     pub(crate) fn tickets_file(&self) -> PathBuf {
         self.reports.join("tickets.jsonl")
@@ -941,6 +947,7 @@ impl Project {
 - The session of a worker is named `<ticket-id> [plan]` in its plan run and `<ticket-id> [work]` in its work run; a worker of an older script has the bare ticket id. Triage checks workers with `claude agents --json --all` or `{script} status`: `done` = finished, `blocked` with `status: waiting` = at a permission prompt, `blocked` with `status: idle` = the turn ended with a question that stands in the report (`{script} status` says `done` then), `failed` or `stopped` = ended badly. It reads the plan or the report file first, `claude logs <id>` second.
 - Triage runs at most 3 workers, and at most one in its work run. Triage does not poll: Dispatch writes one line into the triage chat when a worker is done, blocked or failed, when the user approved or rejected a plan, and when the user answered a question.
 - Triage never answers a worker's question or permission prompt with its own words. A question is answered in the task card of Dispatch; a permission prompt is answered in the agent view.
+- A chat that the user asks for tickets writes them into a new Markdown file in `{reports}/new-tickets/`, never into `{reports}/tickets.jsonl`: one numbered item `N. <title>` per ticket with the list lines `Level:` (simple, medium or hard), `Type:` (fix, feature, refactor or content), `Goal:` and the optional lines `Why:`, `Done when:`, `Do not change:`, `Context:`, `What I see:` and `What I expect:`, as in the section Parts of a plan. At its next read Dispatch puts each item as a ticket at the end of New and deletes the file.
 "
         )
     }
@@ -4614,17 +4621,26 @@ pub struct PlanPart {
 /// when:`, `Do not change:`, `Context:`, `What I see:`, `What I expect:`), keys in any case and
 /// backticks stripped; a wrapped line joins the line above. A plan without the section gives none.
 pub(crate) fn plan_parts(text: &str) -> Vec<PlanPart> {
-    let mut parts: Vec<PlanPart> = Vec::new();
     let mut in_section = false;
+    part_items(text.lines().filter(move |line| {
+        if let Some(heading) = line.trim().strip_prefix("## ") {
+            in_section = heading.trim().eq_ignore_ascii_case("parts");
+            return false;
+        }
+        in_section
+    }))
+}
+
+/// The numbered items of a list of lines in the form of the section `Parts` (see `plan_parts`): the
+/// section of a plan, or a file of the drop folder of the chats (ticket
+/// i-want-to-allow-terminal-inside-the). Empty lines and headings are skipped.
+pub(crate) fn part_items<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<PlanPart> {
+    let mut parts: Vec<PlanPart> = Vec::new();
     // The key of the line above, for a wrapped line; empty: the title.
     let mut last = String::new();
-    for line in text.lines() {
+    for line in lines {
         let trimmed = line.trim();
-        if let Some(heading) = trimmed.strip_prefix("## ") {
-            in_section = heading.trim().eq_ignore_ascii_case("parts");
-            continue;
-        }
-        if !in_section || trimmed.is_empty() || trimmed.starts_with('#') {
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
         let clean = trimmed.replace('`', "");
@@ -13172,5 +13188,28 @@ if (args[0] === 'agents') {
         assert!(body.contains("; Parts (optional: only when the work is too large for one work run, and never in the plan of a part:"), "{body}");
         assert!(body.contains("each part a numbered item `N. <title>` with the list lines `Level:`"), "{body}");
         assert!(body.contains("A ticket message with the block `Part N of M of ticket <id>` is a part of that ticket: triage copies the block into the brief as the section `## Parent and earlier parts`"), "{body}");
+    }
+
+    /// Ticket i-want-to-allow-terminal-inside-the: a chat drops a file into `.dispatch/new-tickets/`,
+    /// and the task read of the board makes its items tickets in New and removes the folder.
+    #[test]
+    fn task_list_takes_the_new_tickets_folder() {
+        let project = scratch("new-tickets-list");
+        apply(&project, &[]).unwrap();
+        let dir = project.reports.join("new-tickets");
+        write_file(&dir.join("from-chat.md"), "1. Show the clock\n- Level: simple\n- Type: feature\n- Goal: Show the clock in the head.\n").unwrap();
+
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        let tickets: Vec<(&str, &str, &str, &str)> = list.tickets.iter().map(|t| (t.id.as_str(), t.title.as_str(), t.status.as_str(), t.summary.as_str())).collect();
+        assert_eq!(tickets, [("show-the-clock", "Show the clock", "new", "Show the clock in the head.")]);
+        assert!(!dir.exists(), "the file and the folder go");
+        clean(&project);
+    }
+
+    #[test]
+    fn the_section_tells_a_chat_where_new_tickets_go() {
+        let body = scratch("new-tickets-section").section_body();
+        assert!(body.contains("writes them into a new Markdown file in `.dispatch/new-tickets/`, never into `.dispatch/tickets.jsonl`: one numbered item `N. <title>` per ticket"), "{body}");
+        assert!(body.ends_with("puts each item as a ticket at the end of New and deletes the file.\n"), "{body}");
     }
 }
