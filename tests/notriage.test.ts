@@ -4,7 +4,7 @@
 // Run: node --test tests/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { triageCard, triagePanesToClose, withoutTriage } from "../src/notriage.ts";
+import { showTriage, triageCard, triagePanesToClose, withoutTriage } from "../src/notriage.ts";
 
 type Node = { id?: string; role?: string; size?: number } | { dir: string; children: Node[]; size?: number };
 
@@ -62,4 +62,24 @@ test("a project with triage shows the Triage card with its remembered chat", () 
 
 test("a project with triage and no remembered chat still shows the Triage card", () => {
   assert.deepEqual(triageCard(null, false), { show: true, chatId: null });
+});
+
+test("a project that loads shows no Triage parts without an open triage pane", () => {
+  assert.equal(showTriage("loading", false, false), false);
+});
+
+test("a project that loads with an open triage pane shows its Triage parts", () => {
+  assert.equal(showTriage("loading", false, true), true);
+});
+
+test("a loaded project with triage shows its Triage parts", () => {
+  assert.equal(showTriage("loaded", false, false), true);
+});
+
+test("a loaded No triage project shows no Triage parts", () => {
+  assert.equal(showTriage("loaded", true, false), false);
+});
+
+test("a project that Dispatch cannot read shows no Triage parts", () => {
+  assert.equal(showTriage("failed", false, false), false);
 });

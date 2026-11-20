@@ -116,7 +116,7 @@ import { autoSwitch, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./paus
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { HOLD_NOTE, holdWait } from "./holdstep";
-import { triageCard, triagePanesToClose, withoutTriage } from "./notriage";
+import { showTriage, triageCard, triagePanesToClose, withoutTriage, type ProjectLoad } from "./notriage";
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
 import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
@@ -2467,6 +2467,15 @@ function hostedTasks(host: HostId, tasks: TaskInfo[]): TaskInfo[] {
 /** The task lists of the projects that the window shows, by project key. */
 const projectTasks = new Map<string, ProjectTasks>();
 
+/** The keys of the projects whose last read of the task list failed (ticket when-projects-are-loading-i-see-triage). */
+const projectReadFailed = new Set<string>();
+
+/** How far the read of a project's task list is: loaded with a record, failed after a bad read, else loading. */
+function projectLoad(key: string): ProjectLoad {
+  if (projectTasks.has(key)) return "loaded";
+  return projectReadFailed.has(key) ? "failed" : "loading";
+}
+
 /**
  * Keeps a new task list of a project, after a look at what changed since the list before it
  * (ticket merged-outside): an old refusal of the Merge button goes by the rule of `refusalGoes`, and
@@ -2492,6 +2501,7 @@ function storeProjectTasks(key: string, record: ProjectTasks, readAt: number): v
   // A task end marks the triage chat of the project for a compaction (triage-compact-after-task).
   if (before && taskEnds(taskShape(before), taskShape(record)).length > 0) markCompact(projectFor(record.host, record.cwd));
   projectTasks.set(key, record);
+  projectReadFailed.delete(key);
   // "No triage" (ticket with-no-triage-on-a-project-shows-no): the triage pane of the project closes
   // when the switch goes on, also in the middle of an answer (user decision 1). The agent view stays.
   if (record.noTriage) void closeTriagePanes(key);
@@ -12633,7 +12643,8 @@ function focusBadge(state: { waits: number; working: number; paused?: boolean })
  */
 function showColumnTab(column: FocusColumn): ColumnTab {
   const key = projectKey(column.host, column.root);
-  const hasTriage = !projectNoTriage(key) || workspacePanes(column).triage !== undefined;
+  // No Triage tab while the project loads (ticket when-projects-are-loading-i-see-triage).
+  const hasTriage = showTriage(projectLoad(key), projectNoTriage(key), workspacePanes(column).triage !== undefined);
   const tabs = columnTabs(hasTriage);
   const shown = parseTab(column.tab, tabs);
   column.triageEl.hidden = shown !== "triage";
@@ -12710,6 +12721,8 @@ function renderFocusBoard(column: FocusColumn, takeFocus: boolean): void {
   const search = column.boardSearchEl.value;
   const shown = record && search.trim() ? record.tickets.filter((t) => ticketMatches(t, search)).length : count;
   column.boardCountEl.textContent = !record ? "Reading…" : search.trim() ? `${shown} of ${count} tickets` : `${count} ${count === 1 ? "ticket" : "tickets"}`;
+  // A spinner before "Reading…" until the project is read (ticket when-projects-are-loading-i-see-triage).
+  if (!record) column.boardCountEl.prepend(mapElement("span", "load-spinner"));
   const scrolls = new Map<string, number>();
   for (const one of column.boardColumnsEl.querySelectorAll<HTMLElement>(".tickets-column")) {
     scrolls.set(one.dataset.status ?? "", one.querySelector(".tickets-list")?.scrollTop ?? 0);
@@ -12765,8 +12778,8 @@ function renderFocus(): void {
     // The tabs (ticket title-project-rail-focus-as-the-only): only the slot of the shown tab is visible.
     const shownTab = showColumnTab(column);
     if (triage) moveInto(triage, column.triageEl);
-    else if (projectNoTriage(key)) {
-      // "No triage": the column has no Triage tab and its slot stays empty.
+    else if (!showTriage(projectLoad(key), projectNoTriage(key), false)) {
+      // "No triage", or a project that loads or could not be read: the column has no Triage tab and its slot stays empty.
       column.triageEl.replaceChildren();
     } else {
       const start = document.createElement("button");
@@ -12828,8 +12841,11 @@ function renderFocus(): void {
     } catch {
       // Without the storage the triage row shows without a time.
     }
-    // A project with No triage shows no Triage card (ticket why-is-there-triage-section-on-top-of).
-    const card = triageCard(remembered, projectNoTriage(key));
+    // A project with No triage shows no Triage card (ticket why-is-there-triage-section-on-top-of),
+    // and a project that loads or could not be read shows none without its triage pane (ticket
+    // when-projects-are-loading-i-see-triage).
+    const load = projectLoad(key);
+    const card = triageCard(remembered, !showTriage(load, projectNoTriage(key), triage !== undefined));
     if (card.show) {
       const chat = chatList.find((chat) => chat.id === remembered && chat.host === column.host);
       const triageRow = document.createElement("button");
@@ -12900,7 +12916,9 @@ function renderFocus(): void {
     const waits = (task: Task) => taskWaits(task) || task.workers.some((worker) => worker.state === "blocked");
     const runs = (task: Task) => waits(task) || task.workers.some((worker) => workerOrder(worker) < 2);
     const split = splitNewest(tasks, runs);
-    if (fold("tasks", "Tasks", tasks.length, true, tasks.filter(waits).length)) {
+    // Until the project is read, one loading line stands in place of the Tasks section.
+    if (load !== "loaded") items.push(projectLoadLine(load, "chat-note"));
+    else if (fold("tasks", "Tasks", tasks.length, true, tasks.filter(waits).length)) {
       const taskItems = withPending(split.shown, split.shown.map((task) => taskElement(task)), key);
       if (taskItems.length === 0) note(card.show ? "No tasks yet. Give triage a task in its chat." : "No tasks yet. Add a ticket on the board.");
       items.push(...taskItems);
@@ -13384,6 +13402,7 @@ async function refreshFocusTasks(onlyWhenChanged = false): Promise<void> {
       } catch {
         // A folder that is no project has no tasks.
         projectTasks.delete(key);
+        projectReadFailed.add(key);
         focusReplies.delete(key);
         changed = true;
       }
@@ -13522,6 +13541,17 @@ const mapAllTasks = new Set<string>();
 const MAP_DONE_SHOWN = 5;
 /** From this many rows on, You and Triage stand at the top instead of in the middle of the rows. */
 const MAP_TOP_ROWS = 5;
+
+/**
+ * The line of a project that loads (a spinner and "Loading the project…") or that Dispatch could not
+ * read (ticket when-projects-are-loading-i-see-triage). The poll reads a failed project again.
+ */
+function projectLoadLine(load: ProjectLoad, className: string, tag: "p" | "span" = "p"): HTMLElement {
+  if (load === "failed") return mapElement(tag, `${className} project-load`, "Could not read this project");
+  const line = mapElement(tag, `${className} project-load`, "Loading the project…");
+  line.prepend(mapElement("span", "load-spinner"));
+  return line;
+}
 
 function mapElement<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text?: string): HTMLElementTagNameMap[K] {
   const made = document.createElement(tag);
@@ -13755,11 +13785,19 @@ function mapSection(ref: ProjectRef): HTMLElement {
   const triageCard = mapElement("button", "map-node triage");
   triageCard.title = "Go to the triage chat of this project in focus mode";
   const idle = projectNoTriage(key) ? NO_TRIAGE_NOTE : triageNotes.has(key) ? "runs in another program" : "not running · click to start";
-  triageCard.append(mapElement("b", "", "Triage"), mapElement("span", "map-line", triage ? [choice.model || "default model", choice.effort || "default effort"].join(" · ") : idle));
+  // While the project loads, the box shows the spinner without the word Triage, and a click does
+  // nothing (ticket when-projects-are-loading-i-see-triage, user decision 1).
+  const load = projectLoad(key);
+  const loading = load !== "loaded" && !triage;
+  if (loading) {
+    triageCard.title = "";
+    triageCard.append(projectLoadLine(load, "map-line", "span"));
+  } else triageCard.append(mapElement("b", "", "Triage"), mapElement("span", "map-line", triage ? [choice.model || "default model", choice.effort || "default effort"].join(" · ") : idle));
   triageCard.style.gridRow = `1 / span ${rows}`;
   triageCard.style.gridColumn = "2";
   if (atTop) triageCard.classList.add("top");
   triageCard.addEventListener("click", () => {
+    if (loading) return;
     void setView("focus").then(async () => {
       await ensureWorkspace(ref);
       renderFocus();
@@ -13770,7 +13808,8 @@ function mapSection(ref: ProjectRef): HTMLElement {
   links.push({ from: you, to: triageCard, label: "tasks" });
 
   if (tasks.length === 0 && cards.length === 0) {
-    const none = mapElement("p", "map-muted map-none", record ? "No tasks yet. Give triage a task in its chat." : "Reading the tasks…");
+    // Without a record the loading line stands here only when the Triage box does not show it.
+    const none = record ? mapElement("p", "map-muted map-none", "No tasks yet. Give triage a task in its chat.") : loading ? mapElement("p", "map-muted map-none") : projectLoadLine(load, "map-muted map-none");
     none.style.gridColumn = "3 / span 3";
     graph.append(none);
   }
@@ -14148,7 +14187,8 @@ function renderOverview(): void {
     card.expandEl.setAttribute("aria-pressed", String(size === "extended"));
     const record = projectTasks.get(key);
     if (!record) {
-      card.tasksEl.replaceChildren(mapElement("p", "overview-none", "Reading the tasks…"));
+      // A spinner until the project is read (ticket when-projects-are-loading-i-see-triage).
+      card.tasksEl.replaceChildren(projectLoadLine(projectLoad(key), "overview-none"));
       continue;
     }
     // Three parts (overview-backlog, tickets): what is in work, the newest finished tasks, the tickets.
@@ -14175,7 +14215,8 @@ function renderOverview(): void {
   );
   for (const card of cards) {
     const key = projectKey(card.host, card.root);
-    card.startEl.hidden = !without.includes(key);
+    // No Start triage while the project loads or could not be read (ticket when-projects-are-loading-i-see-triage).
+    card.startEl.hidden = !without.includes(key) || projectLoad(key) !== "loaded";
     // The chat runs in a program outside the host: a click checks again and starts no second chat.
     const elsewhere = triageNotes.has(key);
     card.startEl.textContent = elsewhere ? "Triage runs in another program · check again" : "Start triage";

@@ -2906,6 +2906,23 @@ button.ticket-level {
     transform: rotate(360deg);
   }
 }
+/* A project that loads (ticket when-projects-are-loading-i-see-triage): a spinner before the text. */
+.load-spinner {
+  display: inline-block;
+  flex: none;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 0.5em;
+  vertical-align: -0.1em;
+  border: 2px solid var(--accent);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: ticket-add-spin 0.8s linear infinite;
+}
+.project-load {
+  color: var(--muted);
+  font-size: 0.9em;
+}
 #ticket-add.busy {
   cursor: progress;
 }

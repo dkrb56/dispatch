@@ -39,3 +39,16 @@ export function triagePanesToClose(panes: { id: string; role?: string; key: stri
 export function triageCard(remembered: string | null, noTriage: boolean): { show: boolean; chatId: string | null } {
   return { show: !noTriage, chatId: remembered };
 }
+
+/** How far the first read of a project's task list is (ticket when-projects-are-loading-i-see-triage). */
+export type ProjectLoad = "loading" | "failed" | "loaded";
+
+/**
+ * Whether the Triage parts of a project show (tab, card, Start triage, Map box). An open triage pane
+ * means the project has triage, so its parts show also while the project loads. Otherwise they
+ * show only after a good read of a project without "No triage".
+ */
+export function showTriage(load: ProjectLoad, noTriage: boolean, hasPane: boolean): boolean {
+  if (hasPane) return true;
+  return load === "loaded" && !noTriage;
+}
