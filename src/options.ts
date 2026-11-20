@@ -157,10 +157,10 @@ function drawPhoneCode(link: string): void {
 }
 
 const PHONE_NOTES = {
-  start: "First install Tailscale on the iPhone and sign in to the same account as this computer. Then click the button: Dispatch starts the host and restarts, the terminals of this window end, and the code shows here.",
+  start: "First install Tailscale on the phone and sign in to the same account as this computer. Then click the button: Dispatch starts the host and restarts, the terminals of this window end, and the code shows here.",
   tailscale: "The phone needs the Tailscale address of this computer. Start Tailscale, then start the host again.",
-  connect: "Scan this code with the iPhone camera. Tailscale must run on the phone. The phone lists only the projects of a connected window, so click the button: Dispatch restarts and the terminals of this window end.",
-  scan: "Tailscale must be installed on the iPhone and signed in to the same account. Scan this code with the iPhone camera. The page then shows the last step: Share, then Add to Home Screen.",
+  connect: "Scan this code with the phone camera. Tailscale must run on the phone. The phone lists only the projects of a connected window, so click the button: Dispatch restarts and the terminals of this window end.",
+  scan: "Tailscale must be installed on the phone and signed in to the same account. Scan this code with the phone camera. The page then shows the last step. On an iPhone: in Safari tap Share, then Add to Home Screen. On Android: in Chrome tap the menu ⋮, then Add to Home screen.",
 };
 
 /** This window works through the host of this PC, so the phone can list its projects. */
