@@ -567,7 +567,7 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   assert.match(MAIN, /const boardNoteEl = mapElement\("span", "focus-board-note", NO_TRIAGE_NOTE\);\n[\s\S]*?\n  boardHead\.append\(boardNoteEl, boardCountEl, boardSearchEl\);/);
   // Ticket issues-with-details-button: the Terminal switch stands right after the tab buttons, not in the board head.
   assert.match(MAIN, /const terminal = stripSwitch\("focus-terminal-details focus-terminal-switch"\);/);
-  assert.match(MAIN, /tabRowEl\.append\(tabButtons\.triage, tabButtons\.tickets, tabButtons\.workers, terminal\);/);
+  assert.match(MAIN, /tabRowEl\.append\(tabButtons\.triage, tabButtons\.tickets, tabButtons\.workers, chats, terminal\);/);
   assert.doesNotMatch(MAIN, /focus-terminal-button/);
   assert.match(MAIN, /async function openProjectTerminal\([\s\S]*?panes\.has\(kept\)\) return;/);
   assert.doesNotMatch(CSS, /\.focus-terminal-button/);
@@ -583,7 +583,7 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   assert.match(MAIN, /interface FocusSize \{[\s\S]*?term\?: number;/);
   assert.match(CSS, /\.focus-terminal \{/);
   assert.match(CSS, /\.focus-terminal\[hidden\] \{\s*display: none;/);
-  assert.match(HTML, /In Focus the terminal opens between the task list and the board/);
+  assert.match(HTML, /In Focus the terminal opens between the left panel and the board/);
 
   // Tickets when-terminal-is-open-say-that-it-s-open, issues-with-details-button: the Terminal switch is on
   // while the terminal is open, and off closes it as × does.
@@ -599,7 +599,7 @@ test("no triage: Focus shows the tickets board where triage would stand", () => 
   assert.match(branch, /if \(shownTab === "tickets"\) \{\s*renderFocusBoard\(column, !ticketsDialog\.open\);/);
   // One drawing for the window and the Focus board; each column names its project.
   const board = MAIN.slice(MAIN.indexOf("function renderFocusBoard("), MAIN.indexOf("function renderFocusBoards("));
-  assert.match(board, /if \(typingIn\(column\.boardColumnsEl\)\) return;/);
+  assert.match(board, /if \(typingIn\(column\.boardColumnsEl\)\) \{\s*renderSkipped = true;\s*return;/);
   assert.match(board, /fillTicketColumns\(column\.boardColumnsEl, projectKey\(column\.host, column\.root\), column\.boardSearchEl\.value\);/);
   assert.match(MAIN, /fillTicketColumns\(ticketsColumnsEl, key, ticketsSearchEl\.value\);/);
   assert.match(MAIN, /column\.dataset\.project = key;/);
@@ -634,7 +634,7 @@ test("focus board: a search box in the head narrows the columns (ticket add-sear
 });
 
 test("no triage: the done and failed alerts come from the announcements of a poll", () => {
-  const announce = MAIN.slice(MAIN.indexOf("function announceWorkerChanges("), MAIN.indexOf("/** The workers that wait for the user are first"));
+  const announce = MAIN.slice(MAIN.indexOf("function announceWorkerChanges("), MAIN.indexOf("/** The script names a worker `<ticket> [plan]`"));
   assert.match(announce, /const ends: WorkerEnd\[\] = told\s*\.filter/);
   assert.match(announce, /fireAlerts\(endNotices\(ends, nightAny\(\)\)\);/);
   assert.doesNotMatch(announce, /workerList/, "never from the worker list directly");

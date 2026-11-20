@@ -254,5 +254,5 @@ test("a narrow column keeps room for its board: panel and terminal shrink first,
   // A drag of the panel edge leaves the board (and a terminal beside it) its room.
   assert.match(main, /function dragSide[\s\S]*?FOCUS_BOARD_MIN[\s\S]*?FOCUS_TERM_MIN[\s\S]*?\n\}/);
   const html = read("../index.html");
-  assert.match(html, /When the projects do not fit side by side, the task panel and the terminal get narrower first, then the row scrolls sideways\./);
+  assert.match(html, /When the projects do not fit side by side, the left panel and the terminal get narrower first, then the row scrolls sideways\./);
 });

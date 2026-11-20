@@ -4641,11 +4641,6 @@ function announceWorkerChanges(workers: Worker[]): void {
   saveWorkerStates(states, ended, earlyTold);
 }
 
-/** The workers that wait for the user are first, then the workers that run, then the others. */
-function workerOrder(worker: Worker): number {
-  return worker.state === "blocked" ? 0 : worker.state === "working" ? 1 : 2;
-}
-
 /** The script names a worker `<ticket> [plan]` or `<ticket> [work]`; an older script used the bare ticket id. */
 const RUN_NAME = /^(.*) \[(plan|work)\]$/;
 
@@ -9472,8 +9467,12 @@ function renderTickets(): void {
     focusNew = false;
     return;
   }
-  // An open level list of the form holds it too: a render would close the list.
-  if (typingIn(ticketsColumnsEl)) return;
+  // An open level list of the form holds it too: a render would close the list. A text box of a task
+  // card draws the board again at its blur (ticket tasks-column-on-the-left-is-redundant).
+  if (typingIn(ticketsColumnsEl)) {
+    renderSkipped = true;
+    return;
+  }
   const key = refKey(ticketsRef);
   const record = projectTasks.get(key);
   const tickets = record?.tickets ?? [];
@@ -9541,7 +9540,15 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
     // A board of another project (Focus mode) shows no form of this part.
     const form = status === "backlog" && partForm !== null && tickets.some((ticket) => ticket.id === partForm?.id) ? partForm : null;
     if (form) list.append(newTicketForm(key, form));
-    list.append(...cards.map((ticket) => ticketCard(key, ticket, queueIds, record)));
+    const ticketEls: HTMLElement[] = cards.map((ticket) => ticketCard(key, ticket, queueIds, record));
+    // A message to triage without a ticket keeps its temporary card in In progress, after the tickets
+    // that wait for the user, as `withPending` places it (ticket tasks-column-on-the-left-is-redundant).
+    const loose = status === "in-progress" ? projectPending(key).filter((card) => card.entry === null) : [];
+    if (loose.length > 0) {
+      const at = pendingIndex(cards, (ticket) => ticketPlace(ticket).rank === 0);
+      ticketEls.splice(at, 0, ...loose.map(pendingElement));
+    }
+    list.append(...ticketEls);
     if (hidden > 0) {
       const more = ticketButton(
         "Show all",
@@ -9554,7 +9561,7 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
       more.classList.add("tickets-show-all");
       list.append(more);
     }
-    if (items.length === 0 && !form) {
+    if (items.length === 0 && !form && loose.length === 0) {
       const none = paused ? PAUSED_NEW_EMPTY : "No tickets. A message to triage lands here, and Dispatch sends it when triage is free.";
       const backlog = "No tickets. Dispatch never sends a Backlog ticket: drag it to New when it should go.";
       list.append(mapElement("p", "tickets-none", status === "new" ? none : status === "backlog" ? backlog : "No tickets"));
@@ -9908,7 +9915,9 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   } else if (ticketTask && approvedMark(ticketTask)) card.classList.add("approved");
   // A parent whose own work ended waits for its parts: a dashed grey frame (ticket order-is-messed-up-in-the-tasks-list-and).
   else if (partProgress(ticket, tickets).total > 0) card.classList.add("parts");
-  meta.append(tag, levelTag, mapElement("span", "ticket-date", chatTime(ticket.created)), state);
+  meta.append(tag, levelTag, mapElement("span", "ticket-date", chatTime(ticket.created)));
+  // An In progress ticket with a task shows the task card instead of the state line (ticket tasks-column-on-the-left-is-redundant).
+  if (!ticketTask) meta.append(state);
   // The chain of the parts (ticket subtickets): a part names its place and its parent, a parent its count.
   const place = partPlace(ticket, tickets);
   const parentTicket = ticket.parent ? tickets.find((one) => one.id === ticket.parent) : undefined;
@@ -9969,6 +9978,8 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   );
   card.append(top, meta);
   if (chainLine) card.append(chainLine);
+  // The task card with its runs, steps, plan, report, checks and buttons, below the ticket lines (user decision 1).
+  if (ticketTask) card.append(taskElement(ticketTask));
   if (planError !== undefined) card.append(mapElement("div", "ticket-error", `The plan did not start: ${planError}`));
   card.append(tools);
   return card;
@@ -11857,6 +11868,13 @@ interface FocusColumn {
   dotEl: HTMLElement;
   pathEl: HTMLElement;
   sideEl: HTMLElement;
+  /** The drag edge of the left panel; hidden with the panel. */
+  sideHandle: HTMLElement;
+  /**
+   * The Chats switch beside the tabs (ticket tasks-column-on-the-left-is-redundant): on shows the left
+   * panel with the triage chat and the chats, off hides it. Off at first; kept per project.
+   */
+  chatsButton: HTMLButtonElement;
   /**
    * The tabs above the work area (ticket title-project-rail-focus-as-the-only): Triage (only with a
    * triage chat), Tickets and Workers, each a button; Tickets and Workers carry a count.
@@ -12090,6 +12108,8 @@ interface FocusSize {
   state?: ColumnChoice;
   /** The tab of the work area that the user chose last (ticket title-project-rail-focus-as-the-only). */
   tab?: ColumnTab;
+  /** The left panel with the chats shows (ticket tasks-column-on-the-left-is-redundant); off when not set. */
+  chats?: boolean;
 }
 const FOCUS_SIZES_KEY = "focus-sizes";
 /** The narrowest column and left panel that a drag leaves. */
@@ -12526,7 +12546,15 @@ function focusColumn(ref: ProjectRef): FocusColumn {
     if (pane) void closePane(pane.id).then(() => renderFocus());
     else void openProjectTerminal(ref);
   });
-  tabRowEl.append(tabButtons.triage, tabButtons.tickets, tabButtons.workers, terminal);
+  // The Chats switch before the Terminal switch (ticket tasks-column-on-the-left-is-redundant): on shows
+  // the left panel with the triage chat and the chats; off at first; kept per project.
+  const chats = stripSwitch("focus-terminal-details focus-chats-switch");
+  chats.querySelector(".auto-switch-label")!.textContent = "Chats";
+  chats.addEventListener("click", () => {
+    saveFocusSize(key, { chats: focusSizes()[key]?.chats !== true });
+    renderFocus();
+  });
+  tabRowEl.append(tabButtons.triage, tabButtons.tickets, tabButtons.workers, chats, terminal);
   // The tickets board of the project (ticket in-focus-mode-i-want-to-se-ticket-board), in the Tickets tab.
   const boardEl = mapElement("div", "focus-board");
   boardEl.hidden = true;
@@ -12578,7 +12606,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   // The shown tab fills the area; the Commands terminals stay below it in every tab.
   main.append(tabRowEl, triageHeadEl, triageEl, boardEl, agentsHeadEl, agentsEl, commandsEl);
   // Drag handles: the left panel against the chat, and this column against the next one.
-  const sideHandle = resizeHandle("side-resize", "Drag to make the panel of tasks wider or narrower; double-click for the usual width");
+  const sideHandle = resizeHandle("side-resize", "Drag to make the left panel wider or narrower; double-click for the usual width");
   // The terminal of Open terminal, between the tasks and the board (ticket when-terminal-is-open-in-focus-mode-it).
   const termEl = mapElement("div", "focus-terminal");
   termEl.hidden = true;
@@ -12620,7 +12648,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   dragTerm(termHandle, key, termEl, workEl);
   dragColumns(colHandle, key, el);
   const tab = focusSizes()[key]?.tab;
-  const column: FocusColumn = { host, root, el, dotEl, pathEl, sideEl, tabButtons, ticketsCountEl, workersCountEl, tab, triageEl, boardEl, boardNoteEl, boardCountEl, boardSearchEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, workEl, termSplitEl, detailsEls, detailsOn: { triage: false, agents: false, terminal: false }, triageHeadEl, agentsHeadEl, chatSearchEl, agentsEl, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, restoreEl, colHandle };
+  const column: FocusColumn = { host, root, el, dotEl, pathEl, sideEl, sideHandle, chatsButton: chats, tabButtons, ticketsCountEl, workersCountEl, tab, triageEl, boardEl, boardNoteEl, boardCountEl, boardSearchEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, workEl, termSplitEl, detailsEls, detailsOn: { triage: false, agents: false, terminal: false }, triageHeadEl, agentsHeadEl, chatSearchEl, agentsEl, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, restoreEl, colHandle };
   // A click anywhere on a strip brings the column back; a button or a drag edge keeps its own action.
   el.addEventListener("click", (event) => {
     if (!el.classList.contains("min")) return;
@@ -12796,7 +12824,10 @@ function focusDetailPanes(): Pane[] {
  * keyboard to an open rename box or form of a part.
  */
 function renderFocusBoard(column: FocusColumn, takeFocus: boolean): void {
-  if (typingIn(column.boardColumnsEl)) return;
+  if (typingIn(column.boardColumnsEl)) {
+    renderSkipped = true;
+    return;
+  }
   const record = projectTasks.get(projectKey(column.host, column.root));
   const count = record?.tickets.length ?? 0;
   const search = column.boardSearchEl.value;
@@ -12910,7 +12941,16 @@ function renderFocus(): void {
     showOld(column);
     if (shownTab === "workers" && agents) requestAnimationFrame(() => fitPane(agents));
 
-    // The left column: the triage chat, then the tasks with their cards.
+    // The Chats switch shows or hides the whole left panel (ticket tasks-column-on-the-left-is-redundant,
+    // user decisions 2 and 3); off when the project has no saved choice.
+    const sideShown = focusSizes()[key]?.chats === true;
+    column.sideEl.hidden = !sideShown;
+    column.sideHandle.hidden = !sideShown;
+    column.chatsButton.setAttribute("aria-checked", String(sideShown));
+    column.chatsButton.title = sideShown ? "Hide the left panel with the triage chat and the other chats" : "Show the left panel with the triage chat and the other chats";
+    if (!sideShown) continue;
+
+    // The left column: the triage chat, then the chats. The task cards stand in the In progress column of the board.
     const items: HTMLElement[] = [];
     const heading = (text: string) => {
       const element = document.createElement("h2");
@@ -12960,9 +13000,9 @@ function renderFocus(): void {
       });
       items.push(heading("Triage"), triageRow);
     }
-    // The Tasks and Chats sections (focus-tickets-chats): a fold heading, the 5 newest items and an
+    // The Chats section (focus-tickets-chats): a fold heading, the 5 newest items and an
     // Older group. Each fold is a part of the record `focus-folds` of the project.
-    const fold = (part: FoldPart, text: string, count: number, section: boolean, waits = 0) => {
+    const fold = (part: FoldPart, text: string, count: number, section: boolean) => {
       const open = foldOpen(focusFolds, key, part);
       const header = document.createElement("button");
       header.className = `chat-group${section ? " focus-fold" : ""}${open ? " open" : ""}`;
@@ -12973,15 +13013,7 @@ function renderFocus(): void {
       const number = document.createElement("span");
       number.className = "count";
       number.textContent = String(count);
-      header.append(name);
-      // A folded Tasks section names the tasks that wait (user decision 5).
-      if (!open && waits > 0) {
-        const wait = document.createElement("span");
-        wait.className = "count focus-fold-waits";
-        wait.textContent = `${waits} wait`;
-        header.append(wait);
-      }
-      header.append(number);
+      header.append(name, number);
       header.addEventListener("click", () => toggleFocusFold(key, part));
       items.push(header);
       return open;
@@ -12992,22 +13024,8 @@ function renderFocus(): void {
       none.textContent = text;
       items.push(none);
     };
-    const record = projectTasks.get(key);
-    const tasks = record ? projectTaskList(record) : [];
-    // A task that waits for the user or runs never folds into Older tasks (user decision 1).
-    const waits = (task: Task) => taskWaits(task) || task.workers.some((worker) => worker.state === "blocked");
-    const runs = (task: Task) => waits(task) || task.workers.some((worker) => workerOrder(worker) < 2);
-    const split = splitNewest(tasks, runs);
-    // Until the project is read, one loading line stands in place of the Tasks section.
+    // Until the project is read, one loading line stands before the Chats section.
     if (load !== "loaded") items.push(projectLoadLine(load, "chat-note"));
-    else if (fold("tasks", "Tasks", tasks.length, true, tasks.filter(waits).length)) {
-      const taskItems = withPending(split.shown, split.shown.map((task) => taskElement(task)), key);
-      if (taskItems.length === 0) note(card.show ? "No tasks yet. Give triage a task in its chat." : "No tasks yet. Add a ticket on the board.");
-      items.push(...taskItems);
-      if (split.older.length > 0 && fold("older-tasks", "Older tasks", split.older.length, false)) {
-        items.push(...split.older.map((task) => taskElement(task)));
-      }
-    }
     // The chats of the project, newest first, without the workers and the triage chat of the Triage card.
     const workerChats = new Set(workerList.map((worker) => `${worker.host}|${worker.sessionId}`));
     const chats = chatList

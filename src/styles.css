@@ -2439,6 +2439,35 @@ button.task-head:hover {
   border-color: var(--text-2);
 }
 
+/* Ticket tasks-column-on-the-left-is-redundant: the task card inside an In progress card has no frame
+   of its own; the frame of the ticket shows waits, working, approved and parts. `[class]` outranks the
+   state rules of `.task`. */
+.ticket-card .task,
+.ticket-card .task[class] {
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.ticket-card .task.attention.pulse::after {
+  display: none;
+}
+
+/* A board column is narrow: the task card inside a ticket card keeps smaller indents. */
+.ticket-card .task-head {
+  padding: 4px 0;
+}
+
+.ticket-card .task-body {
+  margin: 0 0 4px 6px;
+}
+
+.ticket-card .task > .task-card {
+  margin: 2px 0 4px;
+}
+
 .ticket-card.canceled {
   opacity: 0.75;
 }
@@ -7895,7 +7924,7 @@ body.chats-sized .focus-side {
   min-height: 0;
 }
 
-/* The left column of a project: its triage chat and its tasks, like the chat panel. */
+/* The left column of a project: its triage chat and its other chats, like the chat panel. */
 .focus-side {
   display: flex;
   flex: 0 1 auto;
