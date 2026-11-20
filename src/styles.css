@@ -2433,6 +2433,18 @@ button.task-head:hover {
   border-color: var(--text-2);
 }
 
+/* Ticket show-a-parent-ticket-and-its-parts-as: a parent and its parts stand inside one frame in the
+   colour of their family (`--group-colour`, set by the page). */
+.ticket-group {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px;
+  border: 2px solid var(--group-colour);
+  border-radius: 12px;
+}
+
 /* Ticket tasks-column-on-the-left-is-redundant: the task card inside an In progress card has no frame
    of its own; the frame of the ticket shows waits, working, approved and parts. `[class]` outranks the
    state rules of `.task`. */

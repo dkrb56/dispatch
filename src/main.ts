@@ -95,7 +95,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, boardTickets, bulkIds, canDrag, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
+import { addedText, boardTickets, bulkIds, canDrag, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketGroups, ticketMatches, ticketMessage, ticketRoute, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
@@ -9500,6 +9500,27 @@ function renderTickets(): void {
  * board of a Focus column share it, so the cards, the buttons and the drag are the same. Each column
  * names its project, so a drag drops only on the board of its own project.
  */
+/**
+ * The cards of a column with each run of neighbouring cards of one family inside one frame in the colour
+ * of the family (ticket show-a-parent-ticket-and-its-parts-as); other cards stand as they are.
+ */
+function groupFrames(els: readonly HTMLElement[], marks: readonly ({ parent: string; colour: string } | undefined)[]): HTMLElement[] {
+  const out: HTMLElement[] = [];
+  for (let at = 0; at < els.length; ) {
+    const mark = marks[at];
+    if (!mark) {
+      out.push(els[at++]);
+      continue;
+    }
+    const frame = mapElement("div", "ticket-group");
+    frame.dataset.group = mark.parent;
+    frame.style.setProperty("--group-colour", mark.colour);
+    while (at < els.length && marks[at]?.parent === mark.parent) frame.append(els[at++]);
+    out.push(frame);
+  }
+  return out;
+}
+
 function fillTicketColumns(container: HTMLElement, key: string, search: string): void {
   const record = projectTasks.get(key);
   const tickets = record?.tickets ?? [];
@@ -9521,6 +9542,9 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
   };
   // Planning: an In progress ticket whose task is in its plan phase, until Approve (ticket ticket-board-update-update-to-columns).
   const planning = (ticket: Ticket) => taskByName.get(ticket.task || ticket.id)?.info?.state === "planning";
+  // A parent and its parts share one colour (ticket show-a-parent-ticket-and-its-parts-as): from all
+  // tickets of the project, so a search does not change the colours.
+  const groups = ticketGroups(tickets);
   const columns = COLUMNS.map(({ status, name }) => {
     const items = boardTickets(shown, status, planning, status === "in-progress" || status === "planning" ? ticketPlace : undefined);
     const { shown: cards, hidden } = columnCards(items, status, search.trim() !== "", showAll.has(status));
@@ -9546,14 +9570,18 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
     const form = status === "backlog" && partForm !== null && tickets.some((ticket) => ticket.id === partForm?.id) ? partForm : null;
     if (form) list.append(newTicketForm(key, form));
     const ticketEls: HTMLElement[] = cards.map((ticket) => ticketCard(key, ticket, queueIds, record));
+    const elGroups = cards.map((ticket) => groups.get(ticket.id));
     // A message to triage without a ticket keeps its temporary card in In progress, after the tickets
     // that wait for the user, as `withPending` places it (ticket tasks-column-on-the-left-is-redundant).
     const loose = status === "in-progress" ? projectPending(key).filter((card) => card.entry === null) : [];
     if (loose.length > 0) {
-      const at = pendingIndex(cards, (ticket) => ticketPlace(ticket).rank === 0);
+      let at = pendingIndex(cards, (ticket) => ticketPlace(ticket).rank === 0);
+      // A loose card does not split a family: it stands after the family.
+      while (at > 0 && at < cards.length && elGroups[at] && elGroups[at]?.parent === elGroups[at - 1]?.parent) at++;
       ticketEls.splice(at, 0, ...loose.map(pendingElement));
+      elGroups.splice(at, 0, ...loose.map(() => undefined));
     }
-    list.append(...ticketEls);
+    list.append(...groupFrames(ticketEls, elGroups));
     if (hidden > 0) {
       const more = ticketButton(
         "Show all",

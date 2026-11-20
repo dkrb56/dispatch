@@ -47,6 +47,7 @@ import {
   reentersNew,
   repairLine,
   splitImages,
+  ticketGroups,
   ticketMatches,
   ticketMessage,
   taskCopyText,
@@ -904,6 +905,69 @@ test("subtickets: the parts of one parent stand together in Backlog in their ord
   assert.deepEqual(ids(columnTickets([ticket("a", "backlog", null, 1, 1), ticket("b", "backlog", null, 1, 2)], "backlog")), ["b", "a"]);
   assert.deepEqual(ids(partsOf("big", list)), ["p-1", "p-2", "p-3", "p-new"]);
   assert.deepEqual(partsOf("", list), []);
+});
+
+// Ticket show-a-parent-ticket-and-its-parts-as: a parent and its parts as one group with its own colour.
+
+test("parent groups: a parent stands before its parts, at the place of the first card of the family", () => {
+  const list = [
+    ticket("loose-old", "backlog", null, 1, 1),
+    part("b-2", "B", 2, "backlog", "", 5),
+    ticket("loose-new", "backlog", null, 1, 9),
+    part("b-1", "B", 1, "backlog", "", 3),
+    ticket("B", "backlog", null, 1, 2),
+    ticket("middle", "backlog", null, 1, 4),
+  ];
+  assert.deepEqual(ids(columnTickets(list, "backlog")), ["loose-new", "B", "b-1", "b-2", "middle", "loose-old"], "Backlog: the family at the place of b-2, a plain ticket keeps its place");
+  const work = [ticket("w-loose", "in-progress", null, 1, 6), part("a-1", "A", 1, "in-progress", "", 8), ticket("A", "in-progress", null, 1, 2)];
+  assert.deepEqual(ids(columnTickets(work, "in-progress")), ["A", "a-1", "w-loose"], "In progress: parent and part together");
+  const place = (one: { id: string }) => ({ rank: one.id === "w-loose" ? 0 : 1, time: 0 });
+  assert.deepEqual(ids(columnTickets(work, "in-progress", place)), ["w-loose", "A", "a-1"], "with place: the family at the place of its first card");
+  const queue = [part("q-2", "Q", 2, "new"), ticket("x", "new", 2), ticket("Q", "new", 3)];
+  queue[0].order = 1;
+  assert.deepEqual(ids(columnTickets(queue, "new")), ["q-2", "x", "Q"], "Scheduled keeps its queue order");
+});
+
+test("parent groups: a family split between Planning and In progress stays together in each column", () => {
+  const list = [
+    ticket("A", "in-progress", null, 1, 2),
+    part("a-1", "A", 1, "in-progress", "", 9),
+    part("a-2", "A", 2, "in-progress", "", 1),
+    ticket("solo", "in-progress", null, 1, 5),
+    ticket("plan-solo", "in-progress", null, 1, 7),
+  ];
+  const planning = (one: { id: string }) => one.id === "a-1" || one.id === "plan-solo";
+  assert.deepEqual(ids(boardTickets(list, "planning", planning)), ["a-1", "plan-solo"]);
+  assert.deepEqual(ids(boardTickets(list, "in-progress", planning)), ["A", "a-2", "solo"], "the parent and its other part stand together");
+});
+
+test("parent groups: one colour per open family, distinct colours, no group for a finished family", () => {
+  const list = [
+    ticket("A", "in-progress", null, 10),
+    part("a-1", "A", 1, "backlog"),
+    part("a-2", "A", 2, "done", "done"),
+    ticket("B", "done", null, 5),
+    part("b-1", "B", 1, "new"),
+    ticket("C", "done", null, 1),
+    part("c-1", "C", 1, "done", "done"),
+    part("c-2", "C", 2, "canceled", "canceled"),
+    ticket("plain", "backlog", null, 3),
+  ];
+  const groups = ticketGroups(list);
+  assert.deepEqual([...groups.keys()].sort(), ["A", "B", "a-1", "a-2", "b-1"], "parents and parts of open families only");
+  assert.equal(groups.get("a-1")?.parent, "A");
+  assert.equal(groups.get("a-2")?.colour, groups.get("A")?.colour, "one colour per family");
+  assert.notEqual(groups.get("A")?.colour, groups.get("B")?.colour, "families differ");
+  assert.equal(groups.get("B")?.colour, "hsl(210 55% 66%)", "the oldest parent gets the first colour");
+  const many = Array.from({ length: 12 }, (_, n) => [ticket(`P${n}`, "backlog", null, n), part(`p${n}`, `P${n}`, 1)]).flat();
+  const colours = new Set([...ticketGroups(many).values()].map((group) => group.colour));
+  assert.equal(colours.size, 12, "twelve families, twelve colours");
+});
+
+test("parent groups: the board wraps a family in a frame in its colour", () => {
+  assert.match(CSS, /\.ticket-group \{[^}]*var\(--group-colour\)/);
+  assert.match(MAIN, /ticket-group/);
+  assert.match(MAIN, /ticketGroups\(/);
 });
 
 test("subtickets: the parent counts its parts and shows where the chain stopped", () => {

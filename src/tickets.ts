@@ -480,18 +480,24 @@ export function columnTickets<T extends Pick<Ticket, "id" | "status" | "order" |
   if (status === "in-progress" && place) {
     const places = new Map(sorted.map((ticket) => [ticket, place(ticket)]));
     const at = (ticket: T) => places.get(ticket) ?? { rank: 0, time: 0 };
-    return sorted.sort((a, b) => at(a).rank - at(b).rank || at(b).time - at(a).time || b.updated - a.updated || b.created - a.created);
+    sorted.sort((a, b) => at(a).rank - at(b).rank || at(b).time - at(a).time || b.updated - a.updated || b.created - a.created);
   }
-  if (status !== "backlog") return sorted;
-  // The parts of one parent stand together in their order, at the place of the newest of them (ticket subtickets).
+  // A parent and its parts stand together, the parent first and the parts in their chain order, at the
+  // place of the first card of the family (ticket show-a-parent-ticket-and-its-parts-as, user decision 2).
+  const parents = new Set(tickets.map((ticket) => ticket.parent).filter((parent): parent is string => !!parent));
+  const family = (ticket: T) => ticket.parent || (parents.has(ticket.id) ? ticket.id : "");
   const shown: T[] = [];
+  const placed = new Set<string>();
   for (const ticket of sorted) {
-    if (shown.includes(ticket)) continue;
-    if (!ticket.parent) {
+    const key = family(ticket);
+    if (!key) {
       shown.push(ticket);
       continue;
     }
-    shown.push(...sorted.filter((one) => one.parent === ticket.parent).sort((a, b) => (a.part ?? 0) - (b.part ?? 0) || a.created - b.created));
+    if (placed.has(key)) continue;
+    placed.add(key);
+    const members = sorted.filter((one) => family(one) === key);
+    shown.push(...members.filter((one) => one.id === key), ...partsOf(key, members));
   }
   return shown;
 }
@@ -538,6 +544,29 @@ export function partEnd(ticket: Pick<Ticket, "status" | "note">): "open" | "done
 /** The parts of a parent in the order of the chain, with the parts that the user canceled. */
 export function partsOf<T extends Pick<Ticket, "parent" | "part" | "created">>(parent: string, tickets: readonly T[]): T[] {
   return tickets.filter((ticket) => !!parent && ticket.parent === parent).sort((a, b) => (a.part ?? 0) - (b.part ?? 0) || a.created - b.created);
+}
+
+/**
+ * The families of the board (ticket show-a-parent-ticket-and-its-parts-as): for each parent with parts
+ * and each of its parts, the parent id and the colour of the family. Only a family with at least one open
+ * card counts (user decision 1). Families go by the creation of the parent; family N gets the hue
+ * 210 + N × 137.508 (the golden angle), so every family has its own colour and neighbours stand far apart.
+ */
+export function ticketGroups(
+  tickets: readonly Pick<Ticket, "id" | "parent" | "part" | "created" | "status">[],
+): Map<string, { parent: string; colour: string }> {
+  const open = (ticket: Pick<Ticket, "status">) => ticket.status !== "done" && ticket.status !== "canceled";
+  const families = tickets
+    .map((parent) => ({ parent, parts: partsOf(parent.id, tickets) }))
+    .filter(({ parent, parts }) => parts.length > 0 && (open(parent) || parts.some(open)))
+    .sort((a, b) => a.parent.created - b.parent.created || a.parent.id.localeCompare(b.parent.id));
+  const groups = new Map<string, { parent: string; colour: string }>();
+  families.forEach(({ parent, parts }, n) => {
+    const hue = Math.round(((210 + n * 137.508) % 360) * 10) / 10;
+    const group = { parent: parent.id, colour: `hsl(${hue} 55% 66%)` };
+    for (const ticket of [parent, ...parts]) groups.set(ticket.id, group);
+  });
+  return groups;
 }
 
 /**
