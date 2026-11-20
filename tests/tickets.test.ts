@@ -1066,3 +1066,52 @@ test("an In progress ticket shows its state in its frame", () => {
   const help = HTML.slice(HTML.indexOf("<h3>Tickets</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
   assert.ok(help.includes("blue frame") && help.includes("flashing"), "the Help sentence");
 });
+
+test("the In progress column puts running tasks first", () => {
+  const list = [
+    ticket("waits", "in-progress", null, 1, 9),
+    ticket("runs-old", "in-progress", null, 2, 3),
+    ticket("runs-new", "in-progress", null, 3, 2),
+    ticket("rest-a", "in-progress", null, 4, 8),
+    ticket("rest-b", "in-progress", null, 5, 7),
+    ticket("approved", "in-progress", null, 6, 1),
+  ];
+  const places: Record<string, { rank: number; time: number }> = {
+    waits: { rank: 1, time: 50 },
+    "runs-old": { rank: 0, time: 10 },
+    "runs-new": { rank: 0, time: 20 },
+    "rest-a": { rank: 3, time: 5 },
+    "rest-b": { rank: 3, time: 5 },
+    approved: { rank: 2, time: 1 },
+  };
+  const place = (one: { id: string }) => places[one.id];
+  assert.deepEqual(
+    ids(columnTickets(list, "in-progress", place)),
+    ["runs-new", "runs-old", "waits", "approved", "rest-a", "rest-b"],
+    "rank, then time, then the last change",
+  );
+  assert.deepEqual(ids(columnTickets(list, "in-progress")), ["waits", "rest-a", "rest-b", "runs-old", "runs-new", "approved"], "without place: the last change");
+  const done = [ticket("d-old", "done", null, 1, 1), ticket("d-new", "done", null, 2, 2)];
+  assert.deepEqual(ids(columnTickets(done, "done", () => ({ rank: 0, time: 0 }))), ["d-new", "d-old"], "other columns keep their order");
+});
+
+test("the task list puts running tasks first", () => {
+  const list = MAIN.slice(MAIN.indexOf("function taskList("), MAIN.indexOf("function taskAction("));
+  assert.match(list, /rank: taskRank\(task\), time: taskTime\(task\)/);
+  assert.match(list, /at\(a\)\.rank - at\(b\)\.rank \|\| at\(b\)\.time - at\(a\)\.time/);
+  const rank = list.slice(list.indexOf("function taskRank("));
+  const working = rank.indexOf('kind === "working"');
+  const waits = rank.indexOf("if (waits) return 1");
+  const approved = rank.indexOf("approvedMark(task)");
+  assert.ok(working > 0 && waits > working && approved > waits, "working, then waits, then approved");
+  assert.match(MAIN, /pendingIndex\(tasks, \(task\) => taskRank\(task\) === 0\)/);
+  const columns = MAIN.slice(MAIN.indexOf("function fillTicketColumns("), MAIN.indexOf("function fillTicketColumns(") + 3000);
+  assert.match(columns, /columnTickets\(shown, status, status === "in-progress" \? ticketPlace : undefined\)/);
+  const card = MAIN.slice(MAIN.indexOf("function ticketCard("), MAIN.indexOf("function startTicketDrag("));
+  assert.ok(card.indexOf('classList.add("parts")') > card.indexOf('classList.add("approved")'), "parts after approved");
+  assert.match(CSS, /\.ticket-card\.in-progress\.parts \{\s*border-style: dashed;\s*border-color: var\(--text-2\);/);
+  const help = HTML.slice(HTML.indexOf("<h3>Tickets</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
+  assert.ok(help.includes("the tickets that run now first") && help.includes("dashed grey frame"), "the Help of Tickets");
+  const tasks = HTML.slice(HTML.indexOf("<h3>Tasks and chats of a column</h3>"), HTML.indexOf("<h3>Where the work runs</h3>"));
+  assert.ok(tasks.includes("the tasks that run now first"), "the Help of Tasks");
+});

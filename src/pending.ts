@@ -130,8 +130,9 @@ export function settleCards(cards: readonly PendingCard[], project: string, name
 }
 
 /**
- * Where the cards stand in a task list (decision 4 of the plan): after the leading tasks that wait
- * for the user, before the rest. A new task runs, so its card comes there.
+ * Where the cards stand in a task list (decision 4 of the plan): after the leading tasks for which
+ * the predicate is true (the tasks that run, ticket order-is-messed-up-in-the-tasks-list-and), before
+ * the rest. A new task runs, so its card comes there.
  */
 export function pendingIndex<T>(tasks: readonly T[], waits: (task: T) => boolean): number {
   let at = 0;

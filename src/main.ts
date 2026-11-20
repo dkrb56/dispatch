@@ -4054,7 +4054,7 @@ function taskWaits(task: Task): boolean {
 function withPending<T extends HTMLElement>(tasks: Task[], items: T[], project: string): HTMLElement[] {
   const cards = projectPending(project);
   if (cards.length === 0) return items;
-  const at = pendingIndex(tasks, taskWaits);
+  const at = pendingIndex(tasks, (task) => taskRank(task) === 0);
   return [...items.slice(0, at), ...cards.map(pendingElement), ...items.slice(at)];
 }
 
@@ -4843,12 +4843,24 @@ function taskList(workers: Worker[], infos: TaskInfo[], project?: ProjectTasks):
   };
   for (const worker of workers) task(workerTask(worker)).workers.push(worker);
   for (const info of infos) task(info.name).info ??= info;
-  // A task that waits for the user is first: a blocked worker, a plan to approve, a question to answer.
-  const order = (task: Task) =>
-    planReady(task) || reportWaits(task) ? 0 : Math.min(2, ...task.workers.map(workerOrder));
-  const time = (task: Task) =>
-    Math.max(task.info?.report?.modified ?? 0, task.info?.plan?.modified ?? 0, ...task.workers.map((worker) => worker.startedAt ?? 0));
-  return [...tasks.values()].sort((a, b) => order(a) - order(b) || time(b) - time(a));
+  // A task that runs now is first, then one that waits for the user, then an approved one (ticket
+  // order-is-messed-up-in-the-tasks-list-and). Rank and time are computed once per task: the sort runs often.
+  const place = new Map([...tasks.values()].map((task) => [task, { rank: taskRank(task), time: taskTime(task) }]));
+  const at = (task: Task) => place.get(task) ?? { rank: 3, time: 0 };
+  return [...tasks.values()].sort((a, b) => at(a).rank - at(b).rank || at(b).time - at(a).time);
+}
+
+/**
+ * The place group of a task in the Tasks list and in the In progress column (ticket
+ * order-is-messed-up-in-the-tasks-list-and): 0 a run works now, 1 it waits for the user, 2 approved,
+ * 3 the rest. It uses the checks of the card frames, so the frame and the place agree.
+ */
+function taskRank(task: Task): number {
+  const waits = taskAttentionWait(task) !== null;
+  if (taskStatus(task).kind === "working" && !waits) return 0;
+  if (waits) return 1;
+  if (approvedMark(task)) return 2;
+  return 3;
 }
 
 /**
@@ -9490,8 +9502,14 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
     scrolls.set(old.dataset.status ?? "", old.querySelector(".tickets-list")?.scrollTop ?? 0);
   }
   const showAll = showAllColumns.get(container) ?? new Set<string>();
+  // In progress goes in the order of the Tasks list (ticket order-is-messed-up-in-the-tasks-list-and).
+  const taskByName = new Map((record ? projectTaskList(record) : []).map((task) => [task.name, task]));
+  const ticketPlace = (ticket: Ticket) => {
+    const task = taskByName.get(ticket.task || ticket.id);
+    return task ? { rank: taskRank(task), time: taskTime(task) } : { rank: 3, time: ticket.updated };
+  };
   const columns = COLUMNS.map(({ status, name }) => {
-    const items = columnTickets(shown, status);
+    const items = columnTickets(shown, status, status === "in-progress" ? ticketPlace : undefined);
     const { shown: cards, hidden } = columnCards(items, status, search.trim() !== "", showAll.has(status));
     const column = mapElement("section", "tickets-column");
     column.dataset.status = status;
@@ -9865,6 +9883,7 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   }
   const state = mapElement("span", `ticket-state${endFailed(ticket) ? " failed" : ""}`, ticketState(project, ticket, queueIds, record));
   // An approved ticket: its state line in blue and bold (ticket when-ticket-is-approved-i-need-more, user decision 3).
+  const tickets = record?.tickets ?? [];
   const ticketTask = ticket.status === "in-progress" && record ? projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id)) : undefined;
   if (ticketTask && approvedMark(ticketTask)) state.classList.add("approved");
   // A task that waits for the user: an orange frame (ticket tickets-which-are-waiting-for-me-should).
@@ -9878,9 +9897,10 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
       card.style.setProperty("--flash-shift", `${-(Date.now() % 1600)}ms`);
     }
   } else if (ticketTask && approvedMark(ticketTask)) card.classList.add("approved");
+  // A parent whose own work ended waits for its parts: a dashed grey frame (ticket order-is-messed-up-in-the-tasks-list-and).
+  else if (partProgress(ticket, tickets).total > 0) card.classList.add("parts");
   meta.append(tag, levelTag, mapElement("span", "ticket-date", chatTime(ticket.created)), state);
   // The chain of the parts (ticket subtickets): a part names its place and its parent, a parent its count.
-  const tickets = record?.tickets ?? [];
   const place = partPlace(ticket, tickets);
   const parentTicket = ticket.parent ? tickets.find((one) => one.id === ticket.parent) : undefined;
   const chainLine = place

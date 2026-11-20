@@ -2433,6 +2433,12 @@ button.task-head:hover {
   border-color: var(--accent);
 }
 
+/* Ticket order-is-messed-up-in-the-tasks-list-and: a parent whose own work ended waits for its parts. */
+.ticket-card.in-progress.parts {
+  border-style: dashed;
+  border-color: var(--text-2);
+}
+
 .ticket-card.canceled {
   opacity: 0.75;
 }

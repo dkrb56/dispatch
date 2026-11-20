@@ -457,14 +457,21 @@ export function ticketMatches(ticket: Pick<Ticket, "id" | "title" | "summary" | 
 
 /**
  * The cards of a column in their order: New by the queue, the other columns newest first (by their
- * last change).
+ * last change). With `place`, In progress goes by the rank of its task (low first), then its time
+ * (newest first), then the last change (ticket order-is-messed-up-in-the-tasks-list-and).
  */
 export function columnTickets<T extends Pick<Ticket, "id" | "status" | "order" | "created" | "updated"> & Partial<Pick<Ticket, "parent" | "part">>>(
   tickets: readonly T[],
   status: TicketStatus,
+  place?: (ticket: T) => { rank: number; time: number },
 ): T[] {
   if (status === "new") return queueOrder(tickets);
   const sorted = tickets.filter((ticket) => ticket.status === status).sort((a, b) => b.updated - a.updated || b.created - a.created);
+  if (status === "in-progress" && place) {
+    const places = new Map(sorted.map((ticket) => [ticket, place(ticket)]));
+    const at = (ticket: T) => places.get(ticket) ?? { rank: 0, time: 0 };
+    return sorted.sort((a, b) => at(a).rank - at(b).rank || at(b).time - at(a).time || b.updated - a.updated || b.created - a.created);
+  }
   if (status !== "backlog") return sorted;
   // The parts of one parent stand together in their order, at the place of the newest of them (ticket subtickets).
   const shown: T[] = [];
