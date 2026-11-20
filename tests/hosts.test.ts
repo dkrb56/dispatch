@@ -180,7 +180,7 @@ test("Options has the third radio, and the Help names it with the switch of each
   const start = HTML.indexOf('<dialog id="options">');
   const dialog = HTML.slice(start, HTML.indexOf("</dialog>", start));
   for (const value of ["local", "hosts", "mixed"]) assert.match(dialog, new RegExp(`<input type="radio" name="work-mode" value="${value}"`), value);
-  assert.match(dialog, /<b>This PC and hosts\.<\/b>/);
+  assert.match(dialog, /<b>This PC and hosts<\/b>/);
   const where = HTML.slice(HTML.indexOf("<h3>Where the work runs</h3>"), HTML.indexOf("<h3>Other buttons</h3>"));
   assert.match(where, /three modes/);
   assert.match(where, /<b>This PC and hosts<\/b>/);

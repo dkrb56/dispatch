@@ -50,7 +50,7 @@ Dispatch looks for a new release once an hour (**?** → **Check for update** ch
 
 ## Work on another computer
 
-Options is the wrench at the right of the top bar. Options and Setup pipeline show their settings as tabs, one section at a time.
+Options is the wrench at the right of the top bar. Options and Setup pipeline show their sections in a list at the left, one section at a time.
 
 Options → **Where the work runs** has three modes. **This PC does the work** is the default: everything runs in this window, and nothing listens on the network. **Use hosts**: one or more computers run `dispatch-host`, and this window shows and controls them over Tailscale. **This PC and hosts**: this window does the work of this computer itself and shows and controls the hosts of the list too.
 

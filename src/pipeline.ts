@@ -1,5 +1,5 @@
 import { call, type HostId } from "./backend";
-import { type BuildFolders, cleanable, type CleanResult, cleanText, rowText } from "./builds";
+import { type BuildFolders, cleanable, type CleanResult, cleanText, rowCells } from "./builds";
 import { type FullRunInfo, fullRunLines, timeMinutes, timeText } from "./checks";
 import { initDialogTabs } from "./dialogtabs";
 import { type FileEntry, openViewer, statFile } from "./files";
@@ -82,6 +82,18 @@ const dialog = document.querySelector<HTMLDialogElement>("#setup")!;
 const tabs = initDialogTabs(dialog);
 const projectEl = document.querySelector<HTMLElement>("#setup-project")!;
 const stepsEl = document.querySelector<HTMLElement>("#setup-steps")!;
+/** The chip of the header with the count of the steps to do, and the badge of the tab Steps (its `data-badge`). */
+const todoEl = document.querySelector<HTMLElement>("#setup-todo")!;
+const stepsTabEl = dialog.querySelector<HTMLButtonElement>('[role="tab"][data-tab="steps"]')!;
+/** "D of N done" above the steps, and the fill of the bar under it. */
+const countEl = document.querySelector<HTMLElement>("#setup-steps-count")!;
+const barEl = document.querySelector<HTMLElement>("#setup-steps-bar > span")!;
+/** The dot before the footer message: the wait colour while a step is to do, the work colour when all are done. */
+const dotEl = document.querySelector<HTMLElement>("#setup-dot")!;
+/** The rows that need another switch: `data-under` names it, `taskBranches` or `noTriage-off` (No triage off). The row is dimmed while that does not hold. */
+const underEls = [...dialog.querySelectorAll<HTMLElement>("label[data-under]")];
+/** The section of the rules check; its `data-state` is checking, ok, found or failed. */
+const checkEl = document.querySelector<HTMLElement>("#setup-rules-check")!;
 const messageEl = document.querySelector<HTMLElement>("#setup-message")!;
 const applyEl = document.querySelector<HTMLButtonElement>("#setup-apply")!;
 /** The button "Commit to git". It commits the setup files when every step is done. */
@@ -146,6 +158,7 @@ async function openFinding(finding: Finding): Promise<void> {
 
 /** Shows the conflicts of the rules with the pipeline, with Remove and Remove all, and a link to each file. */
 async function showConflicts(check: RulesCheck): Promise<void> {
+  checkEl.dataset.state = check.findings.length === 0 ? "ok" : "found";
   checkStateEl.textContent = checkText(check, "pipeline");
   const rows = new Map<Finding, HTMLElement>();
   for (const finding of check.findings) {
@@ -171,6 +184,7 @@ async function showConflicts(check: RulesCheck): Promise<void> {
  */
 function checkRules(host: HostId, target: string): void {
   const run = ++checkRun;
+  checkEl.dataset.state = "checking";
   const options = savedOptions();
   const stop = tick(options, (progress) => {
     if (run !== checkRun) return;
@@ -183,7 +197,9 @@ function checkRules(host: HostId, target: string): void {
     })
     .catch((error) => {
       stop();
-      if (run === checkRun) checkStateEl.textContent = `The check of the rules failed: ${error}`;
+      if (run !== checkRun) return;
+      checkEl.dataset.state = "failed";
+      checkStateEl.textContent = `The check of the rules failed: ${error}`;
     });
 }
 
@@ -201,8 +217,16 @@ async function showBuilds(host: HostId, target: string, note = ""): Promise<void
     buildsEl.hidden = folders.targets.length === 0;
     buildsListEl.replaceChildren(
       ...folders.rows.map((row) => {
-        const item = document.createElement("li");
-        item.textContent = folders.targets.length > 1 ? `${row.target}\\${rowText(row)}` : rowText(row);
+        // One row: the folder (with its target folder when there are several), the kind and the size.
+        const item = document.createElement("div");
+        const cells = rowCells(row);
+        const name = folders.targets.length > 1 ? `${row.target}\\${cells.name}` : cells.name;
+        for (const [className, text] of [["name", name], ["kind", cells.kind], ["size", cells.size]]) {
+          const cell = document.createElement("span");
+          cell.className = className;
+          cell.textContent = text;
+          item.append(cell);
+        }
         item.title = `${row.target}\\${row.name.split("/").join("\\")}`;
         if (!cleanable(row)) item.className = "main";
         return item;
@@ -235,6 +259,45 @@ function rulesElement(rules: string[]): HTMLElement {
     list.append(label);
   });
   return list;
+}
+
+/**
+ * One step as a row: the state and the title, then the file, then the text that the step adds and the
+ * checkboxes of its rules. A step that is to do is open, so the user sees what Apply changes.
+ */
+function stepElement(step: Step, root: string): HTMLElement {
+  const item = document.createElement("details");
+  item.className = step.done ? "done" : "todo";
+  item.open = !step.done;
+  const summary = document.createElement("summary");
+  summary.title = `${step.done ? "Done" : "To do"}: ${step.title}`;
+  const title = document.createElement("span");
+  title.className = "step-title";
+  title.textContent = step.title;
+  // The file relative to the project, as the design shows it; the tooltip keeps the full path.
+  const target = document.createElement("span");
+  target.className = "step-target";
+  const prefix = /[\\/]$/.test(root) ? root : `${root}\\`;
+  target.textContent = step.target.startsWith(prefix) ? step.target.slice(prefix.length) : step.target;
+  target.title = step.target;
+  summary.append(title, target);
+  const body = document.createElement("div");
+  body.className = "step-body";
+  const detail = document.createElement("pre");
+  detail.textContent = step.detail;
+  body.append(detail);
+  if (step.rules) body.append(rulesElement(step.rules));
+  item.append(summary, body);
+  return item;
+}
+
+/** Dims the rows that need another switch: Tickets start their plan needs No triage off, the gate rows need Task branches. */
+function showUnder(options: Options): void {
+  for (const row of underEls) {
+    const under = row.dataset.under ?? "";
+    const holds = under === "noTriage-off" ? !options.noTriage : Boolean(options[under as keyof Options]);
+    row.classList.toggle("dim", !holds);
+  }
 }
 
 /** Shows the last full run of every check: the head line, the checks with their exit codes and logs, the tickets. */
@@ -282,8 +345,11 @@ function currentOptions(): Options {
 }
 
 function show(plan: Plan): void {
-  projectEl.textContent = plan.root;
+  // The subtitle of the header: the name of the folder, then its path.
+  const name = plan.root.split(/[\\/]/).filter(Boolean).pop() ?? plan.root;
+  projectEl.textContent = `${name} · ${plan.root}`;
   shownOptions = plan.options;
+  showUnder(plan.options);
   for (const option of optionEls) {
     option.checked = Boolean(plan.options[option.dataset.option as keyof Options]);
     option.disabled = false;
@@ -303,23 +369,19 @@ function show(plan: Plan): void {
   findChecksEl.disabled = false;
   if (document.activeElement !== checksAllEl) checksAllEl.value = plan.checksAll ?? "";
   checksAllEl.disabled = false;
-  stepsEl.replaceChildren(
-    ...plan.steps.map((step) => {
-      const item = document.createElement("details");
-      item.className = step.done ? "done" : "";
-      const summary = document.createElement("summary");
-      summary.textContent = `${step.done ? "Done" : "To do"}: ${step.title}`;
-      const target = document.createElement("p");
-      target.textContent = step.target;
-      const detail = document.createElement("pre");
-      detail.textContent = step.detail;
-      item.append(summary, target, detail);
-      if (step.rules) item.append(rulesElement(step.rules));
-      return item;
-    }),
-  );
+  stepsEl.replaceChildren(...plan.steps.map((step) => stepElement(step, plan.root)));
   const open = plan.steps.filter((step) => !step.done).length;
+  const done = plan.steps.length - open;
   allDone = open === 0;
+  // The chip of the header, the badge of the tab Steps, the count and the bar above the steps, the dot of the footer.
+  todoEl.hidden = plan.steps.length === 0;
+  todoEl.textContent = allDone ? "All steps done" : `${open} ${open === 1 ? "step" : "steps"} to do`;
+  todoEl.classList.toggle("done", allDone);
+  stepsTabEl.dataset.badge = open ? String(open) : "";
+  countEl.textContent = `${done} of ${plan.steps.length} done`;
+  barEl.style.width = plan.steps.length ? `${Math.round((done / plan.steps.length) * 100)}%` : "0";
+  dotEl.hidden = false;
+  dotEl.classList.toggle("done", allDone);
   applyEl.disabled = allDone;
   commitEl.disabled = !(allDone && plan.git);
   commitEl.title = plan.git ? commitTitle : "The project is not a git repository";
@@ -428,6 +490,7 @@ export function initPipeline(
     }
   });
   document.querySelector("#setup-close")!.addEventListener("click", () => dialog.close());
+  document.querySelector("#setup-close-top")!.addEventListener("click", () => dialog.close());
   dialog.addEventListener("close", () => {
     onClose();
     const waiting = pending;
@@ -444,6 +507,15 @@ function open(host: HostId, target: string | null): void {
   rulesOff.clear();
   projectEl.textContent = "";
   stepsEl.replaceChildren();
+  todoEl.hidden = true;
+  todoEl.textContent = "";
+  todoEl.classList.remove("done");
+  stepsTabEl.dataset.badge = "";
+  countEl.textContent = "";
+  barEl.style.width = "0";
+  dotEl.hidden = true;
+  dotEl.classList.remove("done");
+  for (const row of underEls) row.classList.remove("dim");
   messageEl.textContent = "";
   applyEl.disabled = true;
   commitEl.disabled = true;
@@ -464,6 +536,7 @@ function open(host: HostId, target: string | null): void {
   fullAfterEl.disabled = true;
   fullLastEl.replaceChildren();
   checkRun += 1;
+  delete checkEl.dataset.state;
   checkStateEl.textContent = "";
   checkListEl.replaceChildren();
   buildsEl.hidden = true;

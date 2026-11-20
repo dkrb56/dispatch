@@ -131,7 +131,7 @@ test("the Options dialog holds the three switches and both lists; the top bar ho
   assert.ok(start >= 0, "index.html has the Options dialog");
   const dialog = HTML.slice(start, HTML.indexOf("</dialog>", start));
   for (const name of ["notify", "chime", "blink"]) assert.match(dialog, new RegExp(`type="checkbox" data-alert="${name}"`), name);
-  assert.ok(dialog.includes('id="theme"') && dialog.includes('id="text-size"'), "both lists are in the dialog");
+  assert.ok(dialog.includes('id="theme"') && dialog.includes('id="text-size"'), "both pickers are in the dialog");
 });
 
 test("the Options dialog holds the section Run the host on this PC, and the Help names it (remote-multi-host-help)", () => {
@@ -221,9 +221,9 @@ test("the Options dialog has one fixed size and its body scrolls", () => {
       .filter((rule) => rule.selectors.includes(selector))
       .flatMap((rule) => rule.declarations.filter(([name]) => name === property).map(([, value]) => value))
       .pop();
-  // One height on every tab, so the tabs stay in place; at most 760 px wide (change-options-and-setup-windows).
+  // One height on every tab, so the tabs stay in place; as wide as the design, 880 px (redesign-the-setup-pipeline-and-options, decision 1).
   assert.equal(get("#options", "height"), "min(86vh, 640px)");
-  assert.equal(get("#options", "width"), "min(92vw, 760px)");
+  assert.equal(get("#options", "width"), "min(92vw, 880px)");
   assert.equal(get("#options", "max-height"), undefined, "no max-height of the wide layout");
   assert.equal(get("#options-body", "overflow-y"), "auto", "the body scrolls in a small window");
   // The shared frame still gives Rules and Help their height.

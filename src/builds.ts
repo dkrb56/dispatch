@@ -48,6 +48,11 @@ export function rowText(row: BuildRow): string {
   return `${row.name} · ${sizeText(row.bytes)} · ${KIND_TEXT[row.kind]}`;
 }
 
+/** One row as three cells: the folder, the kind in words and the size. The Setup window draws one column each. */
+export function rowCells(row: BuildRow): { name: string; kind: string; size: string } {
+  return { name: row.name, kind: KIND_TEXT[row.kind], size: sizeText(row.bytes) };
+}
+
 /** Whether a row is one that the clean takes. */
 export function cleanable(row: BuildRow): boolean {
   return row.kind === "proof" || row.kind === "cache";

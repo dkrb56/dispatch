@@ -1398,76 +1398,6 @@ button.task-head:hover {
   cursor: pointer;
 }
 
-/* The schedule of the full run of all checks in Setup pipeline, and its last run (ticket scheduled-full-run-of-all-checks). */
-#setup .setup-full-head {
-  margin: 10px 0 2px;
-  line-height: 1.45;
-}
-
-#setup .setup-full {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 12px;
-}
-
-#setup .setup-full label {
-  margin: 2px 0;
-}
-
-#setup .setup-full input[type="time"],
-#setup .setup-full input[type="number"] {
-  padding: 2px 4px;
-  border: 1px solid var(--hairline);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
-}
-
-#setup .setup-full input[type="number"] {
-  width: 5em;
-}
-
-#setup .setup-full input:disabled {
-  opacity: 0.5;
-}
-
-#setup .setup-full-last {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin: 6px 0 2px;
-  font-size: calc(12px * var(--text-scale));
-}
-
-#setup .setup-full-last .full-head {
-  color: var(--muted);
-}
-
-#setup .setup-full-last .full-result {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-#setup .setup-full-last .exit {
-  color: var(--muted);
-}
-
-#setup .setup-full-last .exit.failed {
-  color: var(--danger);
-}
-
-#setup .setup-full-last .full-log {
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--accent);
-  cursor: pointer;
-  font: inherit;
-}
-
 /* The model and the effort of the work run on the Plan ready card (ticket ticket-form-optional-fields-on-a-new). */
 .task-card .card-work {
   display: flex;
@@ -3997,44 +3927,10 @@ button.ticket-level {
 }
 
 #rules header,
-#help header,
-#options header {
+#help header {
   display: flex;
   align-items: center;
   padding-left: 20px;
-}
-
-/* The tab row of the Setup pipeline and Options windows: one tab shows its section, with the look of the chat tabs. */
-.dialog-tabs {
-  display: flex;
-  flex: none;
-  flex-wrap: wrap;
-  gap: 2px;
-  padding: 6px 20px;
-  border-bottom: 1px solid var(--hairline);
-}
-
-.dialog-tabs [role="tab"] {
-  height: 24px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 4px;
-  background: none;
-  color: var(--text-2);
-  font: inherit;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.dialog-tabs [role="tab"]:hover {
-  color: var(--text);
-}
-
-.dialog-tabs [role="tab"].active {
-  background: var(--card);
-  box-shadow: inset 0 0 0 1px var(--line);
-  color: var(--text);
-  font-weight: 600;
 }
 
 [data-tab-panel][hidden] {
@@ -4042,8 +3938,7 @@ button.ticket-level {
 }
 
 #rules h2,
-#help h2,
-#options h2 {
+#help h2 {
   flex: 1;
   margin: 0;
   font-size: calc(16px * var(--text-scale));
@@ -4051,8 +3946,7 @@ button.ticket-level {
 }
 
 #rules-close,
-#help-close,
-#options-close {
+#help-close {
   width: 32px;
   height: 32px;
   margin: 8px;
@@ -4067,8 +3961,7 @@ button.ticket-level {
 }
 
 #rules-close:hover,
-#help-close:hover,
-#options-close:hover {
+#help-close:hover {
   background: var(--card);
 }
 
@@ -4481,15 +4374,17 @@ button.ticket-level {
   cursor: pointer;
 }
 
-/* The dialog of the Setup pipeline button: at most 760 px wide, one fixed height.
-   A header, a row of tabs, a body that shows one tab and scrolls, and a footer with the buttons. */
-#setup {
-  width: min(92vw, 760px);
+/* The Setup pipeline and Options windows (ticket redesign-the-setup-pipeline-and-options), after the design canvas
+   "Dispatch Setup and Options redesign": 880 by 640 px, a header with an icon, a list of sections at the left, a body
+   that shows one section and scrolls, and a footer. Every colour is a token of :root, so each theme works. */
+#setup,
+#options {
+  width: min(92vw, 880px);
   height: min(86vh, 640px);
   padding: 0;
   box-sizing: border-box;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--surface);
   box-shadow: 0 24px 64px rgb(0 0 0 / 50%);
   color: var(--text);
@@ -4504,164 +4399,952 @@ button.ticket-level {
   background: rgb(0 0 0 / 60%);
 }
 
-#setup-head {
-  flex: none;
-  padding: 14px 20px 8px;
-  border-bottom: 1px solid var(--hairline);
-}
-
-#setup-body {
-  display: block;
-  flex: 1 1 auto;
-  min-height: 0;
-  padding: 12px 20px;
-  overflow-y: auto;
-}
-
-/* The Steps tab: the steps, the rules check and the build folders, one under the other. */
-#setup div[data-tab-panel]:not([hidden]) {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-#setup-footer {
+/* The header: an icon box, the title with its subtitle, the chip of the open steps (Setup) and the close cross. */
+#setup .dialog-head,
+#options .dialog-head {
   display: flex;
   flex: none;
   align-items: center;
   gap: 12px;
-  padding: 10px 20px;
-  border-top: 1px solid var(--hairline);
+  padding: 14px 16px 14px 20px;
+  border-bottom: 1px solid var(--hairline);
 }
 
-#setup-footer #setup-message {
+.dialog-head .dialog-icon {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--accent-line);
+  border-radius: 8px;
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.dialog-head .dialog-title {
+  display: flex;
   flex: 1;
-  margin: 0;
-  word-break: normal;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
 }
 
-#setup h2 {
-  margin: 0 0 4px;
+#setup .dialog-head h2,
+#options .dialog-head h2 {
+  margin: 0;
   font-size: calc(16px * var(--text-scale));
   font-weight: 600;
 }
 
-#setup p {
-  margin: 4px 0;
-  color: var(--muted);
-  word-break: break-all;
-}
-
-/* The groups of the settings of the project and of the Options window: cells of a grid. */
-#setup .setup-group,
-#options fieldset {
-  min-width: 0;
+.dialog-head .dialog-title p {
   margin: 0;
-  padding: 6px 12px 8px;
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-#setup .setup-group legend,
-#options legend {
-  padding: 0 6px;
-  color: var(--muted);
+.dialog-head .dialog-title p.mono {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(11.5px * var(--text-scale));
+}
+
+.dialog-head .head-chip {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--wait-line);
+  border-radius: 999px;
+  background: var(--wait-bg);
+  color: var(--wait);
+  font-size: calc(12px * var(--text-scale));
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.dialog-head .head-chip::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentcolor;
+}
+
+.dialog-head .head-chip.done {
+  border-color: var(--work-line);
+  background: var(--work-bg);
+  color: var(--work);
+}
+
+.dialog-head .head-chip[hidden] {
+  display: none;
+}
+
+#setup .dialog-x,
+#options .dialog-x {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-2);
+  cursor: pointer;
+}
+
+#setup .dialog-x:hover,
+#options .dialog-x:hover {
+  background: var(--card);
+  color: var(--text);
+}
+
+/* The list of sections at the left and the body at the right. */
+.dialog-split {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.dialog-tabs {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 196px;
+  box-sizing: border-box;
+  padding: 12px 10px;
+  border-right: 1px solid var(--hairline);
+  background: var(--bg);
+}
+
+.dialog-tabs [role="tablist"] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dialog-tabs [role="tab"] {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--text-2);
+  font: inherit;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dialog-tabs [role="tab"]:hover {
+  color: var(--text);
+}
+
+.dialog-tabs [role="tab"].active {
+  background: var(--accent-bg);
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* The count of the steps to do, after the name Steps (pipeline.ts sets data-badge; empty: no badge). */
+.dialog-tabs [role="tab"][data-badge]:not([data-badge=""])::after {
+  content: attr(data-badge);
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: auto;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: var(--wait-bg);
+  color: var(--wait);
   font-size: calc(11px * var(--text-scale));
   font-weight: 600;
 }
 
-#setup .setup-group label,
-#options label {
+.dialog-tabs .dialog-tabs-note {
+  margin: auto 0 0;
+  padding: 10px 8px 4px;
+  border-top: 1px solid var(--hairline);
+  color: var(--muted);
+  font-size: calc(11.5px * var(--text-scale));
+  line-height: 1.5;
+}
+
+#setup-body,
+#options-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 22px 26px 28px;
+  overflow-y: auto;
+}
+
+#setup-body > [data-tab-panel]:not([hidden]),
+#options-body > [data-tab-panel]:not([hidden]) {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin: 6px 0;
-  line-height: 1.45;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* A section: the legend or an h3 as its heading, an intro line, then cards. */
+#setup .setup-group,
+#options fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+#setup legend,
+#options legend {
+  margin: 0 0 4px;
+  padding: 0;
+  font-size: calc(15px * var(--text-scale));
+  font-weight: 600;
+}
+
+#setup-body p,
+#options-body p {
+  margin: 0;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+.setup-section,
+.look-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.section-head > h3,
+.section-head > div {
+  flex: 1;
+  min-width: 0;
+}
+
+.section-head > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#setup h3,
+#options h3 {
+  margin: 0;
+  font-size: calc(15px * var(--text-scale));
+  font-weight: 600;
+}
+
+#host-section h3 {
+  font-size: calc(13.5px * var(--text-scale));
+}
+
+.section-head .section-count {
+  flex: none;
+  color: var(--text-2);
+  font-size: calc(12px * var(--text-scale));
+}
+
+/* The plain buttons of both windows. The filled one does the next action: Apply, Start the host. */
+#setup-clean-builds,
+#setup-find-checks,
+#setup-buttons button,
+#options #host-add,
+#options #host-run button,
+#options #phone-block button,
+#options-footer button {
+  flex: none;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-#setup .setup-group input,
-#options input {
+#setup-clean-builds:hover:not(:disabled),
+#setup-find-checks:hover:not(:disabled),
+#setup-buttons button:hover:not(:disabled),
+#options #host-add:hover:not(:disabled),
+#options #host-run button:hover:not(:disabled),
+#options #phone-block button:hover:not(:disabled),
+#options-footer button:hover {
+  border-color: var(--accent-line);
+}
+
+#setup-clean-builds:disabled,
+#setup-find-checks:disabled,
+#setup-buttons button:disabled,
+#options #host-add:disabled,
+#options #host-run button:disabled,
+#options #phone-block button:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+#setup-buttons #setup-apply:not(:disabled),
+#options #host-run-start:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+#setup-buttons #setup-commit:not(:disabled) {
+  border-color: var(--accent-line);
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+#setup-buttons #setup-close {
+  border-color: transparent;
+  background: none;
+  color: var(--text-2);
+}
+
+#setup-buttons #setup-close:hover {
+  border-color: transparent;
+  background: var(--card);
+  color: var(--text);
+}
+
+/* A card of switch rows: a title, a text and a caption at the left, the switch at the right. A field under a
+   switch (a text box, the times of the full run) is the row's own; a dimmed row needs another switch first. */
+.switch-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--card);
+  overflow: hidden;
+}
+
+.switch-card > * + * {
+  border-top: 1px solid var(--hairline);
+}
+
+.switch-card > .switch-row + .switch-field {
+  border-top: 0;
+}
+
+.switch-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin: 0;
+  padding: 14px 16px;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.switch-row > span {
+  display: block;
+  flex: 1;
+  order: 1;
+  min-width: 0;
+  color: var(--text-2);
+}
+
+.switch-row > span > b:first-child {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--text);
+  font-size: calc(13.5px * var(--text-scale));
+  font-weight: 600;
+}
+
+.switch-row small,
+.switch-field small,
+.field small,
+.field-row small,
+#options p.small {
+  color: var(--muted);
+  font-size: calc(11.5px * var(--text-scale));
+}
+
+.switch-row small {
+  display: block;
+  margin-top: 4px;
+}
+
+.switch-row code,
+.switch-field code,
+.field code {
+  color: var(--text);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+}
+
+.switch-row > input[type="checkbox"] {
+  position: relative;
   flex: none;
-  accent-color: var(--accent);
+  order: 2;
+  width: 36px;
+  height: 20px;
+  margin: 1px 0 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--line);
+  appearance: none;
+  cursor: pointer;
+  transition: background 0.15s;
 }
 
-#setup .setup-group > p,
-#options p {
-  margin-top: 8px;
-  word-break: normal;
+.switch-row > input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-2);
+  transition: transform 0.15s;
 }
 
-/* The commands of "Measure before the plan" and the gate command of "Task branches", under their switches. */
-#setup-measure-commands,
-#setup-merge-gate,
-#setup-checks {
+.switch-row > input[type="checkbox"]:checked {
+  background: var(--switch-on);
+}
+
+.switch-row > input[type="checkbox"]:checked::before {
+  background: var(--text);
+  transform: translateX(16px);
+}
+
+.switch-row > input[type="checkbox"]:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.switch-row > input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.switch-row.dim {
+  padding-left: 32px;
+  background: var(--bg);
+  opacity: 0.45;
+}
+
+.switch-row .when-off,
+.switch-row.dim .when-on {
+  display: none;
+}
+
+.switch-row.dim .when-off {
+  display: block;
+}
+
+.switch-field,
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.switch-field {
+  padding: 0 68px 14px 16px;
+}
+
+.switch-field > label,
+.field > label {
+  color: var(--text-2);
+  font-size: calc(12px * var(--text-scale));
+  font-weight: 600;
+}
+
+#setup textarea {
   display: block;
   box-sizing: border-box;
   width: 100%;
-  margin: 2px 0 6px;
-  padding: 6px;
-  border: 1px solid var(--hairline);
-  border-radius: 6px;
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
   background: var(--bg);
   color: var(--text);
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: calc(12px * var(--text-scale));
+  line-height: 1.6;
   resize: vertical;
 }
 
-#setup-measure-commands:disabled,
-#setup-merge-gate:disabled,
-#setup-checks:disabled {
+#setup textarea:disabled {
   opacity: 0.5;
 }
 
-#setup-find-checks {
-  align-self: flex-start;
-}
-
-/* The Options window: the frame of the Help window, at most 760 px wide, one fixed height. */
-#options {
-  box-sizing: border-box;
-  width: min(92vw, 760px);
-  height: min(86vh, 640px);
-}
-
-#options header {
-  flex: none;
-  border-bottom: 1px solid var(--hairline);
-}
-
-/* The body shows the section of one tab and scrolls. */
-#options-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  padding: 12px 20px 20px;
-  overflow-y: auto;
-  font-size: calc(13px * var(--text-scale));
-}
-
-#options label.options-list {
+/* The schedule of the full run of all checks and its last run (ticket scheduled-full-run-of-all-checks). */
+.switch-field.setup-full {
+  flex-direction: row;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px 16px;
 }
 
-#options select {
-  height: 30px;
-  padding: 0 6px;
+.setup-full > label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: inherit;
+  font-weight: 400;
+}
+
+.setup-full input[type="time"],
+.setup-full input[type="number"] {
+  box-sizing: border-box;
+  height: 28px;
+  padding: 0 8px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: var(--bg);
   color: var(--text);
+  color-scheme: dark;
   font: inherit;
 }
 
-/* The host address, the port and the key of the section "Where the work runs". */
+.setup-full input[type="number"] {
+  width: 64px;
+}
+
+.setup-full input:disabled {
+  opacity: 0.5;
+}
+
+.setup-full .setup-full-last {
+  display: flex;
+  flex: 1 0 100%;
+  flex-direction: column;
+  gap: 2px;
+  font-size: calc(12px * var(--text-scale));
+}
+
+.setup-full-last .full-head {
+  color: var(--muted);
+}
+
+.setup-full-last .full-result {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.setup-full-last .exit {
+  color: var(--muted);
+}
+
+.setup-full-last .exit.failed {
+  color: var(--danger);
+}
+
+.setup-full-last .full-log {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+}
+
+/* The steps: how many are done, a bar, then one row per step with its state, its file and a chevron. */
+.progress {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--hairline);
+  overflow: hidden;
+}
+
+.progress > span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--work);
+  transition: width 0.2s;
+}
+
+.step-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--card);
+  overflow: hidden;
+}
+
+.step-card:empty {
+  display: none;
+}
+
+.step-card > details + details {
+  border-top: 1px solid var(--hairline);
+}
+
+.step-card summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.step-card summary::-webkit-details-marker {
+  display: none;
+}
+
+.step-card summary::before {
+  content: "";
+  flex: none;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 2px dashed var(--wait);
+  border-radius: 50%;
+}
+
+.step-card details.done summary::before {
+  border: 0;
+  background: var(--work);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M8 12.5l2.8 2.8L16 10'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.step-card .step-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.step-card details.done .step-title {
+  color: var(--text-2);
+  font-weight: 400;
+}
+
+.step-card .step-target {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(11.5px * var(--text-scale));
+}
+
+.step-card summary::after {
+  content: "";
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin: 0 4px 2px 2px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+}
+
+.step-card details[open] summary::after {
+  transform: rotate(45deg);
+}
+
+.step-card .step-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 14px 12px 42px;
+}
+
+.step-card pre {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--code-arg);
+  font: calc(11.5px * var(--text-scale)) / 1.6 "Cascadia Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+.step-card pre:empty {
+  display: none;
+}
+
+/* The checkboxes of the working rules, in the row of the step. */
+#setup .setup-rules label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 2px 0;
+  font: calc(12px * var(--text-scale)) / 1.5 "Cascadia Mono", Consolas, monospace;
+  cursor: pointer;
+}
+
+#setup .setup-rules input {
+  flex: none;
+  accent-color: var(--accent);
+}
+
+/* The conflicts of the rules with the pipeline: a green box when there is none. */
+#setup-rules-check:has(#setup-rules-state:empty) {
+  display: none;
+}
+
+#setup-rules-check .findings-state {
+  margin: 0;
+}
+
+#setup-rules-check[data-state="ok"] .findings-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--work-line);
+  border-radius: 10px;
+  background: var(--work-bg);
+  color: var(--work);
+}
+
+#setup-rules-check[data-state="ok"] .findings-state::before {
+  content: "";
+  flex: none;
+  width: 16px;
+  height: 16px;
+  background: var(--work);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+#setup-rules-check[data-state="failed"] .findings-state {
+  color: var(--danger);
+}
+
+/* The build folders of a cargo project (ticket proof-target-cleanup): one row per folder with its kind and size. */
+#setup-builds[hidden] {
+  display: none;
+}
+
+#setup-builds .findings-state {
+  margin: 0;
+}
+
+.row-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--card);
+  overflow: hidden;
+}
+
+.row-card:empty {
+  display: none;
+}
+
+.row-card > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+}
+
+.row-card > div + div {
+  border-top: 1px solid var(--hairline);
+}
+
+.row-card .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-card .kind {
+  flex: none;
+  color: var(--muted);
+  font-size: calc(11.5px * var(--text-scale));
+}
+
+.row-card .size {
+  flex: none;
+  min-width: 64px;
+  color: var(--text-2);
+  text-align: right;
+}
+
+.row-card .main .name {
+  color: var(--muted);
+}
+
+/* The footer: the state dot and the message, then Close, Commit to git and Apply. */
+#setup-footer,
+#options-footer {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px 12px 20px;
+  border-top: 1px solid var(--hairline);
+}
+
+#setup-footer #setup-message,
+#options-footer p {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+
+.state-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--wait);
+}
+
+#setup-dot.done {
+  background: var(--work);
+}
+
+#setup-buttons {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+/* Options, Where the work runs: three mode cards, then the host table (hidden in the mode This PC does the work). */
+.mode-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mode-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 8px;
+  align-items: center;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--card);
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.mode-card > input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.mode-card > b {
+  font-size: calc(13.5px * var(--text-scale));
+  font-weight: 600;
+}
+
+.mode-card > span {
+  grid-column: 1 / -1;
+  color: var(--text-2);
+}
+
+.mode-card code {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+}
+
+.mode-card:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+#host-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#host-section[hidden] {
+  display: none;
+}
+
+.host-table {
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--card);
+  overflow: hidden;
+}
+
+.host-head,
+#options .host-row {
+  display: grid;
+  grid-template-columns: 1.1fr 1.8fr 0.7fr 1.1fr 32px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+}
+
+.host-head {
+  border-bottom: 1px solid var(--hairline);
+  color: var(--muted);
+  font-size: calc(11.5px * var(--text-scale));
+  font-weight: 600;
+}
+
+#options .host-row + .host-row {
+  border-top: 1px solid var(--hairline);
+}
+
+#host-list:empty::after {
+  content: "No host yet. Add host adds a row.";
+  display: block;
+  padding: 10px 12px;
+  color: var(--muted);
+}
+
 #options input[type="text"],
 #options input[type="password"],
 #options input[type="number"] {
   box-sizing: border-box;
-  width: 60%;
+  min-width: 0;
   height: 30px;
   padding: 0 8px;
   border: 1px solid var(--line);
@@ -4671,94 +5354,131 @@ button.ticket-level {
   font: inherit;
 }
 
-#options label.options-list input:disabled {
+#options input:disabled {
   color: var(--muted);
   opacity: 0.6;
 }
 
-/* The host list of the section "Where the work runs" (remote-multi-host): one row per host with the
-   name, the address, the port, the key and Remove. */
-#host-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 6px 0;
-}
-
-#options .host-row {
-  display: grid;
-  grid-template-columns: 1fr 2fr 70px 1fr auto;
-  gap: 6px;
-  align-items: center;
-}
-
-#options .host-row input[type="text"],
-#options .host-row input[type="password"],
-#options .host-row input[type="number"] {
+#options .host-row input {
   width: 100%;
-  min-width: 0;
 }
 
-#options .host-row input:disabled {
-  color: var(--muted);
-  opacity: 0.6;
-}
-
-#options #host-add,
-#options .host-remove {
-  height: 30px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--card);
-  color: var(--text);
-  font: inherit;
-  cursor: pointer;
-}
-
-#options #host-add:disabled,
-#options .host-remove:disabled {
-  color: var(--muted);
-  cursor: default;
-}
-
-/* The section "Run the host on this PC": the key, the three buttons and the error line. */
-#options #host-run-key {
-  width: 80%;
+#options .host-row .host-address {
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: calc(12px * var(--text-scale));
 }
 
-#host-run .buttons,
-#phone-block .buttons {
+#options .host-remove {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 8px 0;
-}
-
-#host-run .buttons button,
-#phone-block .buttons button {
-  height: 28px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
   border-radius: 6px;
-  background: var(--card);
-  color: inherit;
-  font: inherit;
-  font-size: calc(13px * var(--text-scale));
+  background: none;
+  color: var(--text-2);
   cursor: pointer;
 }
 
-#host-run .buttons button:hover:not(:disabled),
-#phone-block .buttons button:hover:not(:disabled) {
-  border-color: var(--accent-line);
+#options .host-remove:hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--text);
 }
 
-#host-run .buttons button:disabled,
-#phone-block .buttons button:disabled {
-  color: var(--muted);
+#options .host-remove:disabled {
+  color: var(--faint);
   cursor: default;
+}
+
+#options .note-wait {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--wait-line);
+  border-radius: 10px;
+  background: var(--wait-bg);
+  color: var(--wait);
+}
+
+/* Options, Host on this PC: a card with the state dot, the buttons, the key and the sign-in switch. */
+.card-box {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--card);
+}
+
+.card-box[hidden] {
+  display: none;
+}
+
+.host-state-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#options .host-state-row p {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  font-size: calc(13.5px * var(--text-scale));
+  font-weight: 600;
+}
+
+#host-run-dot {
+  width: 8px;
+  height: 8px;
+  background: var(--muted);
+}
+
+#host-run[data-state="on"] #host-run-dot {
+  background: var(--work);
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.field-row > input {
+  flex: 1;
+}
+
+#options #host-run-key,
+#options #phone-link {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+}
+
+#options #host-run-key {
+  color: var(--text-2);
+}
+
+#host-run .card-box .switch-row {
+  align-items: center;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--hairline);
+}
+
+#host-run .card-box .switch-row > span > b:first-child {
+  margin: 0;
+  font-size: inherit;
+  font-weight: 400;
+}
+
+#host-run .card-box .switch-row[hidden] {
+  display: none;
 }
 
 #options #host-run-error,
@@ -4767,19 +5487,212 @@ button.ticket-level {
   white-space: pre-wrap;
 }
 
-/* The tab Phone: the code keeps its white ground in every theme. */
+.what-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#options .what-list h4 {
+  margin: 0;
+  color: var(--text-2);
+  font-size: calc(13px * var(--text-scale));
+  font-weight: 600;
+}
+
+#options .what-list ul,
+#options ul.what-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+/* Options, Phone: the code on its white ground at the left, the link and New phone key at the right. */
+#phone-block .buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+#phone-block .buttons:not(:has(button:not([hidden]))) {
+  display: none;
+}
+
+#phone-ready {
+  flex-direction: row;
+  gap: 20px;
+}
+
 #phone-code {
   display: block;
-  max-width: 100%;
-  margin: 8px 0;
-  border-radius: 6px;
+  flex: none;
+  width: 168px;
+  height: 168px;
+  border-radius: 10px;
   background: #ffffff;
 }
 
-#options #phone-link {
+.phone-side {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+#options .phone-side > p {
+  color: var(--text);
+}
+
+.phone-side .field-row {
+  margin-top: auto;
+}
+
+/* Options, Look: one card per theme with a preview in its own colours (main.ts sets --p-*), the sizes as a row.
+   The legend Look stays for the reader of the page; the two headings of the design show. */
+#options fieldset[data-tab-panel="look"] legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+
+.theme-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.theme-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 8px 8px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--card);
+  cursor: pointer;
+}
+
+.theme-card > input,
+.size-pick > input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.theme-card:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.theme-card:has(input:focus-visible),
+.size-pick:has(input:focus-visible) > span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.theme-preview {
+  display: flex;
+  height: 64px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--p-surface);
+  overflow: hidden;
+}
+
+.theme-preview .side {
+  width: 30px;
+  background: var(--p-bg);
+}
+
+.theme-preview .lines {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px;
+}
+
+.theme-preview .bar {
+  width: 54%;
+  height: 7px;
+  border-radius: 4px;
+  background: var(--p-accent);
+}
+
+.theme-preview .line {
   width: 80%;
-  font-family: "Cascadia Mono", Consolas, monospace;
-  font-size: calc(12px * var(--text-scale));
+  height: 5px;
+  border-radius: 3px;
+  background: var(--p-card);
+}
+
+.theme-preview .line + .line {
+  width: 64%;
+}
+
+.theme-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+  font-weight: 600;
+}
+
+.theme-card:has(input:checked) .theme-name::after {
+  content: "";
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin-left: auto;
+  background: var(--accent);
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12.5l4.5 4.5L19 7.5'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.size-picks {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+  background: var(--bg);
+}
+
+.size-pick {
+  position: relative;
+  margin: 0;
+  cursor: pointer;
+}
+
+.size-pick > span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 58px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 6px;
+  color: var(--text-2);
+}
+
+.size-pick:has(input:checked) > span {
+  background: var(--line);
+  color: var(--text);
+  font-weight: 600;
 }
 
 /* The folder chooser of the mode "Use a host": the folders of the host through dir_list. */
@@ -4948,127 +5861,6 @@ button.ticket-level {
   border-color: var(--work-line);
   background: var(--work-bg);
   color: var(--work);
-}
-
-#setup details {
-  margin-top: 6px;
-  padding: 6px 10px;
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  background: var(--bg);
-}
-
-#setup summary {
-  color: var(--wait);
-  cursor: pointer;
-}
-
-#setup details.done summary {
-  color: var(--work);
-}
-
-/* The checkboxes of the working rules, below the heading of the step. */
-#setup .setup-rules label {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin: 4px 8px;
-  font: calc(12px * var(--text-scale))/1.5 "Cascadia Mono", Consolas, monospace;
-  cursor: pointer;
-}
-
-#setup .setup-rules input {
-  flex: none;
-  accent-color: var(--accent);
-}
-
-#setup pre {
-  margin: 4px 0 0;
-  padding: 8px;
-  overflow-x: auto;
-  background: var(--bg);
-  font: calc(12px * var(--text-scale))/1.5 "Cascadia Mono", Consolas, monospace;
-  white-space: pre-wrap;
-}
-
-/* The conflicts of the rules with the pipeline, a cell of the body grid. */
-#setup-rules-check {
-  min-width: 0;
-  padding: 6px 12px 8px;
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-}
-
-#setup-rules-check h3 {
-  margin: 0;
-  color: var(--accent);
-  font-size: calc(13px * var(--text-scale));
-  font-weight: 600;
-}
-
-#setup-rules-check:has(#setup-rules-state:empty) {
-  display: none;
-}
-
-/* The build folders of a cargo project with the button Clean build folders (ticket proof-target-cleanup). */
-#setup-builds {
-  min-width: 0;
-  padding: 6px 12px 8px;
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-}
-
-#setup-builds[hidden] {
-  display: none;
-}
-
-#setup-builds h3 {
-  margin: 0;
-  color: var(--accent);
-  font-size: calc(13px * var(--text-scale));
-  font-weight: 600;
-}
-
-#setup-builds-list {
-  margin: 4px 0 8px;
-  padding-left: 18px;
-  font-size: calc(12px * var(--text-scale));
-}
-
-#setup-builds-list .main {
-  color: var(--muted);
-}
-
-#setup-buttons {
-  display: flex;
-  flex: none;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-#setup-buttons button {
-  height: 30px;
-  padding: 0 14px;
-  border: 1px solid var(--hairline);
-  border-radius: 6px;
-  background: var(--card);
-  color: var(--text);
-  font: inherit;
-  cursor: pointer;
-}
-
-/* The filled button does the next action: the steps, then the commit. */
-#setup-buttons #setup-apply:not(:disabled),
-#setup-buttons #setup-commit:not(:disabled) {
-  border-color: var(--accent-line);
-  background: var(--accent-bg);
-  color: var(--accent);
-  font-weight: 600;
-}
-
-#setup-buttons button:disabled {
-  color: var(--faint);
-  cursor: default;
 }
 
 /* The viewer shows one file on top of the terminals. */

@@ -464,11 +464,12 @@ function fitPane(pane: Pane): void {
   pane.fit.fit();
 }
 
-/** The sizes of the text that the list in the Options screen offers, in percent of the normal size. */
+/** The sizes of the text that the row of buttons in the Options screen offers, in percent of the normal size. */
 const TEXT_SIZES = [90, 100, 115, 130, 150];
 /** The size of the text of a terminal at 100 percent, in pixels. */
 const TERMINAL_FONT_PX = 14;
-const textSizeEl = document.querySelector<HTMLSelectElement>("#text-size")!;
+/** The radios of the text sizes in the Options screen, one per button. */
+const textSizeEls = [...document.querySelectorAll<HTMLInputElement>('#text-size input[name="text-size"]')];
 let textSize = 100;
 
 function terminalFontSize(): number {
@@ -479,7 +480,7 @@ function terminalFontSize(): number {
 function setTextSize(size: number): void {
   textSize = TEXT_SIZES.includes(size) ? size : 100;
   document.documentElement.style.setProperty("--text-scale", String(textSize / 100));
-  textSizeEl.value = String(textSize);
+  for (const radio of textSizeEls) radio.checked = Number(radio.value) === textSize;
   for (const pane of panes.values()) pane.term.options.fontSize = terminalFontSize();
   if (activeId) fitTab(activeId);
   try {
@@ -489,8 +490,8 @@ function setTextSize(size: number): void {
   }
 }
 
-/** The list of the colour themes in the Options screen (src/theme.ts). */
-const themeEl = document.querySelector<HTMLSelectElement>("#theme")!;
+/** The radios of the theme cards in the Options screen (src/theme.ts), one per card. */
+const themeEls = [...document.querySelectorAll<HTMLInputElement>('#theme input[name="theme"]')];
 /** The name of the current colour theme. */
 let theme = themeName(null);
 
@@ -499,7 +500,7 @@ function setTheme(name: string | null): void {
   theme = themeName(name);
   const root = document.documentElement.style;
   for (const [token, value] of Object.entries(themeTokens(theme))) root.setProperty(token, value);
-  themeEl.value = theme;
+  for (const radio of themeEls) radio.checked = radio.value === theme;
   for (const pane of panes.values()) pane.term.options.theme = terminalTheme(theme);
   try {
     localStorage.setItem("theme", theme);
@@ -14559,13 +14560,27 @@ async function start(): Promise<void> {
   } catch {
     // The chat panel stays visible.
   }
-  themeEl.addEventListener("change", () => setTheme(themeEl.value));
+  // Each theme card shows its own colours in its preview, from the tokens of its theme (redesign-the-setup-pipeline-and-options).
+  for (const radio of themeEls) {
+    const tokens = themeTokens(radio.value);
+    const card = radio.closest<HTMLElement>(".theme-card");
+    for (const [token, value] of [["--p-bg", tokens["--bg"]], ["--p-surface", tokens["--surface"]], ["--p-card", tokens["--card"]], ["--p-accent", tokens["--accent"]]]) {
+      card?.style.setProperty(token, value);
+    }
+    radio.addEventListener("change", () => {
+      if (radio.checked) setTheme(radio.value);
+    });
+  }
   try {
     setTheme(localStorage.getItem("theme"));
   } catch {
     setTheme(null);
   }
-  textSizeEl.addEventListener("change", () => setTextSize(Number(textSizeEl.value)));
+  for (const radio of textSizeEls) {
+    radio.addEventListener("change", () => {
+      if (radio.checked) setTextSize(Number(radio.value));
+    });
+  }
   try {
     setTextSize(Number(localStorage.getItem("text-size")));
   } catch {

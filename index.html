@@ -84,137 +84,190 @@
       <span id="status-dispatch">…</span>
     </footer>
     <dialog id="setup">
-      <header id="setup-head">
-        <h2>Setup pipeline</h2>
-        <p id="setup-project"></p>
-      </header>
-      <nav class="dialog-tabs" role="tablist" aria-label="Sections">
-        <button type="button" role="tab" data-tab="steps">Steps</button>
-        <button type="button" role="tab" data-tab="triage">Triage</button>
-        <button type="button" role="tab" data-tab="plans">Plans and work runs</button>
-        <button type="button" role="tab" data-tab="branches">Branches and checks</button>
-        <button type="button" role="tab" data-tab="git">Files in git</button>
-      </nav>
-      <div id="setup-body">
-        <div data-tab-panel="steps">
-          <fieldset class="setup-group" id="setup-steps-group">
-            <legend>Steps</legend>
-            <p>Short reports changes the step "Triage role". Measure before the plan changes the steps "Task files", "Section in CLAUDE.md" and "Measure before the plan". Task branches changes the steps "Allow rules", "Section in CLAUDE.md" and "Task branches". Task files local only changes the steps "Task files", "Section in CLAUDE.md" and "Task files in git". Project notes in git changes the step "Project notes in git". Start plans without decisions, Checks at the gate, Pick the checks after the work run and Push after the merge change the step "Section in CLAUDE.md". Tickets start their plan changes the steps "Section in CLAUDE.md" and "Triage role". No triage changes the step "Section in CLAUDE.md". The first check in the list, and the last one out, changes the step "Section in CLAUDE.md". After Apply, the next start of the workspace opens a new triage chat. The other settings apply at once. Auto-merge finished tasks works at once, and also changes the step "Section in CLAUDE.md".</p>
-            <div id="setup-steps"></div>
-          </fieldset>
-          <section id="setup-rules-check">
-            <h3>Rules that conflict with the pipeline</h3>
-            <p id="setup-rules-state" class="findings-state"></p>
-            <div id="setup-rules-list"></div>
-          </section>
-          <section id="setup-builds" hidden>
-            <h3>Build folders</h3>
-            <p id="setup-builds-state" class="findings-state"></p>
-            <ul id="setup-builds-list"></ul>
-            <button id="setup-clean-builds" title="Delete the proof builds and the incremental cache; the main build (debug, release) and a folder in use stay" disabled>Clean build folders</button>
-          </section>
+      <header id="setup-head" class="dialog-head">
+        <span class="dialog-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2"></circle><circle cx="5" cy="18" r="2"></circle><circle cx="19" cy="12" r="2"></circle><path d="M7 6h4a4 4 0 0 1 4 4v0a2 2 0 0 0 2 2"></path><path d="M7 18h4a4 4 0 0 0 4-4v0a2 2 0 0 1 2-2"></path></svg>
+        </span>
+        <div class="dialog-title">
+          <h2>Setup pipeline</h2>
+          <p id="setup-project" class="mono"></p>
         </div>
+        <span id="setup-todo" class="head-chip" hidden></span>
+        <button type="button" id="setup-close-top" class="dialog-x" aria-label="Close" title="Close (Esc)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+        </button>
+      </header>
+      <div class="dialog-split">
+        <nav class="dialog-tabs" aria-label="Sections">
+          <div role="tablist">
+            <button type="button" role="tab" data-tab="steps">Steps</button>
+            <button type="button" role="tab" data-tab="triage">Triage</button>
+            <button type="button" role="tab" data-tab="plans">Plans and work runs</button>
+            <button type="button" role="tab" data-tab="branches">Branches and checks</button>
+            <button type="button" role="tab" data-tab="git">Files in git</button>
+          </div>
+          <p class="dialog-tabs-note">Switches save at once. Files change only when you click Apply.</p>
+        </nav>
+        <div id="setup-body">
+          <div data-tab-panel="steps">
+            <section class="setup-section" id="setup-steps-group">
+              <div class="section-head">
+                <h3>Steps</h3>
+                <span id="setup-steps-count" class="section-count"></span>
+              </div>
+              <div id="setup-steps-bar" class="progress" aria-hidden="true"><span></span></div>
+              <p>Each step writes one file of the project. Apply does the steps that are to do. Then Commit to git saves the files.</p>
+              <div id="setup-steps" class="step-card"></div>
+            </section>
+            <section class="setup-section" id="setup-rules-check">
+              <h3>Rules that conflict with the pipeline</h3>
+              <p id="setup-rules-state" class="findings-state"></p>
+              <div id="setup-rules-list"></div>
+            </section>
+            <section class="setup-section" id="setup-builds" hidden>
+              <div class="section-head">
+                <h3>Build folders</h3>
+                <button id="setup-clean-builds" type="button" title="Delete the proof builds and the incremental cache; the main build (debug, release) and a folder in use stay" disabled>Clean build folders</button>
+              </div>
+              <p id="setup-builds-state" class="findings-state"></p>
+              <div id="setup-builds-list" class="row-card"></div>
+            </section>
+          </div>
           <fieldset class="setup-group" data-tab-panel="triage">
             <legend>Triage</legend>
-            <label>
-              <input type="checkbox" data-option="shortReports" />
-              <span><b>Short reports.</b> Triage tells you the result and your decisions in a few lines. It gives details when you ask.</span>
-            </label>
-            <label>
-              <input type="checkbox" data-option="triageName" />
-              <span><b>Fixed title.</b> A new triage chat has the name "Triage" in the chat list.</span>
-            </label>
-            <label>
-              <input type="checkbox" data-option="ticketsStartPlans" />
-              <span><b>Tickets start their plan.</b> Dispatch writes the brief from a New ticket and starts its plan itself, without triage. A ticket that ends with a question mark, or has only images, still goes to triage.</span>
-            </label>
-            <label>
-              <input type="checkbox" data-option="noTriage" />
-              <span><b>No triage.</b> Every New ticket starts its own plan, a question too. Dispatch writes nothing to a triage chat: the task cards and the alerts tell you, and your questions go to a plain Chat.</span>
-            </label>
+            <p>How the triage chat talks to you and which tickets it sees. After Apply, the next start of the workspace opens a new triage chat.</p>
+            <div class="switch-card">
+              <label class="switch-row">
+                <input type="checkbox" data-option="shortReports" />
+                <span><b>Short reports</b> Triage tells you the result and your decisions in a few lines. It gives details when you ask. <small>Changes the step "Triage role".</small></span>
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" data-option="triageName" />
+                <span><b>Fixed title</b> A new triage chat has the name "Triage" in the chat list.</span>
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" data-option="noTriage" />
+                <span><b>No triage</b> Every New ticket starts its own plan, a question too. Dispatch writes nothing to a triage chat: the task cards and the alerts tell you, and your questions go to a plain Chat. <small>Changes the step "Section in CLAUDE.md".</small></span>
+              </label>
+              <label class="switch-row" data-under="noTriage-off">
+                <input type="checkbox" data-option="ticketsStartPlans" />
+                <span><b>Tickets start their plan</b> Dispatch writes the brief from a New ticket and starts its plan itself, without triage. A ticket that ends with a question mark, or has only images, still goes to triage. <small class="when-on">Changes the steps "Section in CLAUDE.md" and "Triage role".</small><small class="when-off">No triage is on, so every ticket starts its plan.</small></span>
+              </label>
+            </div>
           </fieldset>
           <fieldset class="setup-group" data-tab-panel="plans">
             <legend>Plans and work runs</legend>
-            <label>
-              <input type="checkbox" data-option="autoApprove" />
-              <span><b>Approve plans automatically.</b> Dispatch starts the work run as soon as a plan is ready, no file of the task has uncommitted changes and no other work run runs. A plan with a <code>HOLD:</code> decision waits for your click.</span>
-            </label>
-            <label>
-              <input type="checkbox" data-option="startPlainPlans" />
-              <span><b>Start plans without decisions.</b> A plan that asks you nothing starts its work run by itself, with the recommended checks. A plan with a decision waits for your click.</span>
-            </label>
-            <label>
-              <input type="checkbox" data-option="paused" />
-              <span><b>Pause tasks.</b> Dispatch sends no ticket to triage and starts no work run for this project. A worker that runs finishes. Resume starts the queue where it stopped. The Pause button with the buttons of the project does the same.</span>
-            </label>
-            <label>
-              <input type="checkbox" data-option="measureBeforePlan" />
-              <span><b>Measure before the plan.</b> The plan run may run the commands below first, one at a time, and the plan gets a section "Measured" with what they showed. It can run no other command.</span>
-            </label>
-            <textarea id="setup-measure-commands" rows="3" spellcheck="false" placeholder="One command per line, for example: npm test&#10;{measure} stands for the scratch folder of the task&#10;# limit 600 as the first line sets the time limit in seconds" title="The commands that the plan run may run, one per line. Each runs with cmd.exe in the project folder. The box saves when you leave it"></textarea>
+            <p>When a plan may start its work without your click, and what the plan run may measure.</p>
+            <div class="switch-card">
+              <label class="switch-row">
+                <input type="checkbox" data-option="paused" />
+                <span><b>Pause tasks</b> Dispatch sends no ticket to triage and starts no work run for this project. A worker that runs finishes. Resume starts the queue where it stopped. The Pause button with the buttons of the project does the same.</span>
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" data-option="startPlainPlans" />
+                <span><b>Start plans without decisions</b> A plan that asks you nothing starts its work run by itself, with the recommended checks. A plan with a decision waits for your click. <small>Changes the step "Section in CLAUDE.md".</small></span>
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" data-option="autoApprove" />
+                <span><b>Approve plans automatically</b> Dispatch starts the work run as soon as a plan is ready, no file of the task has uncommitted changes and no other work run runs. A plan with a <code>HOLD:</code> decision waits for your click.</span>
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" data-option="measureBeforePlan" />
+                <span><b>Measure before the plan</b> The plan run may run the commands below first, one at a time, and the plan gets a section "Measured" with what they showed. It can run no other command. <small>Changes the steps "Task files", "Section in CLAUDE.md" and "Measure before the plan".</small></span>
+              </label>
+              <div class="switch-field">
+                <label for="setup-measure-commands">Commands, one per line</label>
+                <textarea id="setup-measure-commands" rows="3" spellcheck="false" placeholder="One command per line, for example: npm test&#10;{measure} stands for the scratch folder of the task&#10;# limit 600 as the first line sets the time limit in seconds" title="The commands that the plan run may run, one per line. Each runs with cmd.exe in the project folder. The box saves when you leave it"></textarea>
+                <small><code>{measure}</code> is the scratch folder of the task. <code># limit 600</code> as the first line sets the time limit in seconds.</small>
+              </div>
+            </div>
           </fieldset>
           <fieldset class="setup-group" data-tab-panel="branches">
             <legend>Branches and checks</legend>
-            <label>
-              <input type="checkbox" data-option="taskBranches" />
-              <span><b>Task branches.</b> Each task works on its own branch <code>task/&lt;task&gt;</code>. When the worker is done, the task card shows <b>Merge</b>: Dispatch merges the branch after the gate command below passed. The push stays with you.</span>
-            </label>
-            <textarea id="setup-merge-gate" rows="2" spellcheck="false" placeholder="The gate command, for example: node scripts/merge-check.mjs&#10;# limit 14400 as the first line sets the time limit in seconds" title="The command that must pass on the merged code before the merge commit. It runs with cmd.exe in the project folder. Empty: no gate. The box saves when you leave it"></textarea>
-            <label>
-              <input type="checkbox" data-option="checksAtGate" />
-              <span><b>Checks at the gate.</b> The checks that you tick on the task card run once, at the merge, through the gate command above. The worker does not run them. Needs Task branches and a gate command.</span>
-            </label>
-            <label>
-              <input type="checkbox" data-option="autoMerge" />
-              <span><b>Auto-merge finished tasks.</b> Dispatch merges a task with a done report into the branch it started from, without your click, after the gate command passed. Branches that already wait for Merge merge too. A failed merge waits on the task card. Needs Task branches and a gate command.</span>
-            </label>
-            <label>
-              <input type="checkbox" data-option="pushAfterMerge" />
-              <span><b>Push after the merge.</b> Merge also pushes your branch to its upstream branch, never with force. A failed push leaves the merge on this computer and shows on the task card. Needs Task branches.</span>
-            </label>
-            <label for="setup-checks" class="setup-checks-label">
-              <span><b>Checks.</b> The tests and gates that a task can run, one per line. Dispatch fills the box with the tests that it finds in the project, and Apply saves them. The plan recommends some, and you tick them on the task card before Approve. Empty: no checks.</span>
-            </label>
-            <textarea id="setup-checks" rows="3" spellcheck="false" placeholder="name | command, one per line, for example: unit | npm test&#10;| always after the command: always recommended&#10;| covers: what the check tests, for the picker&#10;# a comment line" title="The checks that a task of this project can run, one per line: name | command, | always for a check that is always recommended, and | covers: what the check tests, for the picker. The box saves when you leave it"></textarea>
-            <button type="button" id="setup-find-checks" title="Read the project files again and add the tests that the list does not have yet. Your lines stay" disabled>Find tests</button>
-            <label>
-              <input type="checkbox" data-option="pickChecks" />
-              <span><b>Pick the checks after the work run.</b> When the worker is done, an agent reads the change and picks the checks, with one reason each. The task card shows them before they run; you add or remove checks. The work run runs no check of the list; the Plan ready card shows no checkboxes. With Task branches, the ticked checks run at the merge.</span>
-            </label>
-            <label for="setup-checks-all" class="setup-checks-label">
-              <span><b>Run everything when these files change.</b> A change to one of these files makes the picker pick every check.</span>
-            </label>
-            <textarea id="setup-checks-all" rows="2" spellcheck="false" placeholder="one path or folder per line, for example: src/net/&#10;Cargo.lock&#10;**/*.proto" title="The files whose change runs every check: one path, folder or pattern with * per line. The box saves when you leave it"></textarea>
-            <div class="setup-full-head"><b>Full run of all checks.</b> Every check of the list runs in the project folder on your branch, also with the switch above off. A failed check opens a fix ticket in New with its command and its last lines, one ticket per check while it is open.</div>
-            <div class="setup-full">
-              <label>
-                <input type="checkbox" data-option="fullChecksNightly" />
-                <span>Each night at</span>
+            <p>Each task on its own branch, merged after a gate command passes. The push stays with you unless you turn it on.</p>
+            <div class="switch-card">
+              <label class="switch-row">
+                <input type="checkbox" data-option="taskBranches" />
+                <span><b>Task branches</b> Each task works on its own branch <code>task/&lt;task&gt;</code>. When the worker is done, the task card shows <b>Merge</b>: Dispatch merges the branch after the gate command below passed. <small>Changes the steps "Allow rules", "Section in CLAUDE.md" and "Task branches".</small></span>
               </label>
-              <input type="time" id="setup-full-at" title="The time of the nightly full run, in the time of this computer. A missed time runs when Dispatch is open again" disabled />
-              <label for="setup-full-after">After this many finished tasks (0: off)</label>
-              <input type="number" id="setup-full-after" min="0" max="999" step="1" title="The full run also comes after this many tickets moved to Done since the last one. 0: off" disabled />
+              <div class="switch-field">
+                <label for="setup-merge-gate">Gate command</label>
+                <textarea id="setup-merge-gate" rows="2" spellcheck="false" placeholder="The gate command, for example: node scripts/merge-check.mjs&#10;# limit 14400 as the first line sets the time limit in seconds" title="The command that must pass on the merged code before the merge commit. It runs with cmd.exe in the project folder. Empty: no gate. The box saves when you leave it"></textarea>
+                <small>Must pass on the merged code before the merge commit. Empty: no gate.</small>
+              </div>
+              <label class="switch-row" data-under="taskBranches">
+                <input type="checkbox" data-option="checksAtGate" />
+                <span><b>Checks at the gate</b> The checks that you tick on the task card run once, at the merge, through the gate command above. The worker does not run them. <small class="when-on">Changes the step "Section in CLAUDE.md". Needs a gate command.</small><small class="when-off">Turn on Task branches first.</small></span>
+              </label>
+              <label class="switch-row" data-under="taskBranches">
+                <input type="checkbox" data-option="autoMerge" />
+                <span><b>Auto-merge finished tasks</b> Dispatch merges a task with a done report into the branch it started from, without your click, after the gate command passed. Branches that already wait for Merge merge too. A failed merge waits on the task card. <small class="when-on">Works at once, and changes the step "Section in CLAUDE.md". Needs a gate command.</small><small class="when-off">Turn on Task branches first.</small></span>
+              </label>
+              <label class="switch-row" data-under="taskBranches">
+                <input type="checkbox" data-option="pushAfterMerge" />
+                <span><b>Push after the merge</b> Merge also pushes your branch to its upstream branch, never with force. A failed push leaves the merge on this computer and shows on the task card. <small class="when-on">Changes the step "Section in CLAUDE.md".</small><small class="when-off">Turn on Task branches first.</small></span>
+              </label>
             </div>
-            <div id="setup-full-last" class="setup-full-last"></div>
+            <div class="section-head">
+              <div>
+                <h3>Checks</h3>
+                <p>The tests and gates that a task can run. The plan recommends some, and you tick them on the task card before Approve.</p>
+              </div>
+              <button type="button" id="setup-find-checks" title="Read the project files again and add the tests that the list does not have yet. Your lines stay" disabled>Find tests</button>
+            </div>
+            <div class="field">
+              <label for="setup-checks">name | command, one per line</label>
+              <textarea id="setup-checks" rows="4" spellcheck="false" placeholder="name | command, one per line, for example: unit | npm test&#10;| always after the command: always recommended&#10;| covers: what the check tests, for the picker&#10;# a comment line" title="The checks that a task of this project can run, one per line: name | command, | always for a check that is always recommended, and | covers: what the check tests, for the picker. The box saves when you leave it"></textarea>
+              <small>Add <code>| always</code> for a check that is always recommended, <code>| covers:</code> to say what it tests. Dispatch fills the box with the tests that it finds, and Apply saves them. Empty: no checks. The first check in the list, and the last one out, changes the step "Section in CLAUDE.md".</small>
+            </div>
+            <div class="switch-card">
+              <label class="switch-row">
+                <input type="checkbox" data-option="pickChecks" />
+                <span><b>Pick the checks after the work run</b> When the worker is done, an agent reads the change and picks the checks, with one reason each. The task card shows them before they run; you add or remove checks. The work run runs no check of the list, and the Plan ready card shows no checkboxes. With Task branches, the ticked checks run at the merge. <small>Changes the step "Section in CLAUDE.md".</small></span>
+              </label>
+              <div class="switch-field">
+                <label for="setup-checks-all">Run every check when these files change</label>
+                <textarea id="setup-checks-all" rows="2" spellcheck="false" placeholder="one path or folder per line, for example: src/net/&#10;Cargo.lock&#10;**/*.proto" title="The files whose change runs every check: one path, folder or pattern with * per line. The box saves when you leave it"></textarea>
+              </div>
+              <label class="switch-row">
+                <input type="checkbox" data-option="fullChecksNightly" />
+                <span><b>Full run of all checks</b> Every check of the list runs in the project folder on your branch, also with the switch above off. A failed check opens a fix ticket in New with its command and its last lines, one ticket per check while it is open. The switch turns the nightly run on; the count below works also without it.</span>
+              </label>
+              <div class="switch-field setup-full">
+                <label>Each night at
+                  <input type="time" id="setup-full-at" title="The time of the nightly full run, in the time of this computer. A missed time runs when Dispatch is open again" disabled />
+                </label>
+                <label>After this many finished tasks
+                  <input type="number" id="setup-full-after" min="0" max="999" step="1" title="The full run also comes after this many tickets moved to Done since the last one. 0: off" disabled />
+                  (0: off)
+                </label>
+                <div id="setup-full-last" class="setup-full-last"></div>
+              </div>
+            </div>
           </fieldset>
           <fieldset class="setup-group" data-tab-panel="git">
             <legend>Files in git</legend>
-            <label>
-              <input type="checkbox" data-option="ignoreTasks" />
-              <span><b>Task files local only.</b> Git ignores the folder <code>.dispatch</code>: tickets, briefs, plans, reports and logs stay on this computer, and a clone has none. Off, git tracks the folder and Dispatch commits it.</span>
-            </label>
-            <label>
-              <input type="checkbox" data-option="notesInGit" />
-              <span><b>Project notes in git.</b> Git tracks the notes of Claude for this project in <code>.claude</code> (memory.md, mistakes.md, agents-override.md, triage.md, settings.json), so a clone has them, and Dispatch commits the notes with the task files. The rest of <code>.claude</code> stays on this computer. Off, a folder <code>.claude</code> that git ignores stays on this computer.</span>
-            </label>
+            <p>Which Dispatch and Claude files a clone of the project gets.</p>
+            <div class="switch-card">
+              <label class="switch-row">
+                <input type="checkbox" data-option="ignoreTasks" />
+                <span><b>Task files local only</b> Git ignores the folder <code>.dispatch</code>: tickets, briefs, plans, reports and logs stay on this computer, and a clone has none. Off, git tracks the folder and Dispatch commits it. <small>Changes the steps "Task files", "Section in CLAUDE.md" and "Task files in git".</small></span>
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" data-option="notesInGit" />
+                <span><b>Project notes in git</b> Git tracks the notes of Claude for this project in <code>.claude</code> (memory.md, mistakes.md, agents-override.md, triage.md, settings.json), so a clone has them, and Dispatch commits the notes with the task files. The rest of <code>.claude</code> stays on this computer. Off, a folder <code>.claude</code> that git ignores stays on this computer. <small>Changes the step "Project notes in git".</small></span>
+              </label>
+            </div>
           </fieldset>
+        </div>
       </div>
       <div id="setup-footer">
+        <span id="setup-dot" class="state-dot" aria-hidden="true"></span>
         <p id="setup-message"></p>
         <div id="setup-buttons">
-          <button id="setup-apply" title="Do the steps that are To do; Commit to git then commits the files">Apply</button>
-          <button id="setup-commit" title="Commit the setup files of the project on the current branch; other changes stay out, and Dispatch makes no push" disabled>Commit to git</button>
           <button id="setup-close" title="Close the window (Esc)">Close</button>
+          <button id="setup-commit" title="Commit the setup files of the project on the current branch; other changes stay out, and Dispatch makes no push" disabled>Commit to git</button>
+          <button id="setup-apply" title="Do the steps that are To do; Commit to git then commits the files">Apply</button>
         </div>
       </div>
     </dialog>
@@ -511,7 +564,7 @@
           <ul>
             <li>In the modes Use hosts and This PC and hosts, the folder chooser of Dispatch opens. With several computers, it asks for the computer too (see Where the work runs).</li>
             <li>A project that is set up skips the window and opens its workspace: go to step 6.</li>
-            <li>The window shows its parts as tabs: Steps, Triage, Plans and work runs, Branches and checks, Files in git. A click on a tab shows that part. The window opens on Steps. <b>Apply</b>, <b>Commit to git</b> and <b>Close</b> stay at the bottom on every tab.</li>
+            <li>The window shows its parts in a list at the left: Steps, Triage, Plans and work runs, Branches and checks, Files in git. A click on a name shows that part. The window opens on Steps. The number next to Steps counts the steps to do, and the head of the window says how many steps are to do. Each setting is a switch on its own row, with a short text under it. <b>Apply</b>, <b>Commit to git</b> and <b>Close</b> stay at the bottom on every part.</li>
             <li>Click a step to see its file and the text that it adds.</li>
             <li>Under the steps, the window lists the rules of the project that conflict with the pipeline, each with its file as a link. A click opens the file in the viewer, also for a rule outside the project. <b>Open in editor</b> there lets you change the rule yourself.</li>
             <li>Apply makes no commit, so you can look at the changes in git first. When all steps are done, <b>Commit to git</b> becomes available.</li>
@@ -1005,7 +1058,7 @@
             <li>The update saves your tabs, downloads the installer and installs: Dispatch closes, a progress bar runs, and the new version opens with your tabs. The check reads the public releases on GitHub and needs no login.</li>
             <li>On a Mac the click downloads the disk image and opens it, and Dispatch closes. Drag Dispatch to Applications. The app is not signed, so run <code>xattr -cr /Applications/Dispatch.app</code> in Terminal once before the next start.</li>
             <li>The line below the title of this window shows the version and the result of the check. Dispatch checks once an hour; <b>Check for update</b> checks now, and installs a new version that it found.</li>
-            <li>The Options window holds where the work runs (see Where the work runs), the alerts, the switch <b>Compact triage after each task</b>, the colour theme of the window and the terminals (Slate, or Graphite with a blue, indigo, teal or amber accent) and the size of the text (90 to 150 percent). A change applies at once, and Dispatch keeps the choices on this computer. The window shows its sections as tabs, one section at a time, and opens on the first tab.</li>
+            <li>The Options window holds where the work runs (see Where the work runs), the alerts, the switch <b>Compact triage after each task</b>, the colour theme of the window and the terminals (Slate, or Graphite with a blue, indigo, teal or amber accent) and the size of the text (90 to 150 percent). A change applies at once, and Dispatch keeps the choices on this computer. The window shows its sections in a list at the left, one section at a time, and opens on the first one. The theme is a row of cards with a preview of each theme, and the text size a row of buttons.</li>
             <li>An alert comes one time when a plan is ready, a report has a question or needs a permission, or a worker waits at a prompt. Each alert has its own switch in Options. The notification names the task and what it waits for. The button blinks until you open the window.</li>
             <li>The tasks that already wait when Dispatch starts give no alert. The chime plays only after your first key or click in Dispatch, because the window may play sound only then. In night mode only a plan with a HOLD decision, a permission and a prompt alert. A test build that runs with <code>npm run tauri dev</code> shows the notification as from PowerShell.</li>
             <li>The bar at the bottom shows "Claude account:" with the email of the account that Claude Code uses on the computer that does the work. Then come the weekly usage for all models and for Fable, the version of Claude Code and the version of Dispatch. The email stays on this computer.</li>
@@ -1020,132 +1073,226 @@
       </div>
     </dialog>
     <dialog id="options">
-      <header>
-        <h2>Options</h2>
-        <button id="options-close" title="Close (Esc)">&times;</button>
+      <header class="dialog-head">
+        <span class="dialog-icon" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"></path><circle cx="16" cy="7" r="2"></circle><circle cx="10" cy="17" r="2"></circle></svg>
+        </span>
+        <div class="dialog-title">
+          <h2>Options</h2>
+          <p>For Dispatch on this PC, in every project</p>
+        </div>
+        <button type="button" id="options-close" class="dialog-x" aria-label="Close" title="Close (Esc)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+        </button>
       </header>
-      <nav class="dialog-tabs" role="tablist" aria-label="Sections">
-        <button type="button" role="tab" data-tab="work">Where the work runs</button>
-        <button type="button" role="tab" data-tab="host">Host on this PC</button>
-        <button type="button" role="tab" data-tab="phone">Phone</button>
-        <button type="button" role="tab" data-tab="alerts">Alerts</button>
-        <button type="button" role="tab" data-tab="triage">Triage chat</button>
-        <button type="button" role="tab" data-tab="look">Look</button>
-      </nav>
-      <div id="options-body">
-        <fieldset data-tab-panel="work">
-          <legend>Where the work runs</legend>
-          <label>
-            <input type="radio" name="work-mode" value="local" />
-            <span><b>This PC does the work.</b> Dispatch runs the terminals, Claude Code and the workers on this computer, as before.</span>
-          </label>
-          <label>
-            <input type="radio" name="work-mode" value="hosts" />
-            <span><b>Use hosts.</b> Dispatch shows and controls one or more <code>dispatch-host</code> programs on other computers over Tailscale, or on this one. Nothing runs here.</span>
-          </label>
-          <label>
-            <input type="radio" name="work-mode" value="mixed" />
-            <span><b>This PC and hosts.</b> Dispatch runs the terminals, Claude Code and the workers on this computer and shows and controls the hosts of the list too. No host program runs on this computer.</span>
-          </label>
-          <div id="host-list"></div>
-          <p id="host-own-note" hidden>This PC runs its own work in this mode, so Dispatch skips the row of this PC.</p>
-          <button id="host-add" type="button" title="Add a row for one more host">Add host</button>
-          <template id="host-row">
-            <div class="host-row">
-              <input type="text" class="host-name" placeholder="Name" spellcheck="false" autocomplete="off" title="The name of the host in the window: in the title, the bar and after each project name" aria-label="Host name" />
-              <input type="text" class="host-address" placeholder="100.x.y.z or name.tailnet.ts.net" spellcheck="false" autocomplete="off" title="The Tailscale address or name of the computer that runs dispatch-host; 127.0.0.1 for this computer" aria-label="Host address" />
-              <input type="number" class="host-port" min="1" max="65535" placeholder="7470" title="The port of the host; empty is 7470" aria-label="Port" />
-              <input type="password" class="host-key" placeholder="Key" spellcheck="false" autocomplete="off" title="The key from host-key.txt in the data folder of the host" aria-label="Key" />
-              <button type="button" class="host-remove" title="Remove this host from the list">Remove</button>
+      <div class="dialog-split">
+        <nav class="dialog-tabs" aria-label="Sections">
+          <div role="tablist">
+            <button type="button" role="tab" data-tab="work">Where the work runs</button>
+            <button type="button" role="tab" data-tab="host">Host on this PC</button>
+            <button type="button" role="tab" data-tab="phone">Phone</button>
+            <button type="button" role="tab" data-tab="alerts">Alerts</button>
+            <button type="button" role="tab" data-tab="triage">Triage chat</button>
+            <button type="button" role="tab" data-tab="look">Look</button>
+          </div>
+          <p class="dialog-tabs-note">Changes save at once.</p>
+        </nav>
+        <div id="options-body">
+          <fieldset data-tab-panel="work">
+            <legend>Where the work runs</legend>
+            <p>Which computers run the terminals, Claude Code and the workers.</p>
+            <div class="mode-cards">
+              <label class="mode-card">
+                <input type="radio" name="work-mode" value="local" />
+                <b>This PC does the work</b>
+                <span>Dispatch runs the terminals, Claude Code and the workers on this computer, as before.</span>
+              </label>
+              <label class="mode-card">
+                <input type="radio" name="work-mode" value="hosts" />
+                <b>Use hosts</b>
+                <span>Dispatch shows and controls one or more <code>dispatch-host</code> programs on other computers over Tailscale, or on this one. Nothing runs here.</span>
+              </label>
+              <label class="mode-card">
+                <input type="radio" name="work-mode" value="mixed" />
+                <b>This PC and hosts</b>
+                <span>Dispatch runs the terminals, Claude Code and the workers on this computer and shows and controls the hosts of the list too. No host program runs on this computer.</span>
+              </label>
             </div>
-          </template>
-          <p>A change here takes effect at the next start of Dispatch.</p>
-        </fieldset>
-        <fieldset id="host-run" data-tab-panel="host">
-          <legend>Run the host on this PC</legend>
-          <p id="host-run-state">The host is not running.</p>
-          <label class="options-list">
-            <span>Key</span>
-            <input type="text" id="host-run-key" readonly spellcheck="false" autocomplete="off" title="The key of the host on this PC; another window needs it in the mode Use hosts" />
-          </label>
-          <div class="buttons">
-            <button id="host-run-start" title="Start dispatch-host on this PC and use it in this window">Start the host</button>
-            <button id="host-run-stop" title="Stop dispatch-host and its terminals" disabled>Stop the host</button>
-            <button id="host-run-newkey" title="Start the host again with a new key" disabled>New key</button>
-          </div>
-          <label id="host-run-autostart-row" hidden>
-            <input type="checkbox" id="host-run-autostart" />
-            <span>Start the host at each Windows sign-in</span>
-          </label>
-          <p id="host-run-error" hidden></p>
-          <p>Start runs dispatch-host from the folder of Dispatch, adds or updates the row 127.0.0.1 of this PC in the host list, switches this window to Use hosts (also from This PC and hosts) and restarts Dispatch; the terminals of this window end. Stop ends the host and its terminals, removes that row and restarts Dispatch; with an empty list this window goes back to This PC does the work, and with other hosts in the list it goes to This PC and hosts. New key restarts the host with a new key; every other window needs the new key.</p>
-        </fieldset>
-        <fieldset id="phone-block" data-tab-panel="phone">
-          <legend>Overview on your iPhone</legend>
-          <p id="phone-note"></p>
-          <div class="buttons">
-            <button id="phone-start" title="Start the host of this PC if needed, use it in this window and restart Dispatch" hidden>Start and show the code</button>
-          </div>
-          <p id="phone-error" hidden></p>
-          <div id="phone-ready" hidden>
-            <canvas id="phone-code" role="img" aria-label="Code with the link of the phone page"></canvas>
-            <input type="text" id="phone-link" readonly spellcheck="false" autocomplete="off" aria-label="Link of the phone page" title="The link of the phone page, with the phone key; it needs Tailscale on the phone" />
+            <section id="host-section" hidden>
+              <div class="section-head">
+                <h3>Hosts</h3>
+                <button id="host-add" type="button" title="Add a row for one more host">Add host</button>
+              </div>
+              <div class="host-table">
+                <div class="host-head" aria-hidden="true"><span>Name</span><span>Tailscale address</span><span>Port</span><span>Key</span><span></span></div>
+                <div id="host-list"></div>
+              </div>
+              <p id="host-own-note" hidden>This PC runs its own work in this mode, so Dispatch skips the row of this PC.</p>
+              <p class="small">The key is in host-key.txt in the data folder of the host. Port empty: 7470.</p>
+              <template id="host-row">
+                <div class="host-row">
+                  <input type="text" class="host-name" placeholder="Name" spellcheck="false" autocomplete="off" title="The name of the host in the window: in the title, the bar and after each project name" aria-label="Host name" />
+                  <input type="text" class="host-address" placeholder="100.x.y.z or name.tailnet.ts.net" spellcheck="false" autocomplete="off" title="The Tailscale address or name of the computer that runs dispatch-host; 127.0.0.1 for this computer" aria-label="Host address" />
+                  <input type="number" class="host-port" min="1" max="65535" placeholder="7470" title="The port of the host; empty is 7470" aria-label="Port" />
+                  <input type="password" class="host-key" placeholder="Key" spellcheck="false" autocomplete="off" title="The key from host-key.txt in the data folder of the host" aria-label="Key" />
+                  <button type="button" class="host-remove" aria-label="Remove this host" title="Remove this host from the list">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"></path></svg>
+                  </button>
+                </div>
+              </template>
+            </section>
+            <p class="note-wait">A change here takes effect at the next start of Dispatch.</p>
+          </fieldset>
+          <fieldset id="host-run" data-tab-panel="host">
+            <legend>Run the host on this PC</legend>
+            <p>Run dispatch-host here, so another window or your phone can reach this PC.</p>
+            <div class="card-box">
+              <div class="host-state-row">
+                <span id="host-run-dot" class="state-dot" aria-hidden="true"></span>
+                <p id="host-run-state">The host is not running.</p>
+                <button id="host-run-stop" title="Stop dispatch-host and its terminals" disabled>Stop the host</button>
+                <button id="host-run-start" class="primary" title="Start dispatch-host on this PC and use it in this window">Start the host</button>
+              </div>
+              <div class="field">
+                <label for="host-run-key">Key</label>
+                <div class="field-row">
+                  <input type="text" id="host-run-key" readonly spellcheck="false" autocomplete="off" placeholder="Shows when the host runs" title="The key of the host on this PC; another window needs it in the mode Use hosts" />
+                  <button id="host-run-newkey" title="Start the host again with a new key" disabled>New key</button>
+                </div>
+                <small>Another window needs this key in the mode Use hosts.</small>
+              </div>
+              <label id="host-run-autostart-row" class="switch-row" hidden>
+                <input type="checkbox" id="host-run-autostart" />
+                <span><b>Start the host at each Windows sign-in</b></span>
+              </label>
+              <p id="host-run-error" hidden></p>
+            </div>
+            <section class="what-list">
+              <h4>What Start and Stop do</h4>
+              <ul>
+                <li>Start runs dispatch-host from the folder of Dispatch, adds or updates the row 127.0.0.1 of this PC in the host list, switches this window to Use hosts (also from This PC and hosts) and restarts Dispatch; the terminals of this window end.</li>
+                <li>Stop ends the host and its terminals, removes that row and restarts Dispatch; with an empty list this window goes back to This PC does the work, and with other hosts in the list it goes to This PC and hosts.</li>
+                <li>New key restarts the host with a new key; every other window needs the new key.</li>
+              </ul>
+            </section>
+          </fieldset>
+          <fieldset id="phone-block" data-tab-panel="phone">
+            <legend>Overview on your iPhone</legend>
+            <p>See the project cards and add tickets from your iPhone.</p>
+            <p id="phone-note"></p>
             <div class="buttons">
-              <button id="phone-newkey" title="Make a new phone key; the old code stops working and the host keeps running">New phone key</button>
+              <button id="phone-start" title="Start the host of this PC if needed, use it in this window and restart Dispatch" hidden>Start and show the code</button>
             </div>
-          </div>
-          <p>The phone shows the project cards and can add tickets. It reaches no terminal and no file. Tailscale must run on the phone.</p>
-        </fieldset>
-        <fieldset data-tab-panel="alerts">
-          <legend>Alerts when a task waits for you</legend>
-          <label>
-            <input type="checkbox" data-alert="notify" />
-            <span><b>Notification.</b> A system notification names the task and what it waits for.</span>
-          </label>
-          <label>
-            <input type="checkbox" data-alert="chime" />
-            <span><b>Chime.</b> A short, quiet sound, one time per task.</span>
-          </label>
-          <label>
-            <input type="checkbox" data-alert="blink" />
-            <span><b>Blink.</b> The Dispatch button in the taskbar blinks until you open the window.</span>
-          </label>
-          <label>
-            <input type="checkbox" data-attention="pulse" />
-            <span><b>Pulse.</b> The card of a task that waits for you pulses, and so does the pill or column of its project, until you click the card. The Setup button of a project that misses setup steps pulses too. The system setting for reduced motion turns the motion off too.</span>
-          </label>
-          <p>An alert comes one time when a task starts to wait: a plan is ready, a report has a question or needs a permission, or a worker waits at a prompt. While night mode is on, only what night mode leaves to you alerts: a plan with a HOLD decision, a permission and a prompt. With No triage on, a task that is done or failed alerts too, but not in night mode.</p>
-        </fieldset>
-        <fieldset data-tab-panel="triage">
-          <legend>Triage chat</legend>
-          <label>
-            <input type="checkbox" data-compact="triage" />
-            <span><b>Compact triage after each task.</b> When a task of a project ends, Dispatch sends /compact to its triage chat at a quiet moment, so the chat keeps a small context. Off: the chat grows until the limit of the list new chat at.</span>
-          </label>
-        </fieldset>
-        <fieldset data-tab-panel="look">
-          <legend>Look</legend>
-          <label class="options-list">
-            <span>Colour theme</span>
-            <select id="theme" title="The colours of the window and the terminals" aria-label="Theme">
-              <option value="slate">Slate</option>
-              <option value="graphite-blue">Graphite blue</option>
-              <option value="graphite-indigo">Graphite indigo</option>
-              <option value="graphite-teal">Graphite teal</option>
-              <option value="graphite-amber">Graphite amber</option>
-            </select>
-          </label>
-          <label class="options-list">
-            <span>Text size</span>
-            <select id="text-size" title="The size of the text in the window and in the terminals" aria-label="Text size">
-              <option value="90">90%</option>
-              <option value="100">100%</option>
-              <option value="115">115%</option>
-              <option value="130">130%</option>
-              <option value="150">150%</option>
-            </select>
-          </label>
-        </fieldset>
+            <p id="phone-error" hidden></p>
+            <div id="phone-ready" class="card-box" hidden>
+              <canvas id="phone-code" role="img" aria-label="Code with the link of the phone page"></canvas>
+              <div class="phone-side">
+                <p>Scan the code with the camera of your phone.</p>
+                <div class="field">
+                  <label for="phone-link">Or open this link</label>
+                  <input type="text" id="phone-link" readonly spellcheck="false" autocomplete="off" aria-label="Link of the phone page" title="The link of the phone page, with the phone key; it needs Tailscale on the phone" />
+                </div>
+                <div class="field-row">
+                  <button id="phone-newkey" title="Make a new phone key; the old code stops working and the host keeps running">New phone key</button>
+                  <small>The old code then stops working.</small>
+                </div>
+              </div>
+            </div>
+            <ul class="what-list">
+              <li>Tailscale must run on the phone.</li>
+              <li>The phone reaches no terminal and no file.</li>
+            </ul>
+          </fieldset>
+          <fieldset data-tab-panel="alerts">
+            <legend>Alerts</legend>
+            <p>How Dispatch tells you that a task waits for you.</p>
+            <div class="switch-card">
+              <label class="switch-row">
+                <input type="checkbox" data-alert="notify" />
+                <span><b>Notification</b> A system notification names the task and what it waits for.</span>
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" data-alert="chime" />
+                <span><b>Chime</b> A short, quiet sound, one time per task.</span>
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" data-alert="blink" />
+                <span><b>Blink</b> The Dispatch button in the taskbar blinks until you open the window.</span>
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" data-attention="pulse" />
+                <span><b>Pulse</b> The card of a task that waits for you pulses, and so does the pill or column of its project, until you click the card. The Setup button of a project that misses setup steps pulses too. The system setting for reduced motion turns the motion off too.</span>
+              </label>
+            </div>
+            <section class="what-list">
+              <h4>When an alert comes</h4>
+              <ul>
+                <li>One time when a task starts to wait: a plan is ready, a report has a question or needs a permission, or a worker waits at a prompt.</li>
+                <li>While night mode is on, only what night mode leaves to you alerts: a plan with a HOLD decision, a permission and a prompt.</li>
+                <li>With No triage on, a task that is done or failed alerts too, but not in night mode.</li>
+              </ul>
+            </section>
+          </fieldset>
+          <fieldset data-tab-panel="triage">
+            <legend>Triage chat</legend>
+            <p>Keep the triage chat of each project small.</p>
+            <div class="switch-card">
+              <label class="switch-row">
+                <input type="checkbox" data-compact="triage" />
+                <span><b>Compact triage after each task</b> When a task of a project ends, Dispatch sends /compact to its triage chat at a quiet moment, so the chat keeps a small context. Off: the chat grows until the limit of the list new chat at.</span>
+              </label>
+            </div>
+          </fieldset>
+          <fieldset data-tab-panel="look">
+            <legend>Look</legend>
+            <section class="look-section">
+              <h3>Colour theme</h3>
+              <p>The colours of the window and the terminals.</p>
+              <div id="theme" class="theme-cards" role="radiogroup" aria-label="Colour theme">
+                <label class="theme-card">
+                  <input type="radio" name="theme" value="slate" />
+                  <span class="theme-preview" aria-hidden="true"><span class="side"></span><span class="lines"><span class="bar"></span><span class="line"></span><span class="line"></span></span></span>
+                  <span class="theme-name">Slate</span>
+                </label>
+                <label class="theme-card">
+                  <input type="radio" name="theme" value="graphite-blue" />
+                  <span class="theme-preview" aria-hidden="true"><span class="side"></span><span class="lines"><span class="bar"></span><span class="line"></span><span class="line"></span></span></span>
+                  <span class="theme-name">Graphite blue</span>
+                </label>
+                <label class="theme-card">
+                  <input type="radio" name="theme" value="graphite-indigo" />
+                  <span class="theme-preview" aria-hidden="true"><span class="side"></span><span class="lines"><span class="bar"></span><span class="line"></span><span class="line"></span></span></span>
+                  <span class="theme-name">Graphite indigo</span>
+                </label>
+                <label class="theme-card">
+                  <input type="radio" name="theme" value="graphite-teal" />
+                  <span class="theme-preview" aria-hidden="true"><span class="side"></span><span class="lines"><span class="bar"></span><span class="line"></span><span class="line"></span></span></span>
+                  <span class="theme-name">Graphite teal</span>
+                </label>
+                <label class="theme-card">
+                  <input type="radio" name="theme" value="graphite-amber" />
+                  <span class="theme-preview" aria-hidden="true"><span class="side"></span><span class="lines"><span class="bar"></span><span class="line"></span><span class="line"></span></span></span>
+                  <span class="theme-name">Graphite amber</span>
+                </label>
+              </div>
+            </section>
+            <section class="look-section">
+              <h3>Text size</h3>
+              <p>The size of the text in the window and in the terminals.</p>
+              <div id="text-size" class="size-picks" role="radiogroup" aria-label="Text size">
+                <label class="size-pick"><input type="radio" name="text-size" value="90" /><span>90%</span></label>
+                <label class="size-pick"><input type="radio" name="text-size" value="100" /><span>100%</span></label>
+                <label class="size-pick"><input type="radio" name="text-size" value="115" /><span>115%</span></label>
+                <label class="size-pick"><input type="radio" name="text-size" value="130" /><span>130%</span></label>
+                <label class="size-pick"><input type="radio" name="text-size" value="150" /><span>150%</span></label>
+              </div>
+            </section>
+          </fieldset>
+        </div>
+      </div>
+      <div id="options-footer">
+        <p>Changes save at once.</p>
+        <button type="button" id="options-close-bottom" title="Close (Esc)">Close</button>
       </div>
     </dialog>
     <dialog id="folder-chooser">

@@ -2,7 +2,7 @@
 // size text, the row text, which rows the clean takes and the text after a clean. Run: node --test tests/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BuildRow, cleanable, cleanText, rowText, sizeText } from "../src/builds.ts";
+import { type BuildRow, cleanable, cleanText, rowCells, rowText, sizeText } from "../src/builds.ts";
 
 const row = (name: string, kind: BuildRow["kind"], bytes: number): BuildRow => ({ target: "D:\p\target", name, kind, bytes });
 
@@ -18,6 +18,11 @@ test("a row names its folder, size and kind", () => {
   assert.equal(rowText(row("debug", "main", 2 * 1024 ** 3)), "debug · 2.0 GB · main build");
   assert.equal(rowText(row("test-copy", "proof", 5 * 1024 ** 2)), "test-copy · 5 MB · proof build");
   assert.equal(rowText(row("debug/incremental", "cache", 3 * 1024)), "debug/incremental · 3 KB · incremental cache");
+});
+
+test("a row as three cells: the folder, the kind and the size (redesign-the-setup-pipeline-and-options)", () => {
+  assert.deepEqual(rowCells(row("debug", "main", 2 * 1024 ** 3)), { name: "debug", kind: "main build", size: "2.0 GB" });
+  assert.deepEqual(rowCells(row("debug/incremental", "cache", 3 * 1024)), { name: "debug/incremental", kind: "incremental cache", size: "3 KB" });
 });
 
 test("the clean takes proofs and the cache, never the main build", () => {

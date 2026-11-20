@@ -421,8 +421,12 @@ test("tickets start their plan: the dispatcher starts plans only behind the swit
 });
 
 test("tickets start their plan: the Setup switch, the Help and the README", () => {
-  assert.match(HTML, /<input type="checkbox" data-option="ticketsStartPlans" \/>\s*<span><b>Tickets start their plan\.<\/b>/);
-  assert.match(HTML, /Tickets start their plan changes the steps "Section in CLAUDE\.md" and "Triage role"\./);
+  assert.match(HTML, /<input type="checkbox" data-option="ticketsStartPlans" \/>\s*<span><b>Tickets start their plan<\/b>/);
+  // The caption of the row: the steps while No triage is off, the reason while it is on (the row is dimmed then).
+  const row = HTML.slice(HTML.indexOf('data-option="ticketsStartPlans"'), HTML.indexOf("</label>", HTML.indexOf('data-option="ticketsStartPlans"')));
+  assert.match(row, /<small class="when-on">Changes the steps "Section in CLAUDE\.md" and "Triage role"\.<\/small>/);
+  assert.match(row, /<small class="when-off">No triage is on, so every ticket starts its plan\.<\/small>/);
+  assert.match(HTML, /<label class="switch-row" data-under="noTriage-off">\s*<input type="checkbox" data-option="ticketsStartPlans" \/>/);
   const section = (from: string) => {
     const start = HTML.indexOf(`<h3>${from}</h3>`);
     return HTML.slice(start, HTML.indexOf("<h3>", start + 4));
@@ -604,8 +608,9 @@ test("no triage: the done and failed alerts come from the announcements of a pol
 });
 
 test("no triage: the Setup switch, the Help and the README", () => {
-  assert.match(HTML, /<input type="checkbox" data-option="noTriage" \/>\s*<span><b>No triage\.<\/b>/);
-  assert.match(HTML, /No triage changes the step "Section in CLAUDE\.md"\./);
+  assert.match(HTML, /<input type="checkbox" data-option="noTriage" \/>\s*<span><b>No triage<\/b>/);
+  const noTriageRow = HTML.slice(HTML.indexOf('data-option="noTriage"'), HTML.indexOf("</label>", HTML.indexOf('data-option="noTriage"')));
+  assert.match(noTriageRow, /<small>Changes the step "Section in CLAUDE\.md"\.<\/small>/);
   const section = (from: string) => {
     const start = HTML.indexOf(`<h3>${from}</h3>`);
     return HTML.slice(start, HTML.indexOf("<h3>", start + 4));

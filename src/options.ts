@@ -1,6 +1,6 @@
 // The Options screen (ticket alerts-options): the three switches of the alerts when a task waits for
 // the user, the switch of the triage compaction after a task (ticket triage-compact-after-task), and
-// the colour theme and text size lists (main.ts wires those two, as before).
+// the colour theme cards and the text size buttons (main.ts wires those two, as before).
 import { ALERT_OPTIONS_KEY, type AlertOptions, parseAlertOptions } from "./alerts";
 import { parsePulse, PULSE_KEY } from "./attention";
 import { COMPACT_KEY, parseCompact } from "./compact";
@@ -15,6 +15,10 @@ const listEl = document.querySelector<HTMLElement>("#host-list")!;
 const addEl = document.querySelector<HTMLButtonElement>("#host-add")!;
 const rowTemplate = document.querySelector<HTMLTemplateElement>("#host-row")!;
 const ownNoteEl = document.querySelector<HTMLElement>("#host-own-note")!;
+/** The section Hosts of the tab Where the work runs: the list and Add host. Hidden in the mode This PC does the work. */
+const hostSectionEl = document.querySelector<HTMLElement>("#host-section")!;
+/** The panel Host on this PC; its `data-state` (on, off, unknown) colours the dot of the state line. */
+const hostRunEl = document.querySelector<HTMLElement>("#host-run")!;
 /** The address of the host of this PC in the list. */
 const THIS_PC = "127.0.0.1";
 
@@ -56,7 +60,9 @@ function showOwnNote(): void {
   ownNoteEl.hidden = !(mixed && rowEntries().some((entry) => isOwnHostRow(entry, lastRun?.key)));
 }
 
+/** The host list counts only with hosts: off, the section is hidden (decision 2 of redesign-the-setup-pipeline-and-options). */
 function enableHostFields(on: boolean): void {
+  hostSectionEl.hidden = !on;
   for (const input of listEl.querySelectorAll<HTMLInputElement | HTMLButtonElement>("input, button")) input.disabled = !on;
   addEl.disabled = !on;
 }
@@ -184,6 +190,7 @@ function drawPhoneBlock(run: HostRun | null): void {
 function drawHostRun(run: HostRun | null, error = ""): void {
   lastRun = run;
   const running = run?.running === true;
+  hostRunEl.dataset.state = !run ? "unknown" : running ? "on" : "off";
   runStateEl.textContent = !run
     ? "The state of the host is not known."
     : running
@@ -452,6 +459,7 @@ export function initOptions(onClose: () => void, onHostChange: () => unknown): v
   };
   document.querySelector("#show-options")!.addEventListener("click", () => openOptions());
   document.querySelector("#options-close")!.addEventListener("click", () => dialog.close());
+  document.querySelector("#options-close-bottom")!.addEventListener("click", () => dialog.close());
   // A click on the dark area around the dialog closes it.
   dialog.addEventListener("click", (event) => {
     if (event.target === dialog) dialog.close();

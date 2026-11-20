@@ -88,10 +88,10 @@ test("the terminal colours come from the four terminal tokens", () => {
   assert.deepEqual(terminalTheme("nothing"), terminalTheme("slate"));
 });
 
-test("the theme list in the bar offers exactly the theme names, left of the text size", () => {
-  const select = HTML.match(/<select id="theme"[^>]*>([\s\S]*?)<\/select>/);
-  assert.ok(select, "index.html has the list #theme");
-  const values = [...select[1].matchAll(/<option value="([^"]+)">/g)].map((match) => match[1]);
+test("the theme cards in Options offer exactly the theme names, above the text size", () => {
+  const group = HTML.match(/<div id="theme"[^>]*>([\s\S]*?)<\/div>\s*<\/section>/);
+  assert.ok(group, "index.html has the group #theme");
+  const values = [...group[1].matchAll(/<input type="radio" name="theme" value="([^"]+)" \/>/g)].map((match) => match[1]);
   assert.deepEqual(values, NAMES);
-  assert.ok(HTML.indexOf('id="theme"') < HTML.indexOf('id="text-size"'), "the theme list stands left of the text size");
+  assert.ok(HTML.indexOf('id="theme"') < HTML.indexOf('id="text-size"'), "the theme cards stand above the text size");
 });
