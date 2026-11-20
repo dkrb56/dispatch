@@ -49,16 +49,22 @@ test("main.ts: setPaused writes the setting, tells triage, and at Resume starts 
 });
 
 test("the strip above the board shows the state and the action (ticket i-need-more-prominent-button-for)", () => {
-  const on = autoSwitch(false);
+  const on = autoSwitch(false, false);
   assert.equal(on.kind, "on");
-  assert.equal(on.label, "Auto-start");
+  assert.equal(on.label, "Run queue");
   assert.equal(on.on, true);
-  assert.equal(on.detail, "Dispatch takes the New tickets one by one and starts approved plans.");
+  assert.equal(on.detail, "Run queue: Dispatch takes the New tickets one by one and starts each plan after you approve it. Night is off: turn it on when you go away, and Dispatch approves plans by itself.");
   assert.equal(on.title, pauseButton(false).title);
-  const paused = autoSwitch(true);
+  assert.equal(autoSwitch(false, true).detail, "Run queue: Dispatch takes the New tickets one by one. Night is on: Dispatch approves plans and answers questions with the recommended choice; HOLD items and permissions wait for you.");
+  const paused = autoSwitch(true, false);
   assert.equal(paused.kind, "paused");
-  assert.equal(paused.label, "Auto-start");
+  assert.equal(paused.label, "Run queue");
   assert.equal(paused.on, false);
   assert.equal(paused.detail, PAUSE_BANNER);
+  assert.equal(autoSwitch(true, true).detail, PAUSE_BANNER + " Night is on, but no work starts until you turn Run queue on.");
   assert.equal(paused.title, pauseButton(true).title);
+  const nightFn = MAIN.slice(MAIN.indexOf("function showNightButtons"));
+  assert.match(nightFn.slice(0, nightFn.indexOf("\n}\n")), /\.auto-switch-detail/);
+  const pauseFn = MAIN.slice(MAIN.indexOf("function showPauseButtons"));
+  assert.doesNotMatch(pauseFn.slice(0, pauseFn.indexOf("\n}\n")), /auto-switch-detail/);
 });

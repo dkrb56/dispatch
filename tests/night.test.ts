@@ -89,7 +89,7 @@ test("main.ts: night mode per project, no switch of a whole computer", () => {
   assert.match(MAIN, /shared_set", \{ nights: \{ \[path\]: on \} \}/, "a click writes only its own project");
   assert.doesNotMatch(MAIN, /#night-mode/, "the switch of the top bar is gone");
   assert.doesNotMatch(HTML, /id="night-mode"/, "the switch of the top bar is gone");
-  // The Night switch stands right after the Auto-start switch, before the detail text.
+  // The Night switch stands right after the Run queue switch, before the detail text.
   assert.match(MAIN, /autoEl\.append\([^;]*autoButton, autoNight,[^;]*\)/);
   assert.match(MAIN, /setAttribute\("role", "switch"\)/);
   assert.match(MAIN, /auto-switch-night/);

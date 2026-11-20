@@ -3088,6 +3088,12 @@ function showNightButtons(): void {
     button.title = look.title;
     button.setAttribute("aria-checked", String(on));
   }
+  for (const el of document.querySelectorAll<HTMLElement>(".auto-switch")) {
+    const button = el.querySelector<HTMLButtonElement>(".project-night");
+    const night = button ? nightOf(button.dataset.host ?? LOCAL, button.dataset.root) : false;
+    const detail = el.querySelector(".auto-switch-detail");
+    if (detail) detail.textContent = autoSwitch(projectPaused(el.dataset.project ?? ""), night).detail;
+  }
 }
 
 /**
@@ -9177,10 +9183,9 @@ function showPauseButtons(): void {
   showNightButtons();
   for (const el of document.querySelectorAll<HTMLElement>(".auto-switch")) {
     const paused = projectPaused(el.dataset.project ?? "");
-    const look = autoSwitch(paused);
+    const look = autoSwitch(paused, false);
     el.classList.toggle("on", look.kind === "on");
     el.classList.toggle("paused", look.kind === "paused");
-    el.querySelector(".auto-switch-detail")!.textContent = look.detail;
     const button = el.querySelector<HTMLButtonElement>(".auto-switch-start")!;
     button.querySelector(".auto-switch-label")!.textContent = look.label;
     button.title = look.title;

@@ -18,13 +18,21 @@ export function pauseButton(paused: boolean): { text: string; title: string } {
 }
 
 /** The switch above the tickets board: on while tickets start by themselves, off while paused. */
-export function autoSwitch(paused: boolean): { label: string; on: boolean; detail: string; title: string; kind: "on" | "paused" } {
+export function autoSwitch(paused: boolean, night: boolean): { label: string; on: boolean; detail: string; title: string; kind: "on" | "paused" } {
   return paused
-    ? { label: "Auto-start", on: false, detail: PAUSE_BANNER, title: pauseButton(true).title, kind: "paused" }
+    ? {
+        label: "Run queue",
+        on: false,
+        detail: night ? PAUSE_BANNER + " Night is on, but no work starts until you turn Run queue on." : PAUSE_BANNER,
+        title: pauseButton(true).title,
+        kind: "paused",
+      }
     : {
-        label: "Auto-start",
+        label: "Run queue",
         on: true,
-        detail: "Dispatch takes the New tickets one by one and starts approved plans.",
+        detail: night
+          ? "Run queue: Dispatch takes the New tickets one by one. Night is on: Dispatch approves plans and answers questions with the recommended choice; HOLD items and permissions wait for you."
+          : "Run queue: Dispatch takes the New tickets one by one and starts each plan after you approve it. Night is off: turn it on when you go away, and Dispatch approves plans by itself.",
         title: pauseButton(false).title,
         kind: "on",
       };
