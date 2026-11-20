@@ -169,7 +169,7 @@ test("the page: the stacked layout has its rules, its button and its Help item",
   assert.match(css, /#bar #focus-split\s*\{[^}]*display:\s*none/);
   assert.match(css, /body\.focus-mode #bar #focus-split\s*\{[^}]*display:\s*flex/);
   const html = read("../index.html");
-  const viewMode = html.slice(html.indexOf('<div id="view-mode"'), html.indexOf('<div id="bar-projects"'));
+  const viewMode = html.slice(html.indexOf('<div id="view-mode"'), html.indexOf('<button id="focus-split"'));
   assert.doesNotMatch(viewMode, /focus-split/);
   assert.match(html, /<button id="focus-split"[^>]*aria-pressed="false"/);
   assert.match(html, /<li>[^\n]*one above the other[^\n]*lower edge[^\n]*thin bar[^\n]*whole height[^\n]*<\/li>/);
@@ -191,7 +191,7 @@ test("the page: the terminal below the board has its wrapper, its button, its dr
   assert.doesNotMatch(css, /body\.resizing \.focus-body > :not\(\.side-resize\)/);
   assert.match(css, /#focus\.rows > \.focus-col:not\(\.min\):has\(\.focus-work\.stacked > \.focus-terminal:not\(\[hidden\]\)\)\s*\{[^}]*min-height/);
   const main = read("../src/main.ts");
-  assert.match(main, /termHead\.append\(mapElement\("span", "", "Terminal"\), termSpacer, detailsEl, termSplitEl, termClose\);/);
+  assert.match(main, /termHead\.append\(mapElement\("span", "", "Terminal"\), termSpacer, termSplitEl, termClose\);/);
   assert.match(main, /workEl\.classList\.toggle\("stacked", below\);/);
   assert.match(main, /termSplit: toggleTermSplit\(parseTermSplit\(/);
   assert.match(main, /saveFocusSize\(key, \{ termHeight: Math\.round\(term\.height\) \}\)/);
@@ -200,14 +200,17 @@ test("the page: the terminal below the board has its wrapper, its button, its dr
   assert.match(html, /Click <b>Below<\/b> above the terminal to put it below the board[^<]*<b>Beside<\/b> to put it back/);
 });
 
-test("the page: the column tabs and the Details switch of the terminal have their rules, code and Help", () => {
+test("the page: the column tabs and the Details switch of the column have their rules, code and Help", () => {
   const css = read("../src/styles.css").replace(/\/\*[\s\S]*?\*\//g, "");
   assert.match(css, /\.focus-tabs\s*\{[^}]*display:\s*flex/);
   assert.match(css, /\.focus-tab\.active\s*\{/);
   assert.match(css, /\.focus-triage\[hidden\],\s*\.focus-board\[hidden\]/);
-  // The side panel is a slim band above the terminal: a grid of two columns, placed first.
-  assert.match(css, /\.focus-terminal\.details \.side\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*1fr 1fr[^}]*order:\s*-1/);
-  assert.match(css, /\.focus-terminal\.details \.pane\s*\{[^}]*flex-direction:\s*column/);
+  // The side panel is a slim band above the terminal: a grid of two columns, placed first. The Triage
+  // and Workers panes take the same band (ticket no-details-mode, user decision 4).
+  const band = ":is\\(\\.focus-terminal, \\.focus-triage, \\.focus-agents\\)\\.details";
+  assert.match(css, new RegExp(`${band} \\.side\\s*\\{[^}]*display:\\s*grid[^}]*grid-template-columns:\\s*1fr 1fr[^}]*order:\\s*-1`));
+  assert.match(css, new RegExp(`${band} \\.pane\\s*\\{[^}]*flex-direction:\\s*column`));
+  assert.match(css, /\.focus-triage \.side,\s*\.focus-agents \.side\s*\{\s*display:\s*none/);
   assert.match(css, /@container focus-term \(max-width: 360px\)\s*\{\s*\.focus-terminal\.details \.side\s*\{[^}]*grid-template-columns:\s*1fr;/);
   assert.doesNotMatch(css, /flex:\s*0 0 45%/);
   assert.doesNotMatch(css, /workers-hide/);
@@ -221,11 +224,14 @@ test("the page: the column tabs and the Details switch of the terminal have thei
   assert.match(main, /detailsOn: false/);
   assert.doesNotMatch(main, /saveFocusSize\([^)]*detailsOn/);
   assert.match(main, /\.\.\.tabPanes\(activeId \?\? ""\), \.\.\.focusDetailPanes\(\)/);
+  // The switch stands at the right end of the tabs and turns on the band of all three panes.
+  assert.match(main, /tabRowEl\.append\(tabSpacer, detailsEl\);/);
+  assert.match(main, /for \(const slot of \[column\.triageEl, column\.agentsEl, column\.termEl\]\) slot\.classList\.toggle\("details", on\);/);
   const html = read("../index.html");
   assert.match(html, /<b>Tickets<\/b> shows the tickets board[^<]*<b>Workers<\/b> shows the agent view/);
   assert.match(html, /<b>Triage<\/b> as the first tab/);
   assert.match(html, /Each project remembers its tab after a restart/);
-  assert.match(html, /The <b>Details<\/b> switch above the terminal shows its side panel with Environment, Context and Outputs[^<]*off at each start/);
+  assert.match(html, /The <b>Details<\/b> switch at the right of the tabs shows the side panels of the Triage, Workers and terminal panes with Environment, Context and Outputs[^<]*off at each start/);
   assert.doesNotMatch(html, /<b>Workers<\/b> in the head of a column/);
 });
 

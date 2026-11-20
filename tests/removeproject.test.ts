@@ -28,12 +28,12 @@ test("no pending project: no value removes anything", () => {
   assert.equal(removeAnswer(null, ""), null);
 });
 
-test("the texts name the project and say that it keeps running, nothing breaks and + brings it back", () => {
+test("the texts name the project and say that it keeps running, nothing breaks and the rail brings it back", () => {
   const texts = removeTexts("dispatch");
   assert.equal(texts.title, "Remove dispatch from focus mode?");
   assert.match(texts.body, /^dispatch keeps running, and so do its workers\./);
   assert.match(texts.body, /Nothing breaks/);
-  assert.match(texts.body, /add it back to focus mode at any time with \+/);
+  assert.match(texts.body, /stays below the line of the rail; one click there brings it back/);
   assert.equal(texts.cancel, "Cancel");
   assert.equal(texts.remove, "Remove");
 });

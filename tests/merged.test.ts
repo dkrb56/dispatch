@@ -137,7 +137,7 @@ test("index.html: the Setup dialog has the three switches of simpler-process", (
   for (const phrase of ["Start plans without decisions", "Checks at the gate", "Push after the merge"]) {
     assert.ok(help.includes(`<b>${phrase}.</b>`), phrase);
   }
-  const night = html.slice(html.indexOf("<h3>Night mode</h3>"), html.indexOf("<h3>The Chats panel</h3>"));
+  const night = html.slice(html.indexOf("<h3>Night mode</h3>"), html.indexOf("<h3>Tasks and chats of a column</h3>"));
   assert.match(night, /a merge of night mode also pushes/);
 });
 

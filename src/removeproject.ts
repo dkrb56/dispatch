@@ -20,7 +20,7 @@ export function removeTexts(name: string): RemoveTexts {
     title: `Remove ${name} from focus mode?`,
     body:
       `${name} keeps running, and so do its workers. Nothing breaks: its tasks, its chat and its files stay, ` +
-      "and its workspace stays in Details. You can add it back to focus mode at any time with + in the bar.",
+      "and its workspace keeps running. It stays below the line of the rail; one click there brings it back.",
     cancel: "Cancel",
     remove: "Remove",
   };

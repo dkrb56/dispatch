@@ -140,7 +140,6 @@ summary:focus-visible {
 }
 
 /* The buttons with an outline open a panel or a popup. */
-#bar #toggle-chats,
 #bar #show-rules,
 #bar #setup-pipeline,
 #bar #focus-split,
@@ -165,31 +164,6 @@ summary:focus-visible {
 
 body.focus-mode #bar #focus-split {
   display: flex;
-}
-
-/* A toggle button is raised while its panel shows. */
-body:has(#chats:not([hidden])) #toggle-chats,
-body:has(#panes:not(.no-side)) #toggle-side {
-  background: var(--card);
-  color: var(--text);
-}
-
-/* The commands for the panes, as one group of icon buttons at the right. */
-#pane-tools {
-  display: flex;
-  gap: 2px;
-  margin-left: auto;
-  padding: 2px;
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-}
-
-#bar #pane-tools button {
-  justify-content: center;
-  width: 30px;
-  height: 26px;
-  padding: 0;
-  border-radius: 5px;
 }
 
 /* Shows when a worker waits for the user. A click opens that worker. */
@@ -336,10 +310,9 @@ body:has(#panes:not(.no-side)) #toggle-side {
   min-width: 0;
 }
 
-/* The list of the Claude Code chats, on the left of the terminals. */
 /* The project rail (ticket project-rail-at-the-left-edge-of-the): a thin column at the left edge of
    Focus, Map and Overview with one square per project. Focus above the line in the order of the
-   columns, Other below it; + at the bottom. Details keeps the pills of the bar and hides the rail. */
+   columns, Other below it; + at the bottom. The Plan view hides the rail. */
 #rail {
   display: none;
   flex: none;
@@ -360,11 +333,6 @@ body.focus-mode #rail,
 body.map-mode #rail,
 body.overview-mode #rail {
   display: flex;
-}
-
-body.focus-mode #bar-projects,
-body.map-mode #bar-projects {
-  display: none;
 }
 
 .rail-list {
@@ -630,70 +598,6 @@ body.rail-dragging * {
 
 .ticket-menu button:disabled:hover {
   background: transparent;
-}
-
-#chats {
-  display: flex;
-  flex-direction: column;
-  flex: none;
-  box-sizing: border-box;
-  width: 264px;
-  border-right: 1px solid var(--hairline);
-  background: var(--surface);
-}
-
-#chat-search {
-  height: 32px;
-  margin: 10px 8px 0;
-  padding: 0 10px;
-  box-sizing: border-box;
-  border: 1px solid var(--hairline);
-  border-radius: 6px;
-  outline: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: inherit;
-}
-
-#chat-search:focus {
-  border-color: var(--accent-line);
-}
-
-#chat-scope {
-  display: flex;
-  gap: 2px;
-  margin: 10px 8px;
-  padding: 2px;
-  border-radius: 8px;
-  background: var(--bg);
-}
-
-#chat-scope button {
-  flex: 1;
-  height: 26px;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  color: var(--text-2);
-  font: inherit;
-  cursor: pointer;
-}
-
-#chat-scope button.active {
-  background: var(--card);
-  box-shadow: inset 0 0 0 1px var(--line);
-  color: var(--text);
-  font-weight: 600;
-}
-
-#chat-list {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  gap: 2px;
-  min-height: 0;
-  padding: 0 8px 10px;
-  overflow-y: auto;
 }
 
 /* The heading of one project in the list of all chats. A click opens or closes the group. */
@@ -3702,14 +3606,6 @@ button.ticket-level {
   white-space: pre-wrap;
 }
 
-/* The headings "Tasks" and "Chats" in the list. */
-#chat-list h2 {
-  flex: none;
-  margin: 12px 8px 4px;
-  color: var(--muted);
-  font-size: calc(11px * var(--text-scale));
-  font-weight: 600;
-}
 
 /* A worker is a background session of Claude Code. Its second line shows its state as a chip. */
 .worker .when {
@@ -3772,11 +3668,6 @@ button.ticket-level {
   overflow-y: auto;
   border-left: 1px solid var(--hairline);
   background: var(--surface);
-}
-
-/* The Panel button hides all side panels. */
-.no-side .side {
-  display: none;
 }
 
 /* A narrow pane has no space for its side panel. */
@@ -7583,75 +7474,6 @@ button.ticket-level {
   font-weight: 600;
 }
 
-/* Focus mode hides the tools of the tabs and the chat list. */
-body.focus-mode #toggle-chats,
-body.focus-mode #pane-tools,
-body.focus-mode #chats {
-  display: none;
-}
-
-#focus-projects {
-  display: flex;
-  flex: 1;
-  gap: 6px;
-  min-width: 0;
-  overflow-x: auto;
-}
-
-#focus-projects[hidden],
-#focus-add[hidden] {
-  display: none;
-}
-
-.focus-pill {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 7px;
-  padding: 4px 11px;
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
-  cursor: pointer;
-}
-
-.focus-pill .name {
-  font-weight: 600;
-}
-
-.focus-pill .count {
-  padding: 0 7px;
-  border-radius: 9px;
-  background: var(--card);
-  color: var(--text-2);
-  font-size: calc(12px * var(--text-scale));
-}
-
-.focus-pill .count.working {
-  color: var(--work);
-}
-
-.focus-pill .count.waits {
-  color: var(--wait);
-}
-
-.focus-pill .count.paused {
-  color: var(--muted);
-}
-
-#focus-add {
-  flex: none;
-  padding: 4px 11px;
-  border: 1px dashed var(--line);
-  border-radius: 16px;
-  background: transparent;
-  color: var(--text-2);
-  font: inherit;
-  cursor: pointer;
-}
-
 .focus-dot {
   flex: none;
   width: 8px;
@@ -7842,20 +7664,7 @@ body.resizing:has(.focus-work.stacked > .term-resize.dragging) {
   cursor: row-resize;
 }
 
-/* The handle of the chat panel in Tabs: the same drag, for the chat list and the terminals. */
-body.resizing #main > #chats,
-body.resizing #main > #panes {
-  pointer-events: none;
-}
-
-/* The handle shows only with the chat panel: not when the panel is hidden, in focus mode or on the Map. */
-#chats[hidden] + .chats-resize,
-body.focus-mode .chats-resize,
-body.map-mode .chats-resize {
-  display: none;
-}
-
-/* The width that the user dragged in Tabs is also the usual width of the left panels in focus mode.
+/* The usual width of the left panels in focus mode (localStorage `chats-width`).
    A left panel that the user dragged keeps its own width (an inline style). */
 body.chats-sized .focus-side {
   width: var(--chats-width);
@@ -8061,6 +7870,25 @@ body.chats-sized .focus-side {
   font: inherit;
 }
 
+/* The search box of the Chats section of a column (ticket no-details-mode). */
+.focus-chat-search {
+  flex: none;
+  box-sizing: border-box;
+  min-width: 0;
+  margin: 2px 8px 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  outline: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.focus-chat-search:focus {
+  border-color: var(--accent-line);
+}
+
 .focus-terminal-button {
   flex: none;
   padding: 4px 10px;
@@ -8192,9 +8020,17 @@ body.chats-sized .focus-side {
   display: none;
 }
 
-/* The Details switch of the terminal panel (ticket title-project-rail-focus-as-the-only): the look of
-   the Nightmode switch. On, the panel shows the side panel of its pane above the terminal, as a slim band
-   in two columns (one column in a very narrow panel), so On never shows nothing. */
+/* The Details switch of a column (tickets title-project-rail-focus-as-the-only, no-details-mode): the
+   look of the Nightmode switch, at the right of the tabs after a divider. On, the Triage, Workers and
+   terminal panes show their side panels above the terminal, as a slim band in two columns (one column
+   in a very narrow terminal panel), so On never shows nothing. */
+.focus-tabs > .focus-terminal-details {
+  margin-left: 6px;
+  padding-left: 10px;
+  border-left: 1px solid var(--group-line);
+  border-radius: 0;
+}
+
 .focus-terminal-details {
   display: flex;
   flex: none;
@@ -8247,18 +8083,19 @@ body.chats-sized .focus-side {
   container: focus-term / inline-size;
 }
 
-.focus-terminal.details .pane {
+/* The class `details` of the three slots is more specific than their hide rules, so it wins. */
+:is(.focus-terminal, .focus-triage, .focus-agents).details .pane {
   flex-direction: column;
 }
 
 /* The terminal gives up height to the band; the pane clips what does not fit. */
-.focus-terminal.details .term-column {
+:is(.focus-terminal, .focus-triage, .focus-agents).details .term-column {
   min-height: 0;
 }
 
 /* Step 1: a slim band above the terminal, two columns. A fixed share of the height: rows that come
    with a later poll scroll inside it and do not shrink the terminal after its fit. */
-.focus-terminal.details .side {
+:is(.focus-terminal, .focus-triage, .focus-agents).details .side {
   display: grid;
   grid-template-columns: 1fr 1fr;
   grid-template-areas:
@@ -8277,33 +8114,33 @@ body.chats-sized .focus-side {
   border-bottom: 1px solid var(--hairline);
 }
 
-.focus-terminal.details .side h2 {
+:is(.focus-terminal, .focus-triage, .focus-agents).details .side h2 {
   margin: 6px 0 4px;
 }
 
-.focus-terminal.details .side h2:nth-of-type(1) {
+:is(.focus-terminal, .focus-triage, .focus-agents).details .side h2:nth-of-type(1) {
   grid-area: env-h;
   margin-top: 0;
 }
 
-.focus-terminal.details .side .info {
+:is(.focus-terminal, .focus-triage, .focus-agents).details .side .info {
   grid-area: env;
 }
 
-.focus-terminal.details .side h2:nth-of-type(2) {
+:is(.focus-terminal, .focus-triage, .focus-agents).details .side h2:nth-of-type(2) {
   grid-area: ctx-h;
   margin-top: 0;
 }
 
-.focus-terminal.details .side .context {
+:is(.focus-terminal, .focus-triage, .focus-agents).details .side .context {
   grid-area: ctx;
 }
 
-.focus-terminal.details .side h2:nth-of-type(3) {
+:is(.focus-terminal, .focus-triage, .focus-agents).details .side h2:nth-of-type(3) {
   grid-area: out-h;
 }
 
-.focus-terminal.details .side .thumbs {
+:is(.focus-terminal, .focus-triage, .focus-agents).details .side .thumbs {
   grid-area: out;
 }
 
@@ -8405,229 +8242,16 @@ body {
   color: var(--text);
 }
 
-/* The projects in the bar (topbar-projects): closed pills with a frame, a dot, the name and a short
-   state; the current project in Details is an open group with its buttons. */
-#focus-projects {
-  flex: 0 1 auto;
-  align-items: center;
-  gap: 6px;
-}
-
-.focus-pill,
-#bar .focus-pill {
-  gap: 8px;
-  height: 30px;
-  padding: 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-}
-
-.focus-pill .name {
-  font-weight: 500;
-}
-
-.focus-pill .count {
-  padding: 0;
-  background: none;
-  color: var(--muted);
-  font-size: calc(12.5px * var(--text-scale));
-}
-
-/* An idle closed pill shows no state. */
-.focus-pill .count:empty {
-  display: none;
-}
-
-#focus-add,
-#bar #focus-add {
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: 1px dashed var(--line);
-  border-radius: 8px;
-  color: var(--muted);
-}
-
-#bar #focus-add:hover {
-  color: var(--text);
-}
-
-/* In Details the projects group keeps its width, so every pill stays visible. */
-body:not(.focus-mode):not(.map-mode):not(.overview-mode) #bar-projects,
-body:not(.focus-mode):not(.map-mode):not(.overview-mode) #focus-projects {
-  flex-shrink: 0;
-}
-
-/* The pill of the current project in Details: a frame in the accent colour (ticket
-   this-orange-border-makes-me-think-that). A waiting pill has no frame: its dot and "waits" show it. */
-#bar .focus-pill.current {
-  border-color: var(--accent);
-  background: var(--card);
-}
-
-#bar .focus-pill.current .name {
-  font-weight: 600;
-}
-
-/* The head row above the workspace in Details: the current project, its buttons and ×, with the
-   look of the head of a Focus column. It shows in Details only. */
-#workspace-head {
-  height: 42px;
-  border-bottom: 1px solid var(--hairline);
-}
-
-#workspace-head[hidden],
-body.focus-mode #workspace-head,
-body.map-mode #workspace-head,
-body.overview-mode #workspace-head {
-  display: none;
-}
-
-#workspace-head .count {
-  color: var(--muted);
-  font-size: calc(12.5px * var(--text-scale));
-}
-
-#workspace-head .count.working {
-  color: var(--work);
-}
-
-#workspace-head .count.waits {
-  color: var(--wait);
-}
-
-#workspace-head .count.paused {
-  color: var(--muted);
-}
-
 /* The Pause button of a paused project looks pressed (ticket pause-tasks). */
 .focus-head .project-tool[aria-pressed="true"] {
   background: var(--accent-bg);
   color: var(--accent);
 }
 
-.project-divider {
-  flex: none;
-  width: 1px;
-  height: 16px;
-  background: var(--line);
-}
-
-/* A project without a workspace in Details (topbar-one-row): a dashed pill with an empty dot. */
-#bar .focus-pill.dashed {
-  border-style: dashed;
-  color: var(--muted);
-}
-
 .focus-dot.empty {
   box-sizing: border-box;
   border: 1px solid var(--muted);
   background: none;
-}
-
-/* The × at the end of the head row above the workspace closes the workspace of the project. */
-#workspace-head .project-close {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  color: var(--muted);
-  font: inherit;
-  font-size: calc(16px * var(--text-scale));
-  cursor: pointer;
-}
-
-#workspace-head .project-close:hover {
-  background: var(--card);
-  color: var(--text);
-}
-
-/* The chat tabs in the head of a triage pane, after Chat and Terminal (chat-tabs-by-triage): a tab
-   that is no workspace, with its own ×. The bar wraps when the row is long. */
-.pane-bar .chat-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-}
-
-.pane-bar .chat-tabs[hidden] {
-  display: none;
-}
-
-.chat-tabs .chat-tab {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 2px;
-  height: 20px;
-  padding: 0 2px 0 8px;
-  border-radius: 4px;
-  color: var(--text-2);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-/* The shown chat tab has the look of the active view. */
-.chat-tabs .chat-tab.active {
-  background: var(--card);
-  box-shadow: inset 0 0 0 1px var(--line);
-  color: var(--text);
-  font-weight: 600;
-}
-
-.chat-tabs .chat-tab button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  padding: 0;
-  border: 0;
-  border-radius: 4px;
-  background: none;
-  color: var(--muted);
-  font: inherit;
-  cursor: pointer;
-}
-
-.chat-tabs .chat-tab button:hover {
-  color: var(--text);
-}
-
-/* Focus, Map and Overview show no chat tabs: a chat there is a tab of the window. */
-body.focus-mode .chat-tabs,
-body.map-mode .chat-tabs,
-body.overview-mode .chat-tabs {
-  display: none;
-}
-
-/* The slot under the head of a triage pane that holds a shown chat tab, in place of the terminal. */
-.chat-slot {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-}
-
-.chat-slot:empty {
-  display: none;
-}
-
-.chat-slot > .pane {
-  flex: 1;
-  border: 0;
-  border-radius: 0;
 }
 
 .project-tools {
@@ -8637,8 +8261,7 @@ body.overview-mode .chat-tabs {
   gap: 2px;
 }
 
-/* The projects and the setup buttons: framed groups, like the pane buttons. */
-#bar-projects,
+/* The setup buttons: a framed group. */
 #bar-setup {
   display: flex;
   flex: 0 1 auto;
@@ -8650,12 +8273,7 @@ body.overview-mode .chat-tabs {
   border-radius: 8px;
 }
 
-/* The pane buttons take the same visible frame as the other groups. */
-#pane-tools {
-  border-color: var(--group-line);
-}
-
-/* In Details and Focus each project has its own Rules, Setup and N old (topbar-projects); the bar keeps
+/* In Focus each project has its own Rules, Setup and N old (topbar-projects); the bar keeps
    them for the Map and the Overview. */
 body:not(.map-mode):not(.overview-mode) #bar-setup,
 body:not(.map-mode):not(.overview-mode) #stale-alert {
@@ -9160,7 +8778,6 @@ body.resizing:has(#focus.rows .col-resize.dragging) {
 }
 
 /* The bar buttons of the calm look: no frames, quiet text until hovered. */
-#bar #toggle-chats,
 #bar #show-rules,
 #bar #setup-pipeline,
 #bar #focus-split,
@@ -9170,7 +8787,6 @@ body.resizing:has(#focus.rows .col-resize.dragging) {
   color: var(--muted);
 }
 
-#bar #toggle-chats:hover,
 #bar #show-rules:hover,
 #bar #setup-pipeline:hover,
 #bar #focus-split:hover,
@@ -9246,16 +8862,6 @@ body.resizing:has(#focus.rows .col-resize.dragging) {
 .project-tool.project-night[aria-pressed="true"] {
   background: color-mix(in srgb, var(--switch-on) 35%, transparent);
   color: var(--text);
-}
-
-/* In Details Chats stands at the right edge before the pane buttons and takes the push (topbar-one-row);
-   the other views hide Chats, so the pane buttons keep it there. */
-body:not(.focus-mode):not(.map-mode):not(.overview-mode) #bar #toggle-chats {
-  margin-left: auto;
-}
-
-body:not(.focus-mode):not(.map-mode):not(.overview-mode) #bar #pane-tools {
-  margin-left: 6px;
 }
 
 /* A code block of a chat message, with its buttons at the top right: ▶ runs a one-line shell
@@ -9501,12 +9107,6 @@ body:not(.focus-mode):not(.map-mode):not(.overview-mode) #bar #pane-tools {
 
 /* ------------------------------------------------------------------------------------------------
    The Map: each project as a graph of you, triage, its tasks with their runs, and the agents. */
-
-body.map-mode #toggle-chats,
-body.map-mode #pane-tools,
-body.map-mode #chats {
-  display: none;
-}
 
 #map {
   flex: 1;
@@ -10284,14 +9884,6 @@ svg.links {
    rules show it in the flow of the card and hide every message of it but an open question.
    --------------------------------------------------------------------------------------------- */
 
-body.overview-mode #bar-projects,
-body.overview-mode #toggle-chats,
-body.overview-mode #pane-tools,
-body.overview-mode #chats,
-body.overview-mode .chats-resize {
-  display: none;
-}
-
 /* A free canvas (overview-drag-cards): each card stands at its place, the page scrolls down and right.
    The dots (overview-dot-grid) stand on the slots of the 50px grid: the tile moves by the card margin
    minus half a slot, so a card on the grid has its corner on a dot; `local` scrolls them with the cards. */
@@ -10510,16 +10102,6 @@ body.overview-mode .chats-resize {
    tree on the dots of the Overview, with a toolbar on top and a side panel at the right. The cards
    stand on the 50px grid: the canvas has the margin of an Overview card, so a corner lands on a dot.
    --------------------------------------------------------------------------------------------- */
-
-body.plan-mode #bar-projects,
-body.plan-mode #toggle-chats,
-body.plan-mode #pane-tools,
-body.plan-mode #chats,
-body.plan-mode .chats-resize,
-body.plan-mode #workspace-head,
-body.plan-mode .chat-tabs {
-  display: none;
-}
 
 #plan {
   display: flex;

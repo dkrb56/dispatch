@@ -148,11 +148,11 @@ export function chatPlacer<N extends ChatNode>(): ChatPlacer<N> {
 }
 
 /** The four views of Dispatch. */
-export type ViewMode = "focus" | "tabs" | "map" | "overview" | "plan";
+export type ViewMode = "focus" | "map" | "overview" | "plan";
 
-/** The view of the next start, from the saved text: an unknown text gives Details. */
+/** The view of the next start, from the saved text: an unknown text (also the saved text of the old Details view) gives Focus. */
 export function savedView(text: string | null | undefined): ViewMode {
-  return text === "overview" || text === "map" || text === "focus" || text === "plan" ? text : "tabs";
+  return text === "overview" || text === "map" || text === "plan" ? text : "focus";
 }
 
 // ---- The places of the cards (ticket overview-drag-cards) ---------------------------------------

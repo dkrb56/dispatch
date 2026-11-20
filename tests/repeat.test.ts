@@ -108,7 +108,7 @@ test("the store keeps the newest records only", () => {
 });
 
 test("the Help says that an answered question does not come back as new", () => {
-  const start = HTML.indexOf("<h3>The Chats panel</h3>");
+  const start = HTML.indexOf("<h3>Tasks and chats of a column</h3>");
   const item = HTML.slice(start, HTML.indexOf("<h3>Where the work runs</h3>", start));
   assert.match(item, /leaves? (?:an|the|your) answered question in its report/);
   assert.match(item, /Send the answer again/);
@@ -144,7 +144,7 @@ test("the line of the Stop of the permission card has the form of a stopped task
 });
 
 test("the Help says that a task that needs a permission can be stopped", () => {
-  const start = HTML.indexOf("<h3>The Chats panel</h3>");
+  const start = HTML.indexOf("<h3>Tasks and chats of a column</h3>");
   const item = HTML.slice(start, HTML.indexOf("<h3>Where the work runs</h3>", start));
   const line = item.split("\n").find((text) => text.includes("A worker that stopped at a refused step")) ?? "";
   assert.match(line, /<b>Continue<\/b>/);

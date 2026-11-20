@@ -113,13 +113,6 @@ test("the window reads the key of this PC before it connects, and only when a ro
   assert.match(read, /catch/);
 });
 
-test("the head row and a chat tab stay on the computer of the focused terminal", () => {
-  assert.match(body(MAIN, "function openWorkspaceKey"), /keysOfHost\(workspaceKeys, pane\.host, firstBackend\(\)\)/);
-  const open = body(MAIN, "function openChatTab");
-  assert.match(open, /\.host === triage\.host/);
-  assert.match(open, /hideChatTab\(/);
-});
-
 test("Stop the host follows one rule in Options and in the bar", () => {
   assert.doesNotMatch(OPTIONS, /hosts\.length > 0 \? "hosts" : "local"/);
   assert.match(body(OPTIONS, "async function dropOwnRow"), /modeAfterHostStop\(hosts\.length\)/);

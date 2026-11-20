@@ -382,8 +382,9 @@ test("the Overview card has three parts with their empty texts (overview-backlog
 });
 
 test("the saved view", () => {
-  for (const mode of ["overview", "map", "focus", "tabs", "plan"]) assert.equal(savedView(mode), mode);
-  for (const text of [null, "", "nonsense", "Overview"]) assert.equal(savedView(text), "tabs");
+  for (const mode of ["overview", "map", "focus", "plan"]) assert.equal(savedView(mode), mode);
+  // An unknown text, and "tabs" of the old Details view, give Focus (ticket no-details-mode).
+  for (const text of [null, "", "nonsense", "Overview", "tabs"]) assert.equal(savedView(text), "focus");
 });
 
 // ---- The places of the cards (overview-drag-cards) -----------------------------------------------

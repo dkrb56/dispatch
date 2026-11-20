@@ -127,21 +127,23 @@ test("Remove project asks with its own texts: what leaves, what stays, and how i
   const texts = removeProjectTexts("site");
   assert.equal(texts.title, "Remove site from the rail?");
   assert.match(texts.body, /files, its tickets and its chats stay/);
+  // The triage chat and the agent view end (ticket no-details-mode, user decision 3).
+  assert.match(texts.body, /its triage chat and its agent view end/);
   assert.match(texts.body, /\+ at the bottom of the rail/);
 });
 
-test("the rail meets the page: the nav before the chat list, main.ts, the CSS and the Help", () => {
+test("the rail meets the page: the nav before the panes, main.ts, the CSS and the Help", () => {
   const html = read("../index.html");
   const main = read("../src/main.ts");
   const css = read("../src/styles.css");
-  // The rail stands at the left edge of the main row, before the chat list, with + at its bottom.
-  assert.match(html, /<nav id="rail"[\s\S]*?<div id="rail-focus"[\s\S]*?class="rail-line"[\s\S]*?<div id="rail-other"[\s\S]*?<button id="rail-add"[\s\S]*?<\/nav>\s*<aside id="chats">/);
-  // main.ts uses the rules, and renderPills draws the rail outside Details instead of the pills.
+  // The rail stands at the left edge of the main row, before the hidden panes, with + at its bottom.
+  assert.match(html, /<nav id="rail"[\s\S]*?<div id="rail-focus"[\s\S]*?class="rail-line"[\s\S]*?<div id="rail-other"[\s\S]*?<button id="rail-add"[\s\S]*?<\/nav>\s*<main id="panes"/);
+  // main.ts uses the rules, and renderProjects draws the rail (the pills went with Details, ticket no-details-mode).
   assert.match(main, /from "\.\/rail(\.ts)?"/);
   assert.match(main, /import \{[^}]*\bopenPath\b[^}]*\} from "@tauri-apps\/plugin-opener"/);
-  const render = main.match(/function renderPills\(\): void \{([\s\S]*?)\n\}\n/);
-  assert.ok(render, "renderPills is in main.ts");
-  assert.match(render[1], /if \(!details\) \{[\s\S]*?focusProjectsEl\.replaceChildren\(\);[\s\S]*?renderRail\(\);[\s\S]*?return;/);
+  const render = main.match(/function renderProjects\(\): void \{([\s\S]*?)\n\}\n/);
+  assert.ok(render, "renderProjects is in main.ts");
+  assert.match(render[1], /renderRail\(\);/);
   assert.match(main, /localStorage\.getItem\(RAIL_PROJECTS_KEY\)/);
   assert.match(main, /const RAIL_PROJECTS_KEY = "rail-projects"/);
   // The Map and the Overview draw the rail too; the known projects get their task reads.
@@ -149,12 +151,12 @@ test("the rail meets the page: the nav before the chat list, main.ts, the CSS an
   assert.match(main, /if \(railShown\(\)\) for \(const root of railProjects\) roots\.set/);
   // Remove project of the rail asks first, in the window of the × (user decision 3).
   assert.match(main, /askRemoveProject\(ref, "rail"\)/);
-  assert.match(main, /if \(removeKind === "rail"\) forgetProject\(ref\);/);
-  // The CSS: the rail shows in Focus, Map and Overview, the pills of the bar hide in Focus and Map.
+  // It also ends the triage chat and the agent view of the project (ticket no-details-mode, user decision 3).
+  assert.match(main, /if \(removeKind === "rail"\) \{\s*forgetProject\(ref\);[\s\S]{0,300}if \(tabId\) void closeTab\(tabId\);/);
+  // The CSS: the rail shows in Focus, Map and Overview; the CSS of the pills of the bar is gone.
   assert.match(css, /#rail \{[^}]*display: none;/);
   assert.match(css, /body\.focus-mode #rail,\s*body\.map-mode #rail,\s*body\.overview-mode #rail \{\s*display: flex;/);
-  assert.match(css, /body\.focus-mode #bar-projects,\s*body\.map-mode #bar-projects \{\s*display: none;/);
-  assert.match(css, /body\.overview-mode #bar-projects,/);
+  assert.doesNotMatch(css, /#bar-projects/);
   for (const rule of [".rail-square", ".rail-bar.short", ".rail-square.current", ".rail-square.dashed", ".rail-badge.waits", ".rail-badge.working", ".rail-tag", ".rail-card", ".rail-square.drag-over::before", ".rail-line.drop-target"]) {
     assert.ok(css.includes(`${rule} {`) || css.includes(`${rule},`), `the CSS has ${rule}`);
   }

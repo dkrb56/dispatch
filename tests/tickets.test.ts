@@ -572,7 +572,7 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   assert.match(MAIN, /const triageRuns = triagePane\(key\) !== null \|\| projectNoTriage\(key\);/);
 
   // Ticket when-terminal-is-open-in-focus-mode-it: in Focus the terminal stands between the tasks and the board.
-  assert.match(MAIN, /const id = await openProjectChat\(ref, true, /);
+  assert.match(MAIN, /const id = await openProjectChat\(ref, found /);
   assert.match(MAIN, /resizeHandle\("side-resize term-resize"/);
   assert.match(MAIN, /workEl\.append\(termEl, termHandle, main\);\n  body\.append\(sideEl, sideHandle, workEl\);/);
   assert.match(MAIN, /if \(terminal\) moveInto\(terminal, column\.termSlotEl\);/);
@@ -783,7 +783,6 @@ test("the ticket window leaves the app usable and moves by its title bar", () =>
 test("an automatic terminal focus leaves the keyboard in the ticket window", () => {
   const guarded = (start: string, length: number, line: string) => assert.ok(MAIN.slice(MAIN.indexOf(start), MAIN.indexOf(start) + length).includes(line), `${start}: ${line}`);
   const pane = 'if (!addTicketHasKeyboard()) panes.get(tab.focus ?? "")?.term.focus();';
-  guarded("function showChatTab(", 2500, pane);
   guarded("function activate(id: string)", 500, pane);
   guarded("async function runCommands(", 2500, "if (!addTicketHasKeyboard()) target.term.focus();");
   guarded("async function closePane(", 2500, 'if (activeId === tab.id && !addTicketHasKeyboard()) panes.get(tab.focus ?? "")?.term.focus();');

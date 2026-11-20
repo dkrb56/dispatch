@@ -1,40 +1,14 @@
-// Tests of the projects group of the top bar (src/topbar.ts, ticket topbar-projects): the state text
-// of a closed pill and of the open group, and which project has the open group. The last test checks
-// that the page uses the module and says Details.
+// Tests of the state text of a project (src/topbar.ts, ticket topbar-projects): the head of a Focus
+// column and the phone show it. The last test checks that the page has no Details view, no project
+// pills and no other part that only Details had (ticket no-details-mode).
 // Run: node --test tests/
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { barItems, currentProject, detailsProjects, groupCount, pillCount, pillLabels } from "../src/topbar.ts";
+import { savedView } from "../src/overview.ts";
+import { groupCount } from "../src/topbar.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
-
-test("pill labels: different labels stay", () => {
-  assert.deepEqual(pillLabels([{ label: "app", path: "D:\\work\\app" }, { label: "site", path: "D:\\work\\site" }]), ["app", "site"]);
-});
-
-test("pill labels: one label with two parents shows both parents", () => {
-  assert.deepEqual(pillLabels([{ label: "app · Host 1", path: "D:\\one\\app" }, { label: "app · Host 1", path: "D:\\two\\app" }]), ["one/app · Host 1", "two/app · Host 1"]);
-});
-
-test("pill labels: parents with one name on two drives show the whole parent path", () => {
-  assert.deepEqual(pillLabels([{ label: "dispatch · Host 1", path: "D:\\dev\\dispatch" }, { label: "dispatch · Host 1", path: "E:\\dev\\dispatch" }]), ["D:/dev/dispatch · Host 1", "E:/dev/dispatch · Host 1"]);
-});
-
-test("pill labels: one label with one parent stays, also with another case or separator", () => {
-  assert.deepEqual(pillLabels([{ label: "app", path: "D:\\Work\\app" }, { label: "app", path: "d:/work/app/" }]), ["app", "app"]);
-});
-
-test("pill labels: a project at a drive root keeps its label", () => {
-  assert.deepEqual(pillLabels([{ label: "D:", path: "D:\\" }, { label: "D:", path: "E:\\old\\D:" }, { label: "D:", path: "E:\\new\\D:" }]), ["D:", "old/D:", "new/D:"]);
-});
-
-test("a closed pill: waits, the number of working workers, or nothing", () => {
-  assert.deepEqual(pillCount({ waits: 2, working: 1 }), { text: "waits", kind: "waits" });
-  assert.deepEqual(pillCount({ waits: 0, working: 1 }), { text: "1", kind: "working" });
-  assert.deepEqual(pillCount({ waits: 0, working: 3 }), { text: "3", kind: "working" });
-  assert.deepEqual(pillCount({ waits: 0, working: 0 }), { text: "", kind: "idle" });
-});
 
 test("the open group: the full text of today", () => {
   assert.deepEqual(groupCount({ waits: 1, working: 0 }), { text: "1 waits", kind: "waits" });
@@ -43,82 +17,26 @@ test("the open group: the full text of today", () => {
   assert.deepEqual(groupCount({ waits: 0, working: 0 }), { text: "idle", kind: "idle" });
 });
 
-test("the open group: the focused project, else the remembered one, else the first", () => {
-  const keys = ["a", "b", "c"];
-  assert.equal(currentProject(keys, "b", "c"), "b");
-  // A focused terminal outside every pill (a plain shell elsewhere) gives the remembered project.
-  assert.equal(currentProject(keys, "x", "c"), "c");
-  assert.equal(currentProject(keys, "", ""), "a");
-  assert.equal(currentProject(keys, "", "gone"), "a");
-  assert.equal(currentProject([], "a", "a"), null);
-});
-
-test("the bar meets the page: Details, no Project button, main.ts uses the module", () => {
-  const html = read("../index.html");
-  const main = read("../src/main.ts");
-  assert.match(html, /<button data-mode="tabs"[^>]*>Details<\/button>/);
-  assert.doesNotMatch(html, />Tabs</);
-  assert.doesNotMatch(html, /id="select-project"/);
-  assert.match(main, /from "\.\/topbar(\.ts)?"/);
-  assert.match(main, /openRules\(/);
-  assert.match(main, /showSetup\(/);
-});
-
-// Pause tasks (ticket pause-tasks): the pill and the open group show the pause.
-test("paused: the pill and the group say paused; something that waits still says waits", () => {
-  assert.deepEqual(pillCount({ waits: 0, working: 0, paused: true }), { text: "paused", kind: "paused" });
-  assert.deepEqual(pillCount({ waits: 1, working: 0, paused: true }), { text: "waits", kind: "waits" });
-  assert.deepEqual(pillCount({ waits: 0, working: 2, paused: true }), { text: "2 · paused", kind: "working" });
+// Pause tasks (ticket pause-tasks): the state text shows the pause.
+test("paused: the state says paused; something that waits still says waits", () => {
   assert.deepEqual(groupCount({ waits: 0, working: 0, paused: true }), { text: "paused", kind: "paused" });
   assert.deepEqual(groupCount({ waits: 0, working: 1, paused: true }), { text: "1 working · paused", kind: "working" });
   assert.deepEqual(groupCount({ waits: 2, working: 1, paused: true }), { text: "2 wait", kind: "waits" });
   assert.deepEqual(groupCount({ waits: 0, working: 0, paused: false }), { text: "idle", kind: "idle" });
 });
 
-// One row of pills in Details (ticket topbar-one-row): no tab strip; the pills are the one list.
-test("Details lists the focus projects, then the other workspaces in their order", () => {
-  assert.deepEqual(detailsProjects(["a", "b"], ["c", "a", "d"]), ["a", "b", "c", "d"]);
-  assert.deepEqual(detailsProjects([], ["c", "d"]), ["c", "d"]);
-  assert.deepEqual(detailsProjects(["a"], []), ["a"]);
-});
-
-test("the bar rule: a workspace is a full pill, none is dashed, the open group has the only project close", () => {
-  const items = barItems(["a", "b", "c"], new Set(["a", "c"]), "c");
-  assert.deepEqual(items, [
-    { kind: "full", key: "a", close: false },
-    { kind: "dashed", key: "b", close: false },
-    { kind: "open", key: "c", close: true },
-  ]);
-  assert.equal(items.filter((item) => item.close).length, 1);
-});
-
-test("the bar rule: a project without a workspace is never the open group", () => {
-  const items = barItems(["a", "b"], new Set(["a"]), "b");
-  assert.deepEqual(items.map((item) => item.kind), ["full", "dashed"]);
-  assert.ok(items.every((item) => !item.close));
-  assert.deepEqual(barItems([], new Set(), null), []);
-});
-
-test("the page has no tab strip, and Chats stands directly before the pane buttons", () => {
+// No Details mode (ticket no-details-mode): the view switch is Focus, Map, Overview and Plan; the
+// project pills, the chat panel, the pane tools and the head row above the workspace are gone.
+test("the page has no Details view, no project pills and no part that only Details had", () => {
   const html = read("../index.html");
   const main = read("../src/main.ts");
-  assert.doesNotMatch(html, /id="tabs"/);
-  assert.doesNotMatch(main, /tabsEl/);
-  assert.doesNotMatch(main, /className = "tab"/);
-  // Between Chats and the pane buttons stand only the hidden alert buttons (the Nightmode switch of the
-  // bar is gone: each project has its own Night button, ticket i-need-per-project-nightmode-option).
-  const between = html.match(/<button id="toggle-chats"[\s\S]*?<\/button>([\s\S]*?)<div id="pane-tools"/);
-  assert.ok(between, "Chats stands before the pane buttons");
-  const ids = [...between[1].matchAll(/<(\w+) id="([^"]+)"/g)].map((m) => m[2]);
-  assert.ok(ids.every((id) => id.endsWith("-alert")), `only alerts between Chats and the pane buttons: ${ids.join(", ")}`);
-});
-
-test("a waiting pill has no orange frame, and the buttons of Details stand in the head above the workspace", () => {
-  const html = read("../index.html");
-  const main = read("../src/main.ts");
-  const css = read("../src/styles.css");
-  assert.match(html, /id="workspace-head"/);
-  assert.doesNotMatch(main, /className = "project-group"/);
-  const attentionRules = [...css.matchAll(/([^{}]*\.focus-pill\.attention[^{}]*)\{([^}]*)\}/g)];
-  assert.ok(attentionRules.every((rule) => !/box-shadow/.test(rule[2])), "no .focus-pill.attention rule draws a box-shadow");
+  const views = html.slice(html.indexOf('<div id="view-mode"'), html.indexOf("</div>", html.indexOf('<div id="view-mode"')));
+  assert.deepEqual([...views.matchAll(/data-mode="(\w+)"[^>]*>([^<]*)</g)].map((m) => m[2]), ["Focus", "Map", "Overview", "Plan"]);
+  assert.doesNotMatch(views, /data-mode="tabs"|Details/);
+  for (const id of ["bar-projects", "chats", "toggle-chats", "pane-tools", "workspace-head"]) assert.doesNotMatch(html, new RegExp(`id="${id}"`), id);
+  assert.doesNotMatch(main, /"tabs"/);
+  assert.doesNotMatch(main, /renderPills/);
+  // A saved start in Details opens Focus.
+  assert.equal(savedView("tabs"), "focus");
+  assert.equal(savedView(null), "focus");
 });

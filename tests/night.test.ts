@@ -36,7 +36,7 @@ test("the Help text says the switch is kept over a restart and the triage chat f
   const start = HTML.indexOf("<h3>Night mode</h3>");
   assert.ok(start >= 0, "index.html has the Night mode section");
   // The whole section, with its folded details (help-short).
-  const section = HTML.slice(start, HTML.indexOf("<h3>The Chats panel</h3>", start));
+  const section = HTML.slice(start, HTML.indexOf("<h3>Tasks and chats of a column</h3>", start));
   assert.match(section, /a restart brings it back/);
   assert.match(section, /The triage chat follows the switch/);
   assert.match(section, /night-mode\.json/);

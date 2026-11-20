@@ -184,7 +184,7 @@ test("Options has the third radio, and the Help names it with the switch of each
   const where = HTML.slice(HTML.indexOf("<h3>Where the work runs</h3>"), HTML.indexOf("<h3>Other buttons</h3>"));
   assert.match(where, /three modes/);
   assert.match(where, /<b>This PC and hosts<\/b>/);
-  const night = HTML.slice(HTML.indexOf("<h3>Night mode</h3>"), HTML.indexOf("<h3>The Chats panel</h3>"));
+  const night = HTML.slice(HTML.indexOf("<h3>Night mode</h3>"), HTML.indexOf("<h3>Tasks and chats of a column</h3>"));
   assert.match(night, /This PC and hosts/);
 });
 

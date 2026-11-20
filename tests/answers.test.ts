@@ -46,7 +46,7 @@ test("the card counts the questions with a choice", () => {
 
 test("the Help says that the answers of several questions go together", () => {
   // Since help-short the details of the item stand in the folded block of the section.
-  const start = HTML.indexOf("<h3>The Chats panel</h3>");
+  const start = HTML.indexOf("<h3>Tasks and chats of a column</h3>");
   const item = HTML.slice(start, HTML.indexOf("<h3>Where the work runs</h3>", start));
   assert.ok(item.includes("<b>Questions.</b>"), "index.html has the Questions item");
   assert.match(item, /each click is a choice/);

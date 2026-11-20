@@ -196,7 +196,7 @@ export function removeProjectTexts(name: string): { title: string; body: string;
     title: `Remove ${name} from the rail?`,
     body:
       `${name} leaves the project rail. Nothing breaks: its files, its tickets and its chats stay, ` +
-      "and a running workspace keeps running. You can add it back at any time with + at the bottom of the rail.",
+      "and its triage chat and its agent view end. You can add it back at any time with + at the bottom of the rail.",
     cancel: "Cancel",
     remove: "Remove",
   };

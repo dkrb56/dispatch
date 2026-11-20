@@ -17,7 +17,7 @@ import {
 } from "./backend";
 import { chooseFolder } from "./folderchooser";
 import { initHostMode, initOwnHostBar, reachable, showStrayBar, titleBase } from "./hostmode";
-import { type FolderItem, keyHost, keyPath, keysOfHost, mergeLists, pathKey, projectKey, projectLabel, type ProjectRef, readDue, strayItems } from "./hosts";
+import { type FolderItem, keyHost, keyPath, mergeLists, pathKey, projectKey, projectLabel, type ProjectRef, readDue, strayItems } from "./hosts";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -109,9 +109,9 @@ import { agentsText, fileRowTitle, reportChip, rowParts, runChip, type RunChip, 
 import { commandLines, groupLabel, unverifiedText } from "./commandrows";
 import { announcements, parseEnded, serializeEnded } from "./announce";
 import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, type FailedEnds, oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
-import { barItems, currentProject, detailsProjects, groupCount, pillCount, pillLabels } from "./topbar";
+import { groupCount } from "./topbar";
 import { badgeText, moveUp, railDrop, type RailGroup, railItems, railLetters, railMenu, railTags, removeProjectTexts } from "./rail";
-import { type ChatTab, headState, isChatTab, pasteSkipsPane } from "./chattabs";
+import { pasteSkipsPane } from "./chattabs";
 import { autoSwitch, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
@@ -289,10 +289,6 @@ interface Pane extends SavedPane {
   pasting?: boolean;
   /** The arguments of its `pty_spawn` without the size: a reconnect to the host calls it again (remote-client-mode). */
   spawnArgs?: Record<string, unknown>;
-  /** The chat tabs in the head of a triage pane, after Chat and Terminal (chat-tabs-by-triage). */
-  chatTabsEl?: HTMLElement;
-  /** The slot under the bar of a triage pane that holds a shown chat tab. */
-  chatSlotEl?: HTMLElement;
   /** The size of the terminal of a joined pane: the owner window sets it. */
   ptySize?: { cols: number; rows: number };
   /** A joined pane: the first poll that found no chat in the terminal, 0 while a chat runs. */
@@ -444,38 +440,21 @@ const PROMPT_WAIT_MS = 8000;
 const CHAT_START_MS = 15_000;
 
 const panesEl = document.querySelector<HTMLElement>("#panes")!;
-/** The head row above the workspace in Details: the current project, its buttons and × (ticket this-orange-border-makes-me-think-that). */
-const workspaceHeadEl = document.querySelector<HTMLElement>("#workspace-head")!;
-const chatsEl = document.querySelector<HTMLElement>("#chats")!;
 const workerAlertEl = document.querySelector<HTMLButtonElement>("#worker-alert")!;
 const staleAlertEl = document.querySelector<HTMLButtonElement>("#stale-alert")!;
 const updateAlertEl = document.querySelector<HTMLButtonElement>("#update-alert")!;
-const chatSearchEl = document.querySelector<HTMLInputElement>("#chat-search")!;
-const chatScopeEl = document.querySelector<HTMLElement>("#chat-scope")!;
-const chatListEl = document.querySelector<HTMLElement>("#chat-list")!;
 
 const tabs = new Map<string, Tab>();
 const panes = new Map<string, Pane>();
 /** The id of the visible tab. */
 let activeId: string | null = null;
-/**
- * The chat tab that shows inside a triage pane, under its head (chat-tabs-by-triage), or null. It is
- * not saved: at the next start the chat is a tab again, and `openChatTab` places it.
- */
-let shownChat: { tabId: string; triage: string } | null = null;
 
 function tabPanes(tabId: string): Pane[] {
   return [...panes.values()].filter((pane) => pane.tabId === tabId);
 }
 
 function fitTab(tabId: string): void {
-  for (const pane of [...tabPanes(tabId), ...shownChatPanes(tabId)]) fitPane(pane);
-}
-
-/** The panes of the chat tab that shows inside a triage pane of this tab (chat-tabs-by-triage), else none. */
-function shownChatPanes(tabId: string): Pane[] {
-  if (!shownChat || panes.get(shownChat.triage)?.tabId !== tabId) return [];
-  return tabPanes(shownChat.tabId);
+  for (const pane of tabPanes(tabId)) fitPane(pane);
 }
 
 /** Below this size in pixels a terminal keeps its size: the element is hidden, collapsed or minimized. */
@@ -561,19 +540,6 @@ function focusedPane(): Pane | undefined {
     if (triage) return triage;
   }
   return panes.get(tabs.get(activeId ?? "")?.focus ?? "");
-}
-
-/** Shows or hides the side panels of all panes. */
-function setSideVisible(visible: boolean): void {
-  panesEl.classList.toggle("no-side", !visible);
-  for (const pane of panes.values()) pane.sideDue = 0;
-  // The terminals get or lose the space of the panels.
-  if (activeId) fitTab(activeId);
-  try {
-    localStorage.setItem("side-hidden", String(!visible));
-  } catch {
-    // The panel then shows again at the next start.
-  }
 }
 
 /** The files of the gallery of a pane. The newest file is first. */
@@ -858,8 +824,9 @@ async function setRemoteControl(pane: Pane, on: boolean): Promise<void> {
 }
 
 /**
- * Refreshes the side panels of the visible tab, and of each terminal panel of Focus whose Details
- * switch is on (ticket title-project-rail-focus-as-the-only). It runs again and again.
+ * Refreshes the side panels of the visible tab, and of the Triage, Workers and terminal panes of each
+ * column of Focus whose Details switch is on (tickets title-project-rail-focus-as-the-only,
+ * no-details-mode). It runs again and again.
  */
 async function pollSide(): Promise<void> {
   for (const pane of new Set([...tabPanes(activeId ?? ""), ...focusDetailPanes()])) {
@@ -883,44 +850,50 @@ async function pollSide(): Promise<void> {
   setTimeout(() => void pollSide(), 300);
 }
 
-/** The chat list that the chat panel shows. A refresh with the same list changes nothing. */
+/** The chat list that the Chats sections of the columns show. A refresh with the same list changes nothing. */
 let chatsShown = "";
 /** The chats that the user opened a short time ago, with the pane and the time of the start; by host and chat id. */
 const startedChats = new Map<string, { pane: string; time: number }>();
 
-/** Shows a chat in a tab. A chat that does not run in this app gets a new tab on the host of the chat. */
+/**
+ * Shows a chat in Focus (ticket no-details-mode): in the terminal panel of the column of its project;
+ * a project without a column joins Focus first. A chat of no known project shows in the column that
+ * the user worked in last; without such a column nothing opens.
+ */
 async function openChat(chat: Chat): Promise<void> {
-  const startKey = `${chat.host}\n${chat.id}`;
-  const started = startedChats.get(startKey);
-  const recent = started && Date.now() - started.time < CHAT_START_MS ? started.pane : null;
-  const open = panes.get(chat.pane ?? recent ?? "");
-  if (open) {
-    // A chat stands in the head of the triage pane (chat-tabs-by-triage); a workspace pane is its tab.
-    if (open.role) activate(open.tabId);
-    else openChatTab(open.tabId);
-    open.term.focus();
-    await saveState();
+  const ref = [...focusProjects, ...railProjects].find((known) => inProject(chat, refKey(known)));
+  if (ref) {
+    await toFocusColumn(ref);
+    await openFocusChat(chat, ref);
     return;
   }
-  const pane: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: chat.cwd, host: chat.host };
-  startedChats.set(startKey, { pane: pane.id, time: Date.now() });
-  const starts = new Map([[pane.id, { resume: chat.id }]]);
-  const tabId = crypto.randomUUID();
-  await openTab({ id: tabId, layout: pane, focus: pane.id }, false, starts);
-  openChatTab(tabId);
-  await saveState();
+  if (!focusOn) await setView("focus");
+  const current = focusProjects.find((known) => refKey(known) === focusCurrent);
+  if (current) await openFocusChat(chat, current);
+}
+
+/**
+ * Shows a project in Focus (ticket no-details-mode): a project without a column joins Focus first,
+ * and Focus turns on when another view shows. Gives the column of the project.
+ */
+async function toFocusColumn(ref: ProjectRef): Promise<FocusColumn | undefined> {
+  const key = refKey(ref);
+  if (!focusProjects.some((known) => refKey(known) === key)) await joinFocus(ref);
+  if (!focusOn) await setView("focus");
+  const column = focusColumns.get(key);
+  column?.el.scrollIntoView({ behavior: "smooth", inline: "nearest", block: "nearest" });
+  return column;
 }
 
 /**
  * A new tab with a plain Claude Code chat in the project folder, on the host of the project, without
  * the triage role and outside the pipeline: for an Ask outside Focus, for Open terminal and for the
- * button of the Overview card of a project with "No triage". The tab shows as a chat tab in the head of the
- * triage pane in Details (chat-tabs-by-triage), so the view goes there.
+ * button of the Overview card of a project with "No triage". The window goes to Focus and the tab
+ * stays behind it (ticket no-details-mode); without `terminal` the chat shows in the terminal panel
+ * of the column of the project.
  */
-async function openProjectChat(ref: ProjectRef, keepFocus = false, terminal?: { label: string } | { join: string }): Promise<string> {
-  // The terminal of Open terminal in focus mode stays in focus mode (ticket when-terminal-is-open-in-focus-mode-it).
-  const stay = keepFocus && focusOn;
-  if (!stay && (focusOn || mapOn || overviewOn || planOn)) await setView("tabs");
+async function openProjectChat(ref: ProjectRef, terminal?: { label: string } | { join: string }): Promise<string> {
+  await toFocusColumn(ref);
   // Open terminal: a new session with the label of the project, or a joined pane that shows the
   // terminal of another window of the host (ticket if-terminal-in-non-triage-mode-is-opened).
   const join = terminal && "join" in terminal ? terminal.join : undefined;
@@ -932,10 +905,15 @@ async function openProjectChat(ref: ProjectRef, keepFocus = false, terminal?: { 
   const tabId = crypto.randomUUID();
   const back = activeId;
   await openTab({ id: tabId, layout: pane, focus: pane.id }, false, starts);
-  if (stay) {
-    // The new tab hides behind focus mode; the tab that was active stays active.
-    if (back && tabs.has(back)) activate(back);
-  } else openChatTab(tabId);
+  // The new tab hides behind Focus; the tab that was active stays active.
+  if (back && tabs.has(back)) activate(back);
+  const opened = panes.get(pane.id);
+  if (!terminal && opened) {
+    // The pane that the panel showed before goes back to its tab and keeps running.
+    const leaving = projectTerminalPane(ref);
+    if (leaving && leaving !== opened) moveBack(leaving);
+    showInTerminalPanel(opened, refKey(ref));
+  }
   await saveState();
   // The pane id: the Ask of a project with "No triage" sends its question there.
   return pane.id;
@@ -977,7 +955,7 @@ async function openProjectTerminal(ref: ProjectRef): Promise<void> {
       // An older host does not know pty_find: a new session starts, as before.
       found = await call<string | null>(ref.host, "pty_find", { label }).catch(() => null);
     }
-    const id = await openProjectChat(ref, true, found && !panes.has(found) ? { join: found } : { label });
+    const id = await openProjectChat(ref, found && !panes.has(found) ? { join: found } : { label });
     projectTerminals.set(key, id);
     try { localStorage.setItem(storeKey, id); } catch { /* no storage */ }
     // In focus mode the terminal shows between the tasks and the board (ticket when-terminal-is-open-in-focus-mode-it).
@@ -1189,13 +1167,10 @@ type TriageView = "chat" | "terminal";
 
 /** Shows the chat view or the terminal of a triage pane. */
 function showTriageView(pane: Pane, view: TriageView): void {
-  // A chat tab that shows in this pane goes back to its tab first (chat-tabs-by-triage).
-  if (shownChat?.triage === pane.id) hideChatTab(pane);
   pane.chat?.setVisible(view === "chat");
   for (const button of pane.barEl.querySelectorAll<HTMLElement>(".view-switch button")) {
     button.classList.toggle("active", button.dataset.view === view);
   }
-  renderChatTabs();
 }
 
 /** The view of triage that a new triage pane shows: the last choice in localStorage `triage-view`. */
@@ -1206,99 +1181,6 @@ function savedTriageView(): TriageView {
     // The pane then shows the chat view.
   }
   return "chat";
-}
-
-/**
- * Shows a chat tab inside a triage pane, under its head (chat-tabs-by-triage, user decision 1):
- * the panes of the chat tab move into the slot of the pane, and the head stays in view.
- */
-function showChatTab(triage: Pane, tabId: string): void {
-  const tab = tabs.get(tabId);
-  if (!tab || !triage.chatSlotEl) return;
-  // One chat shows at a time: another triage pane gives its chat back first.
-  if (shownChat && shownChat.triage !== triage.id) {
-    const other = panes.get(shownChat.triage);
-    if (other) hideChatTab(other);
-  }
-  if (shownChat?.triage === triage.id && shownChat.tabId !== tabId) {
-    for (const pane of tabPanes(shownChat.tabId)) moveBack(pane);
-  }
-  if (activeId !== triage.tabId) activate(triage.tabId);
-  for (const pane of tabPanes(tabId)) moveInto(pane, triage.chatSlotEl, true);
-  triage.chat?.setVisible(false);
-  triage.termEl.hidden = true;
-  for (const button of triage.barEl.querySelectorAll<HTMLElement>(".view-switch button")) button.classList.remove("active");
-  shownChat = { tabId, triage: triage.id };
-  for (const pane of tabPanes(tabId)) pane.sideDue = 0;
-  if (!addTicketHasKeyboard()) panes.get(tab.focus ?? "")?.term.focus();
-  renderChatTabs();
-}
-
-/** Puts the shown chat tab of a triage pane back into its tab, and shows the view of triage again. */
-function hideChatTab(triage: Pane): void {
-  if (shownChat?.triage !== triage.id) return;
-  const tabId = shownChat.tabId;
-  shownChat = null;
-  for (const pane of tabPanes(tabId)) moveBack(pane);
-  triage.termEl.hidden = false;
-  showTriageView(triage, savedTriageView());
-  fitPane(triage);
-}
-
-/** Fills the chat tabs of the head of each triage pane, and marks the view or the chat tab that shows. */
-function renderChatTabs(): void {
-  const list = plainTabs();
-  for (const pane of panes.values()) {
-    if (!pane.chatTabsEl) continue;
-    const shown = shownChat?.triage === pane.id ? shownChat.tabId : null;
-    const state = headState(list, shown, pane.chat?.visible() === false ? "terminal" : "chat");
-    pane.chatTabsEl.replaceChildren(...state.tabs.map((item) => tabPill(item)));
-    pane.chatTabsEl.hidden = state.tabs.length === 0;
-    for (const button of pane.barEl.querySelectorAll<HTMLElement>(".view-switch button")) {
-      button.classList.toggle("active", button.dataset.view === state.view);
-    }
-  }
-}
-
-/** The triage pane of the current project in Details: the one of the head row above the workspace. */
-function currentTriagePane(): Pane | undefined {
-  const workspaces = workspaceRefs();
-  const workspaceKeys = workspaces.map(refKey);
-  const keys = detailsProjects(focusProjects.map(refKey), workspaceKeys).filter((key) => workspaceKeys.includes(key));
-  const open = openWorkspaceKey(keys);
-  const ref = workspaces.find((known) => refKey(known) === open);
-  return ref ? workspacePanes(ref).triage : undefined;
-}
-
-/**
- * The workspace of the head row above the workspace in Details: the focused one, else the one the
- * user chose last. With a focused terminal only the workspaces of its computer count, so the head
- * row never names another computer (ticket this-pc-runs-twice).
- */
-function openWorkspaceKey(workspaceKeys: string[]): string | null {
-  const pane = focusedPane();
-  const keys = pane ? keysOfHost(workspaceKeys, pane.host, firstBackend()) : workspaceKeys;
-  const at = pane ? { host: pane.host, cwd: pane.project ?? pane.cwd ?? null } : null;
-  const focusedKey = at ? (keys.find((key) => inProject(at, key)) ?? "") : "";
-  return currentProject(keys, focusedKey, focusCurrent);
-}
-
-/**
- * Shows a chat tab (chat-tabs-by-triage): in Details with a workspace of the same computer inside
- * the triage pane of the current project (ticket this-pc-runs-twice), else (Focus, Map, Overview,
- * another computer, or no workspace) as a tab that fills the window.
- */
-function openChatTab(tabId: string): void {
-  const details = !focusOn && !mapOn && !overviewOn;
-  const triage = details ? currentTriagePane() : undefined;
-  if (triage && triage.tabId !== tabId && panes.get(tabs.get(tabId)?.focus ?? "")?.host === triage.host) {
-    showChatTab(triage, tabId);
-    return;
-  }
-  const shownIn = shownChat?.tabId === tabId ? panes.get(shownChat.triage) : undefined;
-  if (shownIn) hideChatTab(shownIn);
-  // `activate` also draws the head row again.
-  activate(tabId);
 }
 
 /** Runs when the user selects a view of a triage pane. A new triage pane starts with the last choice. */
@@ -1379,16 +1261,7 @@ function fillPaneBar(pane: Pane): void {
       button.addEventListener("click", () => selectTriageView(pane, view));
       views.append(button);
     }
-    // The chat tabs stand directly after Chat and Terminal (chat-tabs-by-triage); a shown chat
-    // tab stands in the slot under the bar, in place of the terminal.
-    const chatTabs = document.createElement("div");
-    chatTabs.className = "chat-tabs";
-    label.after(views, chatTabs);
-    const chatSlot = document.createElement("div");
-    chatSlot.className = "chat-slot";
-    pane.termEl.after(chatSlot);
-    pane.chatTabsEl = chatTabs;
-    pane.chatSlotEl = chatSlot;
+    label.after(views);
     showTriageView(pane, savedTriageView());
 
     ({ model: model.value, effort: effort.value } = triageChoice(key));
@@ -2252,20 +2125,18 @@ function triageContextLine(key: string): HTMLElement | null {
 /** The last reply of the `worker_list` command. */
 let workerList: Worker[] = [];
 let workersShown = "";
-/** The pane of each worker that the user opened, by `workerKey`. */
-const workerPanes = new Map<string, string>();
 
 /** The key of a worker: its id, with its host in the mode "Use hosts" (two hosts can know one id). */
 function workerKey(worker: Worker): string {
   return worker.host === LOCAL ? worker.id : `${worker.host}\n${worker.id}`;
 }
 
-/** Shows a worker in a tab. A worker without a tab gets a new one. */
+/**
+ * Shows a worker (ticket no-details-mode): on the Map the worker of a task shows in the worker view;
+ * else the Workers tab of the column of its project shows in Focus. The project is the Focus or rail
+ * project of the worker, else its folder; a project without a column joins Focus first.
+ */
 async function openWorker(worker: Worker): Promise<void> {
-  // The Overview has no agent view: the worker opens in Focus, or in a tab when focus mode does not
-  // have its project.
-  if (overviewOn) await setView(focusProjects.some((known) => inProject(worker, refKey(known))) ? "focus" : "tabs");
-  // On the Map a worker shows in the worker view: the tabs are hidden there.
   if (mapOn) {
     const root = mapProjects().find((known) => inProject(worker, refKey(known)));
     const record = root ? projectTasks.get(refKey(root)) : undefined;
@@ -2274,32 +2145,11 @@ async function openWorker(worker: Worker): Promise<void> {
       openMapFlow(task, worker, workerRun(task, worker) ?? "worker");
       return;
     }
-    await setView("tabs");
   }
-  // In focus mode the worker shows in the Workers pane of its project's column.
-  if (focusOn) {
-    const root = focusProjects.find((known) => inProject(worker, refKey(known)));
-    const column = root ? focusColumns.get(refKey(root)) : undefined;
-    if (column) {
-      setColumnTab(column, "workers");
-      return;
-    }
-  }
-  const open = panes.get(workerPanes.get(workerKey(worker)) ?? "");
-  if (open) {
-    activate(open.tabId);
-    open.term.focus();
-    await saveState();
-    return;
-  }
-  // `claude attach` opens a worker that runs. A worker that ended opens as a chat.
-  const live = worker.state === "working" || worker.state === "blocked";
-  const start: StartCommand = live ? { attach: worker.id } : { resume: worker.sessionId ?? undefined };
-  if (!start.attach && !start.resume) return;
-  const pane: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: worker.cwd, host: worker.host };
-  workerPanes.set(workerKey(worker), pane.id);
-  await openTab({ id: crypto.randomUUID(), layout: pane, focus: pane.id }, false, new Map([[pane.id, start]]));
-  await saveState();
+  const ref = [...focusProjects, ...railProjects].find((known) => inProject(worker, refKey(known))) ?? (worker.cwd ? { host: worker.host, root: worker.cwd } : undefined);
+  if (!ref) return;
+  const column = await toFocusColumn(ref);
+  if (column) setColumnTab(column, "workers");
 }
 
 /** The header of a report: the four lines at its top that the "Background workers" section asks for. */
@@ -2641,8 +2491,6 @@ async function closeTriagePanes(key: string): Promise<void> {
   for (const id of ids) {
     const pane = panes.get(id);
     if (!pane) continue;
-    // A chat tab that shows in the head of this triage pane goes back to its own tab first.
-    if (shownChat?.triage === pane.id) hideChatTab(pane);
     await closePane(id);
   }
   if (focusOn) renderFocus();
@@ -2670,8 +2518,6 @@ let autoMerge = false;
 /** An agent picks the checks after the work run in that project, and whether they run at the merge (ticket test-picker-an-agent-picks-the-checks). */
 let pickChecksOn = false;
 let checksAtMergeOn = false;
-/** The setup time of that project: the chats that started before it are old. */
-let projectSetup: number | null = null;
 /** The plans that Dispatch approved itself, or tried to: the task name and the time of the plan file. One try per plan. */
 const autoApproved = new Map<string, number>();
 /**
@@ -2907,9 +2753,8 @@ function addUnverifiedChip(row: HTMLElement, text: string, title: string): void 
   else when?.prepend(made);
 }
 
-/** Reads the tasks of the project of the focused terminal and shows them in the chat panel. `poll`: the read can wait (`readIsDue`). */
+/** Reads the tasks of the project of the focused terminal. `poll`: the read can wait (`readIsDue`). */
 async function refreshTasks(poll = false): Promise<void> {
-  if (chatsEl.hidden) return;
   const focused = focusedPane();
   const cwd = focused?.cwd ?? null;
   const host = focused?.host ?? firstBackend();
@@ -2937,7 +2782,6 @@ async function refreshTasks(poll = false): Promise<void> {
   autoMerge = reply.autoMerge ?? false;
   pickChecksOn = reply.pickChecks ?? false;
   checksAtMergeOn = reply.checksAtMerge ?? false;
-  projectSetup = reply.setup ?? null;
   tasksFolder = projectKey(host, cwd);
   tasksCwd = cwd ?? "";
   tasksHost = host;
@@ -3350,7 +3194,7 @@ function updateStaleAlert(): void {
   // The "N old" button of each project: in the head of its column and in its group in the bar.
   staleByProject = staleCounts(staleShown, staleKey);
   for (const column of focusColumns.values()) showOld(column);
-  renderPills();
+  renderProjects();
   if (staleDialog.open) renderStale();
 }
 
@@ -3575,14 +3419,19 @@ function initRemoveProject(): void {
     removePending = null;
     const key = removeAnswer(ref ? refKey(ref) : null, removeDialog.returnValue);
     if (ref && key !== null) {
-      if (removeKind === "rail") forgetProject(ref);
-      else removeFocusProject(ref);
+      if (removeKind === "rail") {
+        forgetProject(ref);
+        // Its triage chat and its agent view end, as the × above the workspace of Details did (ticket no-details-mode).
+        const { triage, agents } = workspacePanes(ref);
+        const tabId = (triage ?? agents)?.tabId;
+        if (tabId) void closeTab(tabId);
+      } else removeFocusProject(ref);
     }
     focusedPane()?.term.focus();
   });
 }
 
-/** Refreshes the tasks in the chat panel. It runs again and again. */
+/** Refreshes the tasks of the project of the focused terminal. It runs again and again. */
 async function pollTasks(): Promise<void> {
   const readAt = Date.now();
   try {
@@ -3753,7 +3602,7 @@ async function setPaused(ref: ProjectRef, on: boolean): Promise<void> {
   }
   tasksShown = "";
   renderChats();
-  renderPills();
+  renderProjects();
   renderTickets();
   if (!on) {
     approvePlans();
@@ -10116,9 +9965,9 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
 /** When the last worker read of each host with success began: the start lease waits for it (ticket one-work-run-race). */
 const workerReadTimes = new Map<HostId, number>();
 
-/** Reads the worker list and shows it in the chat panel. `poll`: a host whose read is not due keeps its last list. */
+/** Reads the worker list. `poll`: a host whose read is not due keeps its last list. */
 async function refreshWorkers(poll = false): Promise<void> {
-  // The alert must show also when the chat panel is hidden. Thus this runs always. Every host gives
+  // The alert must show in every view. Thus this runs always. Every host gives
   // its workers; a host that does not answer keeps its last list (remote-multi-host).
   const readAt = Date.now();
   const replies = await Promise.allSettled(backends().map((host) => (!poll || readIsDue(host, "workers") ? call<Omit<Worker, "host">[]>(host, "worker_list") : null)));
@@ -10437,7 +10286,7 @@ async function publishWorkspaces(): Promise<void> {
   );
 }
 
-/** Refreshes the workers in the chat panel, and sends the lines that wait for triage. It runs again and again. */
+/** Refreshes the workers, and sends the lines that wait for triage. It runs again and again. */
 async function pollWorkers(): Promise<void> {
   void publishWorkspaces();
   // Before the worker list: its changes go to triage only from the window that drives.
@@ -10453,13 +10302,6 @@ async function pollWorkers(): Promise<void> {
 
 /** The last reply of the `chat_list` command. */
 let chatList: Chat[] = [];
-/** `project` shows the chats of the folder of the focused terminal. `all` shows all chats in groups. */
-let chatScope: "project" | "all" = "project";
-/** The groups that the user opened or closed in the `all` view. The key is the project. */
-const groupOpen = new Map<string, boolean>();
-
-/** The row "Older chats" is open. The choice is in localStorage `old-chats-open`. */
-let oldChatsOpen = false;
 
 /**
  * The folds of the Tasks and Chats sections in Focus mode and of their Older groups, by project key
@@ -10568,10 +10410,6 @@ function inProject(chat: { cwd: string | null; host: HostId }, project: string):
   return key !== "" && project !== "" && (key === project || key.startsWith(`${project}\\`));
 }
 
-function chatRow(chat: Chat): HTMLElement {
-  return chatRowWith(chat, openChat);
-}
-
 /** The row of a chat with the action of its click: in Focus mode the chat opens in the terminal panel of its column. */
 function chatRowWith(chat: Chat, open: (chat: Chat) => Promise<void>): HTMLElement {
   const row = document.createElement("button");
@@ -10617,11 +10455,7 @@ async function openFocusChat(chat: Chat, ref: ProjectRef): Promise<void> {
   const leaving = step.leaves ? panes.get(step.leaves) : undefined;
   if (leaving) moveBack(leaving);
   let pane = open;
-  if (pane) {
-    // A chat that shows in the head of a triage pane in Details goes back to its tab first.
-    const shownIn = shownChat?.tabId === pane.tabId ? panes.get(shownChat.triage) : undefined;
-    if (shownIn) hideChatTab(shownIn);
-  } else {
+  if (!pane) {
     // A new tab behind Focus, as for Open terminal; the tab that was active stays active.
     const saved: SavedPane = { id: crypto.randomUUID(), shell: "powershell", cwd: chat.cwd, host: chat.host };
     startedChats.set(startKey, { pane: saved.id, time: Date.now() });
@@ -10632,6 +10466,15 @@ async function openFocusChat(chat: Chat, ref: ProjectRef): Promise<void> {
     pane = panes.get(saved.id);
   }
   if (!pane) return;
+  showInTerminalPanel(pane, key);
+  await saveState();
+}
+
+/**
+ * Puts a pane into the terminal panel of the column of a project and shows it there: a chat of the
+ * Chats section, or a Chat of a project (ticket no-details-mode).
+ */
+function showInTerminalPanel(pane: Pane, key: string): void {
   projectTerminals.set(key, pane.id);
   try { localStorage.setItem(`project-terminal:${key}`, pane.id); } catch { /* no storage */ }
   // A strip hides its terminal: a minimized column comes back first.
@@ -10640,17 +10483,6 @@ async function openFocusChat(chat: Chat, ref: ProjectRef): Promise<void> {
   setFocusCurrent(key);
   focusColumns.get(key)?.el.scrollIntoView({ behavior: "smooth", inline: "nearest" });
   pane.term.focus();
-  await saveState();
-}
-
-function setChatScope(scope: "project" | "all"): void {
-  chatScope = scope;
-  try {
-    localStorage.setItem("chat-scope", scope);
-  } catch {
-    // The panel then shows the project view at the next start.
-  }
-  renderChats();
 }
 
 /** The time of the last key of the user (ticket dispatch-lags); a mouse press does not count. */
@@ -10689,7 +10521,7 @@ function requestDraw(): void {
   }, wait);
 }
 
-/** Shows the chats that agree with the search text and the scope. */
+/** Draws the screens again: the boards, Focus, the Map, the Overview, the Plan and the attention marks. */
 function renderChats(): void {
   // A drag of a ticket card keeps its cards until the drop, which renders.
   if (ticketDragging) return;
@@ -10709,154 +10541,10 @@ function renderChats(): void {
   renderOverview();
   renderPlan();
   showProjectAttention();
-  if (chatsEl.hidden) return;
-  // A render replaces the cards. While the user types into one, the render waits for the blur.
-  const active = document.activeElement;
-  if ((active instanceof HTMLTextAreaElement || workListOpen(active)) && chatListEl.contains(active)) {
-    renderSkipped = true;
-    return;
-  }
-  for (const button of chatScopeEl.querySelectorAll("button")) {
-    button.classList.toggle("active", button.dataset.scope === chatScope);
-  }
-  const focused = focusedPane();
-  const focusedHost = focused?.host ?? firstBackend();
-  const folder = projectKey(focusedHost, focused?.cwd);
-  const project = projectFor(focusedHost, focused?.cwd);
-  // A chat must have each word of the search text in its title or in its folder.
-  const words = chatSearchEl.value.toLowerCase().split(/\s+/).filter(Boolean);
-  const agrees = (name: string, cwd: string | null) => {
-    const text = `${name}\n${cwd ?? ""}`.toLowerCase();
-    return words.every((word) => text.includes(word));
-  };
-  // A worker is a chat too. It shows only in the list of the workers.
-  const workerChats = new Set(workerList.map((worker) => `${worker.host}|${worker.sessionId}`));
-  const found = chatList.filter((chat) => !workerChats.has(`${chat.host}|${chat.id}`) && agrees(chat.title, chat.cwd));
-  const workers = workerList
-    .filter((worker) => agrees(worker.name ?? worker.id, worker.cwd))
-    .filter((worker) => chatScope === "all" || inProject(worker, project))
-    .sort((a, b) => workerOrder(a) - workerOrder(b) || (b.startedAt ?? 0) - (a.startedAt ?? 0));
-  const heading = (text: string) => {
-    const element = document.createElement("h2");
-    element.textContent = text;
-    return element;
-  };
-  const note = (text: string, action?: () => void) => {
-    const element = document.createElement(action ? "button" : "p");
-    element.className = "chat-note";
-    element.textContent = text;
-    if (action) {
-      element.title = text;
-      element.addEventListener("click", action);
-    }
-    return element;
-  };
-
-  const items: HTMLElement[] = [];
-  // The triage chat of the project is first. The list of the chats below does not repeat it.
-  let triage: Chat | undefined;
-  try {
-    const remembered = triageRecords.get(project)?.chat ?? null;
-    triage = found.find((chat) => chat.id === remembered && inProject(chat, project));
-  } catch {
-    // The chat is then in the list of the chats.
-  }
-  // A project with No triage shows no Triage heading; its old triage chat stays out of the Chats list.
-  if (triage && !projectNoTriage(project)) items.push(heading("Triage"), chatRow(triage));
-  // The tasks are for one folder. After a change of the terminal, read them again.
-  if (tasksFolder !== folder) {
-    refreshTasks().catch((error) => console.error("task list refresh failed", error));
-  }
-  const infos = tasksFolder === folder ? taskInfos.filter((info) => agrees(info.name, null)) : [];
-  const record = tasksFolder === folder ? projectTasks.get(folder) : undefined;
-  const tasks = taskList(workers, infos, record);
-  const taskItems = withPending(tasks, tasks.map((task) => taskElement(task)), folder);
-  if (taskItems.length > 0) items.push(heading("Tasks"), ...taskItems);
-  // A line that no triage chat took in time. A click on the note removes it.
-  for (const line of droppedLines.filter((line) => line.project === project)) {
-    items.push(
-      note(`Triage did not get this line within a day: ${line.text}`, () => {
-        droppedLines.splice(droppedLines.indexOf(line), 1);
-        renderChats();
-      }),
-    );
-  }
-  if (items.length > 0) items.push(heading("Chats"));
-  if (chatScope === "project") {
-    const mine = found.filter((chat) => inProject(chat, project) && chat !== triage);
-    // A chat that started before the Dispatch setup of the project is old, open in Claude Code or
-    // not. The old chats fold under one row. A project without the setup has no old chats.
-    const setup = tasksFolder === folder ? projectSetup : null;
-    const old = setup === null ? [] : mine.filter((chat) => chat.created < setup);
-    items.push(...mine.filter((chat) => !old.includes(chat)).map(chatRow));
-    if (old.length > 0) {
-      const open = words.length > 0 || oldChatsOpen;
-      const header = document.createElement("button");
-      header.className = `chat-group${open ? " open" : ""}`;
-      header.title = `${open ? "Hide" : "Show"} the chats that started before the Dispatch setup of this project`;
-      const name = document.createElement("span");
-      name.className = "name";
-      name.textContent = "Older chats";
-      const count = document.createElement("span");
-      count.className = "count";
-      count.textContent = String(old.length);
-      header.append(name, count);
-      header.addEventListener("click", () => {
-        oldChatsOpen = !open;
-        try {
-          localStorage.setItem("old-chats-open", String(oldChatsOpen));
-        } catch {
-          // The choice then applies until the app closes.
-        }
-        renderChats();
-      });
-      items.push(header);
-      if (open) items.push(...old.map(chatRow));
-    }
-    if (mine.length === 0 && !triage) {
-      items.push(note(words.length > 0 ? "No chat of this project agrees." : "This folder has no chats."));
-    }
-    const others = found.length - mine.length;
-    if (words.length > 0 && others > 0) {
-      items.push(note(`${others} more in other projects`, () => setChatScope("all")));
-    }
-  } else {
-    // The list has the newest chat first. Thus the project with the newest chat is first.
-    const groups = new Map<string, Chat[]>();
-    for (const chat of found) {
-      const key = projectKey(chat.host, chat.cwd);
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(chat);
-    }
-    for (const [key, chats] of groups) {
-      // Without a choice of the user, a group is open for a search and for the project of the terminal.
-      const open = groupOpen.get(key) ?? (words.length > 0 || inProject(chats[0], project));
-      const header = document.createElement("button");
-      header.className = `chat-group${open ? " open" : ""}`;
-      header.title = chats[0].cwd ?? "";
-      const name = document.createElement("span");
-      name.className = "name";
-      name.textContent = chats[0].cwd ? projectName({ host: chats[0].host, root: chats[0].cwd }) : "(no folder)";
-      const count = document.createElement("span");
-      count.className = "count";
-      count.textContent = String(chats.length);
-      header.append(name, count);
-      header.addEventListener("click", () => {
-        groupOpen.set(key, !open);
-        renderChats();
-      });
-      items.push(header);
-      if (open) items.push(...chats.map(chatRow));
-    }
-    if (groups.size === 0) items.push(note("No chat agrees."));
-  }
-  chatListEl.replaceChildren(...items);
 }
 
-/** Reads the chat list and shows it in the chat panel. `poll`: a host whose read is not due keeps its last list. */
+/** Reads the chat list for the Chats sections of the columns. `poll`: a host whose read is not due keeps its last list. */
 async function refreshChats(poll = false): Promise<void> {
-  // Focus mode shows the chats of each project, also when the user hid the chat panel of Details.
-  if (chatsEl.hidden && !focusOn) return;
   // Every host gives its chats; a host that does not answer keeps its last list (remote-multi-host).
   const replies = await Promise.allSettled(backends().map((host) => (!poll || readIsDue(host, "chats") ? call<Omit<Chat, "host">[]>(host, "chat_list") : null)));
   if (replies.every((reply) => reply.status === "rejected")) throw (replies[0] as PromiseRejectedResult).reason;
@@ -10872,7 +10560,7 @@ async function refreshChats(poll = false): Promise<void> {
   requestDraw();
 }
 
-/** Refreshes the chat panel. It runs again and again. */
+/** Refreshes the chat list. It runs again and again. */
 async function pollChats(): Promise<void> {
   try {
     await refreshChats(true);
@@ -10882,24 +10570,11 @@ async function pollChats(): Promise<void> {
   setTimeout(() => void pollChats(), CHATS_REFRESH_MS);
 }
 
-/** Shows or hides the chat panel. */
-function setChatsVisible(visible: boolean): void {
-  chatsEl.hidden = !visible;
-  renderChats();
-  void refreshChats();
-  try {
-    localStorage.setItem("chats-hidden", String(!visible));
-  } catch {
-    // The panel then shows again at the next start.
-  }
-}
-
 /** Shows a file in the viewer and adds it to the gallery of the pane. */
 function openFile(pane: Pane, entry: FileEntry): void {
   if (entry.kind !== "other" && !pane.extra.some((known) => known.path === entry.path)) {
     pane.extra.push(entry);
   }
-  setSideVisible(true);
   renderSide(pane);
   void openViewer(entry);
 }
@@ -10993,12 +10668,11 @@ function folderName(path: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : path;
 }
 
-/** The plain pill of a tab shows the folder of its focused pane (ticket topbar-one-row). */
+/** Draws the screens again after the focused pane of a tab changed (ticket topbar-one-row). */
 function updateLabel(tab: Tab): void {
   if (!panes.has(tab.focus ?? "")) return;
-  // The chat panel shows the chats of the folder of the focused terminal.
   renderChats();
-  renderPills();
+  renderProjects();
 }
 
 /** Reads the layout of a tab from its elements. */
@@ -11057,8 +10731,7 @@ function activate(id: string): void {
   // The tab shows: at the start, at a click on the tab, back from Focus or the Map. In Focus the
   // triage panes stand in their columns, and `moveInto` puts their chats at the end.
   if (!focusOn) for (const pane of tabPanes(id)) pane.chat?.toEnd();
-  // In Details the current pill and the head row above the workspace follow the focused terminal (topbar-projects).
-  renderPills();
+  renderProjects();
 }
 
 /** Runs when a terminal gets the keyboard focus. */
@@ -11074,15 +10747,6 @@ function focusPane(pane: Pane): void {
   // The status bar shows the host of the focused terminal (remote-multi-host).
   redrawStatusBar();
   void saveState();
-}
-
-/** Splits the focused pane. The new pane uses the same shell and the same folder. */
-async function splitFocused(dir: Direction): Promise<void> {
-  const tab = tabs.get(activeId ?? "");
-  const source = panes.get(tab?.focus ?? "");
-  if (!tab || !source) return;
-  const pane = await splitPane(source, dir, { id: crypto.randomUUID(), shell: source.shell, cwd: source.cwd, host: source.host });
-  pane.term.focus();
 }
 
 /** Starts a new terminal next to a pane, in its tab: to the right (`row`) or below (`column`). */
@@ -11227,10 +10891,6 @@ async function closeTab(id: string): Promise<void> {
   const order = [...tabs.keys()];
   const index = order.indexOf(id);
   const closed = tabPanes(id);
-  // A shown chat goes back to its tab first (chat-tabs-by-triage): a closed triage pane gives its
-  // chat back, and the closed chat tab leaves the slot. Then each pane is in its tab again.
-  const shownTriage = shownChat ? panes.get(shownChat.triage) : undefined;
-  if (shownTriage && (shownChat?.tabId === id || closed.includes(shownTriage))) hideChatTab(shownTriage);
   for (const pane of closed) moveBack(pane);
   tabs.delete(id);
   for (const pane of closed) {
@@ -11243,19 +10903,16 @@ async function closeTab(id: string): Promise<void> {
     await call(pane.host, pane.joined ? "pty_leave" : "pty_kill", { id: pane.id });
   }
 
-  // The × of the last workspace keeps the window (ticket topbar-one-row, user decision 3): a plain
-  // shell tab opens on the first backend, as at a start without tabs.
+  // The last tab closed: Focus needs no tab (ticket no-details-mode).
   if (tabs.size === 0) {
     activeId = null;
-    await newTab("powershell", firstBackend());
     await saveState();
     return;
   }
   if (activeId === id) {
     activate(order[index + 1] ?? order[index - 1]);
   }
-  // The pill of the closed tab goes, also when it was not the active one.
-  renderPills();
+  renderProjects();
   await saveState();
 }
 
@@ -11545,9 +11202,8 @@ async function startPane(pane: Pane, restore: boolean, start?: StartCommand): Pr
       const data = event.clipboardData;
       const image = [...(data?.files ?? [])].find((file) => file.type.startsWith("image/"));
       if (!image || data?.getData("text/plain")) return;
-      // The message box of the chat view saves a pasted image itself. A chat tab in the chat slot has
-      // its own listener on its own pane element, and the slot is beside the chat view, not inside it.
-      if (pasteSkipsPane(event.target, [pane.chat?.el, pane.chatSlotEl])) return;
+      // The message box of the chat view saves a pasted image itself.
+      if (pasteSkipsPane(event.target, [pane.chat?.el])) return;
       event.preventDefault();
       event.stopPropagation();
       void pasteImage(pane, image);
@@ -11730,12 +11386,6 @@ async function joinTerminal(pane: Pane): Promise<void> {
   }
 }
 
-/** A new tab with one terminal on `host` (remote-multi-host: the first backend at a start without tabs). */
-function newTab(shell: Shell, host: HostId, cwd: string | null = null): Promise<void> {
-  const pane: SavedPane = { id: crypto.randomUUID(), shell, cwd, host };
-  return openTab({ id: crypto.randomUUID(), layout: pane, focus: pane.id }, false);
-}
-
 /** `starts` gives the start command of a pane, by the id of the pane. */
 async function openTab(
   saved: SavedTab,
@@ -11769,8 +11419,6 @@ async function openTab(
 // into their tab when focus mode ends; they keep running all the time.
 
 const focusEl = document.querySelector<HTMLElement>("#focus")!;
-const focusProjectsEl = document.querySelector<HTMLElement>("#focus-projects")!;
-const focusAddEl = document.querySelector<HTMLButtonElement>("#focus-add")!;
 /** The project rail at the left edge of Focus, Map and Overview (ticket project-rail-at-the-left-edge-of-the). */
 const railEl = document.querySelector<HTMLElement>("#rail")!;
 const railFocusEl = document.querySelector<HTMLElement>("#rail-focus")!;
@@ -11885,11 +11533,14 @@ interface FocusColumn {
   /** The button in the head of the terminal that puts it below the board or back beside it. */
   termSplitEl: HTMLButtonElement;
   /**
-   * The Details switch in the head of the terminal: on, the panel shows the side panel of its pane
-   * (Environment, Context, Outputs). Off at each start of the app; not stored (user decision 2).
+   * The Details switch at the right of the tabs (ticket no-details-mode): on, the Triage, Workers and
+   * terminal panes of the column show their side panels (Environment, Context, Outputs). Off at each
+   * start of the app; not stored (user decision 2 of title-project-rail-focus-as-the-only).
    */
   detailsEl: HTMLButtonElement;
   detailsOn: boolean;
+  /** The search box of the Chats section (ticket no-details-mode): each word must stand in the title or the folder of a chat. */
+  chatSearchEl: HTMLInputElement;
   agentsEl: HTMLElement;
   /** Opens the newest morning list of night mode. Hidden while the project has none. */
   morningEl: HTMLButtonElement;
@@ -11916,7 +11567,7 @@ const FOLDER_ICON =
 
 /**
  * The buttons of one project (topbar-projects): Tickets (ticket tickets), Tokens (ticket token-usage), Actions (ticket project-actions), Rules, Setup, Git state (ticket add-git-state-button-to-the-project), "N old" and the folder button. They
- * stand in the head row above the workspace in Details and in the head of the column in Focus. Each acts on
+ * stand in the head of the column in Focus. Each acts on
  * this project, not on the focused terminal. "N old" is hidden while the project has no old session.
  */
 function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElement } {
@@ -11995,7 +11646,7 @@ function showOld(column: FocusColumn): void {
 function saveFocus(): void {
   try {
     // + Add project calls this in the Overview too: the Overview stays the saved view.
-    localStorage.setItem("view-mode", overviewOn ? "overview" : planOn ? "plan" : focusOn ? "focus" : "tabs");
+    localStorage.setItem("view-mode", overviewOn ? "overview" : planOn ? "plan" : mapOn ? "map" : "focus");
     localStorage.setItem("focus-projects", JSON.stringify(focusProjects));
   } catch {
     // The choice then applies until the app closes.
@@ -12013,7 +11664,7 @@ function workspacePanes(ref: ProjectRef): { triage?: Pane; agents?: Pane } {
 function shownPanes(): Pane[] {
   // The Overview shows the Chat view of each triage pane: its state, its question and its box need the reads.
   if (overviewOn) return overviewProjects().flatMap((root) => workspacePanes(root).triage ?? []);
-  if (!focusOn) return [...tabPanes(activeId ?? ""), ...shownChatPanes(activeId ?? "")];
+  if (!focusOn) return tabPanes(activeId ?? "");
   return focusProjects.flatMap((ref) => {
     const { triage, agents } = workspacePanes(ref);
     return [triage, agents, ...commandPanes(ref.host, ref.root)].filter((pane): pane is Pane => pane !== undefined);
@@ -12080,12 +11731,10 @@ const FOCUS_BOARD_MIN = 240;
 const FOCUS_TERM_MIN_HEIGHT = 160;
 const FOCUS_BOARD_MIN_HEIGHT = 200;
 /**
- * The width of the chat panel in Details that the user dragged, in pixels. It is also the usual width
- * of the left panel of each project in focus mode. In localStorage `chats-width`.
+ * The usual width of the left panel of each project in focus mode, in pixels; once the width of the
+ * chat panel of the old Details view. In localStorage `chats-width`.
  */
 const CHATS_WIDTH_KEY = "chats-width";
-/** The room that the terminals in Details keep when the chat panel gets wider. */
-const CHATS_PANES_MIN = 360;
 
 function focusSizes(): Record<string, FocusSize> {
   try {
@@ -12313,46 +11962,13 @@ function dragTerm(handle: HTMLElement, key: string, termEl: HTMLElement, workEl:
 }
 
 /**
- * Sets the width of the chat panel in Details, and with it the usual width of the left panels in
- * focus mode; null gives both their usual width back. A left panel that the user dragged in focus
- * mode keeps its own width.
+ * Sets the usual width of the left panels in focus mode; null gives them their usual width back. A
+ * left panel that the user dragged in focus mode keeps its own width.
  */
 function setChatsWidth(width: number | null): void {
-  chatsEl.style.width = width === null ? "" : `${width}px`;
   if (width === null) document.documentElement.style.removeProperty("--chats-width");
   else document.documentElement.style.setProperty("--chats-width", `${width}px`);
   document.body.classList.toggle("chats-sized", width !== null);
-}
-
-/** The handle on the right of the chat panel in Details: its width. The terminals keep `CHATS_PANES_MIN`. */
-function dragChats(handle: HTMLElement): void {
-  let width = 0;
-  let max = FOCUS_SIDE_MAX;
-  const held = (wanted: number) => Math.round(Math.max(FOCUS_SIDE_MIN, Math.min(max, wanted)));
-  dragFrom(
-    handle,
-    () => {
-      width = chatsEl.getBoundingClientRect().width;
-      const room = (chatsEl.parentElement?.getBoundingClientRect().width ?? 0) - CHATS_PANES_MIN;
-      max = Math.min(FOCUS_SIDE_MAX, room);
-    },
-    (dx) => setChatsWidth(held(width + dx)),
-    () => {
-      try {
-        localStorage.setItem(CHATS_WIDTH_KEY, String(Math.round(chatsEl.getBoundingClientRect().width)));
-      } catch {
-        // The width holds until the app closes.
-      }
-    },
-  );
-  handle.addEventListener("dblclick", () => {
-    setChatsWidth(null);
-    try {
-      localStorage.removeItem(CHATS_WIDTH_KEY);
-    } catch {
-      // The usual width then holds until the app closes.
-    }
-  });
 }
 
 /**
@@ -12449,7 +12065,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   const close = document.createElement("button");
   close.className = "focus-close";
   close.textContent = "×";
-  close.title = "Remove this project from focus mode; its workspace stays in Details";
+  close.title = "Remove this project from focus mode; it stays below the line of the rail";
   close.setAttribute("aria-label", `Remove ${projectName(ref)} from focus mode`);
   // The Map of this project: who works on what, and the worker view of each run.
   const mapButton = document.createElement("button");
@@ -12578,16 +12194,26 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   });
   // The place of the terminal: beside the board or below it (ticket i-need-an-option-to-split-terinal-and).
   const termSplitEl = mapElement("button", "focus-terminal-split");
-  // The Details switch (ticket title-project-rail-focus-as-the-only): the side panel of the terminal, off at the start.
+  // The Details switch (tickets title-project-rail-focus-as-the-only, no-details-mode): at the right end
+  // of the tabs; the side panels of the Triage, Workers and terminal panes, off at the start.
   const detailsEl = mapElement("button", "focus-terminal-details");
   detailsEl.setAttribute("role", "switch");
   detailsEl.setAttribute("aria-checked", "false");
-  detailsEl.title = "Show the side panel of this terminal: Environment, Context and Outputs";
+  detailsEl.title = DETAILS_OFF_TITLE;
   const detailsSwitch = mapElement("span", "switch");
   detailsSwitch.setAttribute("aria-hidden", "true");
   detailsSwitch.append(mapElement("span", "knob"));
   detailsEl.append(mapElement("span", "", "Details"), detailsSwitch);
-  termHead.append(mapElement("span", "", "Terminal"), termSpacer, detailsEl, termSplitEl, termClose);
+  const tabSpacer = mapElement("span", "focus-tabs-spacer");
+  tabSpacer.style.flex = "1";
+  tabRowEl.append(tabSpacer, detailsEl);
+  termHead.append(mapElement("span", "", "Terminal"), termSpacer, termSplitEl, termClose);
+  // The search of the Chats section (ticket no-details-mode): it stays one element, so a redraw keeps its text.
+  const chatSearchEl = mapElement("input", "focus-chat-search");
+  chatSearchEl.type = "search";
+  chatSearchEl.placeholder = "Search chats";
+  chatSearchEl.setAttribute("aria-label", `Search the chats of ${projectName(ref)}`);
+  chatSearchEl.addEventListener("input", () => renderFocus());
   const termSlotEl = mapElement("div", "focus-terminal-slot");
   termEl.append(termHead, termSlotEl);
   const termHandle = resizeHandle("side-resize term-resize", "Drag to make the terminal wider or narrower; double-click for the usual width");
@@ -12607,7 +12233,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   dragTerm(termHandle, key, termEl, workEl);
   dragColumns(colHandle, key, el);
   const tab = focusSizes()[key]?.tab;
-  const column: FocusColumn = { host, root, el, dotEl, pathEl, sideEl, tabButtons, ticketsCountEl, workersCountEl, tab, triageEl, boardEl, boardNoteEl, boardCountEl, boardSearchEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, workEl, termSplitEl, detailsEl, detailsOn: false, agentsEl, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, restoreEl, colHandle };
+  const column: FocusColumn = { host, root, el, dotEl, pathEl, sideEl, tabButtons, ticketsCountEl, workersCountEl, tab, triageEl, boardEl, boardNoteEl, boardCountEl, boardSearchEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, workEl, termSplitEl, detailsEl, detailsOn: false, chatSearchEl, agentsEl, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, restoreEl, colHandle };
   // A click anywhere on a strip brings the column back; a button or a drag edge keeps its own action.
   el.addEventListener("click", (event) => {
     if (!el.classList.contains("min")) return;
@@ -12720,28 +12346,35 @@ function setColumnTab(column: FocusColumn, tab: ColumnTab): void {
   renderFocus();
 }
 
+const DETAILS_OFF_TITLE = "Show the side panels of the triage chat, the Workers and the terminal of this project: Environment, Context and Outputs";
+
+/** The Triage, Workers and terminal panes of a column, each while it stands in its slot of the column. */
+function columnDetailPanes(column: FocusColumn): Pane[] {
+  const { triage, agents } = workspacePanes(column);
+  const terminal = projectTerminalPane(column);
+  const placed: [Pane | undefined, HTMLElement][] = [[triage, column.triageEl], [agents, column.agentsEl], [terminal, column.termSlotEl]];
+  return placed.flatMap(([pane, slot]) => (pane && pane.el.parentElement === slot ? [pane] : []));
+}
+
 /**
- * Turns the Details switch of the terminal panel of a column on or off: the class `details` shows the
- * side panel of the pane in the panel, and the next poll reads its data at once.
+ * Turns the Details switch of a column on or off (ticket no-details-mode): the class `details` shows
+ * the side panels of the Triage, Workers and terminal panes, and the next poll reads their data at once.
  */
 function setColumnDetails(column: FocusColumn, on: boolean): void {
   column.detailsOn = on;
-  column.termEl.classList.toggle("details", on);
+  for (const slot of [column.triageEl, column.agentsEl, column.termEl]) slot.classList.toggle("details", on);
   column.detailsEl.setAttribute("aria-checked", String(on));
-  column.detailsEl.title = on ? "Hide the side panel of this terminal" : "Show the side panel of this terminal: Environment, Context and Outputs";
-  const pane = projectTerminalPane(column);
-  if (!pane) return;
-  pane.sideDue = 0;
-  requestAnimationFrame(() => fitPane(pane));
+  column.detailsEl.title = on ? "Hide the side panels of this project" : DETAILS_OFF_TITLE;
+  for (const pane of columnDetailPanes(column)) {
+    pane.sideDue = 0;
+    requestAnimationFrame(() => fitPane(pane));
+  }
 }
 
-/** The panes in the terminal panels of Focus whose Details switch is on: `pollSide` reads their data. */
+/** The panes of the columns of Focus whose Details switch is on: `pollSide` reads their data. */
 function focusDetailPanes(): Pane[] {
   if (!focusOn) return [];
-  return [...focusColumns.values()].flatMap((column) => {
-    const pane = column.detailsOn && column.el.isConnected ? projectTerminalPane(column) : undefined;
-    return pane && pane.el.parentElement === column.termSlotEl ? [pane] : [];
-  });
+  return [...focusColumns.values()].flatMap((column) => (column.detailsOn && column.el.isConnected ? columnDetailPanes(column) : []));
 }
 
 /**
@@ -12792,7 +12425,7 @@ function renderFocus(): void {
   if (columns.length === 0) {
     const empty = document.createElement("p");
     empty.className = "focus-empty";
-    empty.textContent = "No project in focus mode. Click + in the bar and select a project folder.";
+    empty.textContent = "No project in focus mode. Click + at the bottom of the rail and select a project folder.";
     focusEl.replaceChildren(empty);
   }
   showFocusMark();
@@ -12959,117 +12592,34 @@ function renderFocus(): void {
     const chats = chatList
       .filter((chat) => inProject(chat, key) && !workerChats.has(`${chat.host}|${chat.id}`) && chat.id !== card.chatId)
       .sort((a, b) => b.modified - a.modified);
-    const chatSplit = splitNewest(chats);
+    // The search box (ticket no-details-mode, user decision 2): each word in the title or the folder.
+    const words = column.chatSearchEl.value.toLowerCase().split(/\s+/).filter(Boolean);
+    const found = chats.filter((chat) => words.every((word) => `${chat.title}\n${chat.cwd ?? ""}`.toLowerCase().includes(word)));
+    const chatSplit = splitNewest(found);
     if (fold("chats", "Chats", chats.length, true)) {
+      items.push(column.chatSearchEl);
       if (chats.length === 0) note("No other chats in this project.");
+      else if (found.length === 0) note("No chat of this project agrees.");
       const openHere = (chat: Chat) => openFocusChat(chat, { host: column.host, root: column.root });
-      items.push(...chatSplit.shown.map((chat) => chatRowWith(chat, openHere)));
-      if (chatSplit.older.length > 0 && fold("older-chats", "Older chats", chatSplit.older.length, false)) {
-        items.push(...chatSplit.older.map((chat) => chatRowWith(chat, openHere)));
+      // A search shows every chat that agrees; the Older group folds only without one.
+      if (words.length > 0) items.push(...found.map((chat) => chatRowWith(chat, openHere)));
+      else {
+        items.push(...chatSplit.shown.map((chat) => chatRowWith(chat, openHere)));
+        if (chatSplit.older.length > 0 && fold("older-chats", "Older chats", chatSplit.older.length, false)) {
+          items.push(...chatSplit.older.map((chat) => chatRowWith(chat, openHere)));
+        }
       }
     }
+    // The search box keeps the keyboard and its caret through the redraw.
+    const searching = document.activeElement === column.chatSearchEl;
+    const caret = column.chatSearchEl.selectionStart;
     column.sideEl.replaceChildren(...items);
+    if (searching) {
+      column.chatSearchEl.focus();
+      column.chatSearchEl.setSelectionRange(caret, caret);
+    }
   }
-  renderPills();
-}
-
-/**
- * Fills the projects group of the bar with one pill per project, in Details, Focus and Map
- * (projects-group-tabs); the Overview hides the group by CSS (overview-no-projects-group).
- * Focus shows its projects; the other modes show the projects of the Map.
- * In Details the current project is a pill with a blue frame (topbar-projects): the project of
- * the focused terminal, else the one clicked or typed in last, else the first. Its buttons and ×
- * stand in the head row above the workspace (ticket this-orange-border-makes-me-think-that).
- * A click goes to the project: its column in Focus, its graph in the Map, its workspace in
- * Details. The Overview branch stays, but no click reaches it while the group is hidden there.
- * In Details the bar has no tab strip (topbar-one-row): the focus projects and the other
- * workspaces are the pills, a project without a workspace is a dashed pill, the head row ends
- * with a × that closes the workspace. A tab that is no workspace is a chat tab in the head of the
- * triage pane (chat-tabs-by-triage), not a pill of the bar.
- */
-function renderPills(): void {
-  const details = !focusOn && !mapOn && !overviewOn;
-  if (!details) {
-    // Focus, Map and Overview show the project rail instead of the pills (ticket project-rail-at-the-left-edge-of-the).
-    focusProjectsEl.replaceChildren();
-    renderRail();
-    renderWorkspaceHead(null);
-    renderChatTabs();
-    showSetupButtons();
-    return;
-  }
-  const workspaces = workspaceRefs();
-  let roots = focusOn ? focusProjects : mapProjects();
-  if (details) {
-    const byKey = new Map([...focusProjects, ...workspaces].map((ref) => [refKey(ref), ref]));
-    roots = detailsProjects(focusProjects.map(refKey), workspaces.map(refKey)).map((key) => byKey.get(key)!);
-  }
-  const keys = roots.map(refKey);
-  // Outside Details every pill keeps the full look; only the bar of Details changes.
-  const withWorkspace = new Set(details ? workspaces.map(refKey) : keys);
-  let open: string | null = null;
-  if (details) {
-    // The current project is the workspace that the window shows below: a project with a workspace.
-    open = openWorkspaceKey(keys.filter((key) => withWorkspace.has(key)));
-  }
-  const items = barItems(keys, withWorkspace, open);
-  // Two projects with one name show the folder above the project (ticket didnt-we-worked-on-these-buttons).
-  const labels = pillLabels(roots.map((root) => ({ label: projectName(root), path: root.root })));
-  const pills: HTMLElement[] = [];
-  items.forEach((item, index) => {
-    const root = roots[index];
-    const key = item.key;
-    const state = focusState(root);
-    const isOpen = item.kind === "open";
-    const dashed = item.kind === "dashed";
-    const badge = pillCount(state);
-    const pill = document.createElement("button");
-    const signal = attentionClasses(projectSignal(key));
-    pill.className = `focus-pill${isOpen ? " current" : ""}${dashed ? " dashed" : ""}${signal}`;
-    pill.title = backends().length > 1 ? `${root.root}\non ${backendName(root.host)}` : root.root;
-    const dot = document.createElement("span");
-    dot.className = `focus-dot ${badge.kind}${dashed ? " empty" : ""}${signal}`;
-    const name = document.createElement("span");
-    name.className = "name";
-    name.textContent = labels[index];
-    const count = document.createElement("span");
-    count.className = `count ${badge.kind}`;
-    count.textContent = badge.text;
-    // The sign of waiting tickets that do not go (ticket auto-todo), after the name.
-    pill.append(dot, name, ticketSign(root), count);
-    pill.addEventListener("click", () => {
-      // The clicked project becomes the current one; in Details its workspace shows.
-      setFocusCurrent(key);
-      if (focusOn) {
-        focusColumns.get(key)?.el.scrollIntoView({ behavior: "smooth", inline: "nearest" });
-        setFocusCurrent(key);
-        workspacePanes(root).triage?.term.focus();
-      } else if (mapOn) {
-        mapEl.querySelector<HTMLElement>(`.map-project[data-project="${CSS.escape(key)}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
-      } else if (overviewOn) {
-        overviewCards.get(key)?.el.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      } else {
-        const { triage } = workspacePanes(root);
-        if (triage) {
-          activate(triage.tabId);
-          triage.term.focus();
-        } else {
-          // A dashed pill starts the workspace as + does: the Setup pipeline window first when the
-          // project is not set up (topbar-one-row).
-          openProject(root)
-            .then(renderPills)
-            .catch((error) => console.error("project open failed", error));
-        }
-        renderPills();
-      }
-    });
-    pills.push(pill);
-  });
-  focusProjectsEl.replaceChildren(...pills);
-  renderWorkspaceHead(details ? (roots[keys.indexOf(open ?? "")] ?? null) : null);
-  // The chat tabs in the head of each triage pane follow the bar (chat-tabs-by-triage).
-  renderChatTabs();
-  showSetupButtons();
+  renderProjects();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -13084,7 +12634,16 @@ let railDragging = false;
 /** The card "Add to Focus" beside an Other square, while the pointer is on it. */
 let railCard: HTMLElement | null = null;
 
-/** The rail shows in Focus, Map and Overview; Details keeps the pills. */
+/**
+ * Draws the project rail and marks the Setup buttons (ticket no-details-mode): the projects group of
+ * the bar with its pills went with Details.
+ */
+function renderProjects(): void {
+  renderRail();
+  showSetupButtons();
+}
+
+/** The rail shows in Focus, Map and Overview. */
 function railShown(): boolean {
   return focusOn || mapOn || overviewOn;
 }
@@ -13389,99 +12948,11 @@ function forgetProject(ref: ProjectRef): void {
 }
 
 /**
- * The head row above the workspace in Details (ticket this-orange-border-makes-me-think-that): the
- * dot, name, ticket sign and state of the current project, its buttons, a divider and × that
- * closes the workspace, as the head of a Focus column. Hidden and empty without a current project.
- */
-function renderWorkspaceHead(root: ProjectRef | null): void {
-  if (!root) {
-    workspaceHeadEl.hidden = true;
-    workspaceHeadEl.replaceChildren();
-    return;
-  }
-  const key = refKey(root);
-  const badge = groupCount(focusState(root));
-  const signal = attentionClasses(projectSignal(key));
-  const dot = document.createElement("span");
-  dot.className = `focus-dot ${badge.kind}${signal}`;
-  const name = document.createElement("span");
-  name.className = "focus-name";
-  name.textContent = projectName(root);
-  name.title = backends().length > 1 ? `${root.root}
-on ${backendName(root.host)}` : root.root;
-  const count = document.createElement("span");
-  count.className = `count ${badge.kind}`;
-  count.textContent = badge.text;
-  const spacer = document.createElement("span");
-  spacer.style.flex = "1";
-  const close = document.createElement("button");
-  close.className = "project-close";
-  close.textContent = "×";
-  close.title = `Close the workspace of ${projectName(root)}: triage and the agent view end`;
-  close.setAttribute("aria-label", `Close the workspace of ${projectName(root)}`);
-  close.addEventListener("click", () => {
-    const { triage, agents } = workspacePanes(root);
-    const tabId = (triage ?? agents)?.tabId;
-    if (tabId) void closeTab(tabId);
-  });
-  workspaceHeadEl.dataset.project = key;
-  workspaceHeadEl.replaceChildren(dot, name, ticketSign(root), count, spacer, projectTools(root).el, barDivider(), close);
-  workspaceHeadEl.hidden = false;
-}
-
-/** A thin divider of the bar. */
-function barDivider(): HTMLSpanElement {
-  const divider = document.createElement("span");
-  divider.className = "project-divider";
-  divider.setAttribute("aria-hidden", "true");
-  return divider;
-}
-
-/** The tabs that are no workspace: a chat, a Chat of a project, a plain shell (topbar-one-row). */
-function plainTabs(): ChatTab[] {
-  return [...tabs.values()]
-    .filter((tab) => isChatTab(tabPanes(tab.id)))
-    .map((tab) => {
-      const pane = panes.get(tab.focus ?? "");
-      const label = pane ? (pane.cwd ? projectName({ host: pane.host, root: pane.cwd }) : pane.shell) : "";
-      return { id: tab.id, label };
-    });
-}
-
-/**
- * The chat tab of a tab that is no workspace, in the head of the triage pane after Chat and
- * Terminal (chat-tabs-by-triage): the folder of its focused pane and its own ×.
- */
-function tabPill(item: ChatTab & { active: boolean }): HTMLElement {
-  const pill = document.createElement("div");
-  pill.className = `chat-tab${item.active ? " active" : ""}`;
-  const pane = panes.get(tabs.get(item.id)?.focus ?? "");
-  pill.title = pane?.cwd ? `${pane.shell}: ${pane.cwd}${backends().length > 1 ? ` on ${backendName(pane.host)}` : ""}` : (pane?.shell ?? "");
-  const name = document.createElement("span");
-  name.className = "name";
-  name.textContent = item.label;
-  const close = document.createElement("button");
-  close.textContent = "×";
-  close.title = "Close tab";
-  close.setAttribute("aria-label", `Close ${item.label}`);
-  pill.append(name, close);
-  pill.addEventListener("click", () => {
-    openChatTab(item.id);
-    void saveState();
-  });
-  close.addEventListener("click", (event) => {
-    event.stopPropagation();
-    void closeTab(item.id);
-  });
-  return pill;
-}
-
-/**
  * Shows the signal of each project at once, after a press in a card or a full render: the pills,
  * the dots of the Focus columns, the Overview cards and the Map heads.
  */
 function showProjectAttention(): void {
-  renderPills();
+  renderProjects();
   for (const [key, column] of focusColumns) toggleAttention(column.dotEl, projectSignal(key));
   for (const [key, card] of overviewCards) toggleAttention(card.dotEl, projectSignal(key));
   for (const section of mapEl.querySelectorAll<HTMLElement>(".map-project")) {
@@ -13545,7 +13016,7 @@ async function refreshFocusTasks(onlyWhenChanged = false): Promise<void> {
   // Focus mode shows its projects; night mode takes the defaults of every project with a workspace.
   const roots = new Map<string, ProjectRef>();
   if (focusOn || mapOn) for (const root of mapProjects()) roots.set(refKey(root), root);
-  // The pills of the projects group show the state of their projects in every mode.
+  // The squares of the rail show the state of their projects in every mode.
   for (const root of focusOn ? focusProjects : mapProjects()) roots.set(refKey(root), root);
   // The squares below the line of the project rail show their badges too (ticket project-rail-at-the-left-edge-of-the).
   if (railShown()) for (const root of railProjects) roots.set(refKey(root), root);
@@ -13639,14 +13110,9 @@ async function joinFocus(ref: ProjectRef, at = focusProjects.length): Promise<vo
   rememberProject(ref);
   saveFocus();
   await ensureWorkspace(ref);
-  // In Details the workspace of the new project shows; the other modes keep their view.
-  if (!focusOn && !mapOn && !overviewOn) {
-    const { triage } = workspacePanes(ref);
-    if (triage) activate(triage.tabId);
-  }
   applyFocusLayout();
   renderFocus();
-  renderPills();
+  renderProjects();
   await refreshFocusTasks();
   if (focusOn) focusColumns.get(key)?.el.scrollIntoView({ behavior: "smooth", inline: "nearest", block: "nearest" });
 }
@@ -13697,23 +13163,18 @@ async function setFocus(on: boolean): Promise<void> {
   focusOn = on;
   document.body.classList.toggle("focus-mode", on);
   focusEl.hidden = !on;
-  panesEl.hidden = on;
   for (const button of document.querySelectorAll<HTMLButtonElement>("#view-mode button")) {
-    button.classList.toggle("active", button.dataset.mode === (on ? "focus" : "tabs"));
+    if (on) button.classList.toggle("active", button.dataset.mode === "focus");
   }
   if (on) {
     if (focusProjects.length === 0) focusProjects = workspaceRefs();
     for (const root of focusProjects) await ensureWorkspace(root);
     renderFocus();
     await refreshFocusTasks();
-    // The Chats sections of the columns: a hidden chat panel did not read the chat list.
+    // The Chats sections of the columns read the chat list at once.
     refreshChats().catch((error) => console.error("chat list refresh failed", error));
   } else {
     for (const pane of [...panes.values()]) moveBack(pane);
-    if (activeId) {
-      activate(activeId);
-      fitTab(activeId);
-    }
     renderChats();
   }
   saveFocus();
@@ -13754,13 +13215,8 @@ function mapProjects(): ProjectRef[] {
   return workspaceRefs();
 }
 
-/** Switches between the five views. */
+/** Switches between the four views: Focus, Map, Overview and Plan. */
 async function setView(mode: ViewMode): Promise<void> {
-  // A chat tab that shows in a triage pane goes back to its tab before a mode moves the triage pane.
-  if (mode !== "tabs" && shownChat) {
-    const triage = panes.get(shownChat.triage);
-    if (triage) hideChatTab(triage);
-  }
   // The Chat views go back into their panes first: Focus moves the panes, a tab shows them.
   if (overviewOn && mode !== "overview") showOverview(false);
   if (planOn && mode !== "plan") showPlan(false);
@@ -13769,7 +13225,7 @@ async function setView(mode: ViewMode): Promise<void> {
     if (focusOn) await setFocus(false);
     // Last, so that its word is the marked one.
     showPlan(true);
-    renderPills();
+    renderProjects();
     redrawStatusBar();
     return;
   }
@@ -13778,20 +13234,20 @@ async function setView(mode: ViewMode): Promise<void> {
     if (focusOn) await setFocus(false);
     // Last, so that its word is the marked one.
     showOverview(true);
-    renderPills();
+    renderProjects();
     redrawStatusBar();
     return;
   }
   if (mode === "map") {
     if (focusOn) await setFocus(false);
     showMap(true);
-    renderPills();
+    renderProjects();
     redrawStatusBar();
     return;
   }
   if (mapOn) showMap(false);
-  await setFocus(mode === "focus");
-  renderPills();
+  await setFocus(true);
+  renderProjects();
   redrawStatusBar();
 }
 
@@ -13799,17 +13255,12 @@ function showMap(on: boolean): void {
   mapOn = on;
   document.body.classList.toggle("map-mode", on);
   mapEl.hidden = !on;
-  panesEl.hidden = on || focusOn;
   for (const button of document.querySelectorAll<HTMLButtonElement>("#view-mode button")) {
-    button.classList.toggle("active", button.dataset.mode === (on ? "map" : focusOn ? "focus" : "tabs"));
+    button.classList.toggle("active", button.dataset.mode === (on ? "map" : "focus"));
   }
   if (!on) {
     mapFlow?.close();
     mapFlow = null;
-    if (!focusOn && activeId) {
-      activate(activeId);
-      fitTab(activeId);
-    }
     return;
   }
   if (focusProjects.length === 0) focusProjects = mapProjects();
@@ -14094,7 +13545,7 @@ function renderMap(): void {
   const roots = mapProjects();
   const scroll = mapEl.scrollTop;
   if (roots.length === 0) {
-    mapEl.replaceChildren(mapElement("p", "map-muted map-none", "No project on the Map. Click + in the bar and select a project folder, or open a workspace."));
+    mapEl.replaceChildren(mapElement("p", "map-muted map-none", "No project on the Map. Click + at the bottom of the rail and select a project folder."));
     return;
   }
   mapEl.replaceChildren(...roots.map(mapSection));
@@ -14135,8 +13586,8 @@ function openMapFlow(task: Task, worker: Worker, run: "plan" | "work" | "worker"
         renderMap();
       },
       openSession: () => {
-        // The session opens in a tab; the Map hides the tabs.
-        void setView("tabs").then(() => openWorker(worker));
+        // The session shows in the Workers tab of its column in Focus (ticket no-details-mode).
+        void setView("focus").then(() => openWorker(worker));
       },
       openPlan: plan ? () => void openViewer(plan) : null,
     },
@@ -14282,20 +13733,15 @@ function overviewTask(task: Task): OverviewTask {
 }
 
 /**
- * Leaves the Overview for a project: its column in Focus, or its tab when focus mode does not have
- * it. Rules and Setup pipeline then act on it.
+ * Leaves the Overview for a project: its column in Focus; a project without a column joins Focus
+ * first (ticket no-details-mode). Rules and Setup pipeline then act on it.
  */
 async function showProject(ref: ProjectRef): Promise<void> {
   const key = refKey(ref);
-  if (focusProjects.some((known) => refKey(known) === key)) {
-    setFocusCurrent(key);
-    await setView("focus");
-    focusColumns.get(key)?.el.scrollIntoView({ behavior: "smooth", inline: "nearest" });
-    return;
-  }
-  await setView("tabs");
-  const { triage } = workspacePanes(ref);
-  if (triage) activate(triage.tabId);
+  if (!focusProjects.some((known) => refKey(known) === key)) await joinFocus(ref);
+  setFocusCurrent(key);
+  await setView("focus");
+  focusColumns.get(key)?.el.scrollIntoView({ behavior: "smooth", inline: "nearest" });
 }
 
 function overviewCard(ref: ProjectRef): OverviewCard {
@@ -14314,7 +13760,7 @@ function overviewCard(ref: ProjectRef): OverviewCard {
   const dotEl = mapElement("span", "focus-dot");
   dotEl.setAttribute("aria-hidden", "true");
   const name = mapElement("button", "overview-name", projectName(ref));
-  name.title = `${root}\nOpen this project in Focus, or in its tab when focus mode does not have it`;
+  name.title = `${root}\nOpen this project in Focus`;
   name.addEventListener("click", () => void showProject(ref));
   const countEl = mapElement("span", "overview-count");
   const expandEl = mapElement("button", "overview-expand");
@@ -14347,7 +13793,7 @@ function renderOverview(): void {
   }
   const cards = overviewProjects().map(overviewCard);
   if (cards.length === 0) {
-    overviewEl.replaceChildren(mapElement("p", "map-muted map-none", "No project with an open workspace. Click + in the bar and select a project folder, or open a workspace."));
+    overviewEl.replaceChildren(mapElement("p", "map-muted map-none", "No project with an open workspace. Click + at the bottom of the rail and select a project folder."));
   } else if (overviewEl.children.length !== cards.length || cards.some((card, at) => overviewEl.children[at] !== card.el)) {
     overviewEl.replaceChildren(...cards.map((card) => card.el));
   }
@@ -14442,7 +13888,6 @@ function showOverview(on: boolean): void {
     for (const pane of panes.values()) pane.chat?.toEnd();
     return;
   }
-  panesEl.hidden = true;
   for (const button of document.querySelectorAll<HTMLButtonElement>("#view-mode button")) {
     button.classList.toggle("active", button.dataset.mode === "overview");
   }
@@ -14661,7 +14106,6 @@ function showPlan(on: boolean): void {
   document.body.classList.toggle("plan-mode", on);
   planEl.hidden = !on;
   if (!on) return;
-  panesEl.hidden = true;
   for (const button of document.querySelectorAll<HTMLButtonElement>("#view-mode button")) {
     button.classList.toggle("active", button.dataset.mode === "plan");
   }
@@ -15089,7 +14533,7 @@ function renderPlan(): void {
     planCountEl.textContent = "";
     planFlowButton.disabled = true;
     planFlowBarEl.hidden = true;
-    planBoardEl.replaceChildren(mapElement("p", "map-muted map-none", "No project with an open workspace. Click + in the bar and select a project folder, or open a workspace."));
+    planBoardEl.replaceChildren(mapElement("p", "map-muted map-none", "No project with an open workspace. Click + at the bottom of the rail and select a project folder."));
     planSideEl.replaceChildren();
     return;
   }
@@ -15944,39 +15388,7 @@ async function start(): Promise<void> {
   onReturn(window, showNewest);
   panesEl.addEventListener("pointerdown", startResize);
 
-  document.querySelector("#split-right")!.addEventListener("click", () => void splitFocused("row"));
-  document.querySelector("#split-down")!.addEventListener("click", () => void splitFocused("column"));
-  document.querySelector("#close-pane")!.addEventListener("click", () => {
-    const tab = tabs.get(activeId ?? "");
-    if (tab?.focus) void closePane(tab.focus);
-  });
-  document.querySelector("#toggle-side")!.addEventListener("click", () => {
-    setSideVisible(panesEl.classList.contains("no-side"));
-  });
   try {
-    panesEl.classList.toggle("no-side", localStorage.getItem("side-hidden") === "true");
-  } catch {
-    // The panels stay visible.
-  }
-  document.querySelector("#toggle-chats")!.addEventListener("click", () => {
-    setChatsVisible(Boolean(chatsEl.hidden));
-  });
-  // The drag handle on the right edge of the chat panel, as between the left panel and the chat in focus mode.
-  const chatsHandle = resizeHandle("side-resize chats-resize", "Drag to make the chat list wider or narrower; double-click for the usual width");
-  chatsEl.after(chatsHandle);
-  dragChats(chatsHandle);
-  chatSearchEl.addEventListener("input", () => {
-    // A group that the user closed must not hide the results of a new search.
-    groupOpen.clear();
-    renderChats();
-  });
-  for (const button of chatScopeEl.querySelectorAll("button")) {
-    button.addEventListener("click", () => setChatScope(button.dataset.scope === "all" ? "all" : "project"));
-  }
-  try {
-    if (localStorage.getItem("chat-scope") === "all") chatScope = "all";
-    chatsEl.hidden = localStorage.getItem("chats-hidden") === "true";
-    oldChatsOpen = localStorage.getItem("old-chats-open") === "true";
     try {
       focusFolds = parseFolds(JSON.parse(localStorage.getItem(FOCUS_FOLDS_KEY) ?? "{}"));
     } catch {
@@ -15988,7 +15400,7 @@ async function start(): Promise<void> {
       setChatsWidth(Math.round(chatsWidth));
     }
   } catch {
-    // The chat panel stays visible.
+    // The folds and the widths stay as they are.
   }
   // Each theme card shows its own colours in its preview, from the tokens of its theme (redesign-the-setup-pipeline-and-options).
   for (const radio of themeEls) {
@@ -16166,13 +15578,8 @@ async function start(): Promise<void> {
       if (pane?.role === "triage") pane.startedWith = choiceFlags({ model: start.model ?? "", effort: start.effort ?? "" });
     }
   }
-  if (tabs.size === 0) {
-    await newTab("powershell", firstBackend());
-  } else if (loaded?.active) {
-    // A saved chat tab shows in the head of the triage pane (chat-tabs-by-triage).
-    if (tabs.has(loaded.active) && isChatTab(tabPanes(loaded.active))) openChatTab(loaded.active);
-    else activate(loaded.active);
-  }
+  // Focus needs no tab: a start without tabs opens none (ticket no-details-mode).
+  if (loaded?.active && tabs.has(loaded.active)) activate(loaded.active);
   await saveState();
   // A window of hosts asks each host for its lease before the night check: only the driver sends its lines.
   if (usesHosts()) {
@@ -16185,16 +15592,15 @@ async function start(): Promise<void> {
   setInterval(() => void saveScreens(), SCREEN_SAVE_INTERVAL_MS);
   setInterval(tickRunTimes, RUN_TICK_MS);
 
-  // The view modes: the switch, the projects group, and the mode of the last run.
+  // The view modes: the switch and the mode of the last run.
   for (const button of document.querySelectorAll<HTMLButtonElement>("#view-mode button")) {
     button.addEventListener("click", () => void setView(savedView(button.dataset.mode)));
   }
-  focusAddEl.addEventListener("click", () => void addFocusProject().catch((error) => console.error("focus project failed", error)));
   focusSplitEl.addEventListener("click", () => setFocusSplit(toggleSplit(focusSplit)));
   loadQueued();
-  let mode = "tabs";
+  let mode = "focus";
   try {
-    mode = localStorage.getItem("view-mode") ?? "tabs";
+    mode = localStorage.getItem("view-mode") ?? "focus";
     focusSplit = parseSplit(localStorage.getItem(FOCUS_SPLIT_KEY));
     focusProjects = parseFocusProjects(JSON.parse(localStorage.getItem("focus-projects") ?? "[]"));
   } catch {
