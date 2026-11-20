@@ -2131,7 +2131,8 @@ button.task-head:hover {
 .auto-switch {
   display: flex;
   flex: none;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   align-items: center;
   margin: 0;
   padding: 10px 20px;
@@ -2156,62 +2157,26 @@ button.task-head:hover {
   background: var(--wait-bg);
 }
 
-.auto-switch-state {
-  flex: none;
-  font-size: calc(15px * var(--text-scale));
-  font-weight: 700;
-}
-
-.auto-switch.on .auto-switch-state {
-  color: var(--work);
-}
-
-.auto-switch.paused .auto-switch-state {
-  color: var(--wait);
-}
-
 .auto-switch-detail {
-  flex: 1;
+  flex: 1 1 220px;
   min-width: 0;
   color: var(--muted);
 }
 
-.auto-switch-button {
+/* The switches of the strip share the look of the Details switch (ticket this-looks-wierd-when-theres-not-enough). */
+.auto-switch-toggle {
+  display: flex;
   flex: none;
-  padding: 6px 16px;
+  gap: 6px;
+  align-items: center;
+  padding: 0 4px;
   border: 0;
-  border-radius: 6px;
-  color: var(--on-accent);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.auto-switch.on .auto-switch-button {
-  background: var(--wait);
-}
-
-.auto-switch.paused .auto-switch-button {
-  background: var(--work);
-}
-
-/* The Night button next to Pause (ticket nightmode-button-should-be-moved-in-this): a quiet outline; green while night mode is on. */
-.auto-switch-night {
-  flex: none;
-  padding: 5px 14px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-2);
-  font: inherit;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.auto-switch-night[aria-pressed="true"] {
-  border-color: var(--switch-on);
-  background: color-mix(in srgb, var(--switch-on) 35%, transparent);
+  background: none;
   color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
 #tickets-columns,
@@ -7851,10 +7816,16 @@ body.chats-sized .focus-side {
 .focus-board-head {
   display: flex;
   flex: none;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
   color: var(--muted);
   font-size: calc(12px * var(--text-scale));
+}
+
+.focus-board-note,
+.focus-board-count {
+  white-space: nowrap;
 }
 
 /* The search box of the board in Focus (ticket add-search-to-ticket-board), at the right end of the head. */
@@ -8050,7 +8021,7 @@ body.chats-sized .focus-side {
   color: var(--text);
 }
 
-.focus-terminal-details .switch {
+:is(.focus-terminal-details, .auto-switch-toggle) .switch {
   position: relative;
   flex: none;
   width: 28px;
@@ -8060,7 +8031,7 @@ body.chats-sized .focus-side {
   transition: background 0.15s;
 }
 
-.focus-terminal-details .knob {
+:is(.focus-terminal-details, .auto-switch-toggle) .knob {
   position: absolute;
   top: 2px;
   left: 2px;
@@ -8071,11 +8042,11 @@ body.chats-sized .focus-side {
   transition: left 0.15s;
 }
 
-.focus-terminal-details[aria-checked="true"] .switch {
+:is(.focus-terminal-details, .auto-switch-toggle)[aria-checked="true"] .switch {
   background: var(--switch-on);
 }
 
-.focus-terminal-details[aria-checked="true"] .knob {
+:is(.focus-terminal-details, .auto-switch-toggle)[aria-checked="true"] .knob {
   left: 14px;
 }
 

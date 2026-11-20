@@ -10,7 +10,7 @@ const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").rep
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 test("the Night button of a project says its state", () => {
-  assert.equal(nightButton(true).text, "Night on");
+  assert.equal(nightButton(true).text, "Night");
   assert.equal(nightButton(false).text, "Night");
   assert.match(nightButton(true).title, /Click to end it/);
   assert.match(nightButton(false).title, /Other projects stay as they are/);
@@ -89,7 +89,8 @@ test("main.ts: night mode per project, no switch of a whole computer", () => {
   assert.match(MAIN, /shared_set", \{ nights: \{ \[path\]: on \} \}/, "a click writes only its own project");
   assert.doesNotMatch(MAIN, /#night-mode/, "the switch of the top bar is gone");
   assert.doesNotMatch(HTML, /id="night-mode"/, "the switch of the top bar is gone");
-  // The Night button stands right after Pause in the buttons of a project.
-  assert.match(MAIN, /autoEl\.append\([^;]*autoNight, autoButton\)/);
+  // The Night switch stands right after the Auto-start switch, before the detail text.
+  assert.match(MAIN, /autoEl\.append\([^;]*autoButton, autoNight,[^;]*\)/);
+  assert.match(MAIN, /setAttribute\("role", "switch"\)/);
   assert.match(MAIN, /auto-switch-night/);
 });

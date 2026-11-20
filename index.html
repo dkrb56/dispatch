@@ -131,7 +131,7 @@
             <div class="switch-card">
               <label class="switch-row">
                 <input type="checkbox" data-option="paused" />
-                <span><b>Pause tasks</b> Dispatch sends no ticket to triage and starts no work run for this project. A worker that runs finishes. Resume starts the queue where it stopped. The Pause button in the coloured strip above the tickets board does the same.</span>
+                <span><b>Pause tasks</b> Dispatch sends no ticket to triage and starts no work run for this project. A worker that runs finishes. Resume starts the queue where it stopped. The Auto-start switch in the coloured strip above the tickets board does the same.</span>
               </label>
               <label class="switch-row">
                 <input type="checkbox" data-option="startPlainPlans" />
@@ -354,7 +354,7 @@
         <button id="tickets-close" title="Close (Esc)">&times;</button>
       </header>
       <p id="tickets-error" hidden></p>
-      <div id="tickets-auto" class="auto-switch"><span class="auto-switch-state"></span><span class="auto-switch-detail"></span><button class="auto-switch-button"></button></div>
+      <div id="tickets-auto" class="auto-switch"><button class="auto-switch-toggle auto-switch-start" role="switch" aria-checked="true"><span class="auto-switch-label">Auto-start</span><span class="switch" aria-hidden="true"><span class="knob"></span></span></button><span class="auto-switch-detail"></span></div>
       <div id="tickets-columns"></div>
       <div id="tickets-resize" title="Drag to resize the window; double-click for the usual size"></div>
     </dialog>
@@ -648,7 +648,7 @@
           <ul>
             <li>Short reports and Fixed title are on for a new project. The other three are off. A project that was set up before stays off for Measure before the plan and Task branches.</li>
             <li>A change of Short reports applies to a new triage chat only, because a chat keeps the role with which it started. The next start of the workspace (the folder button of the project, or the start of the app) opens a new triage chat.</li>
-            <li><b>Pause tasks</b> applies at once and stays over a restart. The coloured strip above the tickets board, in the Tickets window and on the Focus board, shows the state (green "Auto-start on", yellow "Paused") and pauses or resumes with its large button. The head of its column says "paused" while the project is paused. While paused, no ticket goes to triage, no plan starts its work run (also not with Approve plans automatically or night mode), and night mode answers no question. Your Approve click waits in line, and your answer to a question goes to the worker at once. A worker that runs finishes its run. <b>Resume</b> (the large button of the strip above the tickets board) sends the next ticket and starts the next plan. While paused, Dispatch writes no ticket line by itself: the board shows the state of the tasks, and the first task read after Resume writes the changes into the tickets file. Your own moves, renames and new tickets on the board still write. A ticket that was in flight at Pause and that triage answers without a task still goes to Canceled.</li>
+            <li><b>Pause tasks</b> applies at once and stays over a restart. The coloured strip above the tickets board, in the Tickets window and on the Focus board, shows the state with its Auto-start switch (green and on while tickets start by themselves, yellow and off while paused) and pauses or resumes when you click the switch. The head of its column says "paused" while the project is paused. While paused, no ticket goes to triage, no plan starts its work run (also not with Approve plans automatically or night mode), and night mode answers no question. Your Approve click waits in line, and your answer to a question goes to the worker at once. A worker that runs finishes its run. Turning the <b>Auto-start</b> switch on again (in the strip above the tickets board) sends the next ticket and starts the next plan. While paused, Dispatch writes no ticket line by itself: the board shows the state of the tasks, and the first task read after Resume writes the changes into the tickets file. Your own moves, renames and new tickets on the board still write. A ticket that was in flight at Pause and that triage answers without a task still goes to Canceled.</li>
             <li><b>Approve plans automatically</b> applies at once. It waits when a file of the task has uncommitted changes or another work run runs. A change in another file does not hold it. A work run counts from the moment Dispatch starts it, so only one starts at a time, also with several plans in line. A plan with a decision marked <code>HOLD:</code> waits for your click. The line in the triage chat says "approved automatically".</li>
             <li><b>Measure before the plan.</b> Write the commands into the box under the switch: the tests, a browser test, a measuring script. The plan then has a section "Measured" with each command, what it showed and what it means. A fault that the plan run did not reproduce says "not reproduced".</li>
             <li>The plan run still edits no file, starts no agent and asks you nothing. Apply changes the options of the plan run and the section in <code>CLAUDE.md</code> with the switch.</li>
@@ -908,7 +908,7 @@
         <h3>Night mode</h3>
         <p class="tldr">The work goes on while you are away.</p>
         <ul>
-          <li>Each project has its own <b>Night</b> button, in the coloured strip above the tickets board, just before <b>Pause</b>. Click it when you go away. It reads "Night on" and is green while night mode is on for that project.</li>
+          <li>Each project has its own <b>Night</b> switch, in the coloured strip above the tickets board, next to the <b>Auto-start</b> switch. Turn it on when you go away. The switch is green while night mode is on for that project.</li>
           <li>Dispatch approves plans and answers questions with their recommended option, only in the projects with night mode on. A HOLD decision and a permission still wait for you.</li>
           <li>The computer that does the work stays awake while at least one of its projects has night mode on.</li>
           <li>In the morning, <b>Morning</b> at the top of a column shows the defaults that night mode took.</li>

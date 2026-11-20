@@ -35,7 +35,7 @@ export function nightSyncLines(switchOn: boolean, file: boolean | null): string[
 export function nightButton(on: boolean): { text: string; title: string } {
   return on
     ? {
-        text: "Night on",
+        text: "Night",
         title:
           "Night mode is on for this project: its decisions take their recommended default, HOLD items and permissions wait for you. Click to end it and get the morning list. " +
           "The computer that does the work of this project stays awake while one of its projects has night mode on (the display may turn off).",

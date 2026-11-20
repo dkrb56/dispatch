@@ -17,14 +17,14 @@ export function pauseButton(paused: boolean): { text: string; title: string } {
       };
 }
 
-/** The large switch above the tickets board (ticket i-need-more-prominent-button-for): state, detail, button. */
-export function autoSwitch(paused: boolean): { state: string; detail: string; button: string; title: string; kind: "on" | "paused" } {
+/** The switch above the tickets board: on while tickets start by themselves, off while paused. */
+export function autoSwitch(paused: boolean): { label: string; on: boolean; detail: string; title: string; kind: "on" | "paused" } {
   return paused
-    ? { state: "Paused", detail: PAUSE_BANNER, button: "Resume", title: pauseButton(true).title, kind: "paused" }
+    ? { label: "Auto-start", on: false, detail: PAUSE_BANNER, title: pauseButton(true).title, kind: "paused" }
     : {
-        state: "Auto-start on",
+        label: "Auto-start",
+        on: true,
         detail: "Dispatch takes the New tickets one by one and starts approved plans.",
-        button: "Pause",
         title: pauseButton(false).title,
         kind: "on",
       };

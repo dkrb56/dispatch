@@ -373,6 +373,7 @@ test("paused: the dispatcher passes the pause, and the page has the banner and t
   assert.match(dispatch.slice(0, dispatch.indexOf("\n}\n")), /nextTicket\(queue, \[\], \(id\) => ticketSent\(key, id\) \|\| editingTicket === `\$\{key\}\\n\$\{id\}`, record\.paused\)/);
   assert.match(HTML, /id="tickets-auto" class="auto-switch"/);
   assert.match(MAIN, /autoSwitch\(/);
+  assert.match(HTML, /id="tickets-auto"[^>]*><button class="auto-switch-toggle auto-switch-start" role="switch"/);
   assert.match(HTML, /data-option="paused"/);
   assert.match(CHAT, /waitingText\(options\.waiting\?\.\(\) \?\? 0, options\.paused\?\.\(\) \?\? false\)/);
   assert.match(CSS, /\.auto-switch \{/);

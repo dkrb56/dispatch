@@ -3082,9 +3082,11 @@ function showNightButtons(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>(".project-night")) {
     const on = nightOf(button.dataset.host ?? LOCAL, button.dataset.root);
     const look = nightButton(on);
-    button.textContent = look.text;
+    const label = button.querySelector(".auto-switch-label");
+    if (label) label.textContent = look.text;
+    else button.textContent = look.text;
     button.title = look.title;
-    button.setAttribute("aria-pressed", String(on));
+    button.setAttribute("aria-checked", String(on));
   }
 }
 
@@ -7568,10 +7570,27 @@ function connectResizeCorner(selector: string, dialog: HTMLDialogElement, key: s
   });
 }
 
+/** A switch of a strip above a board: a button with `role="switch"`, a label and the track with its knob (the look of the Details switch). */
+function stripSwitch(className: string): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.className = className;
+  button.setAttribute("role", "switch");
+  button.setAttribute("aria-checked", "false");
+  const label = document.createElement("span");
+  label.className = "auto-switch-label";
+  const track = document.createElement("span");
+  track.className = "switch";
+  track.setAttribute("aria-hidden", "true");
+  const knob = document.createElement("span");
+  knob.className = "knob";
+  track.append(knob);
+  button.append(label, track);
+  return button;
+}
+
 /** The Night button of a strip above a board: `showNightButtons` sets its text and pressed state from its data-host and data-root. */
 function nightSwitchButton(project: () => ProjectRef | null): HTMLButtonElement {
-  const button = document.createElement("button");
-  button.className = "auto-switch-night project-night";
+  const button = stripSwitch("auto-switch-toggle auto-switch-night project-night");
   button.addEventListener("click", () => {
     const ref = project();
     if (ref) setProjectNight(ref, !nightOf(ref.host, ref.root));
@@ -7589,8 +7608,8 @@ function initTickets(): void {
   });
   ticketsSearchEl.addEventListener("input", renderTickets);
   ticketsNightEl.dataset.project = "";
-  ticketsAutoEl.insertBefore(ticketsNightEl, ticketsAutoEl.querySelector(".auto-switch-button"));
-  document.querySelector("#tickets-auto .auto-switch-button")!.addEventListener("click", () => {
+  ticketsAutoEl.insertBefore(ticketsNightEl, ticketsAutoEl.querySelector(".auto-switch-detail"));
+  document.querySelector("#tickets-auto .auto-switch-start")!.addEventListener("click", () => {
     if (ticketsRef) void setPaused(ticketsRef, !projectPaused(refKey(ticketsRef)));
   });
   ticketsDialog.addEventListener("click", (event) => {
@@ -9047,12 +9066,11 @@ function showPauseButtons(): void {
     const look = autoSwitch(paused);
     el.classList.toggle("on", look.kind === "on");
     el.classList.toggle("paused", look.kind === "paused");
-    el.querySelector(".auto-switch-state")!.textContent = look.state;
     el.querySelector(".auto-switch-detail")!.textContent = look.detail;
-    const button = el.querySelector<HTMLButtonElement>(".auto-switch-button")!;
-    button.textContent = look.button;
+    const button = el.querySelector<HTMLButtonElement>(".auto-switch-start")!;
+    button.querySelector(".auto-switch-label")!.textContent = look.label;
     button.title = look.title;
-    button.setAttribute("aria-pressed", String(paused));
+    button.setAttribute("aria-checked", String(look.on));
   }
 }
 
@@ -12220,14 +12238,14 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   // The large auto-start switch above the board (ticket i-need-more-prominent-button-for).
   const autoEl = mapElement("div", "auto-switch");
   autoEl.dataset.project = key;
-  const autoButton = mapElement("button", "auto-switch-button");
+  const autoButton = stripSwitch("auto-switch-toggle auto-switch-start");
   autoButton.addEventListener("click", () => void setPaused(ref, !projectPaused(key)));
   // The Night button of the project, just before Pause (ticket nightmode-button-should-be-moved-in-this).
   const autoNight = nightSwitchButton(() => ref);
   autoNight.dataset.project = key;
   autoNight.dataset.host = ref.host;
   autoNight.dataset.root = ref.root;
-  autoEl.append(mapElement("span", "auto-switch-state"), mapElement("span", "auto-switch-detail"), autoNight, autoButton);
+  autoEl.append(autoButton, autoNight, mapElement("span", "auto-switch-detail"));
   const boardColumnsEl = mapElement("div", "tickets-columns");
   boardEl.append(boardHead, autoEl, boardColumnsEl);
   // The shown tab fills the area; the Commands terminals stay below it in every tab.

@@ -43,7 +43,7 @@ test("main.ts: setPaused writes the setting, tells triage, and at Resume starts 
   assert.match(head, /if \(!on\) \{\s*approvePlans\(\);\s*void dispatchTickets\(\);/);
   assert.doesNotMatch(MAIN, /project-pause/);
   assert.match(MAIN, /el\.append\(tickets, addTicket, tokensButton, actions, rules, setup, gitState, oldEl, folder\)/);
-  assert.match(MAIN, /setAttribute\("aria-pressed", String\(paused\)\)/);
+  assert.match(MAIN, /setAttribute\("aria-checked", String\(look\.on\)\)/);
   assert.match(CSS, /\.project-tool\[aria-pressed="true"\]/);
   assert.match(PIPELINE, /paused: boolean;/);
 });
@@ -51,14 +51,14 @@ test("main.ts: setPaused writes the setting, tells triage, and at Resume starts 
 test("the strip above the board shows the state and the action (ticket i-need-more-prominent-button-for)", () => {
   const on = autoSwitch(false);
   assert.equal(on.kind, "on");
-  assert.equal(on.state, "Auto-start on");
+  assert.equal(on.label, "Auto-start");
+  assert.equal(on.on, true);
   assert.equal(on.detail, "Dispatch takes the New tickets one by one and starts approved plans.");
-  assert.equal(on.button, "Pause");
   assert.equal(on.title, pauseButton(false).title);
   const paused = autoSwitch(true);
   assert.equal(paused.kind, "paused");
-  assert.equal(paused.state, "Paused");
+  assert.equal(paused.label, "Auto-start");
+  assert.equal(paused.on, false);
   assert.equal(paused.detail, PAUSE_BANNER);
-  assert.equal(paused.button, "Resume");
   assert.equal(paused.title, pauseButton(true).title);
 });
