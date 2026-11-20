@@ -391,7 +391,7 @@ test("the window is wired: the Tokens button after Tickets, the dialog, the two 
   for (const id of ["tokens-range", "tokens-projects", "tokens-table-button", "tokens-close", "tokens-tiles", "tokens-bars", "tokens-line", "tokens-who", "tokens-models", "tokens-table"]) {
     assert.ok(html.includes(`id="${id}"`), id);
   }
-  assert.match(main, /el\.append\(tickets, addTicket, tokensButton, actions, pause,/);
+  assert.match(main, /el\.append\(tickets, addTicket, tokensButton, actions, rules,/);
   assert.match(main, /"token_report"/);
   assert.match(main, /"usage_history"/);
   // One project that fails must not fail the read of the others (token-usage-is-broken).

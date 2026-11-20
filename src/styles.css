@@ -2291,6 +2291,25 @@ button.task-head:hover {
   background: var(--work);
 }
 
+/* The Night button next to Pause (ticket nightmode-button-should-be-moved-in-this): a quiet outline; green while night mode is on. */
+.auto-switch-night {
+  flex: none;
+  padding: 5px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.auto-switch-night[aria-pressed="true"] {
+  border-color: var(--switch-on);
+  background: color-mix(in srgb, var(--switch-on) 35%, transparent);
+  color: var(--text);
+}
+
 #tickets-columns,
 .focus-board .tickets-columns {
   display: grid;

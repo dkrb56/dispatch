@@ -41,8 +41,8 @@ test("main.ts: setPaused writes the setting, tells triage, and at Resume starts 
   assert.match(head, /call<boolean>\(ref\.host, "set_paused", \{ cwd: ref\.root, on \}\)/);
   assert.match(head, /tellTriage\(key, pauseLine\(on\)\)/);
   assert.match(head, /if \(!on\) \{\s*approvePlans\(\);\s*void dispatchTickets\(\);/);
-  assert.match(MAIN, /pause\.classList\.add\("project-pause"\)/);
-  assert.match(MAIN, /el\.append\(tickets, addTicket, tokensButton, actions, pause, night, rules, setup, gitState, oldEl, folder\)/);
+  assert.doesNotMatch(MAIN, /project-pause/);
+  assert.match(MAIN, /el\.append\(tickets, addTicket, tokensButton, actions, rules, setup, gitState, oldEl, folder\)/);
   assert.match(MAIN, /setAttribute\("aria-pressed", String\(paused\)\)/);
   assert.match(CSS, /\.project-tool\[aria-pressed="true"\]/);
   assert.match(PIPELINE, /paused: boolean;/);

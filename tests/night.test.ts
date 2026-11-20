@@ -90,5 +90,6 @@ test("main.ts: night mode per project, no switch of a whole computer", () => {
   assert.doesNotMatch(MAIN, /#night-mode/, "the switch of the top bar is gone");
   assert.doesNotMatch(HTML, /id="night-mode"/, "the switch of the top bar is gone");
   // The Night button stands right after Pause in the buttons of a project.
-  assert.match(MAIN, /el\.append\(tickets, addTicket, tokensButton, actions, pause, night, /);
+  assert.match(MAIN, /autoEl\.append\([^;]*autoNight, autoButton\)/);
+  assert.match(MAIN, /auto-switch-night/);
 });

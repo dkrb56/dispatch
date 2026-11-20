@@ -69,7 +69,7 @@ import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, ty
 import { barItems, currentProject, detailsProjects, groupCount, pillCount, pillLabels } from "./topbar";
 import { badgeText, moveUp, railDrop, type RailGroup, railItems, railLetters, railMenu, railTags, removeProjectTexts } from "./rail";
 import { type ChatTab, headState, isChatTab, pasteSkipsPane } from "./chattabs";
-import { autoSwitch, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
+import { autoSwitch, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { type WaitFacts, waitReason } from "./waitreason";
 import { HOLD_NOTE, holdWait } from "./holdstep";
@@ -7465,6 +7465,8 @@ const ticketsPathEl = document.querySelector<HTMLElement>("#tickets-path")!;
 const ticketsErrorEl = document.querySelector<HTMLElement>("#tickets-error")!;
 /** The banner of a paused project on the board, and its text (ticket pause-tasks). */
 const ticketsAutoEl = document.querySelector<HTMLElement>("#tickets-auto")!;
+// The Night button of the strip of the Tickets window (ticket nightmode-button-should-be-moved-in-this); initTickets puts it in.
+const ticketsNightEl = nightSwitchButton(() => ticketsRef);
 const ticketsSearchEl = document.querySelector<HTMLInputElement>("#tickets-search")!;
 
 /** The project of the open board, or null. */
@@ -7613,6 +7615,17 @@ function connectResizeCorner(selector: string, dialog: HTMLDialogElement, key: s
   });
 }
 
+/** The Night button of a strip above a board: `showNightButtons` sets its text and pressed state from its data-host and data-root. */
+function nightSwitchButton(project: () => ProjectRef | null): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.className = "auto-switch-night project-night";
+  button.addEventListener("click", () => {
+    const ref = project();
+    if (ref) setProjectNight(ref, !nightOf(ref.host, ref.root));
+  });
+  return button;
+}
+
 /** Connects the buttons of the board. */
 function initTickets(): void {
   connectResizeCorner("#tickets-resize", ticketsDialog, TICKETS_SIZE_KEY);
@@ -7622,6 +7635,8 @@ function initTickets(): void {
     if (ticketsRef) openAddTicket(ticketsRef);
   });
   ticketsSearchEl.addEventListener("input", renderTickets);
+  ticketsNightEl.dataset.project = "";
+  ticketsAutoEl.insertBefore(ticketsNightEl, ticketsAutoEl.querySelector(".auto-switch-button"));
   document.querySelector("#tickets-auto .auto-switch-button")!.addEventListener("click", () => {
     if (ticketsRef) void setPaused(ticketsRef, !projectPaused(refKey(ticketsRef)));
   });
@@ -9073,13 +9088,6 @@ function showTicketButtons(): void {
 
 /** The Pause button of each project (ticket pause-tasks): its text, tooltip and pressed state from the task list. */
 function showPauseButtons(): void {
-  for (const button of document.querySelectorAll<HTMLButtonElement>(".project-pause")) {
-    const paused = projectPaused(button.dataset.project ?? "");
-    const look = pauseButton(paused);
-    button.textContent = look.text;
-    button.title = look.title;
-    button.setAttribute("aria-pressed", String(paused));
-  }
   showNightButtons();
   for (const el of document.querySelectorAll<HTMLElement>(".auto-switch")) {
     const paused = projectPaused(el.dataset.project ?? "");
@@ -9239,6 +9247,10 @@ function renderTickets(): void {
   ticketsErrorEl.hidden = ticketError === "";
   // The strip above the board: showPauseButtons draws it (ticket i-need-more-prominent-button-for).
   ticketsAutoEl.dataset.project = key;
+  ticketsNightEl.dataset.project = key;
+  ticketsNightEl.dataset.host = ticketsRef.host;
+  ticketsNightEl.dataset.root = ticketsRef.root;
+  showNightButtons();
   fillTicketColumns(ticketsColumnsEl, key, ticketsSearchEl.value);
   focusTicketBox(ticketsColumnsEl);
   focusNew = false;
@@ -11850,7 +11862,7 @@ const FOLDER_ICON =
   '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5a1 1 0 0 1 1-1h3l1.5 1.5H13a1 1 0 0 1 1 1V12a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1z" /></svg>';
 
 /**
- * The buttons of one project (topbar-projects): Tickets (ticket tickets), Tokens (ticket token-usage), Actions (ticket project-actions), Pause, Night (ticket i-need-per-project-nightmode-option), Rules, Setup, Git state (ticket add-git-state-button-to-the-project), "N old" and the folder button. They
+ * The buttons of one project (topbar-projects): Tickets (ticket tickets), Tokens (ticket token-usage), Actions (ticket project-actions), Rules, Setup, Git state (ticket add-git-state-button-to-the-project), "N old" and the folder button. They
  * stand in the head row above the workspace in Details and in the head of the column in Focus. Each acts on
  * this project, not on the focused terminal. "N old" is hidden while the project has no old session.
  */
@@ -11887,16 +11899,7 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   const actions = tool("Actions", `The actions of ${name}: your own buttons for commands and Claude tasks`, () => openActions(ref));
   actions.classList.add("project-actions");
   actions.dataset.project = key;
-  // Pause tasks (ticket pause-tasks): `showPauseButtons` sets the text and the pressed state.
-  const pause = tool("Pause", "", () => void setPaused(ref, !projectPaused(key)));
-  pause.classList.add("project-pause");
-  pause.dataset.project = key;
-  // Night mode of this project only (ticket i-need-per-project-nightmode-option): `showNightButtons` sets the text and the pressed state.
-  const night = tool("Night", "", () => setProjectNight(ref, !nightOf(ref.host, ref.root)));
-  night.classList.add("project-night");
-  night.dataset.project = key;
-  night.dataset.host = ref.host;
-  night.dataset.root = ref.root;
+  // Pause and Night stand in the strip above the board (ticket nightmode-button-should-be-moved-in-this).
   const rules = tool("Rules", `Show the rules that Claude Code gets in ${name}`, () => openRules(ref.host, ref.root));
   const setup = tool("Setup", `Prepare ${name} for triage and workers: the Setup pipeline window`, () => {
     calmSetup(key);
@@ -11917,7 +11920,7 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   // The Git state window (ticket add-git-state-button-to-the-project): history, branch and uncommitted files; it changes nothing.
   const gitState = tool("Git state", `See the commit history and the uncommitted files of ${name}; the window changes nothing`, () => openGitState(ref));
   gitState.classList.add("project-git-state");
-  el.append(tickets, addTicket, tokensButton, actions, pause, night, rules, setup, gitState, oldEl, folder);
+  el.append(tickets, addTicket, tokensButton, actions, rules, setup, gitState, oldEl, folder);
   showOldButton(oldEl, key);
   showTicketButtons();
   markSetupButton(setup, key, name);
@@ -12495,7 +12498,12 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   autoEl.dataset.project = key;
   const autoButton = mapElement("button", "auto-switch-button");
   autoButton.addEventListener("click", () => void setPaused(ref, !projectPaused(key)));
-  autoEl.append(mapElement("span", "auto-switch-state"), mapElement("span", "auto-switch-detail"), autoButton);
+  // The Night button of the project, just before Pause (ticket nightmode-button-should-be-moved-in-this).
+  const autoNight = nightSwitchButton(() => ref);
+  autoNight.dataset.project = key;
+  autoNight.dataset.host = ref.host;
+  autoNight.dataset.root = ref.root;
+  autoEl.append(mapElement("span", "auto-switch-state"), mapElement("span", "auto-switch-detail"), autoNight, autoButton);
   const boardColumnsEl = mapElement("div", "tickets-columns");
   boardEl.append(boardHead, autoEl, boardColumnsEl);
   // The shown tab fills the area; the Commands terminals stay below it in every tab.
