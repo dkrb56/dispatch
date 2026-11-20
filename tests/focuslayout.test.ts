@@ -205,9 +205,11 @@ test("the page: the column tabs and the Details switch of the terminal have thei
   assert.match(css, /\.focus-tabs\s*\{[^}]*display:\s*flex/);
   assert.match(css, /\.focus-tab\.active\s*\{/);
   assert.match(css, /\.focus-triage\[hidden\],\s*\.focus-board\[hidden\]/);
-  assert.match(css, /\.focus-terminal\.details \.side\s*\{[^}]*display:\s*flex/);
-  // A narrow panel puts the side panel below the terminal, so On never shows nothing.
-  assert.match(css, /@container focus-term \(max-width: 600px\)\s*\{\s*\.focus-terminal\.details \.pane\s*\{[^}]*flex-direction:\s*column/);
+  // The side panel is a slim band above the terminal: a grid of two columns, placed first.
+  assert.match(css, /\.focus-terminal\.details \.side\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*1fr 1fr[^}]*order:\s*-1/);
+  assert.match(css, /\.focus-terminal\.details \.pane\s*\{[^}]*flex-direction:\s*column/);
+  assert.match(css, /@container focus-term \(max-width: 360px\)\s*\{\s*\.focus-terminal\.details \.side\s*\{[^}]*grid-template-columns:\s*1fr;/);
+  assert.doesNotMatch(css, /flex:\s*0 0 45%/);
   assert.doesNotMatch(css, /workers-hide/);
   const main = read("../src/main.ts");
   // The Workers button of the head and the × of the Workers bar went; the tabs took their place.

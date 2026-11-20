@@ -7314,8 +7314,8 @@ body.chats-sized .focus-side {
 }
 
 /* The Details switch of the terminal panel (ticket title-project-rail-focus-as-the-only): the look of
-   the Nightmode switch. On, the panel shows the side panel of its pane: beside the terminal when the
-   panel has room, below it in a narrow panel, so On never shows nothing. */
+   the Nightmode switch. On, the panel shows the side panel of its pane above the terminal, as a slim band
+   in two columns (one column in a very narrow panel), so On never shows nothing. */
 .focus-terminal-details {
   display: flex;
   flex: none;
@@ -7368,27 +7368,81 @@ body.chats-sized .focus-side {
   container: focus-term / inline-size;
 }
 
-.focus-terminal.details .side {
-  display: flex;
+.focus-terminal.details .pane {
+  flex-direction: column;
 }
 
-@container focus-term (max-width: 600px) {
-  .focus-terminal.details .pane {
-    flex-direction: column;
-  }
+/* The terminal gives up height to the band; the pane clips what does not fit. */
+.focus-terminal.details .term-column {
+  min-height: 0;
+}
 
-  /* The terminal gives up height to the side panel; the pane clips what does not fit. */
-  .focus-terminal.details .term-column {
-    min-height: 0;
-  }
+/* Step 1: a slim band above the terminal, two columns. A fixed share of the height: rows that come
+   with a later poll scroll inside it and do not shrink the terminal after its fit. */
+.focus-terminal.details .side {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-areas:
+    "env-h ctx-h"
+    "env ctx"
+    ". out-h"
+    ". out";
+  grid-template-rows: auto auto auto auto;
+  column-gap: 16px;
+  align-content: start;
+  order: -1;
+  flex: 0 0 33%;
+  width: auto;
+  padding: 6px 10px;
+  border-left: 0;
+  border-bottom: 1px solid var(--hairline);
+}
 
-  /* A fixed share of the height: rows that come with a later poll scroll inside it and do not
-     shrink the terminal after its fit. */
+.focus-terminal.details .side h2 {
+  margin: 6px 0 4px;
+}
+
+.focus-terminal.details .side h2:nth-of-type(1) {
+  grid-area: env-h;
+  margin-top: 0;
+}
+
+.focus-terminal.details .side .info {
+  grid-area: env;
+}
+
+.focus-terminal.details .side h2:nth-of-type(2) {
+  grid-area: ctx-h;
+  margin-top: 0;
+}
+
+.focus-terminal.details .side .context {
+  grid-area: ctx;
+}
+
+.focus-terminal.details .side h2:nth-of-type(3) {
+  grid-area: out-h;
+}
+
+.focus-terminal.details .side .thumbs {
+  grid-area: out;
+}
+
+@container focus-term (max-width: 360px) {
   .focus-terminal.details .side {
-    flex: 0 0 45%;
-    width: auto;
-    border-top: 1px solid var(--hairline);
-    border-left: 0;
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "env-h"
+      "env"
+      "ctx-h"
+      "ctx"
+      "out-h"
+      "out";
+    grid-template-rows: none;
+  }
+
+  .focus-terminal.details .side h2:nth-of-type(2) {
+    margin-top: 6px;
   }
 }
 
