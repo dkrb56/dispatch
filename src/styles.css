@@ -10504,3 +10504,267 @@ body.overview-mode .chats-resize {
   display: block;
   margin: 4px 12px 0;
 }
+
+/* ---------------------------------------------------------------------------------------------
+   The Plan view (ticket feature-plan-view-a-tree-of-the-project): the tickets of one project as a
+   tree on the dots of the Overview, with a toolbar on top and a side panel at the right. The cards
+   stand on the 50px grid: the canvas has the margin of an Overview card, so a corner lands on a dot.
+   --------------------------------------------------------------------------------------------- */
+
+body.plan-mode #bar-projects,
+body.plan-mode #toggle-chats,
+body.plan-mode #pane-tools,
+body.plan-mode #chats,
+body.plan-mode .chats-resize,
+body.plan-mode #workspace-head,
+body.plan-mode .chat-tabs {
+  display: none;
+}
+
+#plan {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+#plan[hidden] {
+  display: none;
+}
+
+.plan-toolbar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface);
+}
+
+.plan-project-label {
+  color: var(--muted);
+}
+
+.plan-count {
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.plan-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* The dots of the Overview (overview-dot-grid), the same tile and offset. */
+#plan .plan-board {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background-image: radial-gradient(circle, var(--line) 1px, transparent 1.5px);
+  background-size: 50px 50px;
+  background-position: -5px -9px;
+  background-attachment: local;
+}
+
+#plan .plan-board > .map-none {
+  margin: 16px 20px;
+}
+
+.plan-canvas {
+  position: relative;
+  margin: 16px 20px 32px 20px;
+}
+
+.plan-empty {
+  position: absolute;
+  top: 160px;
+  left: 20px;
+}
+
+.plan-wires {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.plan-arrow {
+  fill: none;
+  stroke: var(--group-line);
+  stroke-width: 1.5;
+}
+
+.plan-head {
+  fill: var(--group-line);
+}
+
+.plan-root-line {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 1.5;
+  stroke-dasharray: 5 5;
+}
+
+/* 200 x 56 px: PLAN_CARD_WIDTH and PLAN_CARD_HEIGHT of plantree.ts. */
+.plan-card {
+  display: flex;
+  position: absolute;
+  box-sizing: border-box;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  width: 200px;
+  height: 56px;
+  padding: 6px 10px;
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.plan-ticket.in-progress {
+  border-color: var(--work-line);
+}
+
+.plan-ticket.new {
+  border-color: var(--wait-line);
+}
+
+.plan-ticket.done,
+.plan-ticket.canceled {
+  opacity: 0.75;
+}
+
+.plan-root {
+  border-color: var(--accent-line);
+  background: var(--accent-bg);
+}
+
+.plan-root-name {
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-card-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.plan-name {
+  overflow: hidden;
+  color: var(--text);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-state {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-waits {
+  color: var(--faint);
+}
+
+/* The status dot: the colours of the board (wait for New, work for In progress). */
+.plan-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.plan-dot.new,
+.plan-dot.waits {
+  background: var(--wait);
+}
+
+.plan-dot.in-progress {
+  background: var(--work);
+}
+
+.plan-dot.done {
+  background: var(--accent);
+}
+
+.plan-dot.failed {
+  background: var(--danger);
+}
+
+.plan-dot.canceled {
+  border: 1px solid var(--muted);
+  background: none;
+}
+
+.plan-badge {
+  position: absolute;
+  top: -9px;
+  right: 8px;
+  padding: 0 6px;
+  border: 1px solid;
+  border-radius: 8px;
+  font-size: calc(11px * var(--text-scale));
+  line-height: 16px;
+}
+
+.plan-badge.next {
+  border-color: var(--work-line);
+  background: var(--work-bg);
+  color: var(--work);
+}
+
+.plan-badge.early {
+  border-color: var(--wait-line);
+  background: var(--wait-bg);
+  color: var(--wait);
+}
+
+.plan-side {
+  flex: none;
+  width: 280px;
+  overflow: auto;
+  padding: 8px 12px 24px;
+  border-left: 1px solid var(--hairline);
+  background: var(--surface);
+}
+
+.plan-side-part h3 {
+  margin: 12px 0 6px;
+  color: var(--text);
+  font-size: calc(13px * var(--text-scale));
+}
+
+.plan-side-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 0;
+}
+
+.plan-side-state {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.plan-none {
+  margin: 0;
+  color: var(--faint);
+}

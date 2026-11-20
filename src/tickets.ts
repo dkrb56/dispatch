@@ -37,6 +37,9 @@ export interface Ticket {
   part?: number;
   /** On a parent: its parts may start their work by night mode (the night box of the plan card). */
   night?: boolean;
+  /** The ids of the tickets that this ticket comes after: the arrows of the Plan view (ticket
+   *  feature-plan-view-a-tree-of-the-project). An older host does not send it: no arrows. */
+  after?: string[];
 }
 
 /** The optional fields of a new ticket (ticket ticket-form-optional-fields-on-a-new); empty: not filled. */

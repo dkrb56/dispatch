@@ -149,6 +149,10 @@ pub struct Ticket {
     pub(crate) part: u32,
     /// On a parent: the user ticked the box that lets its parts start their work by night mode.
     pub(crate) night: bool,
+    /// The ids of the tickets that this ticket comes after (the arrows of the Plan view), in their
+    /// order: this ticket starts when they are done. The fold drops the own id, doubles and ids
+    /// that name no ticket of the file (ticket feature-plan-view-a-tree-of-the-project).
+    pub(crate) after: Vec<String>,
     /// When the ticket moved into its column last: the time of its open line and of its last status
     /// or close line. The chain of the parts moves a part only after this time (`follow`).
     #[serde(skip)]
@@ -249,6 +253,7 @@ pub(crate) fn fold(text: &str) -> Vec<Ticket> {
             }
             let created = ts.unwrap_or(0);
             let kind = text_of("type").as_deref().and_then(file_kind);
+            let after = after_of(event.get("after"), &id).unwrap_or_default();
             tickets.push(Ticket {
                 title: text_of("title").filter(|title| !title.is_empty()).unwrap_or_else(|| id.clone()),
                 id,
@@ -267,6 +272,7 @@ pub(crate) fn fold(text: &str) -> Vec<Ticket> {
                 parent: text_of("parent").unwrap_or_default(),
                 part: event.get("part").and_then(Value::as_u64).and_then(|part| u32::try_from(part).ok()).unwrap_or(0),
                 night: event.get("night").and_then(Value::as_bool).unwrap_or(false),
+                after,
                 moved: created,
             });
             continue;
@@ -323,6 +329,10 @@ pub(crate) fn fold(text: &str) -> Vec<Ticket> {
                 if let Some(night) = event.get("night").and_then(Value::as_bool) {
                     ticket.night = night;
                 }
+                // An update line with `after` replaces the whole list.
+                if let Some(after) = after_of(event.get("after"), &ticket.id) {
+                    ticket.after = after;
+                }
             }
             _ => continue,
         }
@@ -334,7 +344,25 @@ pub(crate) fn fold(text: &str) -> Vec<Ticket> {
             ticket.updated = ticket.updated.max(ts);
         }
     }
+    // No arrow points to a ticket that the file does not have.
+    let ids: std::collections::HashSet<String> = tickets.iter().map(|ticket| ticket.id.clone()).collect();
+    for ticket in &mut tickets {
+        ticket.after.retain(|id| ids.contains(id));
+    }
     tickets
+}
+
+/// The list `after` of a line: only an array of strings, without empty ids, the own id and doubles;
+/// none when the line has no array there.
+fn after_of(value: Option<&Value>, own: &str) -> Option<Vec<String>> {
+    let items = value?.as_array()?;
+    let mut after: Vec<String> = Vec::new();
+    for id in items.iter().filter_map(Value::as_str).map(str::trim) {
+        if !id.is_empty() && id != own && !after.iter().any(|known| known == id) {
+            after.push(id.to_string());
+        }
+    }
+    Some(after)
 }
 
 /// The message without the paths of the pasted images at its start, and the number of the images.
@@ -696,6 +724,7 @@ fn open_ticket(project: &Project, tickets: &[Ticket], text: &str, at: u64, statu
         parent: String::new(),
         part: 0,
         night: false,
+        after: Vec::new(),
         moved: at,
     }
 }
@@ -1046,6 +1075,7 @@ pub(crate) fn open_in_progress(project: &Project, id: &str, title: &str, text: &
         parent: String::new(),
         part: 0,
         night: false,
+        after: Vec::new(),
         moved: at,
     };
     append(project, &[open_event(&ticket)])?;
@@ -1091,6 +1121,7 @@ pub fn ticket_adopt(cwd: String, id: String) -> Result<Ticket, String> {
         parent: String::new(),
         part: 0,
         night: false,
+        after: Vec::new(),
         moved: at,
     };
     append(&project, &[open_event(&ticket)])?;
@@ -1672,6 +1703,32 @@ mod tests {
         // A close with done goes to Done with its note.
         let done = fold("{\"op\":\"open\",\"id\":\"c\"}\n{\"op\":\"close\",\"ref\":\"c\",\"resolution\":\"done\",\"note\":\"failed\"}\n");
         assert_eq!((done[0].status.as_str(), done[0].note.as_str(), done[0].title.as_str()), (DONE, "failed", "c"));
+    }
+
+    /// Ticket feature-plan-view-a-tree-of-the-project: the arrows of the Plan view ride on `after`.
+    #[test]
+    fn the_fold_reads_after_without_the_own_id_doubles_and_unknown_ids() {
+        let text = [
+            json!({"op": "open", "id": "a", "title": "A"}),
+            json!({"op": "open", "id": "b", "title": "B", "after": ["a", "b", "a", "gone", "", 5]}),
+            json!({"op": "open", "id": "c", "title": "C", "after": ["a"]}),
+            json!({"op": "update", "ref": "c", "after": ["b"]}),
+            json!({"op": "update", "ref": "a", "title": "A2"}),
+            json!({"op": "open", "id": "d", "title": "D", "after": "a"}),
+        ]
+        .iter()
+        .map(|line| format!("{line}
+"))
+        .collect::<String>();
+        let tickets = fold(&text);
+        let after = |id: &str| tickets.iter().find(|ticket| ticket.id == id).unwrap().after.clone();
+        assert_eq!(after("a"), Vec::<String>::new(), "an update line without after keeps the list");
+        assert_eq!(after("b"), vec!["a".to_string()], "no own id, no double, no unknown id, only strings");
+        assert_eq!(after("c"), vec!["b".to_string()], "an update line replaces the whole list");
+        assert_eq!(after("d"), Vec::<String>::new(), "a value that is no array is no list");
+        // An update line with an empty array takes every arrow away.
+        let cleared = fold(&sample("a", None, None, &[json!({"op": "open", "id": "b", "after": ["a"]}), json!({"op": "update", "ref": "b", "after": []})]));
+        assert!(cleared[1].after.is_empty());
     }
 
     /// One open line of an id, with optional status and type, and its other lines.

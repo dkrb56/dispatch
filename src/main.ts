@@ -31,6 +31,7 @@ import { barHost, markedProject, showMark, watchArea } from "./focusmark";
 import { removeAnswer, removeTexts } from "./removeproject";
 import { type ColumnAction, type ColumnChoice, type ColumnTab, type FocusSplit, type TermSplit, applyAction, columnStates, columnTabs, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, parseTab, parseTermSplit, shareField, toggleSplit, toggleTermSplit } from "./focuslayout";
 import { chatSlotStep, type FoldPart, type Folds, foldOpen, parseFolds, setFold, splitNewest } from "./focuslists";
+import { flowTickets, notInFlow, PLAN_CARD_HEIGHT, PLAN_CARD_WIDTH, planBadges, planLayout, planStateWord } from "./plantree";
 import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode } from "./overview";
 import {
   allowanceLine,
@@ -877,7 +878,7 @@ async function openChat(chat: Chat): Promise<void> {
 async function openProjectChat(ref: ProjectRef, keepFocus = false, terminal?: { label: string } | { join: string }): Promise<string> {
   // The terminal of Open terminal in focus mode stays in focus mode (ticket when-terminal-is-open-in-focus-mode-it).
   const stay = keepFocus && focusOn;
-  if (!stay && (focusOn || mapOn || overviewOn)) await setView("tabs");
+  if (!stay && (focusOn || mapOn || overviewOn || planOn)) await setView("tabs");
   // Open terminal: a new session with the label of the project, or a joined pane that shows the
   // terminal of another window of the host (ticket if-terminal-in-non-triage-mode-is-opened).
   const join = terminal && "join" in terminal ? terminal.join : undefined;
@@ -10664,6 +10665,7 @@ function renderChats(): void {
   renderFocus();
   renderMap();
   renderOverview();
+  renderPlan();
   showProjectAttention();
   if (chatsEl.hidden) return;
   // A render replaces the cards. While the user types into one, the render waits for the blur.
@@ -11951,7 +11953,7 @@ function showOld(column: FocusColumn): void {
 function saveFocus(): void {
   try {
     // + Add project calls this in the Overview too: the Overview stays the saved view.
-    localStorage.setItem("view-mode", overviewOn ? "overview" : focusOn ? "focus" : "tabs");
+    localStorage.setItem("view-mode", overviewOn ? "overview" : planOn ? "plan" : focusOn ? "focus" : "tabs");
     localStorage.setItem("focus-projects", JSON.stringify(focusProjects));
   } catch {
     // The choice then applies until the app closes.
@@ -13506,6 +13508,9 @@ async function refreshFocusTasks(onlyWhenChanged = false): Promise<void> {
   // The squares below the line of the project rail show their badges too (ticket project-rail-at-the-left-edge-of-the).
   if (railShown()) for (const root of railProjects) roots.set(refKey(root), root);
   if (overviewOn) for (const root of overviewProjects()) roots.set(refKey(root), root);
+  // The project of the Plan view (ticket feature-plan-view-a-tree-of-the-project).
+  const planned = planOn ? planProject() : undefined;
+  if (planned) roots.set(refKey(planned), planned);
   // The board and the queue of the tickets (ticket tickets): a project with a New ticket or a card in flight.
   if (ticketsRef) roots.set(refKey(ticketsRef), ticketsRef);
   for (const pane of panes.values()) {
@@ -13551,6 +13556,7 @@ async function refreshFocusTasks(onlyWhenChanged = false): Promise<void> {
     renderFocus();
     renderMap();
     renderOverview();
+    renderPlan();
     renderTickets();
   } else if (changed || Date.now() - lastDrawAt >= DRAW_STALE_MS) {
     requestDraw();
@@ -13698,7 +13704,7 @@ function mapProjects(): ProjectRef[] {
   return workspaceRefs();
 }
 
-/** Switches between the four views. */
+/** Switches between the five views. */
 async function setView(mode: ViewMode): Promise<void> {
   // A chat tab that shows in a triage pane goes back to its tab before a mode moves the triage pane.
   if (mode !== "tabs" && shownChat) {
@@ -13707,6 +13713,16 @@ async function setView(mode: ViewMode): Promise<void> {
   }
   // The Chat views go back into their panes first: Focus moves the panes, a tab shows them.
   if (overviewOn && mode !== "overview") showOverview(false);
+  if (planOn && mode !== "plan") showPlan(false);
+  if (mode === "plan") {
+    if (mapOn) showMap(false);
+    if (focusOn) await setFocus(false);
+    // Last, so that its word is the marked one.
+    showPlan(true);
+    renderPills();
+    redrawStatusBar();
+    return;
+  }
   if (mode === "overview") {
     if (mapOn) showMap(false);
     if (focusOn) await setFocus(false);
@@ -14387,6 +14403,251 @@ function showOverview(on: boolean): void {
   }
   renderOverview();
   void refreshFocusTasks();
+}
+
+// ---------------------------------------------------------------------------------------------
+// The Plan view (ticket feature-plan-view-a-tree-of-the-project): the tickets of one project as a
+// tree on the dots of the Overview. An arrow A → B means "B starts when A is done"; the arrows are the
+// field `after` of each ticket. The rules of the tree are in plantree.ts. This step is read-only:
+// the selection, the comments and groups and Plan the flow come in the parts after it.
+
+const planEl = document.querySelector<HTMLElement>("#plan")!;
+/** The Plan view is on. The choice is in localStorage `view-mode`. */
+let planOn = false;
+/** The parts of the view; made once, so a render keeps the scroll of the board and an open select. */
+const planToolbarEl = mapElement("div", "plan-toolbar");
+const planSelectEl = mapElement("select", "plan-project");
+const planCountEl = mapElement("span", "plan-count");
+const planBoardEl = mapElement("div", "plan-board");
+const planSideEl = mapElement("aside", "plan-side");
+const PLAN_PROJECT_KEY = "plan-project";
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+{
+  const label = mapElement("label", "plan-project-label", "Project ");
+  label.append(planSelectEl);
+  planSelectEl.title = "The project whose tickets the tree shows";
+  planToolbarEl.append(label, planCountEl);
+  const body = mapElement("div", "plan-body");
+  body.append(planBoardEl, planSideEl);
+  planEl.append(planToolbarEl, body);
+  planSelectEl.addEventListener("change", () => {
+    try {
+      localStorage.setItem(PLAN_PROJECT_KEY, planSelectEl.value);
+    } catch {
+      // The choice then applies until the app closes.
+    }
+    renderPlan();
+    void refreshFocusTasks();
+  });
+}
+
+/** The projects of the select: the ones of the Map (focus mode, else the open workspaces). */
+function planProjects(): ProjectRef[] {
+  return mapProjects();
+}
+
+/** The project of the view: the saved one, else the current one of Focus, else the first one. */
+function planProject(): ProjectRef | undefined {
+  const refs = planProjects();
+  let saved: string | null = null;
+  try {
+    saved = localStorage.getItem(PLAN_PROJECT_KEY);
+  } catch {
+    // No saved project.
+  }
+  return refs.find((ref) => refKey(ref) === saved) ?? refs.find((ref) => refKey(ref) === focusCurrent) ?? refs[0];
+}
+
+/** Shows or hides the Plan view. */
+function showPlan(on: boolean): void {
+  planOn = on;
+  document.body.classList.toggle("plan-mode", on);
+  planEl.hidden = !on;
+  if (!on) return;
+  panesEl.hidden = true;
+  for (const button of document.querySelectorAll<HTMLButtonElement>("#view-mode button")) {
+    button.classList.toggle("active", button.dataset.mode === "plan");
+  }
+  try {
+    localStorage.setItem("view-mode", "plan");
+  } catch {
+    // The choice then applies until the app closes.
+  }
+  renderPlan();
+  void refreshFocusTasks();
+}
+
+/** What a card of the Plan view shows of a ticket: the state word, the detail, and the colour of its dot. */
+interface PlanCardState {
+  word: string;
+  detail: string;
+  /** The start of a run that goes on: the ticker moves the detail on. */
+  since?: number;
+  dot: string;
+}
+
+function planCardState(ticket: Ticket, queueIds: string[], record: ProjectTasks): PlanCardState {
+  if (ticket.status !== "in-progress") {
+    const word = planStateWord(ticket.status, null);
+    const end = endWord(ticket);
+    const detail = ticket.status === "new" ? `#${queueIds.indexOf(ticket.id) + 1} in the queue` : end && end.toLowerCase() !== word.toLowerCase() ? end : "";
+    return { word, detail, dot: endFailed(ticket) ? "failed" : ticket.status };
+  }
+  const task = projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id));
+  if (!task) return { word: planStateWord(ticket.status, null), detail: "", dot: "in-progress" };
+  const status = taskStatus(task);
+  const word = planStateWord(ticket.status, taskPhase(task));
+  const live = task.workers.find((worker) => LIVE_STATES.includes(worker.state ?? ""));
+  const dot = status.kind === "waits" ? "waits" : status.kind === "failed" ? "failed" : "in-progress";
+  if (live && live.state === "working") {
+    const time = nodeTime(live);
+    if (time.took) return { word, detail: time.took, since: time.since, dot };
+  }
+  return { word, detail: status.text, dot };
+}
+
+/** An element of the SVG of the arrows. */
+function planSvg<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number>): SVGElementTagNameMap[K] {
+  const made = document.createElementNS(SVG_NS, tag);
+  for (const [name, value] of Object.entries(attrs)) made.setAttribute(name, String(value));
+  return made;
+}
+
+/** A curve from the bottom middle of one card to the top middle of another. */
+function planCurve(x1: number, y1: number, x2: number, y2: number): string {
+  const bend = Math.max(40, Math.abs(y2 - y1) / 2);
+  return `M ${x1} ${y1} C ${x1} ${y1 + bend}, ${x2} ${y2 - bend}, ${x2} ${y2}`;
+}
+
+const PLAN_BADGE_TEXT: Record<"next" | "early", string> = { next: "Next up", early: "Started early" };
+
+/** Draws the toolbar, the tree and the side panel of the project of the view. */
+function renderPlan(): void {
+  if (!planOn) return;
+  const refs = planProjects();
+  const ref = planProject();
+  // The select changes only when the projects change, so an open select stays open.
+  const options = refs.map((one) => `${refKey(one)}\n${projectName(one)}`).join("\n\n");
+  if (planSelectEl.dataset.options !== options) {
+    planSelectEl.dataset.options = options;
+    planSelectEl.replaceChildren(
+      ...refs.map((one) => {
+        const option = mapElement("option", "", projectName(one));
+        option.value = refKey(one);
+        return option;
+      }),
+    );
+  }
+  if (ref) planSelectEl.value = refKey(ref);
+  planSelectEl.disabled = refs.length === 0;
+  if (!ref) {
+    planCountEl.textContent = "";
+    planBoardEl.replaceChildren(mapElement("p", "map-muted map-none", "No project with an open workspace. Click + in the bar and select a project folder, or open a workspace."));
+    planSideEl.replaceChildren();
+    return;
+  }
+  const record = projectTasks.get(refKey(ref));
+  if (!record) {
+    planCountEl.textContent = "";
+    planBoardEl.replaceChildren(mapElement("p", "map-muted map-none", "Reading the tickets…"));
+    planSideEl.replaceChildren();
+    return;
+  }
+  // The board order: the columns of the board, each in its own order.
+  const tickets = COLUMNS.flatMap((column) => columnTickets(record.tickets, column.status));
+  const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]));
+  const queueIds = queueOrder(record.tickets).map((ticket) => ticket.id);
+  const layout = planLayout(tickets);
+  const badges = planBadges(tickets);
+  const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+  planCountEl.textContent = `${plural(layout.cards.length, "ticket")} in the flow · ${plural(layout.arrows.length, "arrow")}`;
+
+  const canvas = mapElement("div", "plan-canvas");
+  canvas.style.width = `${layout.width}px`;
+  canvas.style.height = `${layout.height}px`;
+  const svg = planSvg("svg", { class: "plan-wires", width: layout.width, height: layout.height, "aria-hidden": "true" });
+  const marker = planSvg("marker", { id: "plan-head", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: "auto-start-reverse" });
+  marker.append(planSvg("path", { d: "M 0 1 L 9 5 L 0 9 z", class: "plan-head" }));
+  const defs = planSvg("defs", {});
+  defs.append(marker);
+  svg.append(defs);
+  const place = new Map(layout.cards.map((card) => [card.id, card]));
+  const half = PLAN_CARD_WIDTH / 2;
+  for (const id of layout.rootLines) {
+    const card = place.get(id);
+    if (card) svg.append(planSvg("path", { class: "plan-root-line", d: planCurve(layout.root.x + half, layout.root.y + PLAN_CARD_HEIGHT, card.x + half, card.y) }));
+  }
+  for (const arrow of layout.arrows) {
+    const from = place.get(arrow.from);
+    const to = place.get(arrow.to);
+    if (!from || !to) continue;
+    const path = planSvg("path", { class: "plan-arrow", d: planCurve(from.x + half, from.y + PLAN_CARD_HEIGHT, to.x + half, to.y - 2), "marker-end": "url(#plan-head)" });
+    const title = planSvg("title", {});
+    title.textContent = `${arrow.to} starts when ${arrow.from} is done`;
+    path.append(title);
+    svg.append(path);
+  }
+  canvas.append(svg);
+
+  const root = mapElement("div", "plan-card plan-root");
+  root.style.left = `${layout.root.x}px`;
+  root.style.top = `${layout.root.y}px`;
+  root.title = ref.root;
+  root.append(mapElement("span", "plan-root-name", projectName(ref)), mapElement("span", "plan-state", plural(tickets.length, "ticket")));
+  canvas.append(root);
+  for (const card of layout.cards) {
+    const ticket = byId.get(card.id);
+    if (!ticket) continue;
+    const state = planCardState(ticket, queueIds, record);
+    const badge = badges.get(ticket.id) ?? null;
+    const el = mapElement("div", `plan-card plan-ticket ${ticket.status}`);
+    el.dataset.ticket = ticket.id;
+    el.style.left = `${card.x}px`;
+    el.style.top = `${card.y}px`;
+    el.title = ticket.title;
+    const top = mapElement("div", "plan-card-top");
+    const dot = mapElement("span", `plan-dot ${state.dot}`);
+    dot.setAttribute("aria-hidden", "true");
+    top.append(dot, mapElement("span", "plan-name", ticket.id));
+    const line = mapElement("div", "plan-state", state.word);
+    if (state.detail) {
+      line.append(" · ");
+      const detail = mapElement("span", "", state.detail);
+      if (state.since) detail.dataset.runSince = String(state.since);
+      line.append(detail);
+    }
+    if (badge === "waits") line.append(mapElement("span", "plan-waits", " · waits"));
+    el.append(top, line);
+    if (badge === "next" || badge === "early") el.append(mapElement("span", `plan-badge ${badge}`, PLAN_BADGE_TEXT[badge]));
+    canvas.append(el);
+  }
+  const children: HTMLElement[] = [canvas];
+  if (flowTickets(tickets).length === 0) children.push(mapElement("p", "map-muted plan-empty", "No ticket of this project has an arrow yet."));
+  planBoardEl.replaceChildren(...children);
+
+  // The side panel without a selection: Next up, Started early, Not in the flow.
+  const list = (title: string, items: readonly Ticket[], none: string) => {
+    const section = mapElement("section", "plan-side-part");
+    section.append(mapElement("h3", "", `${title} (${items.length})`));
+    if (items.length === 0) section.append(mapElement("p", "plan-none", none));
+    for (const ticket of items) {
+      const row = mapElement("div", "plan-side-row");
+      row.title = ticket.title;
+      const state = planCardState(ticket, queueIds, record);
+      const dot = mapElement("span", `plan-dot ${state.dot}`);
+      dot.setAttribute("aria-hidden", "true");
+      row.append(dot, mapElement("span", "plan-name", ticket.id), mapElement("span", "plan-side-state", state.word));
+      section.append(row);
+    }
+    return section;
+  };
+  const withBadge = (wanted: "next" | "early") => tickets.filter((ticket) => badges.get(ticket.id) === wanted);
+  planSideEl.replaceChildren(
+    list("Next up", withBadge("next"), "No ticket is next up."),
+    list("Started early", withBadge("early"), "No ticket started early."),
+    list("Not in the flow", notInFlow(tickets), "Every open ticket has an arrow."),
+  );
 }
 
 /** The duration of a running worker moves on this often. */

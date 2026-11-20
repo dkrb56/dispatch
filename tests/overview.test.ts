@@ -382,7 +382,7 @@ test("the Overview card has three parts with their empty texts (overview-backlog
 });
 
 test("the saved view", () => {
-  for (const mode of ["overview", "map", "focus", "tabs"]) assert.equal(savedView(mode), mode);
+  for (const mode of ["overview", "map", "focus", "tabs", "plan"]) assert.equal(savedView(mode), mode);
   for (const text of [null, "", "nonsense", "Overview"]) assert.equal(savedView(text), "tabs");
 });
 
@@ -463,9 +463,10 @@ test("the canvas shows one dot per slot of the grid, under the corner of each ca
   assert.equal(margin.length, 4, ".overview-card has a margin of four values");
   const [top, , , left] = margin;
   assert.equal(last("#overview", "background-position"), `${left - OVERVIEW_GRID / 2}px ${top - OVERVIEW_GRID / 2}px`);
-  // Only the Overview has a background that scrolls with its content: Focus, Tabs and the Map get no grid.
+  // Only the Overview and the board of the Plan view (ticket feature-plan-view-a-tree-of-the-project) have a
+  // background that scrolls with its content: Focus, Tabs and the Map get no grid.
   const scrolling = all.filter((rule) => rule.declarations.some(([name]) => name === "background-attachment"));
-  assert.deepEqual(scrolling.flatMap((rule) => rule.selectors), ["#overview"]);
+  assert.deepEqual(scrolling.flatMap((rule) => rule.selectors), ["#overview", "#plan .plan-board"]);
   // The Help says what the dots are.
   const help = /<h3>Overview<\/h3>[\s\S]*?<ul>([\s\S]*?)<\/ul>/.exec(HTML)?.[1] ?? "";
   assert.match(help, /dots/);

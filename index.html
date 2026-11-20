@@ -15,6 +15,7 @@
         <button data-mode="tabs" title="The workspace of the open project below the bar, the chat list and the group of the current project">Details</button>
         <button data-mode="map" title="The Map: each project with its tasks, runs and agents, and what waits for you; a click on a run shows what its worker does">Map</button>
         <button data-mode="overview" title="One card for each project: the tasks in work, the newest finished tasks, its tickets, and a message box to its triage chat, without the chat history">Overview</button>
+        <button data-mode="plan" title="The Plan: the tickets of one project as a tree; an arrow shows which ticket starts when another is done">Plan</button>
       </div>
       <div id="bar-projects" role="group" aria-label="Projects">
         <div id="focus-projects"></div>
@@ -74,6 +75,7 @@
       <main id="focus" hidden></main>
       <main id="map" hidden></main>
       <main id="overview" hidden></main>
+      <main id="plan" hidden></main>
     </div>
     <footer id="status-bar">
       <span id="status-account">…</span>
@@ -828,6 +830,27 @@
             <li><b>Record of a question from the screen.</b> Claude Code writes a question into the chat only after your answer, so Dispatch reads the open question from the terminal. Each read goes into a file in the folder <code>menu-reads</code> in the data folder of Dispatch, named <code>menu-&lt;date&gt;-&lt;time&gt;-&lt;pane&gt;.json</code>.</li>
             <li>The file holds the screen text of each read, which lines the terminal wrapped, the question and the options that Dispatch made of it, and the times. Dispatch keeps the newest 50 files. When a question shows a wrong text or wrong buttons, give the newest file to triage with your report.</li>
             <li>A click on the name of a project opens it in Focus, or in its tab when focus mode does not have it. A click on a run opens the agent view of the project the same way. Dispatch remembers the Overview at the next start.</li>
+          </ul>
+        </details>
+
+        <h3>Plan</h3>
+        <p class="tldr">The tickets of one project as a tree: an arrow shows what waits for what.</p>
+        <ul>
+          <li><b>Plan</b> at the left of the bar opens it. The select in its toolbar picks the project.</li>
+          <li>An arrow from A to B means: B starts when A is done. The tickets that come first stand at the top.</li>
+          <li>The root card at the top names the project. A dashed line goes from it to each ticket that comes after no other ticket.</li>
+          <li>Each card shows a status dot, the ticket name and its state, for example "Work run · 18 min".</li>
+          <li><b>Next up</b>: the ticket is in New or Backlog, and every ticket before it is done. <b>Started early</b>: the ticket is in work, but a ticket before it is not done. "· waits" shows on a New or Backlog ticket that still waits.</li>
+          <li>The side panel lists the tickets that are next up, the tickets that started early, and the open tickets without arrows ("Not in the flow").</li>
+        </ul>
+        <details class="help-more">
+          <summary>Details</summary>
+          <ul>
+            <li>Each ticket stands in the row of the longest chain of arrows above it. Inside a row, the cards go by the mean place of the tickets they come after, then by the board order. Dispatch calculates the tree again after each change; you cannot drag the cards.</li>
+            <li>A canceled ticket counts as done: it does not hold up the tickets after it.</li>
+            <li>Dispatch keeps the arrows in the tickets file of the project, with each ticket. A renamed ticket keeps its arrows. An arrow to a ticket that is not in the file does not show.</li>
+            <li>In this version the tree is read-only. You cannot select cards, add comments or groups, or draw arrows yet.</li>
+            <li>The cards stand on the dots of the 50 px grid, as in the Overview. Dispatch remembers the Plan view and its project at the next start.</li>
           </ul>
         </details>
 
