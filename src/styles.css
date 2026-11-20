@@ -2518,6 +2518,11 @@ button.task-head:hover {
   border-color: var(--wait-line);
 }
 
+/* Ticket tickets-which-are-waiting-for-me-should: an In progress card whose task waits for the user. */
+.ticket-card.in-progress.waits {
+  border-color: var(--wait);
+}
+
 .ticket-card.canceled {
   opacity: 0.75;
 }

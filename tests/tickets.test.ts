@@ -1000,3 +1000,12 @@ test("the copy button of a task card copies the ticket id", () => {
   assert.match(CSS, /\.task-copy \{/);
   assert.ok(HTML.includes("<b>Copy button.</b>"), "the Help item");
 });
+
+test("an In progress ticket that waits for the user has an orange frame", () => {
+  const card = MAIN.slice(MAIN.indexOf("function ticketCard("), MAIN.indexOf("function startTicketDrag("));
+  assert.match(card, /taskAttentionWait\(ticketTask\)/);
+  assert.match(card, /classList\.add\("waits"\)/);
+  assert.match(CSS, /\.ticket-card\.in-progress\.waits \{\s*border-color: var\(--wait\);/);
+  const help = HTML.slice(HTML.indexOf("<h3>Tickets</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
+  assert.ok(help.includes("orange frame"), "the Help sentence");
+});
