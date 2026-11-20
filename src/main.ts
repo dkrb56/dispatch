@@ -11755,6 +11755,8 @@ interface FocusColumn {
   boardEl: HTMLElement;
   boardNoteEl: HTMLElement;
   boardCountEl: HTMLElement;
+  /** The search box of the board (ticket add-search-to-ticket-board); its text narrows the five columns. */
+  boardSearchEl: HTMLInputElement;
   boardColumnsEl: HTMLElement;
   /** The Commands terminals of the project, below the chat. Hidden without one. */
   commandsEl: HTMLElement;
@@ -12437,7 +12439,13 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   terminal.addEventListener("click", () => void openProjectTerminal(ref));
   // The note shows only in a project with "No triage"; `renderFocus` hides it in the others.
   const boardNoteEl = mapElement("span", "focus-board-note", NO_TRIAGE_NOTE);
-  boardHead.append(terminal, boardNoteEl, boardCountEl);
+  // The search of the board (ticket add-search-to-ticket-board): in the head, outside the columns,
+  // so typing in it does not hold the render of the columns.
+  const boardSearchEl = mapElement("input", "focus-board-search");
+  boardSearchEl.type = "search";
+  boardSearchEl.placeholder = "Search tickets";
+  boardSearchEl.setAttribute("aria-label", `Search the tickets of ${projectName(ref)}`);
+  boardHead.append(terminal, boardNoteEl, boardCountEl, boardSearchEl);
   // The large auto-start switch above the board (ticket i-need-more-prominent-button-for).
   const autoEl = mapElement("div", "auto-switch");
   autoEl.dataset.project = key;
@@ -12494,7 +12502,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   dragTerm(termHandle, key, termEl, workEl);
   dragColumns(colHandle, key, el);
   const tab = focusSizes()[key]?.tab;
-  const column: FocusColumn = { host, root, el, dotEl, pathEl, sideEl, tabButtons, ticketsCountEl, workersCountEl, tab, triageEl, boardEl, boardNoteEl, boardCountEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, workEl, termSplitEl, detailsEl, detailsOn: false, agentsEl, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, restoreEl, colHandle };
+  const column: FocusColumn = { host, root, el, dotEl, pathEl, sideEl, tabButtons, ticketsCountEl, workersCountEl, tab, triageEl, boardEl, boardNoteEl, boardCountEl, boardSearchEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, workEl, termSplitEl, detailsEl, detailsOn: false, agentsEl, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, restoreEl, colHandle };
   // A click anywhere on a strip brings the column back; a button or a drag edge keeps its own action.
   el.addEventListener("click", (event) => {
     if (!el.classList.contains("min")) return;
@@ -12508,6 +12516,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
     button.addEventListener("click", () => setColumnTab(column, name));
   }
   detailsEl.addEventListener("click", () => setColumnDetails(column, !column.detailsOn));
+  boardSearchEl.addEventListener("input", () => renderFocusBoard(column, false));
   close.addEventListener("click", () => askRemoveProject(ref));
   // The column that the user works in is the project of Setup and Rules: a click in it (not on a
   // drag edge) or the keyboard arriving in it.
@@ -12639,12 +12648,14 @@ function renderFocusBoard(column: FocusColumn, takeFocus: boolean): void {
   if (typingIn(column.boardColumnsEl)) return;
   const record = projectTasks.get(projectKey(column.host, column.root));
   const count = record?.tickets.length ?? 0;
-  column.boardCountEl.textContent = record ? `${count} ${count === 1 ? "ticket" : "tickets"}` : "Reading…";
+  const search = column.boardSearchEl.value;
+  const shown = record && search.trim() ? record.tickets.filter((t) => ticketMatches(t, search)).length : count;
+  column.boardCountEl.textContent = !record ? "Reading…" : search.trim() ? `${shown} of ${count} tickets` : `${count} ${count === 1 ? "ticket" : "tickets"}`;
   const scrolls = new Map<string, number>();
   for (const one of column.boardColumnsEl.querySelectorAll<HTMLElement>(".tickets-column")) {
     scrolls.set(one.dataset.status ?? "", one.querySelector(".tickets-list")?.scrollTop ?? 0);
   }
-  fillTicketColumns(column.boardColumnsEl, projectKey(column.host, column.root), "");
+  fillTicketColumns(column.boardColumnsEl, projectKey(column.host, column.root), column.boardSearchEl.value);
   for (const one of column.boardColumnsEl.querySelectorAll<HTMLElement>(".tickets-column")) {
     const list = one.querySelector(".tickets-list");
     if (list) list.scrollTop = scrolls.get(one.dataset.status ?? "") ?? 0;

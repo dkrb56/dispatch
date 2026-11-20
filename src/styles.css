@@ -8029,6 +8029,19 @@ body.chats-sized .focus-side {
   font-size: calc(12px * var(--text-scale));
 }
 
+/* The search box of the board in Focus (ticket add-search-to-ticket-board), at the right end of the head. */
+.focus-board-search {
+  flex: 0 1 200px;
+  min-width: 90px;
+  margin-left: auto;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
 .focus-terminal-button {
   flex: none;
   padding: 4px 10px;

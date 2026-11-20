@@ -551,7 +551,7 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   assert.match(MAIN, /if \(triage \|\| \(agents && projectNoTriage\(refKey\(ref\)\)\)\) return;/);
   // User decision 2: the note and a Chat button where triage would stand (in Focus, above the tickets board).
   assert.match(MAIN, /const NO_TRIAGE_NOTE = "No triage in this project";/);
-  assert.match(MAIN, /const boardNoteEl = mapElement\("span", "focus-board-note", NO_TRIAGE_NOTE\);\n  boardHead\.append\(terminal, boardNoteEl, boardCountEl\);/);
+  assert.match(MAIN, /const boardNoteEl = mapElement\("span", "focus-board-note", NO_TRIAGE_NOTE\);\n[\s\S]*?\n  boardHead\.append\(terminal, boardNoteEl, boardCountEl, boardSearchEl\);/);
   assert.match(MAIN, /mapElement\("button", "focus-terminal-button", "Open terminal"\)/);
   assert.match(MAIN, /async function openProjectTerminal\([\s\S]*?panes\.has\(kept\)\) return;/);
   assert.match(CSS, /\.focus-terminal-button \{/);
@@ -584,7 +584,7 @@ test("no triage: Focus shows the tickets board where triage would stand", () => 
   // One drawing for the window and the Focus board; each column names its project.
   const board = MAIN.slice(MAIN.indexOf("function renderFocusBoard("), MAIN.indexOf("function renderFocusBoards("));
   assert.match(board, /if \(typingIn\(column\.boardColumnsEl\)\) return;/);
-  assert.match(board, /fillTicketColumns\(column\.boardColumnsEl, projectKey\(column\.host, column\.root\), ""\);/);
+  assert.match(board, /fillTicketColumns\(column\.boardColumnsEl, projectKey\(column\.host, column\.root\), column\.boardSearchEl\.value\);/);
   assert.match(MAIN, /fillTicketColumns\(ticketsColumnsEl, key, ticketsSearchEl\.value\);/);
   assert.match(MAIN, /column\.dataset\.project = key;/);
   // renderTickets draws the Focus boards before the return of a closed window.
@@ -597,6 +597,24 @@ test("no triage: Focus shows the tickets board where triage would stand", () => 
   assert.match(CSS, /#tickets-columns,\n\.focus-board \.tickets-columns \{/);
   assert.match(CSS, /\.focus-board \{\n  display: flex;\n  flex: 1;/);
   assert.match(HTML, /A project with <b>No triage<\/b> shows its tickets board in the main panel of its column/);
+});
+
+test("focus board: a search box in the head narrows the columns (ticket add-search-to-ticket-board)", () => {
+  const make = MAIN.slice(MAIN.indexOf("function focusColumn("), MAIN.indexOf("function renderFocusBoard("));
+  assert.match(make, /const boardSearchEl = mapElement\("input", "focus-board-search"\);/);
+  assert.match(make, /boardSearchEl\.type = "search";/);
+  assert.match(make, /boardSearchEl\.placeholder = "Search tickets";/);
+  assert.match(make, /boardCountEl, boardSearchEl, boardColumnsEl/, "the column keeps its own box");
+  // The listener comes after the column object, and never moves the keyboard.
+  assert.ok(make.indexOf('boardSearchEl.addEventListener("input", () => renderFocusBoard(column, false));') > make.indexOf("const column: FocusColumn = {"), "listener after the column");
+  assert.match(MAIN, /boardSearchEl: HTMLInputElement;/);
+  // User decision 2: the count says how many tickets match while the box has text.
+  const board = MAIN.slice(MAIN.indexOf("function renderFocusBoard("), MAIN.indexOf("function renderFocusBoards("));
+  assert.match(board, /record\.tickets\.filter\(\(t\) => ticketMatches\(t, search\)\)\.length/);
+  assert.match(board, /`\$\{shown\} of \$\{count\} tickets`/);
+  assert.match(CSS, /\.focus-board-search \{\n  flex: 0 1 200px;/);
+  assert.match(HTML, /The tickets board has a search box in its head: it finds a ticket by its title, its words, its id or its type/);
+  assert.match(HTML, /Each column keeps its own search until Dispatch restarts\./);
 });
 
 test("no triage: the done and failed alerts come from the announcements of a poll", () => {
