@@ -112,3 +112,19 @@ function diffClass(line: string, inHunk: boolean): DiffClass {
 export function uncommittedText(count: number): string {
   return `Uncommitted changes · ${count} ${count === 1 ? "file" : "files"}`;
 }
+
+/** The label of the file list of a past commit (ticket when-i-click-on-branch-i-need-to-see): "Files of a1b2c3d · 4". */
+export function commitFilesLabel(short: string, count: number): string {
+  return `Files of ${short} · ${count}`;
+}
+
+/**
+ * The head line of the commit block above the diff: the short hash, the author and the age. A merge
+ * says that its files are the changes against the first parent; a root commit says that it is the first.
+ */
+export function commitHeadText(commit: { short: string; author: string; time: number; parents: string[] }, nowMs: number): string {
+  const parts = [commit.short, commit.author, ageText(commit.time, nowMs)];
+  if (commit.parents.length > 1) parts.push("merge: changes against the first parent");
+  else if (commit.parents.length === 0) parts.push("first commit");
+  return parts.join(" · ");
+}

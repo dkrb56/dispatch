@@ -66,6 +66,8 @@ pub fn run() {
             commands::task_commit_preview,
             commands::git_state,
             commands::git_file_diff,
+            commands::git_commit,
+            commands::git_commit_diff,
             commands::task_commit_message,
             commands::task_commit,
             commands::set_project_options,

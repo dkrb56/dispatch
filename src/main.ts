@@ -156,7 +156,7 @@ import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./atten
 import { alertOptions, compactOn, initOptions, openOptions, ownHostRuns, phoneTabWanted, pulseOn, stopOwnHost, useOwnHost } from "./options";
 import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
-import { GIT_STATE_SIZE_KEY, ageText, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "./gitstate";
+import { GIT_STATE_SIZE_KEY, ageText, commitFilesLabel, commitHeadText, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "./gitstate";
 import { initRules, openRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
 import { terminalTheme, themeName, themeTokens } from "./theme";
@@ -5839,6 +5839,17 @@ interface GitState {
   more: boolean;
 }
 
+/** What the command git_commit gives: one past commit with its full message and its changed files. */
+interface GitCommit {
+  hash: string;
+  short: string;
+  author: string;
+  time: number;
+  parents: string[];
+  message: string;
+  files: GitFile[];
+}
+
 const gitStateDialog = document.querySelector<HTMLDialogElement>("#git-state")!;
 /** The project whose git state the window shows. */
 let gitStateRef: ProjectRef | null = null;
@@ -5848,6 +5859,12 @@ let gitStatePath = "";
 let gitStateOpening = 0;
 /** Counts the reads of a file diff, so a late diff of another file changes nothing. */
 let gitStateDiffRead = 0;
+/** The hash of the commit that the window shows (ticket when-i-click-on-branch-i-need-to-see); null for the uncommitted changes. */
+let gitStateCommit: string | null = null;
+/** Counts the reads of a commit, so a late answer for another commit changes nothing. */
+let gitStateCommitRead = 0;
+/** The last git state that the window drew; the way back to the uncommitted changes uses it. */
+let gitStateLast: GitState | null = null;
 
 /**
  * Opens the Git state window of a project (ticket add-git-state-button-to-the-project): the history of
@@ -5856,6 +5873,9 @@ let gitStateDiffRead = 0;
 function openGitState(ref: ProjectRef): void {
   gitStateRef = ref;
   gitStatePath = "";
+  gitStateCommit = null;
+  gitStateLast = null;
+  document.querySelector<HTMLElement>("#git-state-commit")!.hidden = true;
   document.querySelector("#git-state-title")!.textContent = `Git state of ${projectName(ref)}`;
   document.querySelector("#git-state-head")!.textContent = "";
   document.querySelector("#git-state-history")!.replaceChildren();
@@ -5890,59 +5910,147 @@ function readGitState(): void {
     });
 }
 
+/** Makes a line of the window answer a click, Enter and Space. */
+function gitStatePickable(item: HTMLElement, pick: () => void): void {
+  item.tabIndex = 0;
+  item.addEventListener("click", pick);
+  item.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      pick();
+    }
+  });
+}
+
 function drawGitState(ref: ProjectRef, state: GitState): void {
+  gitStateLast = state;
   document.querySelector("#git-state-head")!.textContent = state.inGit ? headLine(state) : "";
   const now = Date.now();
   const history: HTMLElement[] = [];
-  if (state.files.length > 0) history.push(mapElement("li", "git-state-uncommitted", uncommittedText(state.files.length)));
+  if (state.files.length > 0) {
+    const uncommitted = mapElement("li", "git-state-uncommitted", uncommittedText(state.files.length));
+    uncommitted.title = "Show the uncommitted changes";
+    gitStatePickable(uncommitted, () => showGitUncommitted(ref));
+    history.push(uncommitted);
+  }
   for (const row of state.rows) {
     const item = mapElement("li", row.hash ? "git-state-commit" : "git-state-join");
     item.append(mapElement("span", "git-state-graph", row.graph));
     if (row.hash) {
       const chips = refChips(row.refs).map((chip) => mapElement("span", `git-state-chip ${chip.kind}`, chip.text));
       item.append(...chips, mapElement("span", "git-state-subject", row.subject), mapElement("span", "git-state-age", ageText(row.time, now)));
-      item.title = `${row.hash}\n${row.author} · ${new Date(row.time * 1000).toLocaleString()}\n${row.subject}`;
+      item.title = `${row.hash}\n${row.author} · ${new Date(row.time * 1000).toLocaleString()}\n${row.subject}\nClick to see its message, its files and their changes`;
+      item.dataset.hash = row.hash;
+      gitStatePickable(item, () => showGitCommit(ref, row.hash));
     }
     history.push(item);
   }
   if (state.more) history.push(mapElement("li", "git-state-more", "Only the newest 100 commits show."));
   if (state.inGit && state.rows.length === 0) history.push(mapElement("li", "git-state-more", "No commits yet."));
   document.querySelector("#git-state-history")!.replaceChildren(...history);
-  document.querySelector("#git-state-files-label")!.textContent = `Changes · ${state.files.length}`;
-  const list = document.querySelector<HTMLUListElement>("#git-state-files")!;
-  const items = state.files.map((file) => {
+  // After a Refresh, the selected commit stays when it still shows; else the uncommitted changes show.
+  const commit = gitStateCommit;
+  if (commit && state.rows.some((row) => row.hash === commit)) {
+    showGitCommit(ref, commit);
+  } else {
+    showGitUncommitted(ref);
+  }
+}
+
+/** Marks the selected line of the history: the commit of the window, or the uncommitted line. */
+function markGitHistory(): void {
+  for (const item of document.querySelectorAll<HTMLElement>("#git-state-history .git-state-commit")) {
+    item.classList.toggle("selected", item.dataset.hash === gitStateCommit);
+  }
+  document.querySelector("#git-state-history .git-state-uncommitted")?.classList.toggle("selected", gitStateCommit === null);
+}
+
+/** The lines of a file list; a click on a line shows the changes of its file. */
+function gitFileItems(files: GitFile[], pick: (file: GitFile) => void): HTMLElement[] {
+  return files.map((file) => {
     const item = mapElement("li", "git-state-file");
-    item.tabIndex = 0;
     item.dataset.path = file.path;
     item.title = file.old ? `${statusWord(file.status)}: ${file.old} → ${file.path}` : `${statusWord(file.status)}: ${file.path}`;
     item.append(mapElement("span", `git-state-status ${statusWord(file.status)}`, statusLetter(file.status)), mapElement("span", "git-state-path", file.old ? `${file.old} → ${file.path}` : file.path));
-    const pick = (): void => showGitDiff(ref, file);
-    item.addEventListener("click", pick);
-    item.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        pick();
-      }
-    });
+    gitStatePickable(item, () => pick(file));
     return item;
   });
-  list.replaceChildren(...items);
+}
+
+/** Empties the diff pane and shows a note in it. */
+function clearGitDiff(note: string): void {
+  gitStatePath = "";
+  document.querySelector("#git-state-diff-name")!.textContent = "";
+  const diff = document.querySelector("#git-state-diff")!;
+  diff.replaceChildren();
+  if (note) diff.append(mapElement("div", "git-state-diff-note", note));
+}
+
+/** Shows the uncommitted files of the last git state in the Changes list, and the changes of one of them. */
+function showGitUncommitted(ref: ProjectRef): void {
+  const state = gitStateLast;
+  if (!state) return;
+  gitStateCommit = null;
+  gitStateCommitRead++;
+  markGitHistory();
+  document.querySelector<HTMLElement>("#git-state-commit")!.hidden = true;
+  document.querySelector("#git-state-files-label")!.textContent = `Changes · ${state.files.length}`;
+  const list = document.querySelector<HTMLUListElement>("#git-state-files")!;
+  list.replaceChildren(...gitFileItems(state.files, (file) => showGitDiff(ref, file, null)));
   if (state.inGit && state.files.length === 0) list.append(mapElement("li", "git-state-clean", "No uncommitted changes."));
   // The file of the last read stays selected; else the first file.
   const selected = state.files.find((file) => file.path === gitStatePath) ?? state.files[0];
   if (selected) {
-    showGitDiff(ref, selected);
+    showGitDiff(ref, selected, null);
   } else {
-    gitStatePath = "";
-    document.querySelector("#git-state-diff-name")!.textContent = "";
-    const diff = document.querySelector("#git-state-diff")!;
-    diff.replaceChildren();
-    if (state.inGit) diff.append(mapElement("div", "git-state-diff-note", "No uncommitted changes."));
+    gitStateDiffRead++;
+    clearGitDiff(state.inGit ? "No uncommitted changes." : "");
   }
 }
 
-/** Reads the changes of one file and shows them on the right. */
-function showGitDiff(ref: ProjectRef, file: GitFile): void {
+/**
+ * Reads one past commit (ticket when-i-click-on-branch-i-need-to-see) and shows it: its message above
+ * the diff, its files in the Changes list, and the changes of one file. A merge shows its changes
+ * against the first parent.
+ */
+function showGitCommit(ref: ProjectRef, hash: string): void {
+  gitStateCommit = hash;
+  markGitHistory();
+  const read = ++gitStateCommitRead;
+  gitStateDiffRead++;
+  const opening = gitStateOpening;
+  const current = (): boolean => read === gitStateCommitRead && opening === gitStateOpening && gitStateDialog.open;
+  const list = document.querySelector<HTMLUListElement>("#git-state-files")!;
+  document.querySelector("#git-state-files-label")!.textContent = commitFilesLabel(hash.slice(0, 7), 0);
+  list.replaceChildren(mapElement("li", "git-state-clean", "Reading the commit…"));
+  call<GitCommit>(ref.host, "git_commit", { cwd: ref.root, hash })
+    .then((commit) => {
+      if (!current()) return;
+      const block = document.querySelector<HTMLElement>("#git-state-commit")!;
+      block.hidden = false;
+      const head = document.querySelector<HTMLElement>("#git-state-commit-head")!;
+      head.textContent = commitHeadText(commit, Date.now());
+      head.title = `${commit.hash}\n${commit.author} · ${new Date(commit.time * 1000).toLocaleString()}`;
+      document.querySelector("#git-state-commit-message")!.textContent = commit.message;
+      document.querySelector("#git-state-files-label")!.textContent = commitFilesLabel(commit.short, commit.files.length);
+      list.replaceChildren(...gitFileItems(commit.files, (file) => showGitDiff(ref, file, commit.hash)));
+      const selected = commit.files.find((file) => file.path === gitStatePath) ?? commit.files[0];
+      if (selected) {
+        showGitDiff(ref, selected, commit.hash);
+      } else {
+        list.append(mapElement("li", "git-state-clean", "This commit changes no files."));
+        clearGitDiff("This commit changes no files.");
+      }
+    })
+    .catch((reason) => {
+      if (!current()) return;
+      list.replaceChildren(mapElement("li", "git-state-clean error", String(reason)));
+      clearGitDiff("");
+    });
+}
+
+/** Reads the changes of one file and shows them on the right: an uncommitted change, or the change of the commit `hash`. */
+function showGitDiff(ref: ProjectRef, file: GitFile, hash: string | null): void {
   gitStatePath = file.path;
   for (const item of document.querySelectorAll<HTMLElement>("#git-state-files .git-state-file")) {
     item.classList.toggle("selected", item.dataset.path === file.path);
@@ -5953,7 +6061,10 @@ function showGitDiff(ref: ProjectRef, file: GitFile): void {
   const read = ++gitStateDiffRead;
   const opening = gitStateOpening;
   const current = (): boolean => read === gitStateDiffRead && opening === gitStateOpening && gitStateDialog.open;
-  call<string>(ref.host, "git_file_diff", { cwd: ref.root, path: file.path, untracked: file.untracked })
+  const reply = hash
+    ? call<string>(ref.host, "git_commit_diff", { cwd: ref.root, hash, path: file.path, old: file.old })
+    : call<string>(ref.host, "git_file_diff", { cwd: ref.root, path: file.path, untracked: file.untracked });
+  reply
     .then((text) => {
       if (!current()) return;
       const rows = diffRows(text);
@@ -5973,6 +6084,9 @@ function initGitState(): void {
   connectResizeCorner("#git-state-resize", gitStateDialog, GIT_STATE_SIZE_KEY);
   document.querySelector("#git-state-close")!.addEventListener("click", () => gitStateDialog.close());
   document.querySelector("#git-state-refresh")!.addEventListener("click", () => readGitState());
+  document.querySelector("#git-state-commit-back")!.addEventListener("click", () => {
+    if (gitStateRef) showGitUncommitted(gitStateRef);
+  });
   gitStateDialog.addEventListener("click", (event) => {
     if (event.target === gitStateDialog) gitStateDialog.close();
   });

@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ageText, DIFF_MAX_LINES, GIT_STATE_SIZE_KEY, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "../src/gitstate.ts";
+import { ageText, commitFilesLabel, commitHeadText, DIFF_MAX_LINES, GIT_STATE_SIZE_KEY, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "../src/gitstate.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -80,12 +80,26 @@ test("the uncommitted row counts the files", () => {
   assert.equal(uncommittedText(3), "Uncommitted changes · 3 files");
 });
 
+test("a past commit: the label of its file list and the head line of its block", () => {
+  assert.equal(commitFilesLabel("a1b2c3d", 4), "Files of a1b2c3d · 4");
+  assert.equal(commitFilesLabel("a1b2c3d", 0), "Files of a1b2c3d · 0");
+  const now = 1_800_000_000_000;
+  const commit = { short: "a1b2c3d", author: "Ann", time: now / 1000 - 300, parents: ["p1"] };
+  assert.equal(commitHeadText(commit, now), "a1b2c3d · Ann · 5 min ago");
+  assert.equal(commitHeadText({ ...commit, parents: ["p1", "p2"] }, now), "a1b2c3d · Ann · 5 min ago · merge: changes against the first parent");
+  assert.equal(commitHeadText({ ...commit, parents: [] }, now), "a1b2c3d · Ann · 5 min ago · first commit");
+});
+
 test("page: the Git state window, its commands and the project button", () => {
   const HTML = read("../index.html");
   const MAIN = read("../src/main.ts");
   assert.match(HTML, /<dialog id="git-state" aria-labelledby="git-state-title">/);
   assert.match(MAIN, /"git_state"/);
   assert.match(MAIN, /"git_file_diff"/);
+  assert.match(MAIN, /"git_commit"/);
+  assert.match(MAIN, /"git_commit_diff"/);
+  assert.ok(HTML.includes('id="git-state-commit"'));
+  assert.match(HTML, /Click a commit in the history to see its message, its files and their changes/);
   assert.match(MAIN, /gitState\.classList\.add\("project-git-state"\)/);
   assert.match(MAIN, /initGitState\(\);/);
   assert.ok(HTML.includes('id="git-state-resize"'));

@@ -323,6 +323,13 @@
           </section>
         </div>
         <section id="git-state-diff-box">
+          <div id="git-state-commit" hidden>
+            <div id="git-state-commit-top">
+              <span id="git-state-commit-head"></span>
+              <button id="git-state-commit-back" title="Show the uncommitted changes again">Back to uncommitted changes</button>
+            </div>
+            <div id="git-state-commit-message"></div>
+          </div>
           <div id="git-state-diff-name"></div>
           <div id="git-state-diff"></div>
         </section>
@@ -854,7 +861,7 @@
           <li>With <b>Tickets start their plan</b> on in Setup pipeline, Dispatch starts the plan of a New ticket itself. A question still goes to triage.</li>
           <li>With <b>No triage</b> on in Setup pipeline, Dispatch starts the plan of every New ticket itself, a question too. A ticket whose start fails stays in New with the error and a <b>Retry</b> button. Ask your questions in <b>Open terminal</b>, above the board in Focus.</li>
           <li>Ask a Claude chat in a terminal of the project to make tickets: it writes them into <code>.dispatch/new-tickets/</code>, and they appear at the end of New at the next refresh. The chat knows this step after <b>Apply</b> in Setup pipeline. A right-click on selected text in a terminal opens a menu with <b>New ticket from selection</b>: the New ticket window opens with that text in the Goal box.</li>
-          <li><b>Git state</b> among the buttons of a project opens a window with the commits of all branches as a tree, the branch with its commits ahead and behind its remote, and the files that are not committed yet. Click a file to see its changes on the right. <b>Refresh</b> reads git again. The window only shows; it does not commit, pull or push. Drag its bottom-right corner to resize it; Dispatch keeps the size, and a double-click on the corner gives the usual size back.</li>
+          <li><b>Git state</b> among the buttons of a project opens a window with the commits of all branches as a tree, the branch with its commits ahead and behind its remote, and the files that are not committed yet. Click a file to see its changes on the right. Click a commit in the history to see its message, its files and their changes; a merge shows what it brought into the branch, and the top line <b>Uncommitted changes</b> or <b>Back to uncommitted changes</b> shows your open changes again. <b>Refresh</b> reads git again. The window only shows; it does not commit, pull or push. Drag its bottom-right corner to resize it; Dispatch keeps the size, and a double-click on the corner gives the usual size back.</li>
           <li><b>Parts.</b> A plan for a large task can list parts that follow it. The plan card shows them before you approve. Approve puts one ticket per part in Backlog, and they run one after the other.</li>
         </ul>
         <details class="help-more">

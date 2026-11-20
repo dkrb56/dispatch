@@ -207,6 +207,16 @@ pub fn git_file_diff(cwd: String, path: String, untracked: bool) -> Result<Strin
 }
 
 #[tauri::command(async)]
+pub fn git_commit(cwd: String, hash: String) -> Result<info::GitCommit, String> {
+    info::git_commit(cwd, hash)
+}
+
+#[tauri::command(async)]
+pub fn git_commit_diff(cwd: String, hash: String, path: String, old: Option<String>) -> Result<String, String> {
+    info::git_commit_diff(cwd, hash, path, old)
+}
+
+#[tauri::command(async)]
 pub fn task_commit_message(cwd: String, id: String, files: Vec<String>) -> Result<String, String> {
     pipeline::task_commit_message(cwd, id, files)
 }

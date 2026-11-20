@@ -155,6 +155,8 @@ pub fn run(
         "task_commit_preview" => json(pipeline::task_commit_preview(a.req("cwd")?, a.req("id")?)?),
         "git_state" => json(info::git_state(a.req("cwd")?)?),
         "git_file_diff" => json(info::git_file_diff(a.req("cwd")?, a.req("path")?, a.req("untracked")?)?),
+        "git_commit" => json(info::git_commit(a.req("cwd")?, a.req("hash")?)?),
+        "git_commit_diff" => json(info::git_commit_diff(a.req("cwd")?, a.req("hash")?, a.req("path")?, a.opt("old")?)?),
         "task_commit_message" => json(pipeline::task_commit_message(a.req("cwd")?, a.req("id")?, a.req("files")?)?),
         "task_commit" => json(pipeline::task_commit(a.req("cwd")?, a.req("id")?, a.req("message")?, a.req("files")?)?),
         "set_project_options" => json(pipeline::set_project_options(a.req("cwd")?, a.req("options")?)?),

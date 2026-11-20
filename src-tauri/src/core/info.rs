@@ -329,6 +329,115 @@ pub fn git_file_diff(cwd: String, path: String, untracked: bool) -> Result<Strin
     git(&top, &args).ok_or_else(|| format!("git diff of {path} failed."))
 }
 
+/// The tree of a commit without files: the base of the diff of a root commit.
+const GIT_EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// One past commit for the Git state window (ticket when-i-click-on-branch-i-need-to-see): its full
+/// message and the files that it changed against its first parent. Only read commands make it.
+#[derive(Serialize, Default, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommit {
+    hash: String,
+    short: String,
+    author: String,
+    /// The commit time in seconds since the Unix epoch.
+    time: i64,
+    /// The full hashes of the parents: none for a root commit, two for a merge.
+    parents: Vec<String>,
+    /// The full message: the subject line and the body.
+    message: String,
+    /// The changed files against the first parent; the status is one letter, as `M`, `A`, `D` or `R`.
+    files: Vec<GitFile>,
+}
+
+/// Checks a commit hash from the page: 4 to 40 hex characters, so git never reads it as an option.
+fn checked_hash(hash: &str) -> Result<&str, String> {
+    if (4..=40).contains(&hash.len()) && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(hash)
+    } else {
+        Err(format!("{hash} is not a commit hash."))
+    }
+}
+
+/// Checks a path from the page: a path inside the repository, without `..`, a root or a drive part.
+fn checked_path(path: &str) -> Result<&str, String> {
+    let unsafe_part = Path::new(path).components().any(|part| !matches!(part, std::path::Component::Normal(_)));
+    if path.is_empty() || unsafe_part {
+        return Err(format!("The path {path} is not a path inside the project."));
+    }
+    Ok(path)
+}
+
+/// The top folder of the repository of `cwd`.
+fn git_top(cwd: &str) -> Result<PathBuf, String> {
+    let top = git(Path::new(cwd), &["rev-parse", "--show-toplevel"]).ok_or("This project is not a git repository.")?;
+    Ok(PathBuf::from(top.trim().replace('/', std::path::MAIN_SEPARATOR_STR)))
+}
+
+/// The full hash of the commit `hash` and the base of its diff: the first parent, or the empty tree
+/// for a root commit.
+fn commit_and_base(top: &Path, hash: &str) -> Result<(String, String), String> {
+    let spec = format!("{}^{{commit}}", checked_hash(hash)?);
+    let full = git(top, &["rev-parse", "--verify", "-q", &spec]).ok_or_else(|| format!("The commit {hash} does not exist."))?;
+    let full = full.trim().to_string();
+    let parents = git(top, &["rev-parse", &format!("{full}^@")]).unwrap_or_default();
+    let base = parents.lines().next().map(str::trim).filter(|p| !p.is_empty()).unwrap_or(GIT_EMPTY_TREE).to_string();
+    Ok((full, base))
+}
+
+/// Reads `git diff --name-status -z`: a status with a score (as `R087`), then one path, or the old and
+/// the new path for a rename or a copy. The status keeps its first letter only.
+fn parse_git_name_status_z(text: &str) -> Vec<GitFile> {
+    let mut files = Vec::new();
+    let mut entries = text.split('\0');
+    while let Some(status) = entries.next() {
+        let Some(letter) = status.chars().next() else { continue };
+        let old = if matches!(letter, 'R' | 'C') { entries.next().map(str::to_string) } else { None };
+        let Some(path) = entries.next() else { break };
+        files.push(GitFile { status: letter.to_string(), path: path.to_string(), old, untracked: false });
+    }
+    files
+}
+
+/// The commit `hash` of the repository of `cwd` for the Git state window: its message and its
+/// changed files against the first parent. A merge thus shows what it brought into the branch.
+pub fn git_commit(cwd: String, hash: String) -> Result<GitCommit, String> {
+    let top = git_top(&cwd)?;
+    let (full, base) = commit_and_base(&top, &hash)?;
+    let info = git(&top, &["log", "-1", "--no-color", "--format=%H%x1f%h%x1f%an%x1f%ct%x1f%P%x1f%B", &full, "--"])
+        .ok_or_else(|| format!("git log of {hash} failed."))?;
+    let mut field = info.splitn(6, '\u{1f}');
+    let mut next = || field.next().unwrap_or_default().to_string();
+    let (hash, short, author, time, parents, message) = (next(), next(), next(), next(), next(), next());
+    let names = git(&top, &["diff", "--no-color", "--no-ext-diff", "-M", "--name-status", "-z", &base, &full])
+        .ok_or_else(|| format!("git diff of {short} failed."))?;
+    Ok(GitCommit {
+        hash,
+        short,
+        author,
+        time: time.trim().parse().unwrap_or(0),
+        parents: parents.split_whitespace().map(str::to_string).collect(),
+        message: message.trim_end().to_string(),
+        files: parse_git_name_status_z(&names),
+    })
+}
+
+/// The change of one file of the commit `hash` against its first parent, as unified diff text. A
+/// renamed file gives its old path too, so git shows the rename and not a delete and an add.
+pub fn git_commit_diff(cwd: String, hash: String, path: String, old: Option<String>) -> Result<String, String> {
+    checked_hash(&hash)?;
+    checked_path(&path)?;
+    if let Some(old) = &old {
+        checked_path(old)?;
+    }
+    let top = git_top(&cwd)?;
+    let (full, base) = commit_and_base(&top, &hash)?;
+    let mut args = vec!["diff", "--no-color", "--no-ext-diff", "-M", base.as_str(), full.as_str(), "--"];
+    args.extend(old.as_deref());
+    args.push(&path);
+    git(&top, &args).ok_or_else(|| format!("git diff of {path} failed."))
+}
+
 /// An untracked file as diff text: each line added. A file with a NUL byte is binary and shows no text.
 fn untracked_diff(file: &Path) -> Result<String, String> {
     let mut bytes = Vec::new();
@@ -1119,6 +1228,92 @@ mod tests {
         }
         #[cfg(windows)]
         assert!(git_file_diff(cwd.clone(), "C:\\Windows\\win.ini".to_string(), true).is_err());
+        fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn git_commit_reads_the_name_status_entries() {
+        let files = parse_git_name_status_z("M\0src/a.ts\0R087\0old name.txt\0new name.txt\0A\0b.rs\0D\0gone.md\0");
+        let got: Vec<(&str, &str, Option<&str>)> = files.iter().map(|f| (f.status.as_str(), f.path.as_str(), f.old.as_deref())).collect();
+        assert_eq!(
+            got,
+            [("M", "src/a.ts", None), ("R", "new name.txt", Some("old name.txt")), ("A", "b.rs", None), ("D", "gone.md", None)]
+        );
+        assert!(files.iter().all(|f| !f.untracked));
+        assert!(parse_git_name_status_z("").is_empty());
+    }
+
+    #[test]
+    fn git_commit_of_root_normal_rename_and_merge_commits() {
+        let project = crate::core::pipeline::tests::git_scratch("git-commit");
+        let root = project.root.clone();
+        let run = |args: &[&str]| git(&root, args).unwrap_or_else(|| panic!("git {args:?} failed"));
+        let head = || run(&["rev-parse", "HEAD"]).trim().to_string();
+        let cwd = root.to_string_lossy().into_owned();
+        // A root commit: each file is added against the empty tree.
+        fs::write(root.join("a.txt"), "one\n").unwrap();
+        fs::write(root.join("old name.txt"), "keep 1\nkeep 2\nkeep 3\nkeep 4\n").unwrap();
+        run(&["add", "."]);
+        run(&["commit", "-q", "-m", "first"]);
+        let first = head();
+        let commit = git_commit(cwd.clone(), first[..7].to_string()).unwrap();
+        assert_eq!(commit.hash, first);
+        assert!(commit.parents.is_empty(), "a root commit has no parent");
+        assert_eq!(commit.message, "first");
+        assert_eq!(commit.author, "Dispatch test");
+        assert!(commit.time > 0);
+        let files: Vec<(&str, &str)> = commit.files.iter().map(|f| (f.status.as_str(), f.path.as_str())).collect();
+        assert_eq!(files, [("A", "a.txt"), ("A", "old name.txt")]);
+        let added = git_commit_diff(cwd.clone(), first.clone(), "a.txt".to_string(), None).unwrap();
+        assert!(added.contains("+one"), "{added}");
+        // A normal commit with a body, a change and a rename.
+        fs::write(root.join("a.txt"), "one\ntwo\n").unwrap();
+        run(&["mv", "old name.txt", "new name.txt"]);
+        run(&["commit", "-q", "-am", "second\n\nThe body line.\nA second body line."]);
+        let second = head();
+        let commit = git_commit(cwd.clone(), second.clone()).unwrap();
+        assert_eq!(commit.message, "second\n\nThe body line.\nA second body line.");
+        assert_eq!(commit.parents, [first.clone()]);
+        assert_eq!(commit.short, &second[..commit.short.len()]);
+        let files: Vec<(&str, &str, Option<&str>)> = commit.files.iter().map(|f| (f.status.as_str(), f.path.as_str(), f.old.as_deref())).collect();
+        assert_eq!(files, [("M", "a.txt", None), ("R", "new name.txt", Some("old name.txt"))]);
+        let changed = git_commit_diff(cwd.clone(), second.clone(), "a.txt".to_string(), None).unwrap();
+        assert!(changed.contains("+two") && !changed.contains("-one"), "{changed}");
+        let renamed = git_commit_diff(cwd.clone(), second.clone(), "new name.txt".to_string(), Some("old name.txt".to_string())).unwrap();
+        assert!(renamed.contains("rename from old name.txt") && renamed.contains("rename to new name.txt"), "{renamed}");
+        // A merge: the files are what the merge brought into the branch, against its first parent.
+        let main = run(&["rev-parse", "--abbrev-ref", "HEAD"]).trim().to_string();
+        run(&["checkout", "-q", "-b", "side"]);
+        fs::write(root.join("side.txt"), "from side\n").unwrap();
+        run(&["add", "side.txt"]);
+        run(&["commit", "-q", "-m", "side work"]);
+        run(&["checkout", "-q", &main]);
+        fs::write(root.join("main.txt"), "on main\n").unwrap();
+        run(&["add", "main.txt"]);
+        run(&["commit", "-q", "-m", "main work"]);
+        let main_head = head();
+        run(&["merge", "-q", "--no-ff", "--no-edit", "-m", "Merge side into main", "side"]);
+        let merge = head();
+        let commit = git_commit(cwd.clone(), merge.clone()).unwrap();
+        assert_eq!(commit.parents.len(), 2, "a merge has two parents");
+        assert_eq!(commit.parents[0], main_head);
+        assert_eq!(commit.message, "Merge side into main");
+        let files: Vec<(&str, &str)> = commit.files.iter().map(|f| (f.status.as_str(), f.path.as_str())).collect();
+        assert_eq!(files, [("A", "side.txt")], "only the file of the side branch");
+        let merged = git_commit_diff(cwd.clone(), merge.clone(), "side.txt".to_string(), None).unwrap();
+        assert!(merged.contains("+from side"), "{merged}");
+        // Refused input: no option, no short or bad hash, no path outside the project.
+        for bad in ["--all", "abc", "../x", "", "zzzzzzz", "-n1", &"a".repeat(41)] {
+            assert!(git_commit(cwd.clone(), bad.to_string()).is_err(), "{bad}");
+            assert!(git_commit_diff(cwd.clone(), bad.to_string(), "a.txt".to_string(), None).is_err(), "{bad}");
+        }
+        assert!(git_commit(cwd.clone(), "0000000".to_string()).is_err(), "a hash that does not exist");
+        for bad in ["../outside.txt", "a/../../b", "", "/etc/passwd"] {
+            assert!(git_commit_diff(cwd.clone(), second.clone(), bad.to_string(), None).is_err(), "{bad}");
+            assert!(git_commit_diff(cwd.clone(), second.clone(), "a.txt".to_string(), Some(bad.to_string())).is_err(), "old {bad}");
+        }
+        #[cfg(windows)]
+        assert!(git_commit_diff(cwd.clone(), second.clone(), "C:\\Windows\\win.ini".to_string(), None).is_err());
         fs::remove_dir_all(root.parent().unwrap()).unwrap();
     }
 
