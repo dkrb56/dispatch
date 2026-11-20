@@ -52,7 +52,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, bulkIds, canDrag, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages } from "./tickets";
+import { addedText, bulkIds, canDrag, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
@@ -3666,6 +3666,15 @@ async function ticketAction(project: string, command: string, args: Record<strin
     // shows them at once, and the full task read runs without a wait; an older read keeps them.
     if (command === "ticket_move" && Array.isArray(reply)) {
       setBoardTickets(project, reply as Ticket[]);
+      ticketsChangedAt.set(project, Date.now());
+      readProjectTasks(host, cwd).catch((error) => console.warn("task list read failed", error));
+      return true;
+    }
+    // An add, an edit or a new part answers with its one ticket (ticket sometimes-it-takes-really-long-to-save):
+    // the board shows it at once and the window closes; the slow task read runs without a wait.
+    const oneTicket = command === "ticket_add" || command === "ticket_edit" || command === "ticket_add_part";
+    if (oneTicket && reply && typeof (reply as Ticket).id === "string") {
+      setBoardTickets(project, withTicket(projectTickets(project), reply as Ticket));
       ticketsChangedAt.set(project, Date.now());
       readProjectTasks(host, cwd).catch((error) => console.warn("task list read failed", error));
       return true;

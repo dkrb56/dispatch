@@ -194,6 +194,17 @@ export function keepTickets(readAt: number, changedAt: number | undefined, pendi
 }
 
 /**
+ * The board tickets after a save that replied with one ticket (ticket
+ * sometimes-it-takes-really-long-to-save): the ticket of the same id is replaced in place, a new id
+ * goes at the end. The input list stays as it is.
+ */
+export function withTicket<T extends Pick<Ticket, "id">>(tickets: readonly T[], ticket: T): T[] {
+  const at = tickets.findIndex((item) => item.id === ticket.id);
+  if (at < 0) return [...tickets, ticket];
+  return tickets.map((item, index) => (index === at ? ticket : item));
+}
+
+/**
  * The ids that a head button of a column moves at once (ticket tickets-backlog): the shown cards of
  * the column (`shown`, after the search) in their order, without the tickets in flight.
  */

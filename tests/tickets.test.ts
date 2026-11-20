@@ -55,6 +55,7 @@ import {
   typeName,
   USER_DONE,
   waitingText,
+  withTicket,
 } from "../src/tickets.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -177,6 +178,17 @@ test("a task read that began before the last ticket change keeps the tickets of 
   assert.equal(keepTickets(100, 200, false), true, "the read began before the change");
   assert.equal(keepTickets(300, 200, false), false, "the read began after the change");
   assert.equal(keepTickets(300, 200, true), true, "a move still saves");
+});
+
+test("a saved ticket stands on the board before the task read", () => {
+  const list = [{ id: "a", text: "one" }, { id: "b", text: "two" }];
+  assert.deepEqual(withTicket(list, { id: "b", text: "edited" }), [{ id: "a", text: "one" }, { id: "b", text: "edited" }], "the same id is replaced in place");
+  assert.deepEqual(withTicket(list, { id: "c", text: "new" }).map((ticket) => ticket.id), ["a", "b", "c"], "a new id goes at the end");
+  assert.deepEqual(list, [{ id: "a", text: "one" }, { id: "b", text: "two" }], "the input list stays as it is");
+  const action = MAIN.slice(MAIN.indexOf("async function ticketAction("), MAIN.indexOf("async function setPaused("));
+  assert.match(action, /withTicket\(/, "an add, an edit or a part goes onto the board from the reply");
+  assert.match(action, /"ticket_add" \|\| command === "ticket_edit" \|\| command === "ticket_add_part"/);
+  assert.equal(action.match(/readProjectTasks\(host, cwd\)\.catch\(/g)?.length, 2, "the move and the one-ticket save read the tasks without a wait");
 });
 
 test("the drag of a ticket shows a copy under the pointer and a saving card a spinner", () => {
