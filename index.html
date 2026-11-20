@@ -793,6 +793,7 @@
         <h3>Overview</h3>
         <p class="tldr">One small card for each project.</p>
         <ul>
+          <li>A yellow <b>Setup</b> button shows in the head of a card while its project misses setup steps. It opens the Setup pipeline window of that project.</li>
           <li><b>Overview</b> at the left of the bar opens it.</li>
           <li>Drag a card by its grip ⠿ to any place. It snaps to a 50 px grid; the dots show the grid.</li>
           <li>The ⤢ button in the head of a card makes it twice as wide and shows more; ⤡ gives the usual size back.</li>
@@ -1073,7 +1074,7 @@
           <summary>Details</summary>
           <ul>
             <li>The buttons of a project stand in the head of its column in Focus. <b>Tickets</b> opens the tickets board. <b>Actions</b> opens the Actions panel. <b>Setup</b> opens the Setup pipeline window. <b>N old</b> shows only when the project has old sessions. The folder button opens the workspace; a project that is not set up shows the Setup pipeline window first.</li>
-            <li>In the Map and the Overview the right side of the top bar keeps <b>Rules</b>, <b>Setup pipeline</b> and <b>N old sessions</b>. Rules and Setup pipeline act on the project of the focused terminal there, and N old sessions shows the old sessions of all projects.</li>
+            <li>In the Map the right side of the top bar keeps <b>Rules</b> and <b>Setup pipeline</b>; they act on the project of the focused terminal. In the Overview each card that needs it has its own <b>Setup</b> button instead. <b>N old sessions</b> stays in the Map and the Overview and shows the old sessions of all projects.</li>
             <li><b>Copy all</b> puts the rules into the clipboard as text. The three lists left of <b>Analyse rules</b> set the time limit of the check (3 to 30 minutes), the model and the effort. The Setup pipeline window uses the same values. While a check runs, the line above the findings shows the time that passed and the limit.</li>
             <li>Each finding has a link with the name of its file; a click opens the file in the viewer.</li>
             <li>Each rule of a Markdown file has two buttons. <b>Off</b> takes the rule out of the file; the list keeps it with a line through it, and <b>On</b> puts it back at the end of its group. <b>Remove</b> deletes the rule after a second click. The rules that are off are kept on this computer only.</li>

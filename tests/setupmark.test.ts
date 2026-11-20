@@ -95,3 +95,20 @@ test("the Setup pipeline window has five tabs, one panel each, and every setting
   }
   assert.ok(!inside(dialog.indexOf('id="setup-buttons"')), "Apply, Commit to git and Close stay outside the panels");
 });
+
+test("the Overview has no Rules or Setup pipeline in the bar, and a Setup button on each card that needs it (overview-mode-remove-rules-button-and)", () => {
+  const css = read("../src/styles.css");
+  const main = read("../src/main.ts");
+  assert.ok(css.includes("body:not(.map-mode) #bar-setup"));
+  assert.ok(css.includes("body:not(.map-mode):not(.overview-mode) #stale-alert"));
+  assert.ok(css.includes(".overview-head .overview-setup.attention"));
+  assert.ok(css.includes(".overview-head .overview-setup.attention.pulse::after"));
+  const start = main.indexOf("function overviewCard(");
+  const card = main.slice(start, main.indexOf("\nfunction ", start + 1));
+  assert.ok(card.includes('"Setup"'));
+  assert.ok(card.includes("project-setup"));
+  assert.ok(card.includes("showSetup(ref.host, ref.root)"));
+  assert.match(main, /closest\("\.overview-name, \.overview-expand, \.overview-setup"\)/);
+  const show = main.slice(main.indexOf("function showSetupButtons("), main.indexOf("function calmSetup("));
+  assert.ok(show.includes("overview-setup") && show.includes("hidden"));
+});

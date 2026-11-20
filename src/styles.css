@@ -7598,18 +7598,21 @@ button.ticket-level {
 }
 
 .focus-head .project-tool.attention,
+.overview-head .overview-setup.attention,
 #bar #setup-pipeline.attention {
   box-shadow: inset 0 0 0 1px var(--wait);
   color: var(--wait);
 }
 
 .focus-head .project-tool.attention.pulse,
+.overview-head .overview-setup.attention.pulse,
 #bar #setup-pipeline.attention.pulse,
 .ticket-sign.attention.pulse {
   position: relative;
 }
 
 .focus-head .project-tool.attention.pulse::after,
+.overview-head .overview-setup.attention.pulse::after,
 #bar #setup-pipeline.attention.pulse::after,
 .ticket-sign.attention.pulse::after {
   position: absolute;
@@ -7655,6 +7658,7 @@ button.ticket-level {
 @media (prefers-reduced-motion: reduce) {
   .ticket-sign.attention.pulse::after,
   .focus-head .project-tool.attention.pulse::after,
+  .overview-head .overview-setup.attention.pulse::after,
   #bar #setup-pipeline.attention.pulse::after,
   .task.attention.pulse::after,
   .ticket-card.in-progress.working.flash::after {
@@ -8364,8 +8368,12 @@ body {
 }
 
 /* In Focus each project has its own Rules, Setup and N old (topbar-projects); the bar keeps
-   them for the Map and the Overview. */
-body:not(.map-mode):not(.overview-mode) #bar-setup,
+   Rules and Setup pipeline for the Map only, and N old for the Map and the Overview. In the
+   Overview each card has its own Setup button (overview-mode-remove-rules-button-and). */
+body:not(.map-mode) #bar-setup {
+  display: none;
+}
+
 body:not(.map-mode):not(.overview-mode) #stale-alert {
   display: none;
 }
@@ -10098,6 +10106,30 @@ svg.links {
 .overview-expand:hover {
   background: var(--card);
   color: var(--text);
+}
+
+/* The Setup button of a card: shows only while the project misses setup steps
+   (overview-mode-remove-rules-button-and); the attention rules colour it yellow. */
+.overview-setup {
+  flex: none;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: calc(12px * var(--text-scale));
+  cursor: pointer;
+}
+
+.overview-setup:hover {
+  background: var(--card);
+  color: var(--text);
+}
+
+.overview-setup[hidden] {
+  display: none;
 }
 
 .overview-tasks {

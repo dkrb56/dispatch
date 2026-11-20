@@ -9316,11 +9316,14 @@ function markSetupButton(button: HTMLElement, key: string, name: string): void {
 
 /**
  * The Setup button of each project in the bar group and the column heads, and the button Setup
- * pipeline of Map and Overview for the project of the focused terminal (ticket setup-attention).
+ * pipeline of the Map for the project of the focused terminal (ticket setup-attention). The Setup
+ * button of an Overview card shows only while its project misses steps
+ * (overview-mode-remove-rules-button-and).
  */
 function showSetupButtons(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>(".project-setup")) {
     markSetupButton(button, button.dataset.project ?? "", button.dataset.name ?? "");
+    if (button.classList.contains("overview-setup")) button.hidden = !setupStates.get(button.dataset.project ?? "")?.stamp;
   }
   const bar = document.querySelector<HTMLButtonElement>("#setup-pipeline");
   const pane = focusedPane();
@@ -10043,7 +10046,7 @@ function startTicketDrag(event: PointerEvent, card: HTMLElement, project: string
  * drop snaps it to the grid, puts it on top and saves the places. The project name keeps its click.
  */
 function startCardDrag(event: PointerEvent, card: OverviewCard): void {
-  if (event.button !== 0 || (event.target as HTMLElement).closest(".overview-name, .overview-expand")) return;
+  if (event.button !== 0 || (event.target as HTMLElement).closest(".overview-name, .overview-expand, .overview-setup")) return;
   event.preventDefault();
   const head = event.currentTarget as HTMLElement;
   head.setPointerCapture(event.pointerId);
@@ -14052,7 +14055,7 @@ function overviewTask(task: Task): OverviewTask {
 
 /**
  * Leaves the Overview for a project: its column in Focus; a project without a column joins Focus
- * first (ticket no-details-mode). Rules and Setup pipeline then act on it.
+ * first (ticket no-details-mode). Rules and Setup pipeline (Map bar only) then act on it.
  */
 async function showProject(ref: ProjectRef): Promise<void> {
   const key = refKey(ref);
@@ -14083,7 +14086,21 @@ function overviewCard(ref: ProjectRef): OverviewCard {
   const countEl = mapElement("span", "overview-count");
   const expandEl = mapElement("button", "overview-expand");
   // The sign of waiting tickets that do not go (ticket auto-todo), after the name.
-  head.append(grip, dotEl, name, ticketSign(ref), countEl, expandEl);
+  // The Setup button: shows only while the project misses setup steps; `showSetupButtons` sets
+  // `hidden` and the mark (ticket overview-mode-remove-rules-button-and).
+  const setupEl = mapElement("button", "overview-setup project-setup", "Setup");
+  setupEl.dataset.project = key;
+  setupEl.dataset.name = projectName(ref);
+  setupEl.hidden = true;
+  setupEl.addEventListener("pointerdown", (event) => event.stopPropagation());
+  setupEl.addEventListener("click", () => {
+    setFocusCurrent(key);
+    calmSetup(key);
+    showSetup(ref.host, ref.root);
+  });
+  head.append(grip, dotEl, name, ticketSign(ref), countEl, setupEl, expandEl);
+  markSetupButton(setupEl, key, projectName(ref));
+  setupEl.hidden = !setupStates.get(key)?.stamp;
   const tasksEl = mapElement("div", "overview-tasks");
   const startEl = mapElement("button", "focus-start", "Start triage");
   startEl.title = "Open the workspace of this project: triage and the agent view";
