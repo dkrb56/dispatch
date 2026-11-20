@@ -490,10 +490,10 @@ export function orphanTasks(tasks: readonly { name: string; live: boolean }[], t
   return tasks.filter((task) => task.live && !held.has(task.name)).map((task) => task.name);
 }
 
-/** The text that the copy button of a task card copies: the title of the ticket of the task, else the task name. */
-export function taskCopyText(taskName: string, tickets: readonly Pick<Ticket, "id" | "task" | "title">[]): string {
+/** The text that the copy button of a task card copies: the id of the ticket of the task, else the task name. */
+export function taskCopyText(taskName: string, tickets: readonly Pick<Ticket, "id" | "task">[]): string {
   const found = tickets.find((ticket) => (ticket.task || ticket.id) === taskName);
-  return found?.title?.trim() ? found.title : taskName;
+  return found ? found.id : taskName;
 }
 
 /** The line for the triage chat after Dispatch repaired task files with git conflict markers (ticket board-in-progress, user decision 4). */

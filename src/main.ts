@@ -9743,13 +9743,13 @@ function taskCopyButton(task: Task, key: string): HTMLElement {
   copy.className = "task-copy";
   copy.setAttribute("role", "button");
   copy.tabIndex = 0;
-  copy.setAttribute("aria-label", "Copy the ticket title");
-  copy.title = "Copy the ticket title";
+  copy.setAttribute("aria-label", "Copy the ticket id");
+  copy.title = "Copy the ticket id";
   copy.innerHTML =
     '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5v-.5a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 3v5A1.5 1.5 0 0 0 4 9.5h.5"/></svg>';
   const show = (done: boolean) => {
     copy.classList.toggle("done", done);
-    copy.title = done ? "Copied" : "Copy the ticket title";
+    copy.title = done ? "Copied" : "Copy the ticket id";
   };
   if (lastTaskCopy && lastTaskCopy.key === key && lastTaskCopy.until > Date.now()) {
     show(true);
