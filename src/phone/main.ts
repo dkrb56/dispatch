@@ -3,10 +3,44 @@
 // the calls of `src-tauri/src/host/phone.rs`. The page never reports for the lease of the host, so it
 // never takes the automatic work from a desktop window. It runs over plain http, which is no secure
 // context: it uses only the browser features that exist there.
+//
+// The Board view (ticket phone-version-i-need-an-option-to-see) shows the five columns of the tickets
+// board per project; a column head opens and closes the column. A waiting task takes its answer here
+// with `task_reply`, as the computer sends it; the phone writes no line into a triage chat.
 import "./phone.css";
+import { replyText } from "../answers";
+import { CONFIRM_PLACEHOLDER, CONFIRM_TITLE, confirmChoice, confirmQuestion } from "../confirm";
 import { doneTasks, listedTasks, runStarting } from "../overview";
-import { folderName, homeScreenHint, keyAddress, keyFromAddress, keyFromText, oldKeyText, type PhoneCard, type PhoneChoices, phoneCards, type PhoneProject, type PhoneRow, type PhoneTaskList, type PhoneTools, type PhoneWorker, pathKey, shownRoots, toggleRoot, viewFromText, viewToText } from "../phonemodel";
-import { countText, type Ticket } from "../tickets";
+import {
+  folderName,
+  homeScreenHint,
+  keyAddress,
+  keyFromAddress,
+  keyFromText,
+  oldKeyText,
+  type PhoneAnswer,
+  type PhoneBoard,
+  type PhoneBoardTicket,
+  type PhoneCard,
+  type PhoneChoices,
+  type PhoneLayout,
+  phoneBoards,
+  phoneCards,
+  type PhoneProject,
+  phoneReply,
+  type PhoneRow,
+  type PhoneTaskList,
+  type PhoneTools,
+  type PhoneWorker,
+  pathKey,
+  showAllKey,
+  shownRoots,
+  toggleColumn,
+  toggleRoot,
+  viewFromText,
+  viewToText,
+} from "../phonemodel";
+import { COLUMNS, columnCards, columnTickets, countText, endFailed, endWord, LEVELS, levelOf, partPlace, type Ticket, type TicketStatus, typeName } from "../tickets";
 import { taskTldr } from "../tldr";
 import { groupCount } from "../topbar";
 
@@ -29,6 +63,12 @@ const tools: PhoneTools = {
   taskTldr,
   groupCount,
   countText: (tickets) => countText(tickets as readonly Pick<Ticket, "status">[]),
+  columns: COLUMNS,
+  columnTickets: (tickets, status, place) => columnTickets(tickets as Ticket[], status as TicketStatus, place as ((ticket: Ticket) => { rank: number; time: number }) | undefined),
+  columnCards: (cards, status, showAll) => columnCards(cards, status as TicketStatus, false, showAll),
+  confirmQuestion,
+  replyText,
+  confirmChoice,
 };
 
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text = ""): HTMLElementTagNameMap[K] {
@@ -45,7 +85,26 @@ const projectsBtn = element("button", "projects-btn", "Projects");
 projectsBtn.type = "button";
 projectsBtn.setAttribute("aria-expanded", "false");
 projectsBtn.hidden = true;
-top.append(element("h1", "", "Dispatch"), projectsBtn, updatedEl);
+/** The switch Cards | Board (user decision 1): the phone opens on the last choice. */
+const layoutEl = element("div", "layout-switch");
+layoutEl.setAttribute("role", "group");
+layoutEl.setAttribute("aria-label", "View");
+layoutEl.hidden = true;
+const layoutBtns = new Map<PhoneLayout, HTMLButtonElement>(
+  (["cards", "board"] as const).map((layout) => {
+    const button = element("button", "", layout === "cards" ? "Cards" : "Board");
+    button.type = "button";
+    button.addEventListener("click", () => {
+      if (choices.layout === layout) return;
+      choices = { ...choices, layout };
+      saveChoices();
+      draw();
+    });
+    layoutEl.append(button);
+    return [layout, button];
+  }),
+);
+top.append(element("h1", "", "Dispatch"), layoutEl, projectsBtn, updatedEl);
 const panelEl = element("section", "projects-panel");
 panelEl.hidden = true;
 const panelRows = element("div", "projects-rows");
@@ -169,6 +228,7 @@ function askForKey(text: string): void {
   cardsEl.replaceChildren();
   cards.clear();
   projectsBtn.hidden = true;
+  layoutEl.hidden = true;
   panelEl.hidden = true;
   hintEl.hidden = true;
   showMessage(text);
@@ -204,6 +264,7 @@ function connect(): void {
       retryWait = RETRY_FIRST_MS;
       keyForm.hidden = true;
       projectsBtn.hidden = false;
+      layoutEl.hidden = false;
       if (key) storeKey(key);
       showMessage("");
       hintEl.hidden = !homeScreenHint(standalone, hintDismissed());
@@ -316,16 +377,200 @@ interface CardView {
 /** The cards by project. A card stays, so its ticket box keeps the text during a new read. */
 const cards = new Map<string, CardView>();
 
-function rowElement(row: PhoneRow): HTMLElement {
+/** The columns whose Show all the user tapped, as `showAllKey`; they hold until the page closes. */
+const showAll = new Set<string>();
+/** The tickets whose words show, by project key and ticket id. */
+const openTickets = new Set<string>();
+/** The reports that this page answered (`reportMark`): their block says that the answer went. */
+const sentMarks = new Set<string>();
+/** What the user chose and wrote in an answer block, by report mark, so a new read keeps it. */
+const answerStates = new Map<string, { choices: Map<number, string>; words: string; error: string; busy: boolean }>();
+/** A read came while the user typed in an answer box: the page draws when the box loses the focus. */
+let drawLater = false;
+
+function answerState(answer: PhoneAnswer) {
+  let state = answerStates.get(answer.mark);
+  if (!state) {
+    // The recommended option, the first one, is chosen at first.
+    const choices = new Map(answer.questions.filter((question) => question.options.length > 0).map((question) => [question.number, question.options[0]]));
+    state = { choices, words: "", error: "", busy: false };
+    answerStates.set(answer.mark, state);
+  }
+  return state;
+}
+
+/** The answer block of a waiting task: the options of each question, a box for any reply, and Send; or the confirm of a check result. */
+function answerElement(answer: PhoneAnswer, root: string): HTMLElement {
+  const block = element("div", "answer");
+  if (answer.sent) {
+    block.append(element("p", "answer-sent", "Your answer went to the worker. It goes on when the computer starts it."));
+    return block;
+  }
+  const state = answerState(answer);
+  const confirm = answer.kind === "confirm";
+  if (confirm) {
+    block.append(element("p", "answer-title", CONFIRM_TITLE));
+    const result = element("ul", "answer-result");
+    result.append(...answer.result.map((line) => element("li", "", line.replace(/^\s*[-*]\s+/, ""))));
+    block.append(result, element("p", "answer-question", answer.questions[0]?.text ?? ""));
+  } else {
+    for (const question of answer.questions) {
+      block.append(element("p", "answer-question", `${question.number}. ${question.text}`));
+      if (question.options.length === 0) continue;
+      const options = element("div", "options");
+      const buttons = question.options.map((option, at) => {
+        const button = element("button", "option");
+        button.type = "button";
+        button.append(element("span", "", option));
+        if (at === 0) button.append(element("span", "recommended", "Recommended"));
+        button.setAttribute("aria-pressed", String(state.choices.get(question.number) === option));
+        button.addEventListener("click", () => {
+          state.choices.set(question.number, option);
+          for (const [other, one] of buttons.entries()) one.setAttribute("aria-pressed", String(question.options[other] === option));
+        });
+        return button;
+      });
+      options.append(...buttons);
+      block.append(options);
+    }
+  }
+  const box = element("textarea", "answer-box");
+  box.rows = 2;
+  box.value = state.words;
+  box.placeholder = confirm ? CONFIRM_PLACEHOLDER : "Or write your own reply: it goes to the worker as you write it";
+  box.setAttribute("aria-label", confirm ? "Changes to the check result" : `Your reply to ${answer.task}`);
+  box.addEventListener("input", () => (state.words = box.value));
+  box.addEventListener("blur", () => {
+    if (!drawLater) return;
+    drawLater = false;
+    // The tap that took the focus away runs first.
+    setTimeout(draw, 0);
+  });
+  const send = element("button", "primary", confirm ? "Confirm" : "Send");
+  send.type = "button";
+  send.disabled = state.busy;
+  const errorEl = element("p", "answer-error", state.error);
+  errorEl.hidden = state.error === "";
+  send.addEventListener("click", () => {
+    const text = phoneReply(answer, state.choices, box.value, tools);
+    if (text === null) {
+      state.error = "Choose an answer for each question, or write a reply.";
+      errorEl.textContent = state.error;
+      errorEl.hidden = false;
+      return;
+    }
+    state.busy = true;
+    state.error = "";
+    send.disabled = true;
+    errorEl.hidden = true;
+    call("task_reply", { cwd: root, id: answer.task, text })
+      .then(() => {
+        sentMarks.add(answer.mark);
+        answerStates.delete(answer.mark);
+        lastRound = 0;
+        scheduleRound();
+      })
+      .catch((error) => {
+        state.error = `Not sent: ${error}`;
+      })
+      .finally(() => {
+        state.busy = false;
+        draw();
+      });
+  });
+  block.append(box, send, errorEl);
+  return block;
+}
+
+function rowElement(row: PhoneRow, root: string): HTMLElement {
   const made = element("article", "task");
   made.append(element("span", `status ${row.kind}`, row.status));
   made.append(element("p", "about", row.about || row.name));
   if (row.now) made.append(element("p", "", row.now));
+  if (row.answer) made.append(answerElement(row.answer, root));
   return made;
 }
 
-function part(title: string, rows: readonly PhoneRow[], none: string): HTMLElement[] {
-  return [element("h3", "", title), ...(rows.length > 0 ? rows.map(rowElement) : [element("p", "none", none)])];
+function part(title: string, rows: readonly PhoneRow[], none: string, root: string): HTMLElement[] {
+  return [element("h3", "", title), ...(rows.length > 0 ? rows.map((row) => rowElement(row, root)) : [element("p", "none", none)])];
+}
+
+function shortTime(time: number): string {
+  return new Date(time).toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+}
+
+/** A ticket of the board: its tags, title and date; a tap shows the user's words. An In progress ticket shows its task. */
+function ticketElement(item: PhoneBoardTicket, board: PhoneBoard): HTMLElement {
+  const { ticket, row } = item;
+  const made = element("article", `ticket${row?.kind === "waits" ? " waits" : row?.kind === "working" ? " working" : ""}`);
+  const head = element("button", "ticket-head");
+  head.type = "button";
+  const openKey = `${pathKey(board.root)}\n${ticket.id}`;
+  const open = openTickets.has(openKey);
+  head.setAttribute("aria-expanded", String(open));
+  const level = levelOf(ticket);
+  const tags = element("span", "ticket-tags");
+  tags.append(
+    element("span", `tag type-${ticket.type}`, typeName(ticket.type)),
+    element("span", `tag level-${level}`, LEVELS.find((one) => one.level === level)?.name ?? "Medium"),
+    element("span", "ticket-date", shortTime(ticket.created)),
+  );
+  head.append(tags, element("span", "ticket-title", ticket.title || ticket.id));
+  made.append(head);
+  const end = endWord(ticket as Pick<Ticket, "status" | "note">);
+  if (end) made.append(element("p", `ticket-end${endFailed(ticket as Pick<Ticket, "status" | "note">) ? " failed" : ""}`, end));
+  const place = partPlace(ticket as Ticket, board.all as Ticket[]);
+  if (place) {
+    const parent = board.all.find((one) => one.id === ticket.parent);
+    made.append(element("p", "ticket-part", `Part ${place.at} of ${place.of} · ${parent?.title ?? ticket.parent}`));
+  }
+  const words = element("p", "ticket-words", ticket.summary || "No words.");
+  words.hidden = !open;
+  made.append(words);
+  head.addEventListener("click", () => {
+    if (openTickets.has(openKey)) openTickets.delete(openKey);
+    else openTickets.add(openKey);
+    const shown = openTickets.has(openKey);
+    words.hidden = !shown;
+    head.setAttribute("aria-expanded", String(shown));
+  });
+  if (row) made.append(rowElement(row, board.root));
+  return made;
+}
+
+/** The five columns of a project, stacked; a head opens and closes its column for every project. */
+function boardColumns(board: PhoneBoard): HTMLElement[] {
+  return board.columns.map((column) => {
+    const section = element("section", `column${column.open ? "" : " closed"}`);
+    section.dataset.status = column.status;
+    const head = element("button", "column-head");
+    head.type = "button";
+    head.setAttribute("aria-expanded", String(column.open));
+    const arrow = element("span", "arrow", "▾");
+    arrow.setAttribute("aria-hidden", "true");
+    head.append(element("span", "column-name", column.name), element("span", "count", String(column.count)), arrow);
+    head.addEventListener("click", () => {
+      choices = toggleColumn(choices, column.status);
+      saveChoices();
+      draw();
+    });
+    section.append(head);
+    if (!column.open) return section;
+    const list = element("div", "column-list");
+    if (column.tickets.length === 0) list.append(element("p", "none", "No tickets"));
+    list.append(...column.tickets.map((item) => ticketElement(item, board)));
+    if (column.hidden > 0) {
+      const more = element("button", "show-all", `Show all (${column.hidden} more)`);
+      more.type = "button";
+      more.addEventListener("click", () => {
+        showAll.add(showAllKey(board.root, column.status));
+        draw();
+      });
+      list.append(more);
+    }
+    section.append(list);
+    return section;
+  });
 }
 
 /** The card of a project: its head, the place of its lists, and the box for a new ticket. */
@@ -414,20 +659,33 @@ function showFold(view: CardView, root: string): void {
   view.head.setAttribute("aria-expanded", String(!folded));
 }
 
+/** The head and the error line of a project card, the same in both views. */
+function cardHead(view: CardView, root: string, name: string, count: { text: string; kind: string }, error: string): void {
+  showFold(view, root);
+  view.nameEl.textContent = name;
+  view.countEl.className = `count ${count.kind}`;
+  view.countEl.textContent = count.text;
+  view.errorEl.hidden = error === "";
+  view.errorEl.textContent = error ? `Could not read this project: ${error}` : "";
+}
+
 function drawCard(card: PhoneCard): HTMLElement {
   const view = cardView(card.root);
-  showFold(view, card.root);
-  view.nameEl.textContent = card.name;
-  view.countEl.className = `count ${card.count.kind}`;
-  view.countEl.textContent = card.count.text;
+  cardHead(view, card.root, card.name, card.count, card.error);
   view.ticketsEl.textContent = card.tickets;
-  view.errorEl.hidden = card.error === "";
-  view.errorEl.textContent = card.error ? `Could not read this project: ${card.error}` : "";
   view.bodyEl.replaceChildren(
     ...(card.loaded
-      ? [...part("In work", card.inWork, "Nothing in work"), ...part("Done", card.done, "Nothing done yet")]
+      ? [...part("In work", card.inWork, "Nothing in work", card.root), ...part("Done", card.done, "Nothing done yet", card.root)]
       : [element("p", "none", "Reading the tasks…")]),
   );
+  return view.el;
+}
+
+function drawBoard(board: PhoneBoard): HTMLElement {
+  const view = cardView(board.root);
+  cardHead(view, board.root, board.name, board.count, board.error);
+  view.ticketsEl.textContent = tools.countText(board.all);
+  view.bodyEl.replaceChildren(...(board.loaded ? boardColumns(board) : [element("p", "none", "Reading the tickets…")]));
   return view.el;
 }
 
@@ -462,10 +720,16 @@ function drawPanel(): void {
 }
 
 function draw(): void {
+  // A new read must not take the focus and the place from the box the user types in.
+  if (document.activeElement instanceof HTMLTextAreaElement && document.activeElement.classList.contains("answer-box")) {
+    drawLater = true;
+    return;
+  }
   drawPanel();
+  for (const [layout, button] of layoutBtns) button.setAttribute("aria-pressed", String(choices.layout === layout));
   const shown = shownRoots(roots, choices);
   const projects: PhoneProject[] = shown.map((root) => ({ root, list: lists.get(root)?.list ?? null, error: lists.get(root)?.error ?? "" }));
-  const els = phoneCards(projects, workers, tools).map(drawCard);
+  const els = choices.layout === "board" ? phoneBoards(projects, workers, tools, choices.open, showAll, sentMarks).map(drawBoard) : phoneCards(projects, workers, tools, sentMarks).map(drawCard);
   for (const root of [...cards.keys()]) if (!shown.includes(root)) cards.delete(root);
   if (els.length !== cardsEl.children.length || els.some((el, at) => cardsEl.children[at] !== el)) cardsEl.replaceChildren(...els);
   showMessage(

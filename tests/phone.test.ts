@@ -6,8 +6,10 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { doneTasks, listedTasks, runStarting } from "../src/overview.ts";
 import { phoneLink, phoneSetup } from "../src/phonelink.ts";
-import { homeScreenHint, keyAddress, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneCards, phonePhase, phoneStatus, phoneTasks, shownRoots, toggleRoot, viewFromText, viewToText, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
-import { countText, type Ticket } from "../src/tickets.ts";
+import { replyText } from "../src/answers.ts";
+import { confirmChoice, confirmQuestion } from "../src/confirm.ts";
+import { homeScreenHint, inProgressPlace, keyAddress, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, phoneBoards, phoneCards, phonePhase, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, reportMark, showAllKey, shownRoots, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
+import { columnCards, columnTickets, COLUMNS, countText, type Ticket, type TicketStatus } from "../src/tickets.ts";
 import { taskTldr } from "../src/tldr.ts";
 import { groupCount } from "../src/topbar.ts";
 
@@ -22,6 +24,12 @@ const tools: PhoneTools = {
   taskTldr,
   groupCount,
   countText: (tickets) => countText(tickets as readonly Pick<Ticket, "status">[]),
+  columns: COLUMNS,
+  columnTickets: (tickets, status, place) => columnTickets(tickets as Ticket[], status as TicketStatus, place as ((ticket: Ticket) => { rank: number; time: number }) | undefined),
+  columnCards: (cards, status, showAll) => columnCards(cards, status as TicketStatus, false, showAll),
+  confirmQuestion,
+  replyText,
+  confirmChoice,
 };
 
 function info(name: string, fields: Partial<PhoneTaskInfo> = {}): PhoneTaskInfo {
@@ -225,17 +233,20 @@ test("the phone code uses nothing that a plain http page lacks and draws no mark
 const BS = String.fromCharCode(92);
 
 test("the stored view reads back what it wrote, and a broken text gives empty lists", () => {
-  const view = { folded: [`d:${BS}work${BS}alpha`], hidden: ["d:/work/beta"] };
+  const view = { folded: [`d:${BS}work${BS}alpha`], hidden: ["d:/work/beta"], layout: "board" as const, open: ["new", "done"] };
   assert.deepEqual(viewFromText(viewToText(view)), view);
-  for (const text of ["", "{", "null", "7", '"x"', "[]", null, undefined]) assert.deepEqual(viewFromText(text), { folded: [], hidden: [] }, String(text));
-  assert.deepEqual(viewFromText('{"folded":"a","hidden":[1,"b","b",""]}'), { folded: [], hidden: ["b"] }, "bad values drop out");
+  const none = { folded: [], hidden: [], layout: "cards", open: ["in-progress"] };
+  for (const text of ["", "{", "null", "7", '"x"', "[]", null, undefined]) assert.deepEqual(viewFromText(text), none, String(text));
+  assert.deepEqual(viewFromText('{"folded":"a","hidden":[1,"b","b",""]}'), { ...none, hidden: ["b"] }, "bad values drop out");
+  assert.deepEqual(viewFromText('{"folded":[],"hidden":["b"]}'), { ...none, hidden: ["b"] }, "an older stored text: Cards, only In progress open");
+  assert.deepEqual(viewFromText('{"layout":"wall","open":[]}'), { ...none, open: [] }, "an unknown layout is Cards; all columns closed stays closed");
 });
 
 test("a toggle adds a root to a list and then takes it out", () => {
-  const none = { folded: [], hidden: [] };
+  const none = viewFromText(null);
   const once = toggleRoot(none, "folded", `D:${BS}Work${BS}Alpha${BS}`);
-  assert.deepEqual(once, { folded: [`d:${BS}work${BS}alpha`], hidden: [] });
-  assert.deepEqual(none, { folded: [], hidden: [] }, "the old view stays");
+  assert.deepEqual(once, { ...none, folded: [`d:${BS}work${BS}alpha`] });
+  assert.deepEqual(none, viewFromText(null), "the old view stays");
   assert.deepEqual(toggleRoot(once, "folded", `d:${BS}work${BS}alpha`), none);
   assert.deepEqual(toggleRoot(once, "hidden", ROOT).hidden, [`d:${BS}work${BS}alpha`], "the other list is separate");
 });
@@ -256,4 +267,103 @@ test("the page reads task_list only for the projects that show", () => {
   assert.ok(body.includes("for (const root of shownRoots(roots, choices))"), "the loop runs over the shown roots");
   assert.ok(!body.includes("of roots)"), "no loop over all roots");
   assert.equal(body.split('"task_list"').length - 1, 1, "one task_list call");
+});
+
+function ticket(id: string, status: string, fields: Partial<PhoneTicket> = {}): PhoneTicket {
+  return { id, title: `Title ${id}`, type: "fix", summary: `Words of ${id}`, status, order: null, task: "", note: "", created: 1, updated: 1, ...fields };
+}
+
+const QUESTION = { number: 1, text: "Which one?", options: ["Red", "Blue"] };
+
+test("a column opens and closes, one choice for all projects", () => {
+  const first = viewFromText(null);
+  const opened = toggleColumn(first, "new");
+  assert.deepEqual(opened.open, ["in-progress", "new"]);
+  assert.deepEqual(first.open, ["in-progress"], "the old view stays");
+  assert.deepEqual(toggleColumn(opened, "in-progress").open, ["new"]);
+  assert.deepEqual(viewFromText(viewToText(opened)).open, ["in-progress", "new"], "the choice survives a reload");
+});
+
+test("the board has the five columns with their tickets in the board order, only In progress open at first", () => {
+  const tickets = [
+    ticket("b1", "backlog", { updated: 3 }),
+    ticket("n2", "new", { order: 2 }),
+    ticket("n1", "new", { order: 1 }),
+    ...Array.from({ length: 12 }, (_, at) => ticket(`d${at}`, "done", { updated: at, note: "done" })),
+    ticket("c1", "canceled", { note: "canceled" }),
+    ticket("p1", "in-progress"),
+  ];
+  const [board] = phoneBoards([{ root: ROOT, list: { tasks: [], tickets }, error: "" }], [], tools, viewFromText(null).open);
+  assert.equal(board.name, "alpha");
+  assert.deepEqual(board.columns.map((column) => [column.name, column.count, column.open]), [
+    ["Backlog", 1, false],
+    ["New", 2, false],
+    ["In progress", 1, true],
+    ["Done", 12, false],
+    ["Canceled", 1, false],
+  ]);
+  assert.deepEqual(board.columns[1].tickets.map((one) => one.ticket.id), ["n1", "n2"], "New goes by the queue");
+  const done = board.columns[3];
+  assert.deepEqual([done.tickets.length, done.hidden, done.tickets[0].ticket.id], [10, 2, "d11"], "Done shows its 10 newest");
+  const [all] = phoneBoards([{ root: ROOT, list: { tasks: [], tickets }, error: "" }], [], tools, [], new Set([showAllKey(ROOT, "done")]));
+  assert.deepEqual([all.columns[3].tickets.length, all.columns[3].hidden], [12, 0], "Show all shows every ticket");
+  assert.equal(board.columns[2].tickets[0].row, null, "a ticket without a task shows no task");
+});
+
+test("an In progress ticket shows its task, joined by its task name or its id; what waits comes first", () => {
+  const tasks = [
+    info("run", { state: "working", about: "Busy" }),
+    info("other-name", { ...REPORT("needs-decision", "decision"), questions: [QUESTION], about: "Asks" }),
+    info("old", { ...REPORT("done", "nothing"), about: "Old" }),
+  ];
+  const tickets = [
+    ticket("run", "in-progress", { updated: 9 }),
+    ticket("ask", "in-progress", { task: "other-name", updated: 1 }),
+    ticket("old", "in-progress", { updated: 5 }),
+    ticket("none", "in-progress", { updated: 7 }),
+  ];
+  assert.equal(ticketTask(tickets[1], [{ name: "ask" }, { name: "other-name" }])?.name, "other-name", "the task name wins over the id");
+  assert.equal(ticketTask(tickets[0], [{ name: "run" }])?.name, "run");
+  assert.equal(ticketTask(tickets[3], [{ name: "run" }]), null);
+  const [board] = phoneBoards([{ root: ROOT, list: { tasks, tickets }, error: "" }], [worker("run [work]", "working")], tools, ["in-progress"]);
+  const column = board.columns[2];
+  assert.deepEqual(column.tickets.map((one) => one.ticket.id), ["ask", "run", "old", "none"], "waits, working, ended, no task");
+  assert.deepEqual([column.tickets[0].row?.status, column.tickets[0].row?.answer?.kind], ["has a question for you", "questions"]);
+  assert.deepEqual([column.tickets[1].row?.status, column.tickets[1].row?.answer], ["Work run working", null]);
+  assert.deepEqual(inProgressPlace(null, { updated: 4 }), { rank: 3, time: 4 });
+});
+
+test("the answer block: the open questions, or the confirm of a check result", () => {
+  const ask = task({ ...REPORT("needs-decision", "decision"), questions: [QUESTION, { number: 2, text: "Why?", options: [] }] });
+  const block = phoneAnswer(ask, tools, new Set())!;
+  assert.deepEqual([block.kind, block.questions.length, block.sent, block.mark], ["questions", 2, false, "t:5"]);
+  const check = task({ ...REPORT("needs-decision", "decision"), questions: [{ number: 1, text: "Agree?", options: ["Keep", "Change"] }], checkResult: ["- a: yes", ""] });
+  const confirm = phoneAnswer(check, tools, new Set())!;
+  assert.deepEqual([confirm.kind, confirm.result], ["confirm", ["- a: yes"]]);
+  assert.equal(phoneAnswer(task({ ...REPORT("needs-decision", "decision"), questions: [QUESTION] }, [worker("t [work]", "working")]), tools, new Set()), null, "no block while a worker runs");
+  assert.equal(phoneAnswer(task({ ...REPORT("needs-decision", "permission") }), tools, new Set()), null, "a permission has nothing to answer");
+  assert.equal(phoneAnswer(task(REPORT("done", "nothing")), tools, new Set()), null, "a report that does not wait");
+  assert.equal(phoneAnswer(ask, tools, new Set([reportMark(ask)]))?.sent, true, "after a send for the same report");
+  const newer = task({ ...REPORT("needs-decision", "decision"), report: { modified: 6 }, questions: [QUESTION] });
+  assert.equal(phoneAnswer(newer, tools, new Set([reportMark(ask)]))?.sent, false, "a new report asks again");
+  const [card] = phoneCards([{ root: ROOT, list: { tasks: [info("t", { ...REPORT("needs-decision", "decision"), questions: [QUESTION] })], tickets: [] }, error: "" }], [], tools);
+  assert.equal(card.inWork[0].answer?.kind, "questions", "the Cards view has the same block");
+});
+
+test("the reply: the chosen options, the words of a confirm, or any words as written", () => {
+  const ask = phoneAnswer(task({ ...REPORT("needs-decision", "decision"), questions: [QUESTION, { number: 2, text: "Size?", options: ["S", "L"] }, { number: 3, text: "Why?", options: [] }] }), tools, new Set())!;
+  assert.equal(phoneReply(ask, new Map([[1, "Red"], [2, "L"]]), "", tools), "Answer to question 1: Red Answer to question 2: L");
+  assert.equal(phoneReply(ask, new Map([[1, "Red"]]), " ", tools), null, "a question without a choice");
+  assert.equal(phoneReply(ask, new Map(), "Do it\nyour way ", tools), "Do it your way", "words go as written, on one line");
+  const words = phoneAnswer(task({ ...REPORT("needs-decision", "decision"), questions: [{ number: 1, text: "Why?", options: [] }] }), tools, new Set())!;
+  assert.equal(phoneReply(words, new Map(), "", tools), null, "no options and no words");
+  const confirm = phoneAnswer(task({ ...REPORT("needs-decision", "decision"), questions: [{ number: 1, text: "Agree?", options: ["Keep", "Change"] }], checkResult: ["- a"] }), tools, new Set())!;
+  assert.equal(phoneReply(confirm, new Map(), "", tools), "Keep");
+  assert.equal(phoneReply(confirm, new Map(), "drop a\nadd b", tools), "Change: drop a add b");
+});
+
+test("the phone sends a reply only with task_reply, and only from a tap", () => {
+  const code = read("../src/phone/main.ts");
+  assert.ok(code.includes('call("task_reply", { cwd: '), "the reply names the project");
+  for (const word of ["task_approve", "task_reject", "task_decide", "task_stop"]) assert.ok(!code.includes(word), word);
 });

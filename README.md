@@ -63,7 +63,9 @@ With several hosts, each project name gets ` · <host name>` after it, so two pr
 
 ### On your phone
 
-The host also serves a small page with only the Overview: one column of project cards with the tasks in work, the newest finished tasks and the tickets. You can add a ticket there. Tap the name of a card to fold it to one line, and tap again to open it. The button **Projects** lists all projects; untick one to hide its card. The phone keeps both choices on the phone only: the icon on the Home Screen and the browser each keep their own.
+The host also serves a small page with only the Overview: one column of project cards with the tasks in work, the newest finished tasks and the tickets. You can add a ticket there. Tap the name of a card to fold it to one line, and tap again to open it. The button **Projects** lists all projects; untick one to hide its card.
+
+The switch **Cards | Board** at the top picks the view, and the phone opens on your last choice. **Board** shows the tickets of each project in the five columns of the tickets board. Tap a column name to open or close it, for every project at once; In progress is open at first. A ticket in progress shows what its task does now. When the task asks a question, tap an option and **Send**, or write your own reply; a check result waits for **Confirm**. The Cards view shows the same answer. An answer from the phone writes no line into the triage chat. The phone keeps these choices on the phone only: the icon on the Home Screen and the browser each keep their own.
 
 1. Install Tailscale on the phone and sign in to the same tailnet as the computer.
 2. On the computer: Options → **Phone** → **Start and show the code**. Dispatch restarts, the terminals of this window end, and the code shows.
@@ -72,7 +74,7 @@ The host also serves a small page with only the Overview: one column of project 
 
 The phone shows the projects of this computer that are open in a connected Dispatch window, also a window on another computer. A project of another host never shows. A project leaves the phone when its last window closes or disconnects, or after about 3 minutes without contact.
 
-The computer and the host must be on. The phone gives no alerts, and you approve plans and answer questions at the computer. A ticket from the phone starts only while a Dispatch window runs. **New phone key** ends the access of the old code and of the old icon; the host and its terminals keep running. Scan the new code and add the page to the Home Screen again.
+The computer and the host must be on. The phone gives no alerts, and you approve plans at the computer. A ticket from the phone starts only while a Dispatch window runs. **New phone key** ends the access of the old code and of the old icon; the host and its terminals keep running. Scan the new code and add the page to the Home Screen again.
 
 ## What Setup pipeline changes
 
@@ -108,7 +110,7 @@ Dispatch runs on your computer. It reads the session files of Claude Code in `%U
 
 In the modes **Use hosts** and **This PC and hosts** the window and each of its hosts talk over your tailnet only, and Tailscale encrypts the traffic. At the start of each connection the window sends the key, the versions and the id of the window; then keystrokes, terminal output, chat texts, task files, the files that the window shows and pasted images travel between them. The host never listens on all addresses: only on the Tailscale address of its computer and on `127.0.0.1`. The window itself listens on nothing in any mode; a computer listens only when you start the host there. It writes `host-key.txt`, `phone-key.txt`, `host.json`, `host.log`, `shared.json` and `workspaces.json` (the projects that each window has open) into its data folder. The window keeps the keys of its hosts in its own `state.json`. Nothing goes to any other place.
 
-The host also answers plain web requests on its port with the phone page, on the same two addresses. The page holds no data of yours. With the phone key the page may read the list of open projects, their tasks and tickets and the list of workers, and add a ticket. The host checks each request for tasks or a new ticket: the key reaches only the projects on the phone list. That key opens no terminal and no file, and it cannot approve a plan or answer a question. The key travels in the part of the link after `#`, and the phone keeps it on the phone.
+The host also answers plain web requests on its port with the phone page, on the same two addresses. The page holds no data of yours. With the phone key the page may read the list of open projects, their tasks and tickets and the list of workers, add a ticket, and send a reply to a task. The host checks each request for tasks, a new ticket or a reply: the key reaches only the projects on the phone list. That key opens no terminal and no file, and it cannot approve, reject or stop a task. The key travels in the part of the link after `#`, and the phone keeps it on the phone.
 
 Dispatch is an independent project. It is not made or endorsed by Anthropic.
 

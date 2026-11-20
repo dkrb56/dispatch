@@ -300,6 +300,232 @@ input {
   font-size: 14px;
 }
 
+/* The switch Cards | Board (ticket phone-version-i-need-an-option-to-see). */
+.top {
+  flex-wrap: wrap;
+}
+
+.layout-switch {
+  display: flex;
+}
+
+.layout-switch button {
+  border-radius: 0;
+}
+
+.layout-switch button:first-child {
+  border-radius: 8px 0 0 8px;
+}
+
+.layout-switch button:last-child {
+  border-left: 0;
+  border-radius: 0 8px 8px 0;
+}
+
+.layout-switch button[aria-pressed="false"] {
+  background: none;
+  color: var(--text-2);
+}
+
+/* The columns of the Board view: stacked sections whose head opens and closes the column. */
+.column {
+  border-top: 1px solid var(--hairline);
+}
+
+.column-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  text-align: left;
+}
+
+.column-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+}
+
+.column.closed .arrow {
+  transform: rotate(-90deg);
+}
+
+.column-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 12px;
+}
+
+.ticket {
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.ticket.waits {
+  border-color: var(--wait);
+}
+
+.ticket.working {
+  border-color: var(--work);
+}
+
+.ticket-head {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  text-align: left;
+}
+
+.ticket-tags {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.tag {
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text-2);
+}
+
+.tag.type-fix {
+  border-color: var(--danger-bg);
+  color: var(--danger);
+}
+
+.tag.type-feature,
+.tag.level-hard {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.tag.type-refactor {
+  color: var(--work);
+}
+
+.tag.type-content {
+  color: var(--wait);
+}
+
+.ticket-date {
+  color: var(--muted);
+}
+
+.ticket-title {
+  font-weight: 600;
+}
+
+.ticket p {
+  margin: 4px 0 0;
+  color: var(--text-2);
+  font-size: 14px;
+}
+
+.ticket .ticket-end.failed {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.ticket .ticket-words {
+  white-space: pre-wrap;
+}
+
+.ticket .task {
+  margin-top: 6px;
+}
+
+.show-all {
+  align-self: flex-start;
+}
+
+/* The answer block of a waiting task: options as buttons, a box, Send. */
+.answer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.task .answer p {
+  margin: 0;
+}
+
+.answer .answer-title,
+.answer .answer-question {
+  color: var(--text);
+}
+
+.answer .answer-title {
+  color: var(--wait);
+  font-weight: 600;
+}
+
+.answer-result {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--text-2);
+  font-size: 14px;
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-color: var(--line);
+  background: none;
+  color: var(--text);
+  text-align: left;
+}
+
+.option[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.recommended {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.answer .primary {
+  align-self: flex-start;
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.answer .answer-error {
+  color: var(--danger);
+}
+
+.answer .answer-sent {
+  color: var(--work);
+}
+
 [hidden] {
   display: none !important;
 }

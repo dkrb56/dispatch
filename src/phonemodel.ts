@@ -27,7 +27,9 @@ export interface PhoneTaskInfo {
   summary: string[];
   report: PhoneFile | null;
   header: { state: string; needs: string } | null;
-  questions: { text: string }[];
+  questions: PhoneQuestion[];
+  /** The lines under `## Check result` of the report; an older host does not send them. */
+  checkResult?: string[];
   about: string;
   did: string;
   branch?: { exists: boolean; merge: string } | null;
@@ -36,8 +38,29 @@ export interface PhoneTaskInfo {
   elsewhere?: boolean;
 }
 
+/** A question of a report, as `task_list` gives it. */
+export interface PhoneQuestion {
+  number: number;
+  text: string;
+  options: string[];
+}
+
+/** The fields of a ticket of `task_list` that a board card shows (`Ticket` in tickets.ts). */
 export interface PhoneTicket {
+  id: string;
+  title: string;
+  type: string;
+  summary: string;
   status: string;
+  order: number | null;
+  /** The name of the task when triage gave it another id; empty: the id. */
+  task: string;
+  note: string;
+  created: number;
+  updated: number;
+  level?: string;
+  parent?: string;
+  part?: number;
 }
 
 /** The fields of the reply of `task_list` that the page uses. */
@@ -89,7 +112,19 @@ export interface PhoneTools {
     hasPlan: boolean;
   }): { about: string; now: string };
   groupCount(state: { waits: number; working: number; paused?: boolean }): { text: string; kind: string };
-  countText(tickets: readonly PhoneTicket[]): string;
+  countText(tickets: readonly Pick<PhoneTicket, "status">[]): string;
+  /** The five columns of the board in their order (`COLUMNS` of tickets.ts). */
+  columns: readonly { status: string; name: string }[];
+  /** The tickets of a column in their order (`columnTickets` of tickets.ts). */
+  columnTickets(tickets: readonly PhoneTicket[], status: string, place?: (ticket: PhoneTicket) => { rank: number; time: number }): PhoneTicket[];
+  /** The cards of a column to draw and how many stay hidden (`columnCards` of tickets.ts, without a search). */
+  columnCards(cards: readonly PhoneTicket[], status: string, showAll: boolean): { shown: PhoneTicket[]; hidden: number };
+  /** The question of a check result that waits for a confirmation (`confirmQuestion` of confirm.ts). */
+  confirmQuestion(checkResult: readonly string[], questions: readonly PhoneQuestion[]): PhoneQuestion | null;
+  /** The reply for the chosen options (`replyText` of answers.ts). */
+  replyText(questions: PhoneQuestion[], choices: ReadonlyMap<number, string>): string | null;
+  /** The option of a confirm with the words of its box (`confirmChoice` of confirm.ts). */
+  confirmChoice(question: PhoneQuestion, changes: string): string;
 }
 
 /** How the rules of overview.ts see a task. */
@@ -99,6 +134,21 @@ export interface PhoneView {
   starting: boolean;
 }
 
+/**
+ * What the user can answer for a task whose report waits: its questions, or the confirm of a check
+ * result. `mark` names the report (task and report time); `sent` is true after the phone sent an
+ * answer to that report, until the report changes or a worker runs.
+ */
+export interface PhoneAnswer {
+  task: string;
+  mark: string;
+  kind: "questions" | "confirm";
+  questions: PhoneQuestion[];
+  /** The lines of the check result; empty for questions. */
+  result: string[];
+  sent: boolean;
+}
+
 /** One line of a card. */
 export interface PhoneRow {
   name: string;
@@ -106,6 +156,8 @@ export interface PhoneRow {
   status: string;
   about: string;
   now: string;
+  /** The answer block of a task whose report waits; null else. */
+  answer: PhoneAnswer | null;
 }
 
 /** One project card. */
@@ -180,42 +232,58 @@ export function folderName(path: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : path;
 }
 
-/** The choices of the phone: the projects with a folded card and the projects it hides, each as a `pathKey`. */
+/** How the phone shows a project: the cards of today, or the five columns of the tickets board. */
+export type PhoneLayout = "cards" | "board";
+
+/** The columns of the board that are open before the user taps a column head (user decision 2). */
+export const OPEN_FIRST: readonly string[] = ["in-progress"];
+
+/**
+ * The choices of the phone: the projects with a folded card and the projects it hides, each as a
+ * `pathKey`; the layout; and the open columns of the board, one choice for every project (user decision 3).
+ */
 export interface PhoneChoices {
   folded: string[];
   hidden: string[];
+  layout: PhoneLayout;
+  open: string[];
 }
 
 const keyList = (value: unknown): string[] => (Array.isArray(value) ? [...new Set(value.filter((one): one is string => typeof one === "string" && one !== ""))] : []);
 
-/** The stored choices of the phone from a text; a broken or empty text gives two empty lists. */
+/** The stored choices of the phone from a text; a broken or empty text gives empty lists, Cards and only In progress open. */
 export function viewFromText(text: string | null | undefined): PhoneChoices {
   try {
     const value: unknown = JSON.parse(text ?? "");
     if (value && typeof value === "object") {
-      const { folded, hidden } = value as Record<string, unknown>;
-      return { folded: keyList(folded), hidden: keyList(hidden) };
+      const { folded, hidden, layout, open } = value as Record<string, unknown>;
+      return { folded: keyList(folded), hidden: keyList(hidden), layout: layout === "board" ? "board" : "cards", open: Array.isArray(open) ? keyList(open) : [...OPEN_FIRST] };
     }
   } catch {
     // A broken text counts as no choice.
   }
-  return { folded: [], hidden: [] };
+  return { folded: [], hidden: [], layout: "cards", open: [...OPEN_FIRST] };
 }
 
 /** The choices of the phone as the text to store. */
 export function viewToText(view: PhoneChoices): string {
-  return JSON.stringify({ folded: keyList(view.folded), hidden: keyList(view.hidden) });
+  return JSON.stringify({ folded: keyList(view.folded), hidden: keyList(view.hidden), layout: view.layout, open: keyList(view.open) });
+}
+
+/** A column of the board opened, or closed when it is open. The view itself stays as it is. */
+export function toggleColumn(view: PhoneChoices, status: string): PhoneChoices {
+  return { ...view, open: view.open.includes(status) ? view.open.filter((one) => one !== status) : [...view.open, status] };
 }
 
 /** One root added to a list of the view, or taken out when it is in the list. The view itself stays as it is. */
-export function toggleRoot(view: PhoneChoices, list: keyof PhoneChoices, root: string): PhoneChoices {
+export function toggleRoot(view: PhoneChoices, list: "folded" | "hidden", root: string): PhoneChoices {
   const key = pathKey(root);
   const now = view[list];
   return { ...view, [list]: now.includes(key) ? now.filter((one) => one !== key) : [...now, key] };
 }
 
 /** The roots that show on the phone: those that are not hidden, in their order. */
-export function shownRoots(roots: readonly string[], view: PhoneChoices): string[] {
+export function shownRoots(roots: readonly string[], view: Pick<PhoneChoices, "hidden">): string[] {
   return roots.filter((root) => !view.hidden.includes(pathKey(root)));
 }
 
@@ -346,8 +414,72 @@ export function phoneTasks(workers: readonly PhoneWorker[], infos: readonly Phon
   return [...tasks.values()].sort((a, b) => order(a) - order(b) || taskTime(b) - taskTime(a));
 }
 
+/** The mark of the report of a task: an answer sent to it holds until the report changes. */
+export function reportMark(task: Pick<PhoneTask, "name" | "info">): string {
+  return `${task.name}:${task.info?.report?.modified ?? 0}`;
+}
+
+/**
+ * The answer block of a task: the confirm of a check result, else its questions. Null while its
+ * report does not wait, while a worker runs, and for a report that waits only for a permission.
+ * `sent` holds the marks of the reports that the phone answered.
+ */
+export function phoneAnswer(task: PhoneTask, tools: Pick<PhoneTools, "confirmQuestion">, sent: ReadonlySet<string>): PhoneAnswer | null {
+  const info = task.info;
+  if (!info || !reportWaits(task) || permissionWaits(task)) return null;
+  const mark = reportMark(task);
+  const result = (info.checkResult ?? []).filter((line) => line.trim() !== "");
+  const confirm = tools.confirmQuestion(result, info.questions);
+  return {
+    task: task.name,
+    mark,
+    kind: confirm ? "confirm" : "questions",
+    questions: confirm ? [confirm] : info.questions,
+    result: confirm ? result : [],
+    sent: sent.has(mark),
+  };
+}
+
+/**
+ * The text that goes to the worker (user decision 4: any text, as the computer sends). A confirm: the
+ * first option for an empty box, else the second option with the words. Questions: the words as
+ * written when the box has words, else one `Answer to question N: <option>` per question with options.
+ * Null when nothing would go.
+ */
+export function phoneReply(answer: PhoneAnswer, choices: ReadonlyMap<number, string>, words: string, tools: Pick<PhoneTools, "replyText" | "confirmChoice">): string | null {
+  const text = words.replace(/\s*[\r\n]+\s*/g, " ").trim();
+  if (answer.kind === "confirm") return answer.questions[0] ? tools.confirmChoice(answer.questions[0], text) : null;
+  if (text !== "") return text;
+  return tools.replyText(answer.questions, choices);
+}
+
+/** The two short lines and the status of a task. */
+function taskRow(task: PhoneTask, merging: string | null | undefined, tools: PhoneTools, sent: ReadonlySet<string>): PhoneRow {
+  const status = phoneStatus(task, merging);
+  const worker = live(task);
+  const { about, now } = tools.taskTldr({
+    phase: phonePhase(task),
+    about: task.info?.about ?? "",
+    summary: task.info?.summary ?? [],
+    did: task.info?.did ?? "",
+    question: reportWaits(task) ? (task.info?.questions[0]?.text ?? "") : "",
+    run: worker ? (workerRun(task, worker) ?? (task.info?.state === "planning" ? "plan" : "work")) : undefined,
+    hasPlan: Boolean(task.info?.plan),
+  });
+  return { name: task.name, kind: status.kind, status: status.text, about, now, answer: phoneAnswer(task, tools, sent) };
+}
+
+/** The count of the head of a project: what waits for the user, what works, or paused. */
+function projectCount(tasks: readonly PhoneTask[], mine: readonly PhoneWorker[], list: PhoneTaskList | null, tools: PhoneTools): { text: string; kind: string } {
+  return tools.groupCount({
+    waits: tasks.filter((task) => planReady(task) || reportWaits(task)).length,
+    working: mine.filter((worker) => worker.state === "working").length,
+    paused: list?.paused ?? false,
+  });
+}
+
 /** The plain data of each card, in the order of `projects`. */
-export function phoneCards(projects: readonly PhoneProject[], workers: readonly PhoneWorker[], tools: PhoneTools): PhoneCard[] {
+export function phoneCards(projects: readonly PhoneProject[], workers: readonly PhoneWorker[], tools: PhoneTools, sent: ReadonlySet<string> = new Set()): PhoneCard[] {
   return projects.map(({ root, list, error }) => {
     const mine = workers.filter((worker) => workerInProject(worker, root));
     const tasks = phoneTasks(mine, list?.tasks ?? []);
@@ -362,28 +494,11 @@ export function phoneCards(projects: readonly PhoneProject[], workers: readonly 
         workerStates: task.workers.map((worker) => worker.state),
       }),
     });
-    const row = (task: PhoneTask): PhoneRow => {
-      const status = phoneStatus(task, merging);
-      const worker = live(task);
-      const { about, now } = tools.taskTldr({
-        phase: phonePhase(task),
-        about: task.info?.about ?? "",
-        summary: task.info?.summary ?? [],
-        did: task.info?.did ?? "",
-        question: reportWaits(task) ? (task.info?.questions[0]?.text ?? "") : "",
-        run: worker ? (workerRun(task, worker) ?? (task.info?.state === "planning" ? "plan" : "work")) : undefined,
-        hasPlan: Boolean(task.info?.plan),
-      });
-      return { name: task.name, kind: status.kind, status: status.text, about, now };
-    };
+    const row = (task: PhoneTask): PhoneRow => taskRow(task, merging, tools, sent);
     return {
       root,
       name: folderName(root),
-      count: tools.groupCount({
-        waits: tasks.filter((task) => planReady(task) || reportWaits(task)).length,
-        working: mine.filter((worker) => worker.state === "working").length,
-        paused: list?.paused ?? false,
-      }),
+      count: projectCount(tasks, mine, list, tools),
       loaded: list !== null,
       error,
       inWork: tools.listedTasks(tasks, view).map(row),
@@ -391,4 +506,92 @@ export function phoneCards(projects: readonly PhoneProject[], workers: readonly 
       tickets: tools.countText(list?.tickets ?? []),
     };
   });
+}
+
+/** A ticket of the board with the task of an In progress ticket. */
+export interface PhoneBoardTicket {
+  ticket: PhoneTicket;
+  /** The status, the two short lines and the answer block of its task; null without a task. */
+  row: PhoneRow | null;
+}
+
+/** One column of the board of a project. */
+export interface PhoneColumn {
+  status: string;
+  name: string;
+  /** All tickets of the column. */
+  count: number;
+  open: boolean;
+  /** The tickets to draw: Done and Canceled show their newest until Show all. */
+  tickets: PhoneBoardTicket[];
+  /** How many tickets Show all adds. */
+  hidden: number;
+}
+
+/** The board of one project. */
+export interface PhoneBoard {
+  root: string;
+  name: string;
+  count: { text: string; kind: string };
+  loaded: boolean;
+  error: string;
+  columns: PhoneColumn[];
+  /** All tickets of the project, for the part line of a card. */
+  all: PhoneTicket[];
+}
+
+/** The task of a ticket: the task with the name `ticket.task`, else with the id of the ticket. */
+export function ticketTask<T extends Pick<PhoneTask, "name">>(ticket: Pick<PhoneTicket, "id" | "task">, tasks: readonly T[]): T | null {
+  const name = ticket.task || ticket.id;
+  return tasks.find((task) => task.name === name) ?? null;
+}
+
+/** The place of an In progress ticket: what waits for the user first, then what works, then the newest. */
+export function inProgressPlace(task: PhoneTask | null, ticket: Pick<PhoneTicket, "updated">, merging?: string | null): { rank: number; time: number } {
+  if (!task) return { rank: 3, time: ticket.updated };
+  const kind = phoneStatus(task, merging).kind;
+  return { rank: kind === "waits" ? 0 : kind === "working" ? 1 : 2, time: taskTime(task) };
+}
+
+/**
+ * The board of each project, in the order of `projects`: the five columns with their tickets in the
+ * board order. `open` lists the open columns; `showAll` the keys `<root>\n<status>` of the columns
+ * whose Show all the user tapped.
+ */
+export function phoneBoards(
+  projects: readonly PhoneProject[],
+  workers: readonly PhoneWorker[],
+  tools: PhoneTools,
+  open: readonly string[],
+  showAll: ReadonlySet<string> = new Set(),
+  sent: ReadonlySet<string> = new Set(),
+): PhoneBoard[] {
+  return projects.map(({ root, list, error }) => {
+    const mine = workers.filter((worker) => workerInProject(worker, root));
+    const tasks = phoneTasks(mine, list?.tasks ?? []);
+    const merging = list?.merging;
+    const tickets = list?.tickets ?? [];
+    const place = (ticket: PhoneTicket) => inProgressPlace(ticketTask(ticket, tasks), ticket, merging);
+    const columns = tools.columns.map(({ status, name }): PhoneColumn => {
+      const all = tools.columnTickets(tickets, status, status === "in-progress" ? place : undefined);
+      const { shown, hidden } = tools.columnCards(all, status, showAll.has(showAllKey(root, status)));
+      return {
+        status,
+        name,
+        count: all.length,
+        open: open.includes(status),
+        tickets: shown.map((ticket) => {
+          const task = status === "in-progress" ? ticketTask(ticket, tasks) : null;
+          return { ticket, row: task ? taskRow(task, merging, tools, sent) : null };
+        }),
+        hidden,
+      };
+    });
+    return { root, name: folderName(root), count: projectCount(tasks, mine, list, tools), loaded: list !== null, error, columns, all: tickets };
+  });
+}
+
+/** The key of a column whose Show all the user tapped. */
+export function showAllKey(root: string, status: string): string {
+  return `${pathKey(root)}\n${status}`;
 }

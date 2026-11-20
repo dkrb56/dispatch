@@ -18,11 +18,13 @@ pub const NO_BINARY: &str = "the phone sends no binary frames";
 /// The answer to a call for a folder that is not an open project of this computer.
 pub const NOT_OPEN: &str = "this project is not open in a Dispatch window";
 
-/// All that a phone may do: read the open projects, their tasks and the workers, and add a ticket.
+/// All that a phone may do: read the open projects, their tasks and the workers, add a ticket, and
+/// reply to a worker whose report waits (ticket phone-version-i-need-an-option-to-see, user decision 4:
+/// any text, as the computer sends). It approves, rejects and stops nothing.
 /// The calls of `FOLDER_CALLS` work only for an open project.
-const PHONE_CALLS: [&str; 4] = ["workspaces_get", "task_list", "worker_list", "ticket_add"];
+const PHONE_CALLS: [&str; 5] = ["workspaces_get", "task_list", "worker_list", "ticket_add", "task_reply"];
 /// The phone calls that name a project folder in `cwd`.
-const FOLDER_CALLS: [&str; 2] = ["task_list", "ticket_add"];
+const FOLDER_CALLS: [&str; 3] = ["task_list", "ticket_add", "task_reply"];
 
 const SECURITY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src ws:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
@@ -145,7 +147,7 @@ mod tests {
     fn a_folder_call_reaches_only_an_open_project() {
         let args = |value: Value| value.as_object().cloned().unwrap();
         let open = |folder: &str| (folder.to_lowercase() == "d:\\work\\alpha").then(|| "D:\\Work\\Alpha".to_string());
-        for command in ["task_list", "ticket_add"] {
+        for command in ["task_list", "ticket_add", "task_reply"] {
             let mut known = args(serde_json::json!({ "cwd": "d:\\WORK\\alpha", "text": "x" }));
             assert_eq!(limit_to_open(command, &mut known, open), Ok(()), "{command}");
             assert_eq!(known, args(serde_json::json!({ "cwd": "D:\\Work\\Alpha", "text": "x" })), "the saved folder replaces the text of the phone");
@@ -165,10 +167,11 @@ mod tests {
 
     #[test]
     fn the_phone_calls_are_only_the_listed_ones() {
-        for call in ["workspaces_get", "task_list", "worker_list", "ticket_add"] {
+        for call in ["workspaces_get", "task_list", "worker_list", "ticket_add", "task_reply"] {
             assert!(phone_call(call), "{call}");
         }
-        for call in ["pty_spawn", "pty_write", "file_read", "task_approve", "task_reply", "workspaces_set", "driver_state", "image_save", "dir_list", ""] {
+        let refused = ["pty_spawn", "pty_write", "file_read", "task_approve", "task_reject", "task_decide", "task_stop", "task_merge"];
+        for call in refused.into_iter().chain(["workspaces_set", "driver_state", "image_save", "dir_list", ""]) {
             assert!(!phone_call(call), "{call}");
         }
     }
