@@ -85,10 +85,10 @@ export function windowChoices(questions: AnswerQuestion[], saved: ReadonlyMap<nu
   return choices;
 }
 
-/** The title of the window: `Question of <task>` for one question, `<N> questions of <task>` for several. */
-export function windowTitle(task: string, questions: AnswerQuestion[]): string {
+/** The title of the window: `<project> · Question of <task>` for one question, `<project> · <N> questions of <task>` for several. */
+export function windowTitle(task: string, questions: AnswerQuestion[], project: string): string {
   const count = answerable(questions).length;
-  return count === 1 ? `Question of ${task}` : `${count} questions of ${task}`;
+  return `${project} · ` + (count === 1 ? `Question of ${task}` : `${count} questions of ${task}`);
 }
 
 /** A wait that alerted, as far as the window needs it: its kind and its key. */

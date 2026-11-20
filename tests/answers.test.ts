@@ -82,7 +82,7 @@ test("items without options never block the send of the one real question", () =
   assert.equal(replyText(SEVEN, choices), "Answer to question 7: Done, the mockup is saved");
   assert.equal(chosenCount(SEVEN, choices), "1 of 1 chosen");
   assert.equal(holdReason(SEVEN, choices), null);
-  assert.equal(windowTitle("T-1", SEVEN), "Question of T-1");
+  assert.equal(windowTitle("T-1", SEVEN, "alpha"), "alpha · Question of T-1");
   assert.equal(answeredLine("T-1", SEVEN, choices), "Question 7 of T-1 answered in Dispatch: Done, the mockup is saved");
 });
 
@@ -98,8 +98,8 @@ test("the reply of the window with the recommended options is the reply of the c
 });
 
 test("the title of the window counts the questions", () => {
-  assert.equal(windowTitle("T-1", ONE), "Question of T-1");
-  assert.equal(windowTitle("T-1", TWO), "2 questions of T-1");
+  assert.equal(windowTitle("T-1", ONE, "alpha"), "alpha · Question of T-1");
+  assert.equal(windowTitle("T-1", TWO, "alpha"), "alpha · 2 questions of T-1");
 });
 
 test("a new question wait opens the window, other waits and an open window do not", () => {

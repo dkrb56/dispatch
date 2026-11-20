@@ -5474,7 +5474,7 @@ function openDecisions(task: Task, ask = false): void {
   const decisions = [...(task.info?.decisions ?? [])].sort((a, b) => Number(b.hold) - Number(a.hold) || a.number - b.number);
   const waiting = decisions.filter((decision) => decision.hold).length;
   document.querySelector("#decisions-title")!.textContent =
-    `Decisions of ${task.name}` + (waiting > 0 ? ` · ${waiting} wait for you` : "");
+    `${taskProjectName(task)} · Decisions of ${task.name}` + (waiting > 0 ? ` · ${waiting} wait for you` : "");
   const body = document.querySelector<HTMLElement>("#decisions-body")!;
   // The text the decisions come from: the user's words of the brief and the Goal of the plan. It
   // has no class `decision`, so `decisionAnswers` does not see it; a long text scrolls in its box.
@@ -5758,7 +5758,7 @@ function openCommit(task: Task): void {
   const note = document.querySelector<HTMLElement>("#commit-note")!;
   const error = document.querySelector<HTMLElement>("#commit-error")!;
   const send = document.querySelector<HTMLButtonElement>("#commit-send")!;
-  document.querySelector("#commit-title")!.textContent = `Commit files of ${task.name}`;
+  document.querySelector("#commit-title")!.textContent = `${taskProjectName(task)} · Commit files of ${task.name}`;
   const intro = document.querySelector<HTMLElement>("#commit-intro")!;
   intro.dataset.base ??= intro.textContent ?? "";
   intro.textContent = intro.dataset.base;
@@ -6376,7 +6376,7 @@ function openQuestionWindow(task: Task): void {
   }
   const kept = saved.choices;
   const choices = windowChoices(questions, kept);
-  document.querySelector("#questions-title")!.textContent = windowTitle(task.name, questions);
+  document.querySelector("#questions-title")!.textContent = windowTitle(task.name, questions, taskProjectName(task));
   const body = document.querySelector<HTMLElement>("#questions-body")!;
   // What the questions come from: the user's words of the brief and the first line of the report.
   const context = document.createElement("section");
@@ -6478,6 +6478,11 @@ function updateQuestionsWindow(): void {
   document.querySelector<HTMLButtonElement>("#questions-send")!.disabled = busy;
 }
 
+/** The project name of a task, for the title of its windows. */
+function taskProjectName(task: Task): string {
+  return projectName({ host: taskHost(task), root: taskCwd(task) });
+}
+
 /** The row under the report row that opens the result of a check step in its window. */
 function checkResultRow(task: Task, lines: string[]): HTMLElement {
   const row = document.createElement("button");
@@ -6487,15 +6492,15 @@ function checkResultRow(task: Task, lines: string[]): HTMLElement {
   name.textContent = RESULT_LABEL;
   name.prepend(eyeIcon());
   row.append(name);
-  row.addEventListener("click", () => openCheckResult(task.name, lines));
+  row.addEventListener("click", () => openCheckResult(task.name, lines, taskProjectName(task)));
   return row;
 }
 
 const checkResultDialog = document.querySelector<HTMLDialogElement>("#check-result")!;
 
 /** Opens the window with the result of a check step of a task. */
-function openCheckResult(name: string, lines: string[]): void {
-  document.querySelector("#check-result-title")!.textContent = `${RESULT_LABEL} · ${name}`;
+function openCheckResult(name: string, lines: string[], project: string): void {
+  document.querySelector("#check-result-title")!.textContent = `${project} · ${RESULT_LABEL} · ${name}`;
   document.querySelector("#check-result-body")!.textContent = lines.join("\n");
   if (!checkResultDialog.open) checkResultDialog.showModal();
 }
