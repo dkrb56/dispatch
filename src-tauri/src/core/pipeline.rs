@@ -832,8 +832,10 @@ impl Project {
         TASKS_DIR.to_string()
     }
 
-    /// The reports folder as a permission rule writes it: relative to the project, as Claude Code
-    /// takes a rule path without `//` and `~/` from the folder that the session starts in.
+    /// The reports folder as a permission rule writes it in the options files: relative to the
+    /// project, so a clone on another path needs no change. Claude Code takes a rule path without
+    /// `//` and `~/` from the current folder of the shell, and a `cd` moves that folder, so the
+    /// worker script makes each `Edit` rule absolute at run time (ticket a-plan-run-that-ends-without-a-plan).
     fn rule_path(&self) -> String {
         self.reports_text()
     }
@@ -1453,15 +1455,28 @@ function Need-Id {
 }
 
 # The options of a run, one argument per line. Setup pipeline writes the files. The settings file
-# after --settings is relative to the project; claude gets it as an absolute path.
+# after --settings is relative to the project; claude gets it as an absolute path. Claude Code takes
+# a relative rule path from the current folder of the shell, and a cd moves it (ticket
+# a-plan-run-that-ends-without-a-plan), so each Edit rule after --allowedTools and --disallowedTools
+# with a relative path gets the project folder in front: D:\p and Edit(.dispatch/plans/**) give
+# Edit(//d/p/.dispatch/plans/**).
 function Read-Flags([string]$Name) {
   $file = Join-Path $Reports $Name
   if (-not (Test-Path -LiteralPath $file)) { Refuse "$file is missing; run Setup pipeline" }
   $lines = @(Get-Content -LiteralPath $file | Where-Object { $_.Trim() -ne '' })
+  $root = $Project -replace '\\', '/'
+  $rulePrefix = if ($root -match '^([A-Za-z]):/(.*)$') { '//' + $Matches[1].ToLowerInvariant() + '/' + $Matches[2].TrimEnd('/') } else { '' }
   for ($at = 1; $at -lt $lines.Count; $at++) {
     $value = $lines[$at].Trim()
-    if ($lines[$at - 1].Trim() -eq '--settings' -and -not [IO.Path]::IsPathRooted($value)) {
+    $option = $lines[$at - 1].Trim()
+    if ($option -eq '--settings' -and -not [IO.Path]::IsPathRooted($value)) {
       $lines[$at] = [IO.Path]::GetFullPath((Join-Path $Project $value))
+    }
+    if ($rulePrefix -and ($option -eq '--allowedTools' -or $option -eq '--disallowedTools')) {
+      $rules = foreach ($rule in $value -split ',') {
+        if ($rule -match '^Edit\((?![/~])(.+)\)$') { "Edit($rulePrefix/$($Matches[1] -replace '^\./', ''))" } else { $rule }
+      }
+      $lines[$at] = $rules -join ','
     }
   }
   $lines
@@ -3292,6 +3307,8 @@ const WORK_DEFAULT: (&str, &str) = ("opus", "xhigh");
 /// before the plan" on, the plan run keeps the `measure` verb of the script, which runs only the
 /// listed commands, and writes in the scratch folder of the measuring, so each other verb and
 /// each option of the script is denied by name (ticket a-plan-run-can-write-only-into-dispatch).
+/// The `Edit` rules stand here relative to the project; the worker script puts the project folder
+/// in front of them at run time, because a relative rule follows a `cd` of the session's shell.
 fn plan_fixed_lines(project: &Project) -> Result<Vec<String>, String> {
     let rule_path = project.rule_path();
     let script = script_command(&project.reports_text());
@@ -6475,6 +6492,26 @@ pub fn task_resume(cwd: String, id: String) -> Result<String, String> {
     run_script(&project, &["resume", &id])
 }
 
+/// Starts a new plan run of a task whose plan run ended without a plan: the Plan again button of
+/// the task card (ticket a-plan-run-that-ends-without-a-plan). The old session may have lost its
+/// write rule, so a new session starts from the brief. Only a task in `planning` without a plan
+/// file starts again; a script older than Dispatch is refused in plain words, as for Resume.
+pub fn task_replan(cwd: String, id: String) -> Result<String, String> {
+    check_ticket(&id)?;
+    let project = Project::find(&cwd)?;
+    if !fs::read_to_string(project.script()).is_ok_and(|text| text.replace("\r\n", "\n") == WORKER_SCRIPT) {
+        return Err("The worker script of this project is older than Dispatch: Setup pipeline > Apply updates it.".to_string());
+    }
+    if project.plans().join(format!("{id}.md")).exists() {
+        return Err(format!("Task {id} has a plan already."));
+    }
+    let state = fs::read_to_string(project.reports.join(format!("{id}.state"))).unwrap_or_default();
+    if state.trim() != "planning" {
+        return Err(format!("Task {id} is not waiting for its plan."));
+    }
+    run_script(&project, &["plan", &id])
+}
+
 /// Gives the steps of the setup for the project of a folder. It changes nothing.
 pub fn pipeline_plan(cwd: String) -> Result<Plan, String> {
     plan(&Project::find(&cwd)?)
@@ -7351,6 +7388,20 @@ pub(crate) mod tests {
     /// The deny list of a plan run with "Measure before the plan" off.
     fn plan_denied(project: &Project) -> String {
         format!("Edit({}/briefs/**),Bash({} *)", project.rule_path(), script_command(&project.reports_text()))
+    }
+
+    /// A rule list of an options file as the worker script gives it to claude: each `Edit` rule with
+    /// a relative path gets the project folder in front (ticket a-plan-run-that-ends-without-a-plan).
+    fn absolute_rules(project: &Project, rules: &str) -> String {
+        let prefix = rule_form(&project.root.to_string_lossy().replace('\\', "/")).unwrap();
+        rules
+            .split(',')
+            .map(|rule| match rule.strip_prefix("Edit(") {
+                Some(rest) if !rest.starts_with('/') && !rest.starts_with('~') => format!("Edit({prefix}/{rest}"),
+                _ => rule.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(",")
     }
 
     #[test]
@@ -9137,6 +9188,113 @@ if (args[0] === 'agents') {
         }
     }
 
+    /// The scratch project of the proof script of ticket a-plan-run-that-ends-without-a-plan. It
+    /// runs only on request: the proof script sets PLAN_CD_PROOF_DIR, starts it with `--ignored`,
+    /// and replays the arguments in `flags.json` (the plan run of the worker script, recorded by the
+    /// fake claude) in a real Claude Code session in the project `after`.
+    #[test]
+    #[ignore]
+    fn plan_after_cd_proof_project() {
+        let Ok(dir) = std::env::var("PLAN_CD_PROOF_DIR") else { return };
+        let dir = PathBuf::from(dir);
+        let root = dir.join("after");
+        fs::create_dir_all(&root).unwrap();
+        let project = Project { reports: root.join(TASKS_DIR), root, in_git: true };
+        git_init(&project);
+        write_file(&project.root.join("README.md"), "scratch project\n").unwrap();
+        apply(&project, &[]).unwrap();
+        write_file(&project.briefs().join("t-1.md"), "# t-1: a scratch brief\n").unwrap();
+        fs::remove_file(project.instructions()).unwrap();
+        run_git(&project.root, &["add", "--all"]).unwrap();
+        run_git(&project.root, &["commit", "-q", "-m", "scratch setup"]).unwrap();
+        let fake = fake_claude(&dir);
+        let (code, out) = run_script(&project, &fake, "done", &["plan", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        // The fake planner wrote the plan; the real session of the proof writes it again.
+        fs::remove_file(project.plans().join("t-1.md")).unwrap();
+        fs::remove_file(project.reports.join("t-1.state")).unwrap();
+        write_file(&dir.join("flags.json"), &serde_json::to_string(&last_call(&fake)).unwrap()).unwrap();
+        assert!(!project.local_settings_tracked(), "git must not track the local settings");
+    }
+
+    /// Plan again (ticket a-plan-run-that-ends-without-a-plan): only a task in `planning` without a
+    /// plan file starts a new plan run, and an older script is refused in plain words. The refusals
+    /// come before any claude call; the start is the `plan` verb, here with the fake claude (the
+    /// command itself would start the real one).
+    #[test]
+    fn plan_again_starts_a_new_plan_run_only_for_a_lost_plan() {
+        let project = scratch("replan");
+        apply(&project, &[]).unwrap();
+        write_file(&project.briefs().join("t-1.md"), "brief\n").unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        let replan = || task_replan(cwd.clone(), "t-1".to_string());
+
+        write_file(&project.script(), "# an older script\n").unwrap();
+        write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        assert_eq!(replan().unwrap_err(), "The worker script of this project is older than Dispatch: Setup pipeline > Apply updates it.");
+        write_file(&project.script(), WORKER_SCRIPT).unwrap();
+        fs::remove_file(project.reports.join("t-1.state")).unwrap();
+        assert_eq!(replan().unwrap_err(), "Task t-1 is not waiting for its plan.");
+        write_file(&project.reports.join("t-1.state"), "working\n").unwrap();
+        assert_eq!(replan().unwrap_err(), "Task t-1 is not waiting for its plan.");
+        write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        write_file(&project.plans().join("t-1.md"), "plan\n").unwrap();
+        assert_eq!(replan().unwrap_err(), "Task t-1 has a plan already.");
+        assert!(task_replan(cwd.clone(), "../t-1".to_string()).is_err());
+
+        fs::remove_file(project.plans().join("t-1.md")).unwrap();
+        let fake = fake_claude(project.root.parent().unwrap());
+        let (code, out) = run_script(&project, &fake, "done", &["plan", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        let call = last_call(&fake);
+        assert!(call[0].starts_with("Plan ticket t-1. Read the brief "), "{call:?}");
+        assert!(!call.iter().any(|arg| arg == "--resume"), "a new session: {call:?}");
+        assert_eq!(&call[1..4], ["--bg", "--name", "t-1 [plan]"]);
+        assert_eq!(read(&project.reports.join("t-1.state")), "planning\n");
+    }
+
+    /// Claude Code takes a relative rule path from the current folder of the shell, so the script
+    /// gives each relative `Edit` rule of the plan options to claude with the project folder in
+    /// front, in the allowed and in the denied list; the `Bash` rules stay as they are (ticket
+    /// a-plan-run-that-ends-without-a-plan).
+    #[test]
+    fn the_script_makes_the_edit_rules_absolute() {
+        let project = scratch("absolute-rules");
+        apply(&project, &[]).unwrap();
+        set_measure(&project, true);
+        write_file(&project.measure_commands_file(), "cmd /c echo measured\n").unwrap();
+        apply(&project, &[]).unwrap();
+        write_file(&project.briefs().join("t-1.md"), "brief\n").unwrap();
+        let fake = fake_claude(project.root.parent().unwrap());
+        // The fake planner runs the measure verb and records it after the plan call.
+        let plan_call = || -> Vec<String> {
+            read(&fake.join("args.txt")).lines().map(|line| serde_json::from_str::<Vec<String>>(line).unwrap()).filter(|call| call[0].starts_with("Plan ticket")).last().unwrap()
+        };
+        let (code, out) = run_script(&project, &fake, "done", &["plan", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        let call = plan_call();
+        let flags = read(&project.plan_flags());
+        let lines: Vec<&str> = flags.lines().collect();
+        let after = |option: &str| lines[lines.iter().position(|line| *line == option).unwrap() + 1];
+        let prefix = rule_form(&project.root.to_string_lossy().replace('\\', "/")).unwrap();
+        let script = script_command(&project.reports_text());
+        let allowed = &call[call.iter().position(|arg| arg == "--allowedTools").unwrap() + 1];
+        let denied = &call[call.iter().position(|arg| arg == "--disallowedTools").unwrap() + 1];
+        assert_eq!(allowed, &format!("Bash({script} measure *),WebFetch,Edit({prefix}/.dispatch/plans/**),Edit({prefix}/.dispatch/measure/**)"));
+        assert_eq!(allowed, &absolute_rules(&project, after("--allowedTools")));
+        assert!(denied.starts_with(&format!("Edit({prefix}/.dispatch/briefs/**),Bash({script} plan *),")), "{denied}");
+        assert_eq!(denied, &absolute_rules(&project, after("--disallowedTools")));
+        assert!(after("--allowedTools").contains(",Edit(.dispatch/plans/**),"), "the options file stays relative");
+        // A rule that is already absolute, or that starts at the home folder, stays as it is.
+        let edited = flags.replace("WebFetch,", "WebFetch,Edit(//x/abs/**),Edit(~/home/**),");
+        write_file(&project.plan_flags(), &edited).unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["plan", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        let call = plan_call();
+        let allowed = &call[call.iter().position(|arg| arg == "--allowedTools").unwrap() + 1];
+        assert!(allowed.contains(",WebFetch,Edit(//x/abs/**),Edit(~/home/**),Edit(//"), "{allowed}");
+    }
+
     #[test]
     fn the_script_parses_and_drives_the_two_runs() {
         let project = scratch("script");
@@ -9170,8 +9328,8 @@ if (args[0] === 'agents') {
         assert!(start[0].starts_with("Plan ticket t-1. Read the brief "), "{start:?}");
         assert_eq!(&start[1..6], ["--bg", "--name", "t-1 [plan]", "--model", "fable"]);
         assert_eq!(start[start.len() - 5], "Read,Grep,Glob,Bash,WebFetch,Write");
-        assert_eq!(start[start.len() - 3], plan_allowed(&project));
-        assert_eq!(start.last().unwrap(), &plan_denied(&project));
+        assert_eq!(start[start.len() - 3], absolute_rules(&project, &plan_allowed(&project)));
+        assert_eq!(start.last().unwrap(), &absolute_rules(&project, &plan_denied(&project)));
         // The session file names the session of the plan run (ticket task-tokens); claude printed bg-1.
         assert!(out.contains("bg-1"), "the script writes the output of claude on: {out}");
         assert_eq!(read(&project.session_file("t-1")), "plan sess-1\n");
@@ -9430,7 +9588,7 @@ if (args[0] === 'agents') {
         assert_eq!(read(&project.reports.join("t-1.state")), "planning\n");
         let plan = last_call(&fake);
         assert_eq!(&plan[1..8], ["--resume", "sess-1", "--bg", "--name", "t-1 [plan]", "--model", "fable"]);
-        assert_eq!(plan.last().unwrap(), &plan_denied(&project));
+        assert_eq!(plan.last().unwrap(), &absolute_rules(&project, &plan_denied(&project)));
         // A claude that fails writes stopped back, so the card shows Resume again.
         write_file(&project.reports.join("t-1.state"), "stopped\n").unwrap();
         write_file(&fake.join("fail.txt"), "3").unwrap();
@@ -10052,8 +10210,11 @@ if (args[0] === 'agents') {
         assert_eq!(code, 0, "{text}");
         let call = last_call(&fake);
         assert!(call[0].contains(&clone.plans().join("t-1.md").to_string_lossy().into_owned()), "{call:?}");
-        assert!(call.iter().any(|arg| arg.contains("Edit(.dispatch/plans/**)")), "{call:?}");
+        let plans_rule = format!("Edit({}/.dispatch/plans/**)", rule_form(&clone.root.to_string_lossy().replace('\\', "/")).unwrap());
+        assert!(call.iter().any(|arg| arg.contains(&plans_rule)), "{call:?}");
         assert!(!call.iter().any(|arg| arg.contains(&origin)), "{call:?}");
+        let origin_rule = rule_form(&origin.replace('\\', "/")).unwrap();
+        assert!(!call.iter().any(|arg| arg.contains(&format!("{origin_rule}/"))), "{call:?}");
         assert_eq!(read(&fake.join("cwd.txt")).to_lowercase(), clone.root.to_string_lossy().to_lowercase());
 
         let (code, text) = run_script(&clone, &fake, "done", &["approve", "t-1"]);

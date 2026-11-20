@@ -450,6 +450,11 @@ pub fn task_resume(cwd: String, id: String) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
+pub fn task_replan(cwd: String, id: String) -> Result<String, String> {
+    pipeline::task_replan(cwd, id)
+}
+
+#[tauri::command(async)]
 pub fn task_merge(cwd: String, id: String) -> Result<String, String> {
     pipeline::task_merge(cwd, id)
 }

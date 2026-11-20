@@ -106,6 +106,7 @@ pub fn run() {
             commands::task_reply,
             commands::task_stop,
             commands::task_resume,
+            commands::task_replan,
             commands::task_merge,
             commands::action_save,
             commands::action_delete,

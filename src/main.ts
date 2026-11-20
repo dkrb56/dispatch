@@ -107,7 +107,7 @@ import { type FileEntry, type FileInfo, imageFileUrl, initViewer, onHost, openVi
 import { durationText, runTime } from "./duration";
 import { agentsText, fileRowTitle, reportChip, rowParts, runChip, type RunChip, runCostText, runTokensTitle, stepRows, tokenText, type WorkStep } from "./workerrow";
 import { commandLines, groupLabel, unverifiedText } from "./commandrows";
-import { announcements, parseEnded, serializeEnded } from "./announce";
+import { announcements, DONE_EMPTY, parseEnded, serializeEnded } from "./announce";
 import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, type FailedEnds, oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
 import { groupCount } from "./topbar";
 import { badgeText, moveUp, railDrop, type RailGroup, railItems, railLetters, railMenu, railTags, removeProjectTexts } from "./rail";
@@ -368,6 +368,12 @@ interface Worker {
    * (ticket early-done-line). Null for any other worker; absent from an older host.
    */
   result?: boolean | null;
+  /**
+   * For a `done` run without its plan or report (`result` false): true when the job has nothing
+   * left in flight, so it ended for good; false when its background work can still go on; null
+   * when unknown (ticket a-plan-run-that-ends-without-a-plan). Absent from an older host.
+   */
+  finished?: boolean | null;
 }
 
 /** The Claude Code command with which the shell of a new terminal starts. */
@@ -4527,6 +4533,8 @@ function announceWorkerChanges(workers: Worker[]): void {
     state: worker.state,
     quiet: !driverOf(worker.host) || endingSessions.has(workerKey(worker)),
     result: worker.result,
+    // Only a plan run ends as done-empty; a work run without its report stays done-early.
+    finished: RUN_NAME.exec(worker.name ?? worker.id)?.[2] === "plan" ? worker.finished : null,
     worker,
   }));
   const { told, states, ended, early, earlyTold } = announcements(lastWorkerStates, polled, toldWorkerEnds, toldWorkerEarly);
@@ -4544,7 +4552,12 @@ function announceWorkerChanges(workers: Worker[]): void {
     const now = worker.state;
     const name = worker.name ?? worker.id;
     const when = whileClosed ? " (this happened while Dispatch was closed)" : "";
-    const line = now === "blocked" ? `Worker ${name} is blocked${when}${worker.waitingFor ? `: ${worker.waitingFor}` : ""}.` : `Worker ${name} is ${now}${when}.`;
+    const empty = states.get(workerKey(worker)) === DONE_EMPTY;
+    const line = empty
+      ? `Worker ${name} ended without its plan${when}.`
+      : now === "blocked"
+        ? `Worker ${name} is blocked${when}${worker.waitingFor ? `: ${worker.waitingFor}` : ""}.`
+        : `Worker ${name} is ${now}${when}.`;
     const project = projectFor(worker.host, worker.cwd);
     if (!lines.has(project)) lines.set(project, []);
     lines.get(project)!.push(line);
@@ -4560,7 +4573,7 @@ function announceWorkerChanges(workers: Worker[]): void {
     .map(({ worker }) => ({
       ticket: workerTask(worker),
       run: RUN_NAME.exec(worker.name ?? worker.id)?.[2] ?? "",
-      state: worker.state ?? "",
+      state: states.get(workerKey(worker)) === DONE_EMPTY ? DONE_EMPTY : (worker.state ?? ""),
       project: projectName({ host: worker.host, root: worker.cwd ?? "" }),
       noTriage: projectNoTriage(projectFor(worker.host, worker.cwd)),
     }));
@@ -7171,6 +7184,43 @@ function resumeRow(task: Task): HTMLElement | null {
   return row;
 }
 
+/**
+ * The plan run of a task ended for good without its plan (ticket a-plan-run-that-ends-without-a-plan):
+ * the task plans, has no plan file and no worker that runs, and its newest worker is a plan run that
+ * is done without its plan with nothing left in flight, or that failed.
+ */
+function planLost(task: Task): boolean {
+  const info = task.info;
+  if (!info || info.state !== "planning" || info.plan) return false;
+  if (task.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) return false;
+  const newest = task.workers.reduce<Worker | null>((best, worker) => (!best || (worker.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity) ? worker : best), null);
+  if (!newest || workerRun(task, newest) !== "plan") return false;
+  return newest.state === "failed" || (newest.state === "done" && newest.result === false && newest.finished === true);
+}
+
+/**
+ * The Plan again row of a task whose plan run ended without a plan, or null (ticket
+ * a-plan-run-that-ends-without-a-plan). One click starts a new plan run from the brief.
+ */
+function replanRow(task: Task): HTMLElement | null {
+  if (!planLost(task)) return null;
+  const row = document.createElement("div");
+  row.className = "task-stop";
+  const button = document.createElement("button");
+  button.textContent = "Plan again";
+  button.title = `Start a new plan run of ${task.name} from its brief`;
+  button.disabled = busyTasks.has(task.name);
+  button.addEventListener("click", () => {
+    const line = `Task ${task.name}: the user started its plan run again in Dispatch.`;
+    void taskAction(task, "task_replan", { id: task.name }, line);
+  });
+  row.append(button);
+  // A refused start shows its reason under the row until the next click.
+  const error = actionError(task);
+  if (error) row.append(error);
+  return row;
+}
+
 /** The tasks that the user opened or closed, by `<project key>|<task>`, until the app closes. */
 const taskOpenChoice = new Map<string, boolean>();
 
@@ -7193,6 +7243,7 @@ function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"
   if (picks === "running") return { kind: "working", text: pickStatusText(picks, pickAtMerge(task)) };
   if (picks === "picked" || picks === "failed") return { kind: "waits", text: pickStatusText(picks, pickAtMerge(task), task.info?.checked) };
   if (awayRun(task)) return { kind: "waits", text: "ran on another computer · no worker here" };
+  if (planLost(task)) return { kind: "failed", text: "failed · the plan run ended without a plan" };
   if (task.info?.state === "stopped") return { kind: "failed", text: "stopped" };
   if (!task.info?.report && task.workers.some((worker) => worker.state === "failed")) return { kind: "failed", text: "failed" };
   if (reportUnverified(task)) return { kind: "waits", text: `report not verified · ${unverifiedText(task.info?.unverified ?? [], "status")}` };
@@ -7281,6 +7332,7 @@ function taskPhase(task: Task): TaskPhase {
     return liveRun(task, live) === "plan" ? "planning" : "working";
   }
   if (mergeWaits(task)) return "merge";
+  if (planLost(task)) return "failed";
   if (info.state === "stopped") return "stopped";
   if (!info.report && task.workers.some((worker) => worker.state === "failed")) return "failed";
   if (info.header?.state === "failed") return "failed";
@@ -9944,6 +9996,9 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     // A stopped task has no Stop row, so its Resume row takes that place.
     const resume = resumeRow(task);
     if (resume) body.append(resume);
+    // A plan run that ended without a plan has no Stop or Resume row; Plan again stands there.
+    const replan = replanRow(task);
+    if (replan) body.append(replan);
     if (body.childElementCount > 0) made.append(body);
   }
   if (planReady(task) || awayPlan(task)) made.append(planCard(task));

@@ -113,7 +113,7 @@ export interface WorkerEnd {
   ticket: string;
   /** The run of the worker name: `plan`, `work`, or `` for a worker of an older script. */
   run: string;
-  /** The state that was told: `done` (with its result, early-done-line) or `failed`. */
+  /** The state that was told: `done` (with its result, early-done-line), `done-empty` (ended for good without its plan) or `failed`. */
   state: string;
   /** The project folder name, for the notification. */
   project: string;
@@ -123,7 +123,8 @@ export interface WorkerEnd {
 
 /**
  * The notices for the ends of one poll (ticket no-triage-a-project-switch-no-triage-in, point 3):
- * one per work run that is done and per plan or work run that failed, only for a project with "No
+ * one per work run that is done, per plan or work run that failed and per plan run that ended
+ * without a plan (ticket a-plan-run-that-ends-without-a-plan), only for a project with "No
  * triage" on. A done plan run gives the wait "plan", which alerts already. Night mode gives none
  * (user decision 5): it alerts only what waits for the user.
  */
@@ -133,6 +134,7 @@ export function endNotices(ends: readonly WorkerEnd[], night: boolean): Notice[]
   for (const end of ends) {
     if (!end.noTriage) continue;
     if (end.state === "done" && end.run === "work") notices.push({ name: end.ticket, project: end.project, text: "the task is done" });
+    else if (end.state === "done-empty" && end.run === "plan") notices.push({ name: end.ticket, project: end.project, text: "the plan run ended without a plan" });
     else if (end.state === "failed" && (end.run === "plan" || end.run === "work")) {
       notices.push({ name: end.ticket, project: end.project, text: end.run === "plan" ? "the plan run failed" : "the work run failed" });
     }

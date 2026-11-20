@@ -153,6 +153,13 @@ pub struct Worker {
     /// on by itself later. None for every other worker. The window tells triage the end only then.
     #[serde(skip_deserializing)]
     result: Option<bool>,
+    /// For a `done` run of the pipeline without its result (`result` false): true when the job has
+    /// nothing left in flight (`inFlight.tasks` and `inFlight.queued` of its
+    /// `~/.claude/jobs/<id>/state.json` are 0), false when it still has background work that can
+    /// go on by itself, None without the file or the fields (ticket a-plan-run-that-ends-without-a-plan).
+    /// True means the run ended for good without its plan or report.
+    #[serde(skip_deserializing)]
+    finished: Option<bool>,
 }
 
 impl Worker {
@@ -238,6 +245,26 @@ fn worker_end(claude: &Path, id: &str) -> Option<(String, Option<String>)> {
         return None;
     }
     timeline_end(&fs::read_to_string(claude.join("jobs").join(id).join("timeline.jsonl")).ok()?)
+}
+
+/// Whether a job has nothing left in flight, from the text of its `state.json`: true when
+/// `inFlight.tasks` and `inFlight.queued` are 0, false when either is above 0, None when the
+/// text is no JSON or lacks a field (Claude Code 2.1.319).
+fn job_finished(text: &str) -> Option<bool> {
+    let state: Value = serde_json::from_str(text).ok()?;
+    let in_flight = state.get("inFlight")?;
+    let tasks = in_flight.get("tasks")?.as_u64()?;
+    let queued = in_flight.get("queued")?.as_u64()?;
+    Some(tasks == 0 && queued == 0)
+}
+
+/// `job_finished` of `<home>/.claude/jobs/<id>/state.json`.
+fn worker_finished(claude: &Path, id: &str) -> Option<bool> {
+    // The id becomes a part of a path.
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return None;
+    }
+    job_finished(&fs::read_to_string(claude.join("jobs").join(id).join("state.json")).ok()?)
 }
 
 /// The ticket of a run of the pipeline and whether it is the plan run, from the name that
@@ -354,6 +381,9 @@ pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
             }
         }
         worker.result = run_result(worker.state.as_deref(), worker.name.as_deref(), worker.started_at, next_start, modified);
+        if worker.result == Some(false) {
+            worker.finished = claude.as_deref().and_then(|claude| worker_finished(claude, &worker.id));
+        }
     }
     Ok(workers)
 }
@@ -395,7 +425,32 @@ pub fn end_session(id: String) -> Result<String, String> {
 
 #[cfg(test)]
 mod worker_tests {
-    use super::{check_session_id, end_session, run_result, timeline_end, Worker};
+    use super::{check_session_id, end_session, job_finished, run_result, timeline_end, worker_finished, Worker};
+
+    /// The form of `~/.claude/jobs/<id>/state.json` (Claude Code 2.1.319, job 6a54e3cc: a plan run
+    /// that ended without its plan; job 68b71856: a done run with queued work).
+    #[test]
+    fn a_job_is_finished_when_nothing_is_in_flight() {
+        let state = |tasks: &str, queued: &str| {
+            format!("{{\"state\":\"done\",\"inFlight\":{{\"tasks\":{tasks},\"queued\":{queued},\"kinds\":[],\"drainableMonitors\":0}}}}")
+        };
+        assert_eq!(job_finished(&state("0", "0")), Some(true));
+        assert_eq!(job_finished(&state("1", "0")), Some(false));
+        assert_eq!(job_finished(&state("0", "2")), Some(false));
+        // Missing fields, a field that is no number, or no JSON: unknown.
+        assert_eq!(job_finished("{\"state\":\"done\"}"), None);
+        assert_eq!(job_finished("{\"inFlight\":{\"tasks\":0}}"), None);
+        assert_eq!(job_finished(&state("0", "\"x\"")), None);
+        assert_eq!(job_finished("{\"inFlight\":"), None);
+        // The file: missing gives None; an id that is no id reads no file.
+        let claude = std::env::temp_dir().join(format!("dispatch-test-finished-{}", std::process::id()));
+        assert_eq!(worker_finished(&claude, "abc123"), None);
+        std::fs::create_dir_all(claude.join("jobs").join("abc123")).unwrap();
+        std::fs::write(claude.join("jobs").join("abc123").join("state.json"), state("0", "0")).unwrap();
+        assert_eq!(worker_finished(&claude, "abc123"), Some(true));
+        assert_eq!(worker_finished(&claude, "../jobs/abc123"), None);
+        std::fs::remove_dir_all(&claude).unwrap();
+    }
 
     #[test]
     fn the_end_of_a_worker_is_the_last_line_of_its_timeline() {

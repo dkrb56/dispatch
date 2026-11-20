@@ -296,6 +296,15 @@ test("no triage: a done work run and a failed run alert, a done plan run does no
   assert.deepEqual(endNotices([end("t-6", "", "done")], false), [], "a worker of an older script names no run");
 });
 
+// Ticket a-plan-run-that-ends-without-a-plan: a plan run that ended for good without its plan alerts.
+test("no triage: a plan run that ended without a plan alerts, a work run does not", () => {
+  assert.deepEqual(endNotices([end("t-1", "plan", "done-empty")], false), [{ name: "t-1", project: "app", text: "the plan run ended without a plan" }]);
+  assert.deepEqual(endNotices([end("t-2", "work", "done-empty")], false), []);
+  assert.deepEqual(endNotices([end("t-3", "", "done-empty")], false), [], "a worker of an older script names no run");
+  assert.deepEqual(endNotices([end("t-4", "plan", "done-empty")], true), [], "night mode stays quiet");
+  assert.deepEqual(endNotices([end("t-5", "plan", "done-empty", false)], false), [], "triage tells it");
+});
+
 test("no triage: night mode and a project without the switch give no end alert", () => {
   const ends = [end("t-1", "work", "done"), end("t-2", "plan", "failed")];
   assert.deepEqual(endNotices(ends, true), [], "user decision 5: night mode stays quiet");

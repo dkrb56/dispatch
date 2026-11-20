@@ -139,3 +139,38 @@ test("a second early stop of one job is not told again", () => {
   const quiet = announcements(new Map([["q", "working"]]), [{ key: "q", state: "done", result: false, quiet: true }], new Set(), new Set());
   assert.deepEqual([quiet.early, [...quiet.earlyTold], [...quiet.ended]], [[], ["q"], []]);
 });
+
+// Ticket a-plan-run-that-ends-without-a-plan: the plan run of title-task-card-shows-working-after-the
+// (job 6a54e3cc, 2026-11-20) ended `done` without its plan and with nothing in flight. It stayed
+// done-early: no end, no line, no alert. With `finished` true it is done-empty, an end told once.
+type FinishedPoll = [state: string, result?: boolean | null, finished?: boolean | null];
+function replayFinished(polls: FinishedPoll[]) {
+  const lines: string[] = [];
+  let states: Map<string, string | null> = new Map();
+  let ends = new Set<string>();
+  let early = new Set<string>();
+  for (const [state, result, finished] of polls) {
+    const run = announcements(states, [{ key: "p", state, result, finished }], ends, early);
+    lines.push(...run.early.map((worker) => `${worker.key} early`));
+    lines.push(...run.told.map((worker) => `${worker.key} ${run.states.get(worker.key)}`));
+    states = run.states;
+    ends = run.ended;
+    early = run.earlyTold;
+  }
+  return lines;
+}
+
+test("job 6a54e3cc: a plan run that ended for good without its plan is told once as done-empty", () => {
+  assert.deepEqual(replayFinished([["working"], ["done", false, true], ["done", false, true]]), ["p done-empty"]);
+  // After an early stop, the end without the plan is told once.
+  assert.deepEqual(replayFinished([["working"], ["done", false, false], ["done", false, true], ["done", false, true]]), ["p early", "p done-empty"]);
+  // A chat turn after the end gives no second line.
+  assert.deepEqual(replayFinished([["working"], ["done", false, true], ["working"], ["done", false, true]]), ["p done-empty"]);
+});
+
+test("a run with work in flight or an unknown in-flight count stays done-early", () => {
+  assert.deepEqual(replayFinished([["working"], ["done", false, false], ["done", false, false]]), ["p early"]);
+  assert.deepEqual(replayFinished([["working"], ["done", false, null], ["done", false]]), ["p early"]);
+  // `finished` counts only without the result: a done run with its plan is a plain done.
+  assert.deepEqual(replayFinished([["working"], ["done", true, true]]), ["p done"]);
+});

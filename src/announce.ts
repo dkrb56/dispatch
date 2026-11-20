@@ -16,13 +16,19 @@ export interface PolledWorker {
    * older host: the end is then told as before (ticket early-done-line).
    */
   result?: boolean | null;
+  /**
+   * For a `done` run without its result: true when the job has nothing left in flight, so it ended
+   * for good (ticket a-plan-run-that-ends-without-a-plan). The page gives it only for a plan run; a
+   * work run without its report stays `DONE_EARLY`. Null or absent: unknown, also `DONE_EARLY`.
+   */
+  finished?: boolean | null;
 }
 
 /** The states that triage hears about. `working` is the start, not news. */
-export const ANNOUNCED_STATES: ReadonlySet<string> = new Set(["done", "blocked", "failed", "stopped"]);
+export const ANNOUNCED_STATES: ReadonlySet<string> = new Set(["done", "blocked", "failed", "stopped", "done-empty"]);
 
 /** The end states. Triage hears about the end of a job once (ticket done-line-repeats). */
-export const END_STATES: ReadonlySet<string> = new Set(["done", "failed", "stopped"]);
+export const END_STATES: ReadonlySet<string> = new Set(["done", "failed", "stopped", "done-empty"]);
 
 /**
  * The inner state of a run that is `done` without its result: its turn ended, but the session can
@@ -30,6 +36,13 @@ export const END_STATES: ReadonlySet<string> = new Set(["done", "failed", "stopp
  * no end; a later `done` with the result is the end.
  */
 export const DONE_EARLY = "done-early";
+
+/**
+ * The inner state of a run that is `done` without its result and has nothing left in flight
+ * (`finished`): it ended for good without its plan (ticket a-plan-run-that-ends-without-a-plan).
+ * It is an end, told once, also after an earlier `DONE_EARLY`.
+ */
+export const DONE_EMPTY = "done-empty";
 
 /** What one poll gives. */
 export interface Announcement<T extends PolledWorker> {
@@ -59,7 +72,8 @@ export interface Announcement<T extends PolledWorker> {
  * A `done` run without its result is `DONE_EARLY` (ticket early-done-line): no end, so the later
  * `done` with the result is told. Its early stop is told once per job, and only when the poll
  * before showed the worker run or wait: a saved `done` of the version before stays silent.
- * `earlyTold` keeps those keys like `ended`.
+ * `earlyTold` keeps those keys like `ended`. A `done` run without its result that has nothing left
+ * in flight is `DONE_EMPTY`: an end, told once like `done`.
  */
 export function announcements<T extends PolledWorker>(
   before: ReadonlyMap<string, string | null> | null,
@@ -67,7 +81,8 @@ export function announcements<T extends PolledWorker>(
   ended: ReadonlySet<string>,
   earlyTold: ReadonlySet<string> = new Set(),
 ): Announcement<T> {
-  const inner = (worker: T) => (worker.state === "done" && worker.result === false ? DONE_EARLY : worker.state);
+  const inner = (worker: T) =>
+    worker.state === "done" && worker.result === false ? (worker.finished === true ? DONE_EMPTY : DONE_EARLY) : worker.state;
   const states = new Map(workers.map((worker) => [worker.key, inner(worker)] as [string, string | null]));
   const told: T[] = [];
   const early: T[] = [];

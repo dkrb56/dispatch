@@ -226,6 +226,7 @@ pub fn run(
         "task_reply" => json(pipeline::task_reply(a.req("cwd")?, a.req("id")?, a.req("text")?)?),
         "task_stop" => json(pipeline::task_stop(a.req("cwd")?, a.req("id")?)?),
         "task_resume" => json(pipeline::task_resume(a.req("cwd")?, a.req("id")?)?),
+        "task_replan" => json(pipeline::task_replan(a.req("cwd")?, a.req("id")?)?),
         "task_merge" => json(pipeline::task_merge(a.req("cwd")?, a.req("id")?)?),
         "action_save" => json(actions::action_save(a.req("cwd")?, a.req("action")?)?),
         "action_delete" => json(actions::action_delete(a.req("cwd")?, a.req("id")?)?),
