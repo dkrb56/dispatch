@@ -3538,7 +3538,8 @@ pub struct ReportHeader {
 }
 
 /// One question of a report: a numbered item under the heading `## Questions`, with its options
-/// as list items below it, the recommended option first.
+/// as list items below it, the recommended option first. A numbered item without options is a
+/// detail text, not a question, and the reader drops it.
 #[derive(Serialize, PartialEq, Debug)]
 pub struct Question {
     number: u32,
@@ -3598,6 +3599,7 @@ fn parse_report(text: &str) -> (Option<ReportHeader>, Vec<Question>) {
         last.push(' ');
         last.push_str(trimmed);
     }
+    questions.retain(|question| !question.options.is_empty());
     (has_state.then_some(header), questions)
 }
 
@@ -7624,6 +7626,14 @@ pub(crate) mod tests {
                 text: "How should the run get its permissions?".into(),
                 options: vec!["Change the flags, then reply. Recommended. A reply in the \"working\" state takes the flags.".into(), "Stop the ticket.".into()],
             }]
+        );
+        // Numbered steps without options are details above the question, not questions.
+        let (_, questions) = parse_report(
+            "state: needs-decision\nneeds: decision\n\n## Questions\n1. Open the mockup.\n2. Read the layout.\n3. Compare the colours.\n4. Check the fonts.\n5. Check the icons.\n6. Check the spacing.\nThen I read the mockup and found two ways.\n7. Which layout should I use?\n   - Keep the old one\n   - Use the mockup\n",
+        );
+        assert_eq!(
+            questions,
+            vec![Question { number: 7, text: "Which layout should I use?".into(), options: vec!["Keep the old one".into(), "Use the mockup".into()] }]
         );
         let (header, questions) = parse_report("needs: nothing\nstate: done\n\n## Notes\n1. not a question\n");
         assert_eq!(header.map(|h| (h.state, h.needs, h.files)), Some(("done".to_string(), "nothing".to_string(), String::new())));
