@@ -2,6 +2,13 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.81 (2026-11-20)
+- A click on a commit in the Git state window shows its full message, its changed files in the Changes list and the diff of the picked file; a merge shows its changes against the first parent; the Uncommitted changes line and a Back button show the open changes again; new read-only host commands git_commit and git_commit_diff.
+- The strip above the tickets board explains both switches and refreshes on a Night click; Auto-start is now Run queue.
+- A work run can stop at a check step; the task card shows the result with a box for changes and Confirm, and the answer goes to the same run; a Check result row opens the result later; new project switch Confirm check results automatically (the run does not stop, and Dispatch confirms a result that still arrives).
+- Phone tab, Help and README say phone and give the Android Home Screen step.
+- Phone page folds a card by a tap on its head and hides projects in a Projects list; the phone keeps both choices.
+
 ## 0.1.80 (2026-11-20)
 - A merge that stops halfway never leaves the checkout open; the merge verb writes a marker and aborts in its finally, the task read and Merge cancel a merge that a killed script left (only one that Dispatch started), Setup commit, the switch back, untrack and the switch to a task branch stage nothing during an open merge; the card says why nothing was merged and auto-merge does not try again.
 - Approve waits in the queue while the checkout is on the branch of another task; the card names the wait and hides Commit files.
