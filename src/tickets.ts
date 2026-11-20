@@ -126,6 +126,58 @@ export const COLUMNS: readonly { status: BoardColumn; name: string }[] = [
   { status: "canceled", name: "Canceled" },
 ];
 
+/** The width of a board column (ticket each-column-in-ticket-board-should-have): its mode and the saved custom width in px. */
+export interface ColumnWidth {
+  mode: "min" | "regular" | "custom";
+  custom?: number;
+}
+
+/** The localStorage key of the widths of the board columns, one setting for every board. */
+export const COLUMN_WIDTHS_KEY = "board-column-widths";
+
+/** The width of a minimized column, and the limits of a custom width, in px. */
+export const COLUMN_MIN_WIDTH = 40;
+export const COLUMN_CUSTOM_MIN = 120;
+export const COLUMN_CUSTOM_MAX = 900;
+
+/** A dragged width within the custom limits, in whole px. */
+export function clampColumnWidth(width: number): number {
+  if (!Number.isFinite(width)) return COLUMN_CUSTOM_MIN;
+  return Math.round(Math.min(COLUMN_CUSTOM_MAX, Math.max(COLUMN_CUSTOM_MIN, width)));
+}
+
+/** The width of each column from its localStorage text; a bad or missing entry gives Regular. */
+export function parseColumnWidths(text: string | null): Record<BoardColumn, ColumnWidth> {
+  const widths = {} as Record<BoardColumn, ColumnWidth>;
+  let saved: Record<string, unknown> = {};
+  try {
+    const value = text ? (JSON.parse(text) as unknown) : null;
+    if (value && typeof value === "object" && !Array.isArray(value)) saved = value as Record<string, unknown>;
+  } catch {
+    saved = {};
+  }
+  for (const { status } of COLUMNS) {
+    const entry = saved[status] as { mode?: unknown; custom?: unknown } | null | undefined;
+    const custom = entry && typeof entry.custom === "number" && Number.isFinite(entry.custom) ? clampColumnWidth(entry.custom) : undefined;
+    let mode: ColumnWidth["mode"] = entry && (entry.mode === "min" || entry.mode === "custom") ? entry.mode : "regular";
+    if (mode === "custom" && custom === undefined) mode = "regular";
+    widths[status] = custom === undefined ? { mode } : { mode, custom };
+  }
+  return widths;
+}
+
+/** The CSS `grid-template-columns` of the board; all Regular gives the same text as the CSS fallback. */
+export function columnTemplate(widths: Partial<Record<BoardColumn, ColumnWidth>>, live?: { status: BoardColumn; width: number }): string {
+  const parts = COLUMNS.map(({ status }) => {
+    if (live && live.status === status) return `${clampColumnWidth(live.width)}px`;
+    const width = widths[status];
+    if (width?.mode === "min") return `${COLUMN_MIN_WIDTH}px`;
+    if (width?.mode === "custom" && width.custom !== undefined) return `${clampColumnWidth(width.custom)}px`;
+    return "minmax(180px, 1fr)";
+  });
+  return parts.every((part) => part === "minmax(180px, 1fr)") ? `repeat(${COLUMNS.length}, minmax(180px, 1fr))` : parts.join(" ");
+}
+
 /** The columns that take a ticket by a drag or a button: Working follows the task. */
 export const DROP_COLUMNS: readonly TicketStatus[] = ["backlog", "new", "done", "canceled"];
 

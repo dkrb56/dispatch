@@ -95,7 +95,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, boardTickets, bulkIds, canDrag, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketGroups, ticketMatches, ticketMessage, ticketRoute, type InProgressView, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
+import { addedText, boardTickets, bulkIds, canDrag, clampColumnWidth, COLUMN_WIDTHS_KEY, columnTemplate, parseColumnWidths, type BoardColumn, type ColumnWidth, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketGroups, ticketMatches, ticketMessage, ticketRoute, type InProgressView, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
@@ -9537,6 +9537,68 @@ function groupFrames(els: readonly HTMLElement[], marks: readonly ({ parent: str
   return out;
 }
 
+/** The saved widths of the board columns, one setting for every board (ticket each-column-in-ticket-board-should-have). */
+function columnWidths(): Record<BoardColumn, ColumnWidth> {
+  try {
+    return parseColumnWidths(localStorage.getItem(COLUMN_WIDTHS_KEY));
+  } catch {
+    return parseColumnWidths(null);
+  }
+}
+
+function saveColumnWidths(widths: Record<BoardColumn, ColumnWidth>): void {
+  try {
+    localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(widths));
+  } catch {
+    // No storage: the widths hold until Dispatch closes.
+  }
+}
+
+/** Sets the mode of a column on every board; Regular and Minimize keep the saved custom width. */
+function setColumnWidth(status: BoardColumn, mode: ColumnWidth["mode"], custom?: number): void {
+  const widths = columnWidths();
+  const saved = custom ?? widths[status].custom;
+  widths[status] = saved === undefined ? { mode } : { mode, custom: saved };
+  saveColumnWidths(widths);
+  renderTickets();
+}
+
+/**
+ * A drag of the right edge of a column sets its own width (the pattern of `dragDialogSize`): the grid
+ * follows the pointer, and the drop saves mode Custom. `ticketDragging` holds the redraw meanwhile,
+ * so the handle stays in the page.
+ */
+function dragColumnWidth(event: PointerEvent, container: HTMLElement, column: HTMLElement, status: BoardColumn): void {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const handle = event.currentTarget as HTMLElement;
+  handle.setPointerCapture(event.pointerId);
+  const widths = columnWidths();
+  const start = { x: event.clientX, width: column.getBoundingClientRect().width };
+  let width: number | null = null;
+  ticketDragging = true;
+  column.classList.add("resizing");
+  const move = (moved: PointerEvent) => {
+    width = clampColumnWidth(start.width + moved.clientX - start.x);
+    container.style.gridTemplateColumns = columnTemplate(widths, { status, width });
+  };
+  const end = () => {
+    handle.removeEventListener("pointermove", move);
+    handle.removeEventListener("pointerup", end);
+    handle.removeEventListener("pointercancel", end);
+    ticketDragging = false;
+    if (width === null) {
+      renderTickets();
+      return;
+    }
+    setColumnWidth(status, "custom", width);
+  };
+  handle.addEventListener("pointermove", move);
+  handle.addEventListener("pointerup", end);
+  handle.addEventListener("pointercancel", end);
+}
+
 function fillTicketColumns(container: HTMLElement, key: string, search: string): void {
   const record = projectTasks.get(key);
   const tickets = record?.tickets ?? [];
@@ -9562,14 +9624,37 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
   // A parent and its parts share one colour (ticket show-a-parent-ticket-and-its-parts-as): from all
   // tickets of the project, so a search does not change the colours.
   const groups = ticketGroups(tickets);
+  // The width of each column (ticket each-column-in-ticket-board-should-have): Minimize, Regular or Custom.
+  const widths = columnWidths();
+  container.style.gridTemplateColumns = columnTemplate(widths);
   const columns = COLUMNS.map(({ status, name }) => {
     const items = boardTickets(shown, status, view, status === "in-progress" || status === "planning" || status === "waiting" ? ticketPlace : undefined);
     const { shown: cards, hidden } = columnCards(items, status, search.trim() !== "", showAll.has(status));
     const column = mapElement("section", "tickets-column");
     column.dataset.status = status;
     column.dataset.project = key;
+    const width = widths[status];
+    column.classList.toggle("minimized", width.mode === "min");
     const head = mapElement("div", "tickets-column-head");
     head.append(mapElement("b", "", name), mapElement("span", "tickets-column-count", String(items.length)));
+    const sizes = mapElement("div", "tickets-column-width");
+    const sizeButton = (mode: ColumnWidth["mode"], text: string, title: string, disabled = false) => {
+      const button = ticketButton(text, title, () => setColumnWidth(status, mode), disabled);
+      button.setAttribute("aria-pressed", String(width.mode === mode));
+      button.addEventListener("pointerdown", (event) => event.stopPropagation());
+      return button;
+    };
+    sizes.append(
+      sizeButton("min", "–", `Minimize ${name} to a narrow strip`),
+      sizeButton("regular", "▭", `Give ${name} the regular width`),
+      sizeButton(
+        "custom",
+        "↔",
+        width.custom === undefined ? "Drag the right edge of the column to set its own width" : `Give ${name} its own width of ${width.custom} px`,
+        width.custom === undefined,
+      ),
+    );
+    head.append(sizes);
     // The bulk move of the shown cards (ticket tickets-backlog, user decision 3): the search narrows the set.
     if (status === "new" || status === "backlog") {
       const ids = bulkIds(shown, status, inFlight);
@@ -9621,6 +9706,13 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
       );
     }
     column.append(head, list);
+    if (width.mode !== "min") {
+      const handle = mapElement("div", "tickets-column-resize");
+      handle.title = `Drag to set the width of ${name}`;
+      handle.addEventListener("pointerdown", (event) => dragColumnWidth(event, container, column, status));
+      handle.addEventListener("click", (event) => event.stopPropagation());
+      column.append(handle);
+    }
     // The right-click menu of the board (ticket i-need-a-right-mouse-click-option-to-add): in every
     // column and on a card; a box (rename, part form) keeps the normal menu.
     column.addEventListener("contextmenu", (event) => {

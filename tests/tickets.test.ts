@@ -9,6 +9,11 @@ import {
   addedText,
   bulkIds,
   canDrag,
+  clampColumnWidth,
+  COLUMN_CUSTOM_MAX,
+  COLUMN_CUSTOM_MIN,
+  COLUMN_WIDTHS_KEY,
+  columnTemplate,
   CLOSED_COLUMN_LIMIT,
   columnCards,
   columnOf,
@@ -38,6 +43,7 @@ import {
   nextType,
   orphanTasks,
   parseBoardSize,
+  parseColumnWidths,
   parseWindowPlace,
   partPlace,
   partProgress,
@@ -329,6 +335,44 @@ test("the kept size of the tickets window reads back and fits the app window", (
   assert.deepEqual(fitBoardSize({ width: 5000, height: 5000 }, view), { width: 1560, height: 960 }, "at most the window less 40 px");
   assert.deepEqual(fitBoardSize({ width: 900.6, height: 600.4 }, view), { width: 901, height: 600 }, "whole px");
   assert.deepEqual(fitBoardSize(size, { width: 500, height: 300 }), { width: 460, height: 260 }, "a small window wins over the minimum");
+});
+
+test("column widths: the saved text, the clamp and the grid template (ticket each-column-in-ticket-board-should-have)", () => {
+  assert.equal(COLUMN_WIDTHS_KEY, "board-column-widths");
+  const regular = parseColumnWidths(null);
+  for (const { status } of COLUMNS) assert.deepEqual(regular[status], { mode: "regular" }, status);
+  for (const broken of ["", "not json", "null", "[]", "5", '{"done":"min"}', '{"done":{"mode":"wide"}}']) {
+    assert.deepEqual(parseColumnWidths(broken).done, { mode: "regular" }, broken);
+  }
+  const saved = parseColumnWidths(JSON.stringify({ done: { mode: "min" }, backlog: { mode: "custom", custom: 300 }, new: { mode: "regular", custom: 5000 } }));
+  assert.deepEqual(saved.done, { mode: "min" });
+  assert.deepEqual(saved.backlog, { mode: "custom", custom: 300 });
+  assert.deepEqual(saved.new, { mode: "regular", custom: COLUMN_CUSTOM_MAX }, "Regular keeps the custom width");
+  assert.deepEqual(parseColumnWidths('{"done":{"mode":"custom"}}').done, { mode: "regular" }, "Custom without a width is Regular");
+  assert.equal(clampColumnWidth(10), COLUMN_CUSTOM_MIN);
+  assert.equal(clampColumnWidth(5000), COLUMN_CUSTOM_MAX);
+  assert.equal(clampColumnWidth(250.6), 251);
+  assert.equal(clampColumnWidth(Number.NaN), COLUMN_CUSTOM_MIN);
+  const fallback = CSS.match(/#tickets-columns,\n\.focus-board \.tickets-columns \{[^}]*grid-template-columns: ([^;]+);/)?.[1];
+  assert.equal(columnTemplate(regular), fallback, "all Regular equals the CSS fallback");
+  const tracks = columnTemplate({ ...regular, done: { mode: "min" } }).match(/minmax\([^)]*\)|\d+px/g) ?? [];
+  assert.equal(tracks.length, COLUMNS.length);
+  assert.equal(tracks[COLUMNS.findIndex((c) => c.status === "done")], "40px", "Minimize gives a 40 px strip");
+  const custom = columnTemplate({ ...regular, backlog: { mode: "custom", custom: 300 } });
+  assert.ok(custom.startsWith("300px minmax(180px, 1fr)"), custom);
+  assert.ok(columnTemplate(regular, { status: "backlog", width: 260 }).startsWith("260px "), "the live width of a drag");
+  // Page checks: both boards draw through fillTicketColumns, which sets the grid and adds the buttons and the edge.
+  const fill = MAIN.slice(MAIN.indexOf("function fillTicketColumns("), MAIN.indexOf("/** The open right-click menu of a board"));
+  assert.match(fill, /container\.style\.gridTemplateColumns = columnTemplate\(widths\);/);
+  assert.match(fill, /column\.classList\.toggle\("minimized", width\.mode === "min"\);/);
+  for (const mode of ["min", "regular", "custom"]) assert.match(fill, new RegExp(`sizeButton\\(\\s*"${mode}"`), mode);
+  assert.match(fill, /mapElement\("div", "tickets-column-resize"\)/);
+  const drag = MAIN.slice(MAIN.indexOf("function dragColumnWidth("), MAIN.indexOf("function fillTicketColumns("));
+  assert.match(drag, /ticketDragging = true;/);
+  assert.match(drag, /ticketDragging = false;/);
+  assert.match(drag, /setColumnWidth\(status, "custom", width\);/);
+  assert.match(CSS, /\.tickets-column\.minimized \.tickets-column-head > b \{\n  writing-mode: vertical-rl;/);
+  assert.match(CSS, /\.tickets-column-resize \{[^}]*cursor: col-resize;/);
 });
 
 test("the end words, the failure colour, the types and the search", () => {

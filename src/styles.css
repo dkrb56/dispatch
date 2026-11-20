@@ -2254,8 +2254,10 @@ button.task-head:hover {
 }
 
 .tickets-column {
+  position: relative;
   display: flex;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
   border: 1px solid var(--hairline);
   border-radius: 10px;
@@ -2310,6 +2312,7 @@ button.task-head:hover {
   font-size: calc(11px * var(--text-scale));
   font-weight: 600;
   text-transform: uppercase;
+  flex-wrap: wrap;
 }
 
 /* The bulk move of a column (ticket tickets-backlog): "All → Backlog" and "All → New". */
@@ -2343,6 +2346,70 @@ button.task-head:hover {
   background: var(--card);
   color: var(--muted);
   font-weight: 400;
+}
+
+/* The width buttons of a column (ticket each-column-in-ticket-board-should-have): Minimize, Regular, Custom. */
+.tickets-column-width {
+  display: flex;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.tickets-column-head .tickets-column-width button {
+  width: 20px;
+  margin-left: 0;
+  padding: 0;
+}
+
+.tickets-column-head .tickets-column-width + button {
+  margin-left: 0;
+}
+
+.tickets-column-width button[aria-pressed="true"] {
+  border-color: var(--accent-line);
+  color: var(--text);
+}
+
+/* The drag edge of a column: a drag sets its own width. */
+.tickets-column-resize {
+  position: absolute;
+  top: 0;
+  right: -6px;
+  bottom: 0;
+  z-index: 2;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.tickets-column-resize:hover,
+.tickets-column.resizing .tickets-column-resize {
+  background: var(--accent-line);
+  opacity: 0.5;
+}
+
+/* A minimized column: a narrow strip with its name upright and its count; it still takes a drop. */
+.tickets-column.minimized .tickets-list,
+.tickets-column.minimized .tickets-column-head > button {
+  display: none;
+}
+
+.tickets-column.minimized .tickets-column-head {
+  flex: 1;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  padding: 8px 0;
+}
+
+.tickets-column.minimized .tickets-column-width {
+  flex-direction: column;
+  order: -1;
+  margin-left: 0;
+}
+
+.tickets-column.minimized .tickets-column-head > b {
+  writing-mode: vertical-rl;
+  white-space: nowrap;
 }
 
 .tickets-list {
