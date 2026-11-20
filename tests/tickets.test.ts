@@ -567,7 +567,7 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   assert.match(MAIN, /const boardNoteEl = mapElement\("span", "focus-board-note", NO_TRIAGE_NOTE\);\n[\s\S]*?\n  boardHead\.append\(boardNoteEl, boardCountEl, boardSearchEl\);/);
   // Ticket issues-with-details-button: the Terminal switch stands right after the tab buttons, not in the board head.
   assert.match(MAIN, /const terminal = stripSwitch\("focus-terminal-details focus-terminal-switch"\);/);
-  assert.match(MAIN, /tabRowEl\.append\(tabButtons\.triage, tabButtons\.tickets, tabButtons\.workers, chats, terminal\);/);
+  assert.match(MAIN, /tabRowEl\.append\(tabButtons\.triage, tabButtons\.tickets, tabButtons\.workers, chats, terminal, autoEl\);/);
   assert.doesNotMatch(MAIN, /focus-terminal-button/);
   assert.match(MAIN, /async function openProjectTerminal\([\s\S]*?panes\.has\(kept\)\) return;/);
   assert.doesNotMatch(CSS, /\.focus-terminal-button/);

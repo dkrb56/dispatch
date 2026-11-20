@@ -2210,12 +2210,6 @@ button.task-head:hover {
   color: var(--text);
 }
 
-.focus-board .auto-switch {
-  padding: 8px 12px;
-  border-width: 1px;
-  border-radius: 6px;
-}
-
 .auto-switch.on {
   border-color: var(--work-line);
   background: var(--work-bg);
@@ -7986,6 +7980,8 @@ body.chats-sized .focus-side {
   flex: none;
   gap: 2px;
   align-self: flex-start;
+  flex-wrap: wrap;
+  max-width: 100%;
   padding: 2px;
   border: 1px solid var(--group-line);
   border-radius: 8px;
@@ -8210,6 +8206,39 @@ body.chats-sized .focus-side {
   padding-left: 10px;
   border-left: 1px solid var(--group-line);
   border-radius: 0;
+}
+
+.focus-tabs > .auto-switch,
+.focus-tabs > .auto-switch:is(.on, .paused) {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 0 10px;
+  margin-left: 6px;
+  border: 0;
+  border-left: 1px solid var(--group-line);
+  border-radius: 0;
+  background: none;
+}
+
+.focus-tabs .auto-switch-toggle {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: calc(12px * var(--text-scale));
+  font-weight: normal;
+  cursor: pointer;
+}
+
+.focus-tabs .auto-switch-toggle:hover,
+.focus-tabs .auto-switch-toggle[aria-checked="true"] {
+  color: var(--text);
 }
 
 .focus-terminal-details {

@@ -63,8 +63,11 @@ test("the strip above the board shows the state and the action (ticket i-need-mo
   assert.equal(paused.detail, PAUSE_BANNER);
   assert.equal(autoSwitch(true, true).detail, PAUSE_BANNER + " Night is on, but no work starts until you turn Run queue on.");
   assert.equal(paused.title, pauseButton(true).title);
+  assert.equal(on.tip, on.detail + " Click to pause.");
+  assert.equal(paused.tip, PAUSE_BANNER + " Click to resume.");
   const nightFn = MAIN.slice(MAIN.indexOf("function showNightButtons"));
   assert.match(nightFn.slice(0, nightFn.indexOf("\n}\n")), /\.auto-switch-detail/);
+  assert.match(nightFn.slice(0, nightFn.indexOf("\n}\n")), /start\.title = look\.tip/);
   const pauseFn = MAIN.slice(MAIN.indexOf("function showPauseButtons"));
   assert.doesNotMatch(pauseFn.slice(0, pauseFn.indexOf("\n}\n")), /auto-switch-detail/);
 });

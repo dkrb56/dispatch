@@ -3137,7 +3137,10 @@ function showNightButtons(): void {
     const button = el.querySelector<HTMLButtonElement>(".project-night");
     const night = button ? nightOf(button.dataset.host ?? LOCAL, button.dataset.root) : false;
     const detail = el.querySelector(".auto-switch-detail");
-    if (detail) detail.textContent = autoSwitch(projectPaused(el.dataset.project ?? ""), night).detail;
+    const look = autoSwitch(projectPaused(el.dataset.project ?? ""), night);
+    if (detail) detail.textContent = look.detail;
+    const start = el.querySelector<HTMLButtonElement>(".auto-switch-start");
+    if (start) start.title = look.tip;
   }
 }
 
@@ -9327,7 +9330,6 @@ function showPauseButtons(): void {
     el.classList.toggle("paused", look.kind === "paused");
     const button = el.querySelector<HTMLButtonElement>(".auto-switch-start")!;
     button.querySelector(".auto-switch-label")!.textContent = look.label;
-    button.title = look.title;
     button.setAttribute("aria-checked", String(look.on));
   }
 }
@@ -12554,7 +12556,6 @@ function focusColumn(ref: ProjectRef): FocusColumn {
     saveFocusSize(key, { chats: focusSizes()[key]?.chats !== true });
     renderFocus();
   });
-  tabRowEl.append(tabButtons.triage, tabButtons.tickets, tabButtons.workers, chats, terminal);
   // The tickets board of the project (ticket in-focus-mode-i-want-to-se-ticket-board), in the Tickets tab.
   const boardEl = mapElement("div", "focus-board");
   boardEl.hidden = true;
@@ -12570,7 +12571,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   boardSearchEl.setAttribute("aria-label", `Search the tickets of ${projectName(ref)}`);
   boardHead.append(boardNoteEl, boardCountEl, boardSearchEl);
   // The large auto-start switch above the board (ticket i-need-more-prominent-button-for).
-  const autoEl = mapElement("div", "auto-switch");
+  const autoEl = mapElement("span", "auto-switch focus-queue-switches");
   autoEl.dataset.project = key;
   const autoButton = stripSwitch("auto-switch-toggle auto-switch-start");
   autoButton.addEventListener("click", () => void setPaused(ref, !projectPaused(key)));
@@ -12579,9 +12580,10 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   autoNight.dataset.project = key;
   autoNight.dataset.host = ref.host;
   autoNight.dataset.root = ref.root;
-  autoEl.append(autoButton, autoNight, mapElement("span", "auto-switch-detail"));
+  autoEl.append(autoButton, autoNight);
+  tabRowEl.append(tabButtons.triage, tabButtons.tickets, tabButtons.workers, chats, terminal, autoEl);
   const boardColumnsEl = mapElement("div", "tickets-columns");
-  boardEl.append(boardHead, autoEl, boardColumnsEl);
+  boardEl.append(boardHead, boardColumnsEl);
   // The Details switch of a panel (tickets title-project-rail-focus-as-the-only, no-details-mode,
   // issues-with-details-button): in the head line above its pane; off at the start.
   const detailsSwitch = (panel: DetailPanel): HTMLButtonElement => {
