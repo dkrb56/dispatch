@@ -337,6 +337,301 @@ body:has(#panes:not(.no-side)) #toggle-side {
 }
 
 /* The list of the Claude Code chats, on the left of the terminals. */
+/* The project rail (ticket project-rail-at-the-left-edge-of-the): a thin column at the left edge of
+   Focus, Map and Overview with one square per project. Focus above the line in the order of the
+   columns, Other below it; + at the bottom. Details keeps the pills of the bar and hides the rail. */
+#rail {
+  display: none;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  width: 44px;
+  padding: 8px 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-right: 1px solid var(--hairline);
+  background: var(--surface);
+  scrollbar-width: none;
+}
+
+body.focus-mode #rail,
+body.map-mode #rail,
+body.overview-mode #rail {
+  display: flex;
+}
+
+body.focus-mode #bar-projects,
+body.map-mode #bar-projects {
+  display: none;
+}
+
+.rail-list {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-height: 4px;
+}
+
+.rail-line {
+  flex: none;
+  width: 24px;
+  height: 1px;
+  margin: 2px 0;
+  background: var(--line);
+}
+
+.rail-line.drop-target {
+  height: 2px;
+  background: var(--accent);
+}
+
+.rail-square {
+  position: relative;
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
+}
+
+.rail-square:hover {
+  border-color: var(--group-line);
+}
+
+.rail-square:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* The bar on the left of a Focus square: long for a shown column, short for a minimized one. */
+.rail-bar {
+  position: absolute;
+  left: -8px;
+  top: 3px;
+  width: 3px;
+  height: 20px;
+  border-radius: 0 2px 2px 0;
+  background: var(--group-line);
+  pointer-events: none;
+}
+
+.rail-bar.short {
+  top: 9px;
+  height: 8px;
+}
+
+.rail-bar.none {
+  display: none;
+}
+
+.rail-square.current {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+.rail-square.current .rail-bar {
+  background: var(--accent);
+}
+
+.rail-square.min {
+  color: var(--text-2);
+}
+
+.rail-square.other {
+  border-color: var(--hairline);
+  background: transparent;
+  color: var(--muted);
+}
+
+.rail-square.dashed {
+  border: 1px dashed var(--group-line);
+  background: transparent;
+  color: var(--faint);
+}
+
+/* The badges at the corners: amber for the tasks that wait, green for the workers that work. */
+.rail-badge {
+  position: absolute;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  border-radius: 7px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.rail-badge[hidden] {
+  display: none;
+}
+
+.rail-badge.waits {
+  top: -6px;
+  right: -7px;
+  background: var(--wait);
+  color: var(--bg);
+}
+
+.rail-badge.working {
+  bottom: -6px;
+  right: -7px;
+  background: var(--work);
+  color: var(--bg);
+}
+
+.rail-square.attention {
+  box-shadow: 0 0 0 3px var(--wait-glow);
+}
+
+.rail-square.attention.pulse::after {
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow: 0 0 0 4px var(--wait-glow);
+  content: "";
+  pointer-events: none;
+  animation: setup-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-square.attention.pulse::after {
+    animation: none;
+  }
+}
+
+/* The computer tag, only when one folder stands on more than one computer. */
+.rail-tag {
+  position: absolute;
+  bottom: -6px;
+  left: -5px;
+  padding: 0 2px;
+  border-radius: 3px;
+  background: var(--hairline);
+  color: var(--text-2);
+  font-size: 8px;
+  font-weight: 600;
+  line-height: 11px;
+  pointer-events: none;
+}
+
+.rail-tag[hidden] {
+  display: none;
+}
+
+/* Pointing at an Other square shows + on it and a small card "Add to Focus" beside it. */
+.rail-plus {
+  display: none;
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.rail-square.other:hover .rail-letters,
+.rail-square.dashed:hover .rail-letters {
+  display: none;
+}
+
+.rail-square.other:hover .rail-plus,
+.rail-square.dashed:hover .rail-plus {
+  display: inline;
+}
+
+.rail-card {
+  position: fixed;
+  z-index: 40;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 6px 18px rgb(0 0 0 / 35%);
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* A drag of a square: the dragged square, the mark between squares, the mark on the line. */
+.rail-square.dragging {
+  opacity: 0.5;
+}
+
+.rail-square.drag-over::before,
+.rail-square.drag-after::before {
+  position: absolute;
+  left: -6px;
+  right: -6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  content: "";
+  pointer-events: none;
+}
+
+.rail-square.drag-over::before {
+  top: -5px;
+}
+
+.rail-square.drag-after::before {
+  bottom: -5px;
+}
+
+body.rail-dragging,
+body.rail-dragging * {
+  cursor: grabbing !important;
+}
+
+#rail-add {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin-top: auto;
+  padding: 0;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+#rail-add:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.ticket-menu button:disabled {
+  color: var(--faint);
+  cursor: default;
+}
+
+.ticket-menu button:disabled:hover {
+  background: transparent;
+}
+
 #chats {
   display: flex;
   flex-direction: column;

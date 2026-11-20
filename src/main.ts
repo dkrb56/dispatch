@@ -21,7 +21,7 @@ import { type FolderItem, keyHost, keyPath, keysOfHost, mergeLists, pathKey, pro
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openPath, openUrl } from "@tauri-apps/plugin-opener";
 import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -67,6 +67,7 @@ import { commandLines, groupLabel, unverifiedText } from "./commandrows";
 import { announcements, parseEnded, serializeEnded } from "./announce";
 import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, type FailedEnds, oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
 import { barItems, currentProject, detailsProjects, groupCount, pillCount, pillLabels } from "./topbar";
+import { badgeText, moveUp, railDrop, type RailGroup, railItems, railLetters, railMenu, railTags, removeProjectTexts } from "./rail";
 import { type ChatTab, headState, isChatTab, pasteSkipsPane } from "./chattabs";
 import { autoSwitch, pauseButton, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
@@ -1649,6 +1650,8 @@ async function openWorkspace(host: HostId, cwd: string | null | undefined): Prom
   const { info, flags, chat, triage: start, action } = await workspaceStart(host, cwd);
   const { root: project } = info;
   const key = projectKey(host, project);
+  // Every workspace stands in the project rail (ticket project-rail-at-the-left-edge-of-the).
+  rememberProject({ host, root: project });
   // The chat runs in a program outside the host: no second chat, the project shows the note.
   if (action.kind === "note") triageNotes.add(key);
   else triageNotes.delete(key);
@@ -3515,7 +3518,10 @@ function initRemoveProject(): void {
     const ref = removePending;
     removePending = null;
     const key = removeAnswer(ref ? refKey(ref) : null, removeDialog.returnValue);
-    if (ref && key !== null) removeFocusProject(ref);
+    if (ref && key !== null) {
+      if (removeKind === "rail") forgetProject(ref);
+      else removeFocusProject(ref);
+    }
     focusedPane()?.term.focus();
   });
 }
@@ -9241,7 +9247,15 @@ function openBoardMenu(event: MouseEvent, key: string): void {
     item("New ticket in Backlog", "backlog", "Open the New ticket window; the ticket waits in Backlog"),
   );
   // A modal dialog stands in the top layer: the menu goes into the dialog of the board.
-  const dialog = (event.currentTarget as HTMLElement).closest("dialog");
+  showMenu(menu, event, (event.currentTarget as HTMLElement).closest("dialog"));
+}
+
+/**
+ * Shows a built right-click menu at the mouse, inside the window, and closes it at a press outside,
+ * Esc, a scroll, a resize, a blur of the window or the close of its dialog. The board and the project
+ * rail use it.
+ */
+function showMenu(menu: HTMLElement, event: MouseEvent, dialog: HTMLDialogElement | null): void {
   (dialog ?? document.body).append(menu);
   const width = menu.offsetWidth;
   const height = menu.offsetHeight;
@@ -9276,7 +9290,7 @@ function openBoardMenu(event: MouseEvent, key: string): void {
       dialog?.removeEventListener("close", close);
     },
   };
-  menu.querySelector("button")?.focus();
+  menu.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
 }
 
 /** Closes the right-click menu of a board, when one is open. */
@@ -11535,6 +11549,34 @@ async function openTab(
 const focusEl = document.querySelector<HTMLElement>("#focus")!;
 const focusProjectsEl = document.querySelector<HTMLElement>("#focus-projects")!;
 const focusAddEl = document.querySelector<HTMLButtonElement>("#focus-add")!;
+/** The project rail at the left edge of Focus, Map and Overview (ticket project-rail-at-the-left-edge-of-the). */
+const railEl = document.querySelector<HTMLElement>("#rail")!;
+const railFocusEl = document.querySelector<HTMLElement>("#rail-focus")!;
+const railOtherEl = document.querySelector<HTMLElement>("#rail-other")!;
+const railLineEl = railEl.querySelector<HTMLElement>(".rail-line")!;
+const railAddEl = document.querySelector<HTMLButtonElement>("#rail-add")!;
+/**
+ * Every project that the rail knows, in the order they came: the projects in Focus and the ones below
+ * the line. A project removed from Focus stays here; only Remove project of its menu takes it out.
+ * In localStorage `rail-projects`, in the shape of `focus-projects`.
+ */
+let railProjects: ProjectRef[] = [];
+const RAIL_PROJECTS_KEY = "rail-projects";
+
+function saveRailProjects(): void {
+  try {
+    localStorage.setItem(RAIL_PROJECTS_KEY, JSON.stringify(railProjects));
+  } catch {
+    // The list then holds until the app closes.
+  }
+}
+
+/** Adds a project to the known projects of the rail, once. */
+function rememberProject(ref: ProjectRef): void {
+  if (ref.root === "" || railProjects.some((known) => refKey(known) === refKey(ref))) return;
+  railProjects.push({ host: ref.host, root: ref.root });
+  saveRailProjects();
+}
 /** Focus mode is on. The choice is in localStorage `view-mode`. */
 let focusOn = false;
 /** The projects of focus mode with their hosts, in their order. In localStorage `focus-projects`. */
@@ -11554,6 +11596,8 @@ function setFocusCurrent(key: string): void {
   focusCurrent = key;
   showFocusMark();
   redrawStatusBar();
+  // The blue square of the rail follows; the same squares change in place.
+  renderRail();
 }
 
 /** Puts the frame on the column of the project in focus; with one project no column has it. */
@@ -11944,6 +11988,8 @@ function setColumnSize(key: string, action: ColumnAction): void {
   const { choices, changed } = applyAction(keys, focusChoices(), key, action);
   for (const known of changed) saveFocusSize(known, { state: choices[known] });
   applyFocusLayout();
+  // The bars of the rail show the minimized columns.
+  renderRail();
 }
 
 /** A thin bar that the user drags. */
@@ -12695,6 +12741,15 @@ function renderFocus(): void {
  */
 function renderPills(): void {
   const details = !focusOn && !mapOn && !overviewOn;
+  if (!details) {
+    // Focus, Map and Overview show the project rail instead of the pills (ticket project-rail-at-the-left-edge-of-the).
+    focusProjectsEl.replaceChildren();
+    renderRail();
+    renderWorkspaceHead(null);
+    renderChatTabs();
+    showSetupButtons();
+    return;
+  }
   const workspaces = workspaceRefs();
   let roots = focusOn ? focusProjects : mapProjects();
   if (details) {
@@ -12767,6 +12822,322 @@ function renderPills(): void {
   // The chat tabs in the head of each triage pane follow the bar (chat-tabs-by-triage).
   renderChatTabs();
   showSetupButtons();
+}
+
+// ---------------------------------------------------------------------------------------------
+// The project rail (ticket project-rail-at-the-left-edge-of-the): one square per project at the left
+// edge of Focus, Map and Overview. Focus above the line in the order of the columns, the other known
+// projects below it. The rules are in src/rail.ts.
+
+/** The groups and keys of the drawn squares, as text: the same text updates the squares in place. */
+let railOrder = "";
+/** A square of the rail is dragged now: a render waits for the drop. */
+let railDragging = false;
+/** The card "Add to Focus" beside an Other square, while the pointer is on it. */
+let railCard: HTMLElement | null = null;
+
+/** The rail shows in Focus, Map and Overview; Details keeps the pills. */
+function railShown(): boolean {
+  return focusOn || mapOn || overviewOn;
+}
+
+/** The project of a square of the rail, from Focus or the known projects. */
+function railRef(key: string): ProjectRef | undefined {
+  return focusProjects.find((ref) => refKey(ref) === key) ?? railProjects.find((ref) => refKey(ref) === key);
+}
+
+/** Draws the squares of the rail. With the same squares in the same order it changes only their looks and texts. */
+function renderRail(): void {
+  if (!railShown() || railDragging) return;
+  const focusKeys = focusProjects.map(refKey);
+  const known = railProjects.map(refKey);
+  const refs = new Map<string, ProjectRef>();
+  for (const ref of [...railProjects, ...focusProjects]) refs.set(refKey(ref), ref);
+  const counts: Record<string, { waits: number; working: number }> = {};
+  const started = new Set<string>();
+  for (const [key, ref] of refs) {
+    const state = focusState(ref);
+    counts[key] = { waits: state.waits, working: state.working };
+    if (hasWorkspace(ref.host, ref.root)) started.add(key);
+  }
+  const items = railItems({
+    focus: focusKeys,
+    other: known,
+    states: columnStates(focusKeys, focusChoices()),
+    current: focusKeys.length === 1 ? focusKeys[0] : markedProject(focusKeys, focusCurrent),
+    started,
+    counts,
+  });
+  const tags = railTags(
+    items.map((item) => ({ key: item.key, host: refs.get(item.key)!.host, path: pathKey(refs.get(item.key)!.root) })),
+    backends(),
+    LOCAL,
+  );
+  const order = items.map((item) => `${item.group}:${item.key}`).join("\n");
+  if (order !== railOrder) {
+    railOrder = order;
+    hideRailCard();
+    const build = (group: RailGroup) => items.filter((item) => item.group === group).map((item) => railSquare(item.key));
+    railFocusEl.replaceChildren(...build("focus"));
+    railOtherEl.replaceChildren(...build("other"));
+  }
+  const squares = new Map([...railEl.querySelectorAll<HTMLButtonElement>(".rail-square")].map((square) => [square.dataset.project ?? "", square]));
+  for (const item of items) {
+    const square = squares.get(item.key);
+    const ref = refs.get(item.key);
+    if (!square || !ref) continue;
+    const name = projectName(ref);
+    square.className = `rail-square ${item.look}${attentionClasses(projectSignal(item.key))}`;
+    square.querySelector(".rail-letters")!.textContent = railLetters(folderName(ref.root));
+    square.querySelector(".rail-bar")!.className = `rail-bar ${item.bar}`;
+    const waits = square.querySelector<HTMLElement>(".rail-badge.waits")!;
+    waits.textContent = badgeText(item.waits);
+    waits.hidden = waits.textContent === "";
+    const working = square.querySelector<HTMLElement>(".rail-badge.working")!;
+    working.textContent = badgeText(item.working);
+    working.hidden = working.textContent === "";
+    const tag = square.querySelector<HTMLElement>(".rail-tag")!;
+    tag.textContent = tags[item.key] ?? "";
+    tag.hidden = tag.textContent === "";
+    const lines = [name, ref.root];
+    if (backends().length > 1) lines.push(`on ${backendName(ref.host)}`);
+    if (item.waits > 0) lines.push(`${item.waits} ${item.waits === 1 ? "task waits" : "tasks wait"} for you`);
+    if (item.working > 0) lines.push(`${item.working} ${item.working === 1 ? "worker works" : "workers work"}`);
+    if (projectPaused(item.key)) lines.push("paused");
+    if (item.look === "min") lines.push("minimized column");
+    if (item.look === "dashed") lines.push("not started");
+    lines.push(item.group === "focus" ? "Click to go to its column; right-click for more" : "Click to add it to Focus; right-click for more");
+    square.title = lines.join("\n");
+    square.setAttribute("aria-label", `${name}${item.group === "focus" ? ", in Focus" : ""}`);
+  }
+}
+
+/** A new square of the rail with its parts and its events; `renderRail` sets its look and texts. */
+function railSquare(key: string): HTMLButtonElement {
+  const square = mapElement("button", "rail-square");
+  square.type = "button";
+  square.dataset.project = key;
+  square.append(
+    mapElement("span", "rail-bar"),
+    mapElement("span", "rail-letters"),
+    mapElement("span", "rail-plus", "+"),
+    mapElement("span", "rail-badge waits"),
+    mapElement("span", "rail-badge working"),
+    mapElement("span", "rail-tag"),
+  );
+  square.addEventListener("pointerdown", (event) => startRailDrag(event, square, key));
+  square.addEventListener("click", () => railClick(key));
+  square.addEventListener("contextmenu", (event) => {
+    if (railDragging) return;
+    openRailMenu(event, key);
+  });
+  square.addEventListener("pointerenter", () => {
+    if (!railDragging && !focusProjects.some((ref) => refKey(ref) === key)) showRailCard(square);
+  });
+  square.addEventListener("pointerleave", hideRailCard);
+  return square;
+}
+
+/** Shows the card "Add to Focus" to the right of an Other square. */
+function showRailCard(square: HTMLElement): void {
+  hideRailCard();
+  const box = square.getBoundingClientRect();
+  const card = mapElement("div", "rail-card", "Add to Focus");
+  card.style.left = `${box.right + 10}px`;
+  card.style.top = `${box.top + 3}px`;
+  document.body.append(card);
+  railCard = card;
+}
+
+function hideRailCard(): void {
+  railCard?.remove();
+  railCard = null;
+}
+
+/** A click on a square: in Focus it goes to the column; below the line it adds the project to Focus. */
+function railClick(key: string): void {
+  hideRailCard();
+  if (focusProjects.some((ref) => refKey(ref) === key)) {
+    railGo(key);
+    return;
+  }
+  const ref = railRef(key);
+  if (ref) addFromRail(ref).catch((error) => console.error("focus project failed", error));
+}
+
+/**
+ * Goes to the project of a Focus square: in Focus a minimized column opens, its column scrolls into
+ * view and becomes the current one; the Map scrolls to its graph, the Overview to its card.
+ */
+function railGo(key: string): void {
+  const ref = railRef(key);
+  if (!ref) return;
+  if (focusOn) {
+    const keys = focusProjects.map(refKey);
+    if (columnStates(keys, focusChoices())[key] === "min") setColumnSize(key, "restore");
+    focusColumns.get(key)?.el.scrollIntoView({ behavior: "smooth", inline: "nearest", block: "nearest" });
+    setFocusCurrent(key);
+    workspacePanes(ref).triage?.term.focus();
+  } else if (mapOn) {
+    setFocusCurrent(key);
+    mapEl.querySelector<HTMLElement>(`.map-project[data-project="${CSS.escape(key)}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  } else if (overviewOn) {
+    setFocusCurrent(key);
+    overviewCards.get(key)?.el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+}
+
+/** Gives Focus a new order of its projects and draws it. */
+function setFocusOrder(keys: readonly string[]): void {
+  focusProjects = keys.flatMap((key) => railRef(key) ?? []);
+  saveFocus();
+  applyFocusLayout();
+  renderFocus();
+  renderMap();
+  renderRail();
+}
+
+/**
+ * Adds a project of the rail to Focus at a place (the end by default). A project without a workspace
+ * shows the Setup pipeline window first when it is not set up; a close without Apply adds nothing.
+ */
+async function addFromRail(ref: ProjectRef, at?: number): Promise<void> {
+  if (!hasWorkspace(ref.host, ref.root) && !(await setupProject(ref.host, ref.root))) return;
+  await joinFocus(ref, at);
+}
+
+/**
+ * Drags a square of the rail with the pointer, as a ticket card: the HTML drag events do not reach the
+ * page while Tauri handles a drop of files. The drag starts after a move of 5 px, so a click stays a
+ * click. Above the line the gap between the Focus squares under the pointer gets a mark; below the line
+ * the line gets the mark. The drop reorders, adds or removes by the rule of `railDrop`.
+ */
+function startRailDrag(event: PointerEvent, square: HTMLElement, key: string): void {
+  if (event.button !== 0) return;
+  const from = { x: event.clientX, y: event.clientY };
+  let started = false;
+  let place: number | "below" | null = null;
+  const inFocus = focusProjects.some((ref) => refKey(ref) === key);
+  const clear = () => {
+    for (const one of railEl.querySelectorAll(".drag-over, .drag-after, .drop-target")) one.classList.remove("drag-over", "drag-after", "drop-target");
+  };
+  const mark = (x: number, y: number) => {
+    clear();
+    place = null;
+    // A drop far from the rail does nothing.
+    if (x > railEl.getBoundingClientRect().right + 24) return;
+    const line = railLineEl.getBoundingClientRect();
+    if (y > line.top + line.height / 2) {
+      if (inFocus) {
+        place = "below";
+        railLineEl.classList.add("drop-target");
+      }
+      return;
+    }
+    const squares = [...railFocusEl.querySelectorAll<HTMLElement>(".rail-square")];
+    let index = squares.length;
+    for (const [at, one] of squares.entries()) {
+      const box = one.getBoundingClientRect();
+      if (y < box.top + box.height / 2) {
+        index = at;
+        break;
+      }
+    }
+    if (index < squares.length) squares[index].classList.add("drag-over");
+    else if (squares.length > 0) squares[squares.length - 1].classList.add("drag-after");
+    else railLineEl.classList.add("drop-target");
+    place = index;
+  };
+  const move = (moved: PointerEvent) => {
+    if (!started) {
+      if (Math.hypot(moved.clientX - from.x, moved.clientY - from.y) < 5) return;
+      started = true;
+      railDragging = true;
+      hideRailCard();
+      square.classList.add("dragging");
+      document.body.classList.add("rail-dragging");
+    }
+    mark(moved.clientX, moved.clientY);
+  };
+  const end = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", end);
+    window.removeEventListener("pointercancel", end);
+    if (!started) return;
+    railDragging = false;
+    // The click after a real drag goes to no column: one capture listener eats it.
+    const swallow = (click: Event) => {
+      click.stopPropagation();
+      click.preventDefault();
+    };
+    window.addEventListener("click", swallow, { capture: true, once: true });
+    setTimeout(() => window.removeEventListener("click", swallow, { capture: true }));
+    square.classList.remove("dragging");
+    document.body.classList.remove("rail-dragging");
+    clear();
+    const drop = place === null ? null : railDrop(focusProjects.map(refKey), key, place);
+    const ref = railRef(key);
+    if (!drop || !ref) {
+      renderRail();
+      return;
+    }
+    if (drop.kind === "order") setFocusOrder(drop.focus);
+    // A drag below the line removes at once (user decision 2): the project stays below the line.
+    else if (drop.kind === "remove") removeFocusProject(ref);
+    else addFromRail(ref, drop.at).catch((error) => console.error("focus project failed", error));
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", end);
+  window.addEventListener("pointercancel", end);
+}
+
+/** The right-click menu of a square: the items of its group, at the mouse. */
+function openRailMenu(event: MouseEvent, key: string): void {
+  const ref = railRef(key);
+  if (!ref) return;
+  event.preventDefault();
+  closeBoardMenu();
+  hideRailCard();
+  const keys = focusProjects.map(refKey);
+  const group: RailGroup = keys.includes(key) ? "focus" : "other";
+  const items = railMenu(group, { mayMinimize: mayMinimize(keys, focusChoices(), key), first: keys[0] === key, local: ref.host === LOCAL });
+  const menu = mapElement("div", "ticket-menu");
+  menu.setAttribute("role", "menu");
+  for (const item of items) {
+    const button = mapElement("button", "", item.label);
+    button.type = "button";
+    button.disabled = !item.enabled;
+    button.setAttribute("role", "menuitem");
+    if (item.action === "open") button.title = item.enabled ? `Open ${ref.root} in the file manager` : `The folder is on ${backendName(ref.host)}; only a folder of this PC opens from here`;
+    button.addEventListener("click", () => {
+      closeBoardMenu();
+      railAction(item.action, ref);
+    });
+    menu.append(button);
+  }
+  showMenu(menu, event, null);
+}
+
+/** Does the action of an item of the rail menu. */
+function railAction(action: ReturnType<typeof railMenu>[number]["action"], ref: ProjectRef): void {
+  const key = refKey(ref);
+  if (action === "go") railGo(key);
+  else if (action === "minimize") setColumnSize(key, "minimize");
+  else if (action === "up") {
+    const order = moveUp(focusProjects.map(refKey), key);
+    if (order) setFocusOrder(order);
+  } else if (action === "open") openPath(ref.root).catch((error) => console.error("folder open failed", error));
+  else if (action === "remove-focus") askRemoveProject(ref);
+  else if (action === "add") addFromRail(ref).catch((error) => console.error("focus project failed", error));
+  else askRemoveProject(ref, "rail");
+}
+
+/** Remove project of an Other square, after the window asked: the project leaves the rail; + brings it back. */
+function forgetProject(ref: ProjectRef): void {
+  const key = refKey(ref);
+  railProjects = railProjects.filter((known) => refKey(known) !== key);
+  saveRailProjects();
+  renderRail();
 }
 
 /**
@@ -12928,6 +13299,8 @@ async function refreshFocusTasks(onlyWhenChanged = false): Promise<void> {
   if (focusOn || mapOn) for (const root of mapProjects()) roots.set(refKey(root), root);
   // The pills of the projects group show the state of their projects in every mode.
   for (const root of focusOn ? focusProjects : mapProjects()) roots.set(refKey(root), root);
+  // The squares below the line of the project rail show their badges too (ticket project-rail-at-the-left-edge-of-the).
+  if (railShown()) for (const root of railProjects) roots.set(refKey(root), root);
   if (overviewOn) for (const root of overviewProjects()) roots.set(refKey(root), root);
   // The board and the queue of the tickets (ticket tickets): a project with a New ticket or a card in flight.
   if (ticketsRef) roots.set(refKey(ticketsRef), ticketsRef);
@@ -12992,8 +13365,18 @@ async function addFocusProject(): Promise<void> {
   const { root } = await call<ProjectRoot>(host, "project_root", { cwd: chosen.folder });
   // A project that is not set up shows the Setup pipeline window first; a close without Apply adds nothing.
   if (!hasWorkspace(host, root) && !(await setupProject(host, root))) return;
-  const ref: ProjectRef = { host, root };
-  if (!focusProjects.some((known) => refKey(known) === refKey(ref))) focusProjects.push(ref);
+  await joinFocus({ host, root });
+}
+
+/**
+ * Puts a project into Focus at a place (the end by default) and into the known projects of the rail,
+ * starts its workspace, draws, reads its tasks and scrolls its new column into view. +, the click on an
+ * Other square of the rail, Add to Focus and a drag up into Focus all take this way.
+ */
+async function joinFocus(ref: ProjectRef, at = focusProjects.length): Promise<void> {
+  const key = refKey(ref);
+  if (!focusProjects.some((known) => refKey(known) === key)) focusProjects.splice(Math.max(0, Math.min(at, focusProjects.length)), 0, ref);
+  rememberProject(ref);
   saveFocus();
   await ensureWorkspace(ref);
   // In Details the workspace of the new project shows; the other modes keep their view.
@@ -13001,19 +13384,27 @@ async function addFocusProject(): Promise<void> {
     const { triage } = workspacePanes(ref);
     if (triage) activate(triage.tabId);
   }
+  applyFocusLayout();
   renderFocus();
   renderPills();
   await refreshFocusTasks();
+  if (focusOn) focusColumns.get(key)?.el.scrollIntoView({ behavior: "smooth", inline: "nearest", block: "nearest" });
 }
 
 /** The project whose × opened the window "Remove from focus mode?", while the window is open. */
 let removePending: ProjectRef | null = null;
+/** What the open window asks: the removal from Focus, or Remove project of the rail (user decision 3). */
+let removeKind: "focus" | "rail" = "focus";
 const removeDialog = document.querySelector<HTMLDialogElement>("#remove-project")!;
 
-/** The × of a column: asks first; only Remove in the window takes the project out (remove-project-confirm). */
-function askRemoveProject(ref: ProjectRef): void {
-  const texts = removeTexts(projectName(ref));
+/**
+ * The × of a column: asks first; only Remove in the window takes the project out (remove-project-confirm).
+ * With `rail` the window asks for Remove project of an Other square of the rail, with its own texts.
+ */
+function askRemoveProject(ref: ProjectRef, kind: "focus" | "rail" = "focus"): void {
+  const texts = kind === "rail" ? removeProjectTexts(projectName(ref)) : removeTexts(projectName(ref));
   removePending = ref;
+  removeKind = kind;
   document.querySelector<HTMLElement>("#remove-project-title")!.textContent = texts.title;
   document.querySelector<HTMLElement>("#remove-project-body")!.textContent = texts.body;
   document.querySelector<HTMLElement>("#remove-project-cancel")!.textContent = texts.cancel;
@@ -13029,6 +13420,8 @@ function askRemoveProject(ref: ProjectRef): void {
 function removeFocusProject(ref: ProjectRef): void {
   const key = refKey(ref);
   focusProjects = focusProjects.filter((known) => refKey(known) !== key);
+  // The project stays below the line of the rail (ticket project-rail-at-the-left-edge-of-the).
+  rememberProject(ref);
   const { triage, agents } = workspacePanes(ref);
   for (const pane of [triage, agents, projectTerminalPane(ref), ...commandPanes(ref.host, ref.root)]) if (pane) moveBack(pane);
   focusColumns.get(key)?.el.remove();
@@ -13436,6 +13829,8 @@ function renderMap(): void {
   }
   mapEl.replaceChildren(...roots.map(mapSection));
   mapEl.scrollTop = scroll;
+  // The badges of the project rail follow each draw.
+  renderRail();
 }
 
 /** Opens the worker view of a run over the Map. */
@@ -13741,6 +14136,8 @@ function renderOverview(): void {
     }
   }
   placeCards(cards);
+  // The badges of the project rail follow each draw.
+  renderRail();
 }
 
 /**
@@ -14240,6 +14637,21 @@ async function start(): Promise<void> {
   } catch {
     focusProjects = [];
   }
+  // The known projects of the rail. The first time: every project Dispatch knows, the Focus projects,
+  // the open workspaces and the projects with a remembered triage chat (user decision 1).
+  let knownSaved: string | null = null;
+  try {
+    knownSaved = localStorage.getItem(RAIL_PROJECTS_KEY);
+    railProjects = parseFocusProjects(JSON.parse(knownSaved ?? "[]"));
+  } catch {
+    railProjects = [];
+  }
+  if (knownSaved === null) {
+    const remembered = [...triageRecords.keys()].map((key): ProjectRef => ({ host: knownBackend(keyHost(key, firstBackend())), root: keyPath(key) }));
+    for (const ref of [...focusProjects, ...workspaceRefs(), ...remembered]) rememberProject(ref);
+    saveRailProjects();
+  }
+  railAddEl.addEventListener("click", () => void addFocusProject().catch((error) => console.error("focus project failed", error)));
   // Before the first columns, so they already take the shares of this layout.
   showFocusSplit();
   await setView(savedView(mode));
