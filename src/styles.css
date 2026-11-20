@@ -8245,8 +8245,8 @@ body.chats-sized .focus-side {
   min-height: 0;
 }
 
-/* Step 1: a slim band above the terminal, two columns. A fixed share of the height: rows that come
-   with a later poll scroll inside it and do not shrink the terminal after its fit. */
+/* Step 1: a slim band above the terminal, two columns. The band takes the height of its rows, at
+   most a third; the terminal refits when the band changes height. */
 :is(.focus-terminal, .focus-triage, .focus-agents).details .side {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -8259,7 +8259,8 @@ body.chats-sized .focus-side {
   column-gap: 16px;
   align-content: start;
   order: -1;
-  flex: 0 0 33%;
+  flex: 0 0 auto;
+  max-height: 33%;
   width: auto;
   padding: 6px 10px;
   border-left: 0;

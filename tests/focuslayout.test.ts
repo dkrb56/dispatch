@@ -209,6 +209,8 @@ test("the page: the column tabs and the Details switch of the column have their 
   // and Workers panes take the same band (ticket no-details-mode, user decision 4).
   const band = ":is\\(\\.focus-terminal, \\.focus-triage, \\.focus-agents\\)\\.details";
   assert.match(css, new RegExp(`${band} \\.side\\s*\\{[^}]*display:\\s*grid[^}]*grid-template-columns:\\s*1fr 1fr[^}]*order:\\s*-1`));
+  assert.match(css, new RegExp(`${band} \\.side\\s*\\{[^}]*flex:\\s*0 0 auto[^}]*max-height:\\s*33%`));
+  assert.doesNotMatch(css, /flex:\s*0 0 33%/);
   assert.match(css, new RegExp(`${band} \\.pane\\s*\\{[^}]*flex-direction:\\s*column`));
   assert.match(css, /\.focus-triage \.side,\s*\.focus-agents \.side\s*\{\s*display:\s*none/);
   assert.match(css, /@container focus-term \(max-width: 360px\)\s*\{\s*\.focus-terminal\.details \.side\s*\{[^}]*grid-template-columns:\s*1fr;/);

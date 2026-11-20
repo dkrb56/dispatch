@@ -11283,10 +11283,13 @@ function createPane(tabId: string, saved: SavedPane): Pane {
   columnEl.className = "term-column";
   columnEl.append(barEl, termEl);
   // A narrow bar has two lines. The terminal then has less space.
-  new ResizeObserver(() => {
+  // It also refits the terminal when the Details band above it changes height.
+  const barObserver = new ResizeObserver(() => {
     const pane = panes.get(saved.id);
     if (pane) fitPane(pane);
-  }).observe(barEl);
+  });
+  barObserver.observe(barEl);
+  barObserver.observe(termEl);
 
   // Each pane has its own side panel, to the right of its terminal.
   const sideEl = document.createElement("aside");
