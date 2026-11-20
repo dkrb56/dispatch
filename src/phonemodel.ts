@@ -586,13 +586,13 @@ export function phoneBoards(
     const merging = list?.merging;
     const tickets = list?.tickets ?? [];
     const place = (ticket: PhoneTicket) => inProgressPlace(ticketTask(ticket, tasks), ticket, merging);
-    // Planning: an In progress ticket whose task is in its plan phase, until Approve (ticket ticket-board-update-update-to-columns).
-    // Waiting for answer: its task waits for a reply of the user (ticket add-another-column-between-planning-and, user decision 3).
+    // Planning: an In progress ticket whose plan run still writes the plan (ticket ticket-board-update-update-to-columns).
+    // Waiting for answer: its task waits for a reply of the user, or its plan waits for Approve (tickets add-another-column-between-planning-and, put-a-ticket-whose-plan-waits-for).
     const view = (ticket: PhoneTicket): PhoneInProgressView => {
       const task = ticketTask(ticket, tasks);
       if (!task) return "in-progress";
       const phase = phonePhase(task);
-      if (phase === "question" || phase === "permission" || phase === "prompt") return "waiting";
+      if (phase === "question" || phase === "permission" || phase === "prompt" || phase === "plan-ready") return "waiting";
       return task.info?.state === "planning" ? "planning" : "in-progress";
     };
     const columns = tools.columns.map(({ status, name }): PhoneColumn => {

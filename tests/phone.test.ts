@@ -341,7 +341,7 @@ test("an In progress ticket shows its task, joined by its task name or its id; w
 test("a ticket whose task is in its plan phase stands in Planning with its task row (ticket ticket-board-update-update-to-columns)", () => {
   const tasks = [info("plan", { state: "planning", plan: FILE, about: "Plan" }), info("work", { state: "working", about: "Busy" })];
   const tickets = [ticket("plan", "in-progress", { updated: 3 }), ticket("work", "in-progress", { updated: 2 }), ticket("n1", "new", { order: 1 })];
-  const [board] = phoneBoards([{ root: ROOT, list: { tasks, tickets }, error: "" }], [], tools, ["planning", "in-progress"]);
+  const [board] = phoneBoards([{ root: ROOT, list: { tasks, tickets }, error: "" }], [worker("plan [plan]", "working")], tools, ["planning", "in-progress"]);
   const planning = board.columns.find((column) => column.status === "planning")!;
   const progress = board.columns.find((column) => column.status === "in-progress")!;
   assert.deepEqual([planning.name, planning.count, planning.open], ["Planning", 1, true]);
@@ -358,16 +358,17 @@ test("a ticket whose task waits for a reply stands in Waiting for answer with it
     info("prompt", { state: "working", about: "At a prompt" }),
     info("plan", { state: "planning", plan: FILE, about: "Plan" }),
     info("work", { state: "working", about: "Busy" }),
+    info("writing", { state: "planning", plan: FILE, about: "Writes a plan" }),
   ];
-  const tickets = ["ask", "allow", "prompt", "plan", "work"].map((id) => ticket(id, "in-progress"));
-  const workers = [worker("prompt [work]", "blocked"), worker("work [work]", "working")];
+  const tickets = ["ask", "allow", "prompt", "plan", "work", "writing"].map((id) => ticket(id, "in-progress"));
+  const workers = [worker("prompt [work]", "blocked"), worker("work [work]", "working"), worker("writing [plan]", "working")];
   const [board] = phoneBoards([{ root: ROOT, list: { tasks, tickets }, error: "" }], workers, tools, viewFromText(null).open);
   const column = (status: string) => board.columns.find((one) => one.status === status)!;
   const waiting = column("waiting");
   assert.deepEqual([waiting.name, waiting.open], ["Waiting for answer", true], "open at first (user decision 5)");
-  assert.deepEqual(waiting.tickets.map((one) => one.ticket.id).sort(), ["allow", "ask", "prompt"], "a question, a permission and a prompt wait");
+  assert.deepEqual(waiting.tickets.map((one) => one.ticket.id).sort(), ["allow", "ask", "plan", "prompt"], "a question, a permission, a prompt and a plan ready for Approve wait");
   assert.ok(waiting.tickets.every((one) => one.row !== null), "each shows its task row");
-  assert.deepEqual(column("planning").tickets.map((one) => one.ticket.id), ["plan"], "a plan ready for Approve stays in Planning");
+  assert.deepEqual(column("planning").tickets.map((one) => one.ticket.id), ["writing"], "Planning holds only a ticket whose plan run works");
   assert.deepEqual(column("in-progress").tickets.map((one) => one.ticket.id), ["work"], "and the running task stands in Working");
   // After the answer the worker runs again: the ticket goes back to Working.
   const [after] = phoneBoards([{ root: ROOT, list: { tasks, tickets }, error: "" }], [...workers, worker("ask [work]", "working", { startedAt: 20 })], tools, []);

@@ -180,7 +180,7 @@ test("Waiting for answer holds the In progress tickets whose task waits for a re
   const view = (one: { id: string }): InProgressView => (waiting.has(one.id) ? "waiting" : one.id === "plan" ? "planning" : "in-progress");
   assert.deepEqual(ids(boardTickets(list, "waiting", view)), ["asks"], "the ticket that waits stands in Waiting for answer");
   assert.deepEqual(ids(boardTickets(list, "in-progress", view)), ["work"], "and not in Working");
-  assert.deepEqual(ids(boardTickets(list, "planning", view)), ["plan"], "a plan stays in Planning");
+  assert.deepEqual(ids(boardTickets(list, "planning", view)), ["plan"], "a plan that is being written stays in Planning");
   assert.deepEqual(ids(boardTickets(list, "done", view)), ["d"], "Done is unchanged");
   waiting.delete("asks");
   assert.deepEqual(ids(boardTickets(list, "waiting", view)), [], "after the answer the ticket leaves Waiting for answer");
@@ -189,11 +189,12 @@ test("Waiting for answer holds the In progress tickets whose task waits for a re
   const place = (one: { id: string }) => ({ rank: one.id === "asks" ? 0 : 1, time: 0 });
   assert.deepEqual(ids(boardTickets(list, "waiting", view, place)), ["asks", "work"], "Waiting for answer goes in the order of Working");
   // The desktop board: a question, a permission, a repeated question and a prompt go to Waiting for
-  // answer; a plan that waits for Approve (kind plan or hold) stays in Planning (user decisions 3 and 4).
+  // answer; a plan that waits for Approve (kind plan or hold) goes there too (ticket put-a-ticket-whose-plan-waits-for).
   const helper = MAIN.slice(MAIN.indexOf("function taskBoardColumn("), MAIN.indexOf("function attentionWaits("));
-  assert.match(helper, /kind === "question" \|\| kind === "permission" \|\| kind === "repeat" \|\| kind === "prompt"\) return "waiting"/);
+  assert.match(helper, /kind === "prompt" \|\| kind === "plan" \|\| kind === "hold"\) return "waiting"/);
+  assert.match(helper, /question[\s\S]*permission[\s\S]*repeat/);
   assert.ok(helper.indexOf('return "waiting"') < helper.indexOf('"planning" ? "planning"'), "the wait goes before the plan phase");
-  assert.doesNotMatch(helper, /"plan"|"hold"/, "a plan ready for Approve stays in Planning");
+  assert.ok(helper.indexOf("approvalQueued(task)") < helper.indexOf('return "waiting"'), "a queued approval stands in Working");
   assert.match(MAIN, /const view = \(ticket: Ticket\) => taskBoardColumn\(taskByName\.get\(ticket\.task \|\| ticket\.id\)\)/);
   assert.match(MAIN, /column\.status === "planning" \|\| column\.status === "waiting" \? \[\]/, "the Plan view takes each ticket once");
   assert.match(CSS, /grid-template-columns: repeat\(7, minmax\(180px, 1fr\)\);/);

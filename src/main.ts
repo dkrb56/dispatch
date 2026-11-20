@@ -7543,13 +7543,15 @@ function taskAttentionWait(task: Task): AttentionWait | null {
 /**
  * The board column of the ticket of a task (ticket add-another-column-between-planning-and): Waiting
  * for answer when the task waits for a reply of the user (a question, a permission, a repeated question
- * or a prompt; user decision 3), else Planning in its plan phase, else Working. A plan that waits for
- * Approve stays in Planning (user decision 4).
+ * or a prompt; user decision 3), also when its plan waits for Approve (ticket
+ * put-a-ticket-whose-plan-waits-for), else Planning in its plan phase, else Working. An approval that
+ * waits in the queue stands in Working (decision 1 of that ticket).
  */
 function taskBoardColumn(task: Task | undefined): InProgressView {
   if (!task) return "in-progress";
+  if (approvalQueued(task)) return "in-progress";
   const kind = taskAttentionWait(task)?.kind;
-  if (kind === "question" || kind === "permission" || kind === "repeat" || kind === "prompt") return "waiting";
+  if (kind === "question" || kind === "permission" || kind === "repeat" || kind === "prompt" || kind === "plan" || kind === "hold") return "waiting";
   return task.info?.state === "planning" ? "planning" : "in-progress";
 }
 
@@ -9612,8 +9614,8 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
     if (items.length === 0 && !form && loose.length === 0) {
       const none = paused ? PAUSED_NEW_EMPTY : "No tickets. A message to triage lands here, and Dispatch sends it when triage is free.";
       const backlog = "No tickets. Dispatch never sends a Backlog ticket: drag it to Scheduled when it should go.";
-      const planningNone = "No tickets. A ticket comes here when its plan starts, and stays until you approve the plan.";
-      const waitingNone = "No tickets. A ticket comes here when its worker asks you something, and goes back to Working when you answer.";
+      const planningNone = "No tickets. A ticket comes here when its plan starts, and moves on when the plan is ready.";
+      const waitingNone = "No tickets. A ticket comes here when its plan is ready or its worker asks you something, and moves on when you answer.";
       list.append(
         mapElement("p", "tickets-none", status === "new" ? none : status === "backlog" ? backlog : status === "planning" ? planningNone : status === "waiting" ? waitingNone : "No tickets"),
       );
