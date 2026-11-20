@@ -158,6 +158,10 @@ test("the rail meets the page: the nav before the chat list, main.ts, the CSS an
   for (const rule of [".rail-square", ".rail-bar.short", ".rail-square.current", ".rail-square.dashed", ".rail-badge.waits", ".rail-badge.working", ".rail-tag", ".rail-card", ".rail-square.drag-over::before", ".rail-line.drop-target"]) {
     assert.ok(css.includes(`${rule} {`) || css.includes(`${rule},`), `the CSS has ${rule}`);
   }
+  // The rail is 2x bigger: 56px squares in a 72px rail.
+  assert.match(css, /\.rail-square \{[^}]*width: 56px;/);
+  assert.match(css, /\.rail-square \{[^}]*height: 56px;/);
+  assert.match(css, /#rail \{[^}]*width: 72px;/);
   // The Help names the rail, its groups, its clicks, drags and menus.
   assert.match(html, /The <b>project rail<\/b> at the left edge of the window/);
   assert.match(html, /Drag a square of Focus below the line to remove it from Focus at once/);

@@ -347,7 +347,7 @@ body:has(#panes:not(.no-side)) #toggle-side {
   align-items: center;
   gap: 6px;
   box-sizing: border-box;
-  width: 44px;
+  width: 72px;
   padding: 8px 0;
   overflow-y: auto;
   overflow-x: hidden;
@@ -378,7 +378,7 @@ body.map-mode #bar-projects {
 
 .rail-line {
   flex: none;
-  width: 24px;
+  width: 48px;
   height: 1px;
   margin: 2px 0;
   background: var(--line);
@@ -396,15 +396,15 @@ body.map-mode #bar-projects {
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  width: 28px;
-  height: 28px;
+  width: 56px;
+  height: 56px;
   padding: 0;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: 12px;
   background: var(--card);
   color: var(--text);
   font-family: inherit;
-  font-size: 11px;
+  font-size: 22px;
   font-weight: 600;
   line-height: 1;
   letter-spacing: 0.02em;
@@ -426,17 +426,17 @@ body.map-mode #bar-projects {
 .rail-bar {
   position: absolute;
   left: -8px;
-  top: 3px;
-  width: 3px;
-  height: 20px;
-  border-radius: 0 2px 2px 0;
+  top: 6px;
+  width: 6px;
+  height: 40px;
+  border-radius: 0 4px 4px 0;
   background: var(--group-line);
   pointer-events: none;
 }
 
 .rail-bar.short {
-  top: 9px;
-  height: 8px;
+  top: 18px;
+  height: 16px;
 }
 
 .rail-bar.none {
@@ -472,14 +472,14 @@ body.map-mode #bar-projects {
 /* The badges at the corners: amber for the tasks that wait, green for the workers that work. */
 .rail-badge {
   position: absolute;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
   box-sizing: border-box;
-  border-radius: 7px;
-  font-size: 9px;
+  border-radius: 14px;
+  font-size: 18px;
   font-weight: 700;
-  line-height: 14px;
+  line-height: 28px;
   text-align: center;
   pointer-events: none;
 }
@@ -489,15 +489,15 @@ body.map-mode #bar-projects {
 }
 
 .rail-badge.waits {
-  top: -6px;
-  right: -7px;
+  top: -12px;
+  right: -14px;
   background: var(--wait);
   color: var(--bg);
 }
 
 .rail-badge.working {
-  bottom: -6px;
-  right: -7px;
+  bottom: -12px;
+  right: -14px;
   background: var(--work);
   color: var(--bg);
 }
@@ -525,15 +525,15 @@ body.map-mode #bar-projects {
 /* The computer tag, only when one folder stands on more than one computer. */
 .rail-tag {
   position: absolute;
-  bottom: -6px;
-  left: -5px;
-  padding: 0 2px;
-  border-radius: 3px;
+  bottom: -12px;
+  left: -10px;
+  padding: 0 4px;
+  border-radius: 6px;
   background: var(--hairline);
   color: var(--text-2);
-  font-size: 8px;
+  font-size: 16px;
   font-weight: 600;
-  line-height: 11px;
+  line-height: 22px;
   pointer-events: none;
 }
 
@@ -545,7 +545,7 @@ body.map-mode #bar-projects {
 .rail-plus {
   display: none;
   color: var(--accent);
-  font-size: 15px;
+  font-size: 30px;
   font-weight: 600;
 }
 
@@ -605,15 +605,15 @@ body.rail-dragging * {
 
 #rail-add {
   flex: none;
-  width: 28px;
-  height: 28px;
+  width: 56px;
+  height: 56px;
   margin-top: auto;
   padding: 0;
   border: 1px dashed var(--line);
-  border-radius: 6px;
+  border-radius: 12px;
   background: transparent;
   color: var(--text-2);
-  font-size: 16px;
+  font-size: 32px;
   line-height: 1;
   cursor: pointer;
 }
