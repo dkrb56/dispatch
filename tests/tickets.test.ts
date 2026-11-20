@@ -1044,3 +1044,22 @@ test("an In progress ticket that waits for the user has an orange frame", () => 
   const help = HTML.slice(HTML.indexOf("<h3>Tickets</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
   assert.ok(help.includes("orange frame"), "the Help sentence");
 });
+
+test("an In progress ticket shows its state in its frame", () => {
+  const card = MAIN.slice(MAIN.indexOf("function ticketCard("), MAIN.indexOf("function startTicketDrag("));
+  const waits = card.indexOf('classList.add("waits")');
+  const working = card.indexOf('classList.add("working")');
+  const approved = card.indexOf('classList.add("approved")', working);
+  assert.ok(waits > 0 && working > waits && approved > working, "the order waits, working, approved");
+  assert.match(card, /attentionLook\(true, pulseOn\(\), reducedMotion\.matches\) === "pulse"/);
+  assert.match(card, /--flash-shift/);
+  assert.match(CSS, /\.ticket-card\.in-progress\.working \{[^}]*2px solid var\(--work\)/);
+  assert.match(CSS, /\.ticket-card\.in-progress\.approved \{\s*border-color: var\(--accent\);/);
+  const flash = CSS.slice(CSS.indexOf(".ticket-card.in-progress.working.flash::after {"));
+  const rule = flash.slice(0, flash.indexOf("}"));
+  assert.match(rule, /animation: attention-pulse/);
+  assert.doesNotMatch(rule, /animation:[^;]*(box-shadow|transform)/);
+  assert.match(CSS, /prefers-reduced-motion: reduce\) \{[\s\S]*?\.ticket-card\.in-progress\.working\.flash::after/);
+  const help = HTML.slice(HTML.indexOf("<h3>Tickets</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
+  assert.ok(help.includes("blue frame") && help.includes("flashing"), "the Help sentence");
+});

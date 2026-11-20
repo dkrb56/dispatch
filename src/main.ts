@@ -9854,7 +9854,16 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   const ticketTask = ticket.status === "in-progress" && record ? projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id)) : undefined;
   if (ticketTask && approvedMark(ticketTask)) state.classList.add("approved");
   // A task that waits for the user: an orange frame (ticket tickets-which-are-waiting-for-me-should).
+  // One state class per card: waits, else working (a run works now), else approved (ticket border-should-reflect-whats-actually).
   if (ticketTask && taskAttentionWait(ticketTask)) card.classList.add("waits");
+  else if (ticketTask && taskStatus(ticketTask).kind === "working") {
+    card.classList.add("working");
+    if (attentionLook(true, pulseOn(), reducedMotion.matches) === "pulse") {
+      card.classList.add("flash");
+      // The board builds new cards at each poll: the clock keeps the flash in the same phase.
+      card.style.setProperty("--flash-shift", `${-(Date.now() % 1600)}ms`);
+    }
+  } else if (ticketTask && approvedMark(ticketTask)) card.classList.add("approved");
   meta.append(tag, levelTag, mapElement("span", "ticket-date", chatTime(ticket.created)), state);
   // The chain of the parts (ticket subtickets): a part names its place and its parent, a parent its count.
   const tickets = record?.tickets ?? [];

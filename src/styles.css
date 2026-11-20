@@ -2349,7 +2349,6 @@ button.task-head:hover {
   background: var(--surface);
 }
 
-.ticket-card.in-progress,
 .ticket-card.in-flight {
   border-color: var(--work-line);
 }
@@ -2361,6 +2360,30 @@ button.task-head:hover {
 /* Ticket tickets-which-are-waiting-for-me-should: an In progress card whose task waits for the user. */
 .ticket-card.in-progress.waits {
   border-color: var(--wait);
+}
+
+/* Ticket border-should-reflect-whats-actually: bold green while a run of the task works (it flashes
+   with the pulse; the flash animates only opacity), blue when the user approved the plan. */
+.ticket-card.in-progress.working {
+  position: relative;
+  padding: 6px 7px 5px;
+  border: 2px solid var(--work);
+}
+
+.ticket-card.in-progress.working.flash::after {
+  position: absolute;
+  inset: -2px;
+  border: 2px solid var(--work);
+  border-radius: inherit;
+  box-shadow: 0 0 0 4px var(--work-glow);
+  content: "";
+  pointer-events: none;
+  animation: attention-pulse 1.6s ease-in-out infinite;
+  animation-delay: var(--flash-shift, 0ms);
+}
+
+.ticket-card.in-progress.approved {
+  border-color: var(--accent);
 }
 
 .ticket-card.canceled {
@@ -7633,7 +7656,8 @@ button.ticket-level {
   .ticket-sign.attention.pulse::after,
   .focus-head .project-tool.attention.pulse::after,
   #bar #setup-pipeline.attention.pulse::after,
-  .task.attention.pulse::after {
+  .task.attention.pulse::after,
+  .ticket-card.in-progress.working.flash::after {
     opacity: 1;
     animation: none;
   }
