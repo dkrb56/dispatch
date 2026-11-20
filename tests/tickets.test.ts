@@ -58,6 +58,7 @@ import {
   USER_DONE,
   waitingText,
   withTicket,
+  type InProgressView,
 } from "../src/tickets.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -121,14 +122,15 @@ test("triage gets the images, the line with the id and the title, then the words
   assert.equal(ticketMessage({ id: "x", title: "X", summary: "x" }), "Ticket x: X\n\nx");
 });
 
-test("the six columns, the columns that take a drop, and the order of each column", () => {
+test("the seven columns, the columns that take a drop, and the order of each column", () => {
   assert.deepEqual(
     COLUMNS.map((column) => column.name),
-    ["Backlog", "Scheduled", "Planning", "In progress", "Done", "Canceled"],
-    "Backlog first, left of Scheduled (ticket tickets-backlog), then Planning (ticket ticket-board-update-update-to-columns)",
+    ["Backlog", "Scheduled", "Planning", "Waiting for answer", "Working", "Done", "Canceled"],
+    "Backlog first, left of Scheduled (ticket tickets-backlog), then Planning (ticket ticket-board-update-update-to-columns), then Waiting for answer and Working (ticket add-another-column-between-planning-and)",
   );
   assert.equal(columnOf("planning"), "new", "Planning is a view, no stored status");
-  assert.deepEqual(DROP_COLUMNS, ["backlog", "new", "done", "canceled"], "In progress follows the task");
+  assert.equal(columnOf("waiting"), "new", "Waiting for answer is a view, no stored status");
+  assert.deepEqual(DROP_COLUMNS, ["backlog", "new", "done", "canceled"], "Working follows the task");
   assert.equal(columnOf("backlog"), "backlog");
   assert.equal(columnOf("todo"), "new", "an old Todo ticket shows in New");
   assert.equal(columnOf("canceled"), "canceled");
@@ -152,7 +154,7 @@ test("Planning holds the In progress tickets whose task plans, until Approve (ti
     ticket("c", "canceled", null, 1),
   ];
   const planning = new Set(["plan"]);
-  const plans = (one: { id: string }) => planning.has(one.id);
+  const plans = (one: { id: string }): InProgressView => (planning.has(one.id) ? "planning" : "in-progress");
   assert.deepEqual(ids(boardTickets(list, "planning", plans)), ["plan"], "the planning ticket stands in Planning");
   assert.deepEqual(ids(boardTickets(list, "in-progress", plans)), ["work"], "and not in In progress");
   assert.deepEqual(ids(boardTickets(list, "new", plans)), ["n1", "n2"], "Scheduled is the queue in its order");
@@ -165,6 +167,36 @@ test("Planning holds the In progress tickets whose task plans, until Approve (ti
   planning.add("plan").add("work");
   const place = (one: { id: string }) => ({ rank: one.id === "plan" ? 0 : 1, time: 0 });
   assert.deepEqual(ids(boardTickets(list, "planning", plans, place)), ["plan", "work"], "Planning goes in the order of In progress");
+});
+
+test("Waiting for answer holds the In progress tickets whose task waits for a reply (ticket add-another-column-between-planning-and)", () => {
+  const list = [
+    ticket("plan", "in-progress", null, 1, 3),
+    ticket("asks", "in-progress", null, 2, 4),
+    ticket("work", "in-progress", null, 3, 5),
+    ticket("d", "done", null, 1),
+  ];
+  const waiting = new Set(["asks"]);
+  const view = (one: { id: string }): InProgressView => (waiting.has(one.id) ? "waiting" : one.id === "plan" ? "planning" : "in-progress");
+  assert.deepEqual(ids(boardTickets(list, "waiting", view)), ["asks"], "the ticket that waits stands in Waiting for answer");
+  assert.deepEqual(ids(boardTickets(list, "in-progress", view)), ["work"], "and not in Working");
+  assert.deepEqual(ids(boardTickets(list, "planning", view)), ["plan"], "a plan stays in Planning");
+  assert.deepEqual(ids(boardTickets(list, "done", view)), ["d"], "Done is unchanged");
+  waiting.delete("asks");
+  assert.deepEqual(ids(boardTickets(list, "waiting", view)), [], "after the answer the ticket leaves Waiting for answer");
+  assert.deepEqual(ids(boardTickets(list, "in-progress", view)), ["work", "asks"], "and stands in Working again");
+  waiting.add("asks").add("work");
+  const place = (one: { id: string }) => ({ rank: one.id === "asks" ? 0 : 1, time: 0 });
+  assert.deepEqual(ids(boardTickets(list, "waiting", view, place)), ["asks", "work"], "Waiting for answer goes in the order of Working");
+  // The desktop board: a question, a permission, a repeated question and a prompt go to Waiting for
+  // answer; a plan that waits for Approve (kind plan or hold) stays in Planning (user decisions 3 and 4).
+  const helper = MAIN.slice(MAIN.indexOf("function taskBoardColumn("), MAIN.indexOf("function attentionWaits("));
+  assert.match(helper, /kind === "question" \|\| kind === "permission" \|\| kind === "repeat" \|\| kind === "prompt"\) return "waiting"/);
+  assert.ok(helper.indexOf('return "waiting"') < helper.indexOf('"planning" ? "planning"'), "the wait goes before the plan phase");
+  assert.doesNotMatch(helper, /"plan"|"hold"/, "a plan ready for Approve stays in Planning");
+  assert.match(MAIN, /const view = \(ticket: Ticket\) => taskBoardColumn\(taskByName\.get\(ticket\.task \|\| ticket\.id\)\)/);
+  assert.match(MAIN, /column\.status === "planning" \|\| column\.status === "waiting" \? \[\]/, "the Plan view takes each ticket once");
+  assert.match(CSS, /grid-template-columns: repeat\(7, minmax\(180px, 1fr\)\);/);
 });
 
 test("Dispatch never sends a Backlog ticket, and the head buttons move the shown cards (ticket tickets-backlog)", () => {
@@ -180,7 +212,7 @@ test("Dispatch never sends a Backlog ticket, and the head buttons move the shown
   assert.match(MAIN, /ticket_move_all/);
   assert.match(MAIN, /All → Backlog/);
   assert.match(MAIN, /All → Scheduled/);
-  assert.match(CSS, /repeat\(6, minmax\(180px, 1fr\)\)/);
+  assert.match(CSS, /repeat\(7, minmax\(180px, 1fr\)\)/);
 });
 
 test("a drop moves the card on the board at once, by the rule of ticket_move (ticket moving-ticket-from-cancelled-to-done)", () => {
@@ -366,7 +398,7 @@ test("the tickets meet the page: the commands, the board, the dispatcher, the bo
   assert.match(MAIN, /drop\.status === "done" \? USER_DONE/);
   // The Help names the board, its columns, the queue, the sign and Open terminal, and no longer Todo or Ask triage.
   const help = HTML.slice(HTML.indexOf("<h3>Tickets</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
-  for (const name of ["Backlog", "Scheduled", "Planning", "In progress", "Done", "Canceled", "six columns", "All → Backlog", "All → Scheduled", "yellow !", "<b>Open terminal</b>", "tickets.jsonl", "Ticket &lt;id&gt;: &lt;title&gt;"]) assert.ok(help.includes(name), name);
+  for (const name of ["Backlog", "Scheduled", "Planning", "Waiting for answer", "Working", "Done", "Canceled", "seven columns", "All → Backlog", "All → Scheduled", "yellow !", "<b>Open terminal</b>", "tickets.jsonl", "Ticket &lt;id&gt;: &lt;title&gt;"]) assert.ok(help.includes(name), name);
   for (const name of ["<b>Drag a card.</b>", "on Backlog, Scheduled, Done or Canceled", "done by hand", "does not drag", "bottom-right corner", "keeps the size", "double-click"]) assert.ok(help.includes(name), name);
   for (const gone of ["<b>Todo</b>", "→ Todo", "<b>Ask triage</b>", "Questions go at once"]) assert.ok(!HTML.includes(gone), gone);
   assert.doesNotMatch(HTML, /<b>Planned/);
@@ -936,7 +968,7 @@ test("parent groups: a family split between Planning and In progress stays toget
     ticket("solo", "in-progress", null, 1, 5),
     ticket("plan-solo", "in-progress", null, 1, 7),
   ];
-  const planning = (one: { id: string }) => one.id === "a-1" || one.id === "plan-solo";
+  const planning = (one: { id: string }): InProgressView => (one.id === "a-1" || one.id === "plan-solo" ? "planning" : "in-progress");
   assert.deepEqual(ids(boardTickets(list, "planning", planning)), ["a-1", "plan-solo"]);
   assert.deepEqual(ids(boardTickets(list, "in-progress", planning)), ["A", "a-2", "solo"], "the parent and its other part stand together");
 });
@@ -1198,7 +1230,7 @@ test("the task list puts running tasks first", () => {
   assert.ok(working > 0 && waits > working && approved > waits, "working, then waits, then approved");
   assert.match(MAIN, /pendingIndex\(tasks, \(task\) => taskRank\(task\) === 0\)/);
   const columns = MAIN.slice(MAIN.indexOf("function fillTicketColumns("), MAIN.indexOf("function fillTicketColumns(") + 3000);
-  assert.match(columns, /boardTickets\(shown, status, planning, status === "in-progress" \|\| status === "planning" \? ticketPlace : undefined\)/);
+  assert.match(columns, /boardTickets\(shown, status, view, status === "in-progress" \|\| status === "planning" \|\| status === "waiting" \? ticketPlace : undefined\)/);
   const card = MAIN.slice(MAIN.indexOf("function ticketCard("), MAIN.indexOf("function startTicketDrag("));
   assert.ok(card.indexOf('classList.add("parts")') > card.indexOf('classList.add("approved")'), "parts after approved");
   assert.match(CSS, /\.ticket-card\.in-progress\.parts \{\s*border-style: dashed;\s*border-color: var\(--text-2\);/);

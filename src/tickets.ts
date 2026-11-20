@@ -10,9 +10,14 @@ export type TicketStatus = "backlog" | "new" | "in-progress" | "done" | "cancele
 
 /**
  * The columns of the board: the statuses plus `planning`, a view of the `in-progress` tickets whose
- * task is in its plan phase (ticket ticket-board-update-update-to-columns). No ticket stores `planning`.
+ * task is in its plan phase (ticket ticket-board-update-update-to-columns), and `waiting`, a view of the
+ * `in-progress` tickets whose task waits for an answer (ticket add-another-column-between-planning-and).
+ * No ticket stores `planning` or `waiting`.
  */
-export type BoardColumn = TicketStatus | "planning";
+export type BoardColumn = TicketStatus | "planning" | "waiting";
+
+/** The view column of an `in-progress` ticket: Planning, Waiting for answer or Working. */
+export type InProgressView = "planning" | "waiting" | "in-progress";
 
 /** One ticket, as `task_list` gives it (`tickets::Ticket` in Rust). */
 export interface Ticket {
@@ -107,19 +112,21 @@ export const FIELDS: readonly { key: keyof TicketFields; label: string; fix: boo
 ];
 
 /**
- * The six columns of the board, in their order: Backlog first (ticket tickets-backlog, user decision 6),
- * then Scheduled (status `new`, the queue), then Planning (ticket ticket-board-update-update-to-columns).
+ * The seven columns of the board, in their order: Backlog first (ticket tickets-backlog, user decision 6),
+ * then Scheduled (status `new`, the queue), then Planning (ticket ticket-board-update-update-to-columns),
+ * then Waiting for answer and Working (ticket add-another-column-between-planning-and).
  */
 export const COLUMNS: readonly { status: BoardColumn; name: string }[] = [
   { status: "backlog", name: "Backlog" },
   { status: "new", name: "Scheduled" },
   { status: "planning", name: "Planning" },
-  { status: "in-progress", name: "In progress" },
+  { status: "waiting", name: "Waiting for answer" },
+  { status: "in-progress", name: "Working" },
   { status: "done", name: "Done" },
   { status: "canceled", name: "Canceled" },
 ];
 
-/** The columns that take a ticket by a drag or a button: In progress follows the task. */
+/** The columns that take a ticket by a drag or a button: Working follows the task. */
 export const DROP_COLUMNS: readonly TicketStatus[] = ["backlog", "new", "done", "canceled"];
 
 /** The end word of a ticket that the user dropped on Done; the task read leaves it there (`USER_DONE` in tickets.rs). */
@@ -279,9 +286,9 @@ export function fitWindowPlace(place: { left: number; top: number }, size: { wid
   return { left: fit(place.left, size.width, view.width), top: fit(place.top, size.height, view.height) };
 }
 
-/** The status of a status word; an unknown one, the old `todo` and the view column `planning` are `new`. */
+/** The status of a status word; an unknown one, the old `todo` and the view columns `planning` and `waiting` are `new`. */
 export function columnOf(status: string): TicketStatus {
-  return status !== "planning" && COLUMNS.some((column) => column.status === status) ? (status as TicketStatus) : "new";
+  return status !== "planning" && status !== "waiting" && COLUMNS.some((column) => column.status === status) ? (status as TicketStatus) : "new";
 }
 
 /** The types of a ticket in their order, with the word of the tag. */
@@ -503,20 +510,21 @@ export function columnTickets<T extends Pick<Ticket, "id" | "status" | "order" |
 }
 
 /**
- * The cards of one board column (ticket ticket-board-update-update-to-columns). Planning holds the
- * `in-progress` tickets for which `planning` says that their task is in its plan phase (from the plan
- * start until Approve), in the order of In progress; In progress holds the other `in-progress` tickets.
- * Every other column is `columnTickets` of its status. Display only: the stored status stays `in-progress`.
+ * The cards of one board column (ticket ticket-board-update-update-to-columns). Planning, Waiting for
+ * answer and Working hold the `in-progress` tickets whose view column `view` gives (Planning: the task is
+ * in its plan phase, from the plan start until Approve; Waiting for answer: the task waits for an answer
+ * of the user, ticket add-another-column-between-planning-and), in the order of the stored `in-progress`
+ * tickets. Every other column is `columnTickets` of its status. Display only: the stored status stays `in-progress`.
  */
 export function boardTickets<T extends Pick<Ticket, "id" | "status" | "order" | "created" | "updated"> & Partial<Pick<Ticket, "parent" | "part">>>(
   tickets: readonly T[],
   column: BoardColumn,
-  planning: (ticket: T) => boolean,
+  view: (ticket: T) => InProgressView,
   place?: (ticket: T) => { rank: number; time: number },
 ): T[] {
-  if (column !== "planning" && column !== "in-progress") return columnTickets(tickets, column);
+  if (column !== "planning" && column !== "waiting" && column !== "in-progress") return columnTickets(tickets, column);
   const all = columnTickets(tickets, "in-progress", place);
-  return all.filter((ticket) => planning(ticket) === (column === "planning"));
+  return all.filter((ticket) => view(ticket) === column);
 }
 
 /** Done and Canceled show only this many cards until the user clicks Show all (ticket done-and-canceled-show-only-the-newest). */

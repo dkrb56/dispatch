@@ -95,7 +95,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, boardTickets, bulkIds, canDrag, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketGroups, ticketMatches, ticketMessage, ticketRoute, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
+import { addedText, boardTickets, bulkIds, canDrag, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketGroups, ticketMatches, ticketMessage, ticketRoute, type InProgressView, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
@@ -7540,6 +7540,19 @@ function taskAttentionWait(task: Task): AttentionWait | null {
   return null;
 }
 
+/**
+ * The board column of the ticket of a task (ticket add-another-column-between-planning-and): Waiting
+ * for answer when the task waits for a reply of the user (a question, a permission, a repeated question
+ * or a prompt; user decision 3), else Planning in its plan phase, else Working. A plan that waits for
+ * Approve stays in Planning (user decision 4).
+ */
+function taskBoardColumn(task: Task | undefined): InProgressView {
+  if (!task) return "in-progress";
+  const kind = taskAttentionWait(task)?.kind;
+  if (kind === "question" || kind === "permission" || kind === "repeat" || kind === "prompt") return "waiting";
+  return task.info?.state === "planning" ? "planning" : "in-progress";
+}
+
 /** The waits of a list of tasks, for the signal. */
 function attentionWaits(tasks: readonly Task[]): AttentionWait[] {
   return tasks.flatMap((task) => taskAttentionWait(task) ?? []);
@@ -8427,7 +8440,8 @@ function renderTicketDetails(): void {
   const shown = ticketDetails;
   const body: HTMLElement[] = [mapElement("h3", "ticket-details-name", ticket.title)];
   const planTask = record && ticket.status === "in-progress" ? projectTaskList(record).find((task) => task.name === (ticket.task || ticket.id)) : undefined;
-  const column = planTask?.info?.state === "planning" ? "Planning" : (COLUMNS.find((one) => one.status === ticket.status)?.name ?? ticket.status);
+  const where = ticket.status === "in-progress" ? taskBoardColumn(planTask) : ticket.status;
+  const column = COLUMNS.find((one) => one.status === where)?.name ?? ticket.status;
   const meta = mapElement("div", "ticket-details-meta");
   const end = mapElement("span", endFailed(ticket) ? "failed" : "", endWord(ticket) ? `${column} · ${endWord(ticket)}` : column);
   meta.append(mapElement("span", "", ticket.id), mapElement("span", "", typeName(ticket.type)), mapElement("span", "", levelLabel(levelOf(ticket))), end);
@@ -9541,12 +9555,13 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
     return task ? { rank: taskRank(task), time: taskTime(task) } : { rank: 3, time: ticket.updated };
   };
   // Planning: an In progress ticket whose task is in its plan phase, until Approve (ticket ticket-board-update-update-to-columns).
-  const planning = (ticket: Ticket) => taskByName.get(ticket.task || ticket.id)?.info?.state === "planning";
+  // Waiting for answer: its task waits for a reply of the user (ticket add-another-column-between-planning-and).
+  const view = (ticket: Ticket) => taskBoardColumn(taskByName.get(ticket.task || ticket.id));
   // A parent and its parts share one colour (ticket show-a-parent-ticket-and-its-parts-as): from all
   // tickets of the project, so a search does not change the colours.
   const groups = ticketGroups(tickets);
   const columns = COLUMNS.map(({ status, name }) => {
-    const items = boardTickets(shown, status, planning, status === "in-progress" || status === "planning" ? ticketPlace : undefined);
+    const items = boardTickets(shown, status, view, status === "in-progress" || status === "planning" || status === "waiting" ? ticketPlace : undefined);
     const { shown: cards, hidden } = columnCards(items, status, search.trim() !== "", showAll.has(status));
     const column = mapElement("section", "tickets-column");
     column.dataset.status = status;
@@ -9598,7 +9613,10 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
       const none = paused ? PAUSED_NEW_EMPTY : "No tickets. A message to triage lands here, and Dispatch sends it when triage is free.";
       const backlog = "No tickets. Dispatch never sends a Backlog ticket: drag it to Scheduled when it should go.";
       const planningNone = "No tickets. A ticket comes here when its plan starts, and stays until you approve the plan.";
-      list.append(mapElement("p", "tickets-none", status === "new" ? none : status === "backlog" ? backlog : status === "planning" ? planningNone : "No tickets"));
+      const waitingNone = "No tickets. A ticket comes here when its worker asks you something, and goes back to Working when you answer.";
+      list.append(
+        mapElement("p", "tickets-none", status === "new" ? none : status === "backlog" ? backlog : status === "planning" ? planningNone : status === "waiting" ? waitingNone : "No tickets"),
+      );
     }
     column.append(head, list);
     // The right-click menu of the board (ticket i-need-a-right-mouse-click-option-to-add): in every
@@ -9839,7 +9857,7 @@ function ticketState(project: string, ticket: Ticket, queueIds: string[], record
   }
   if (ticket.status === "in-progress") {
     const task = record ? projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id)) : undefined;
-    if (!task) return "In progress";
+    if (!task) return "Working";
     // A run whose worker the list does not show yet: the state file says that it starts.
     const status = taskStatus(task);
     const phase = taskPhase(task);
@@ -12567,7 +12585,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   const workersCountEl = mapElement("span", "focus-tab-count");
   const tabButtons: Record<ColumnTab, HTMLButtonElement> = {
     triage: tabButton("triage", "Triage", "The triage chat of this project"),
-    tickets: tabButton("tickets", "Tickets", "The tickets board of this project; the number counts the tickets in Backlog, Scheduled, Planning and In progress", ticketsCountEl),
+    tickets: tabButton("tickets", "Tickets", "The tickets board of this project; the number counts the tickets in Backlog, Scheduled, Planning, Waiting for answer and Working", ticketsCountEl),
     workers: tabButton("workers", "Workers", "The agent view of Claude Code with the workers of this project; the number counts the workers that work or wait for you", workersCountEl),
   };
   // The Terminal switch right after the tabs (ticket issues-with-details-button): on opens the terminal
@@ -14762,8 +14780,8 @@ function planReveal(id: string): void {
 /** The tickets of a project (by its key) in the board order, as the Plan view takes them. */
 function planBoardTickets(key: string): Ticket[] {
   const record = projectTasks.get(key);
-  // Planning is a view of In progress: its tickets come with In progress, once.
-  return record ? COLUMNS.flatMap((column) => (column.status === "planning" ? [] : columnTickets(record.tickets, column.status))) : [];
+  // Planning and Waiting for answer are views of Working: their tickets come with Working, once.
+  return record ? COLUMNS.flatMap((column) => (column.status === "planning" || column.status === "waiting" ? [] : columnTickets(record.tickets, column.status))) : [];
 }
 
 /** Plan the flow: starts the draft of the project of the view with the arrows of the board, or keeps the one that runs. */
@@ -15058,8 +15076,8 @@ function renderPlan(): void {
     return;
   }
   // The board order: the columns of the board, each in its own order.
-  // Planning is a view of In progress: its tickets come with In progress, once.
-  const tickets = COLUMNS.flatMap((column) => (column.status === "planning" ? [] : columnTickets(record.tickets, column.status)));
+  // Planning and Waiting for answer are views of Working: their tickets come with Working, once.
+  const tickets = COLUMNS.flatMap((column) => (column.status === "planning" || column.status === "waiting" ? [] : columnTickets(record.tickets, column.status)));
   const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]));
   const queueIds = queueOrder(record.tickets).map((ticket) => ticket.id);
   const key = refKey(ref);

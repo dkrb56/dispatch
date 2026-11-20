@@ -206,7 +206,7 @@ export function planStateWord(status: string, phase: string | null): string {
   if (status === "new") return "Scheduled";
   if (status === "done") return "Done";
   if (status === "canceled") return "Canceled";
-  if (phase === null) return "In progress";
+  if (phase === null) return "Working";
   if (phase === "planning") return "Plan run";
   if (phase === "plan-ready" || phase === "queued") return "Plan ready";
   return "Work run";

@@ -4,7 +4,7 @@
 // never takes the automatic work from a desktop window. It runs over plain http, which is no secure
 // context: it uses only the browser features that exist there.
 //
-// The Board view (ticket phone-version-i-need-an-option-to-see) shows the six columns of the tickets
+// The Board view (ticket phone-version-i-need-an-option-to-see) shows the seven columns of the tickets
 // board per project; a column head opens and closes the column. A waiting task takes its answer here
 // with `task_reply`, as the computer sends it; the phone writes no line into a triage chat.
 import "./phone.css";
@@ -40,7 +40,7 @@ import {
   viewFromText,
   viewToText,
 } from "../phonemodel";
-import { boardTickets, COLUMNS, columnCards, countText, endFailed, endWord, LEVELS, levelOf, partPlace, type BoardColumn, type Ticket, typeName } from "../tickets";
+import { boardTickets, COLUMNS, columnCards, countText, endFailed, endWord, LEVELS, levelOf, partPlace, type BoardColumn, type InProgressView, type Ticket, typeName } from "../tickets";
 import { taskTldr } from "../tldr";
 import { groupCount } from "../topbar";
 
@@ -64,8 +64,8 @@ const tools: PhoneTools = {
   groupCount,
   countText: (tickets) => countText(tickets as readonly Pick<Ticket, "status">[]),
   columns: COLUMNS,
-  columnTickets: (tickets, status, planning, place) =>
-    boardTickets(tickets as Ticket[], status as BoardColumn, planning as (ticket: Ticket) => boolean, place as ((ticket: Ticket) => { rank: number; time: number }) | undefined),
+  columnTickets: (tickets, status, view, place) =>
+    boardTickets(tickets as Ticket[], status as BoardColumn, view as (ticket: Ticket) => InProgressView, place as ((ticket: Ticket) => { rank: number; time: number }) | undefined),
   columnCards: (cards, status, showAll) => columnCards(cards, status as BoardColumn, false, showAll),
   confirmQuestion,
   replyText,
@@ -539,7 +539,7 @@ function ticketElement(item: PhoneBoardTicket, board: PhoneBoard): HTMLElement {
   return made;
 }
 
-/** The six columns of a project, stacked; a head opens and closes its column for every project. */
+/** The seven columns of a project, stacked; a head opens and closes its column for every project. */
 function boardColumns(board: PhoneBoard): HTMLElement[] {
   return board.columns.map((column) => {
     const section = element("section", `column${column.open ? "" : " closed"}`);

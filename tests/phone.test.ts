@@ -9,7 +9,7 @@ import { phoneLink, phoneSetup } from "../src/phonelink.ts";
 import { replyText } from "../src/answers.ts";
 import { confirmChoice, confirmQuestion } from "../src/confirm.ts";
 import { homeScreenHint, inProgressPlace, keyAddress, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, phoneBoards, phoneCards, phonePhase, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, reportMark, showAllKey, shownRoots, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
-import { boardTickets, type BoardColumn, columnCards, COLUMNS, countText, type Ticket } from "../src/tickets.ts";
+import { boardTickets, type BoardColumn, columnCards, type InProgressView, COLUMNS, countText, type Ticket } from "../src/tickets.ts";
 import { taskTldr } from "../src/tldr.ts";
 import { groupCount } from "../src/topbar.ts";
 
@@ -25,8 +25,8 @@ const tools: PhoneTools = {
   groupCount,
   countText: (tickets) => countText(tickets as readonly Pick<Ticket, "status">[]),
   columns: COLUMNS,
-  columnTickets: (tickets, status, planning, place) =>
-    boardTickets(tickets as Ticket[], status as BoardColumn, planning as (ticket: Ticket) => boolean, place as ((ticket: Ticket) => { rank: number; time: number }) | undefined),
+  columnTickets: (tickets, status, view, place) =>
+    boardTickets(tickets as Ticket[], status as BoardColumn, view as (ticket: Ticket) => InProgressView, place as ((ticket: Ticket) => { rank: number; time: number }) | undefined),
   columnCards: (cards, status, showAll) => columnCards(cards, status as BoardColumn, false, showAll),
   confirmQuestion,
   replyText,
@@ -236,10 +236,10 @@ const BS = String.fromCharCode(92);
 test("the stored view reads back what it wrote, and a broken text gives empty lists", () => {
   const view = { folded: [`d:${BS}work${BS}alpha`], hidden: ["d:/work/beta"], layout: "board" as const, open: ["new", "done"] };
   assert.deepEqual(viewFromText(viewToText(view)), view);
-  const none = { folded: [], hidden: [], layout: "cards", open: ["in-progress"] };
+  const none = { folded: [], hidden: [], layout: "cards", open: ["waiting", "in-progress"] };
   for (const text of ["", "{", "null", "7", '"x"', "[]", null, undefined]) assert.deepEqual(viewFromText(text), none, String(text));
   assert.deepEqual(viewFromText('{"folded":"a","hidden":[1,"b","b",""]}'), { ...none, hidden: ["b"] }, "bad values drop out");
-  assert.deepEqual(viewFromText('{"folded":[],"hidden":["b"]}'), { ...none, hidden: ["b"] }, "an older stored text: Cards, only In progress open");
+  assert.deepEqual(viewFromText('{"folded":[],"hidden":["b"]}'), { ...none, hidden: ["b"] }, "an older stored text: Cards, only Waiting for answer and Working open");
   assert.deepEqual(viewFromText('{"layout":"wall","open":[]}'), { ...none, open: [] }, "an unknown layout is Cards; all columns closed stays closed");
 });
 
@@ -279,13 +279,13 @@ const QUESTION = { number: 1, text: "Which one?", options: ["Red", "Blue"] };
 test("a column opens and closes, one choice for all projects", () => {
   const first = viewFromText(null);
   const opened = toggleColumn(first, "new");
-  assert.deepEqual(opened.open, ["in-progress", "new"]);
-  assert.deepEqual(first.open, ["in-progress"], "the old view stays");
-  assert.deepEqual(toggleColumn(opened, "in-progress").open, ["new"]);
-  assert.deepEqual(viewFromText(viewToText(opened)).open, ["in-progress", "new"], "the choice survives a reload");
+  assert.deepEqual(opened.open, ["waiting", "in-progress", "new"]);
+  assert.deepEqual(first.open, ["waiting", "in-progress"], "the old view stays");
+  assert.deepEqual(toggleColumn(opened, "in-progress").open, ["waiting", "new"]);
+  assert.deepEqual(viewFromText(viewToText(opened)).open, ["waiting", "in-progress", "new"], "the choice survives a reload");
 });
 
-test("the board has the six columns with their tickets in the board order, only In progress open at first", () => {
+test("the board has the seven columns with their tickets in the board order, only Waiting for answer and Working open at first", () => {
   const tickets = [
     ticket("b1", "backlog", { updated: 3 }),
     ticket("n2", "new", { order: 2 }),
@@ -300,16 +300,17 @@ test("the board has the six columns with their tickets in the board order, only 
     ["Backlog", 1, false],
     ["Scheduled", 2, false],
     ["Planning", 0, false],
-    ["In progress", 1, true],
+    ["Waiting for answer", 0, true],
+    ["Working", 1, true],
     ["Done", 12, false],
     ["Canceled", 1, false],
   ]);
   assert.deepEqual(board.columns[1].tickets.map((one) => one.ticket.id), ["n1", "n2"], "Scheduled goes by the queue");
-  const done = board.columns[4];
+  const done = board.columns[5];
   assert.deepEqual([done.tickets.length, done.hidden, done.tickets[0].ticket.id], [10, 2, "d11"], "Done shows its 10 newest");
   const [all] = phoneBoards([{ root: ROOT, list: { tasks: [], tickets }, error: "" }], [], tools, [], new Set([showAllKey(ROOT, "done")]));
-  assert.deepEqual([all.columns[4].tickets.length, all.columns[4].hidden], [12, 0], "Show all shows every ticket");
-  assert.equal(board.columns[3].tickets[0].row, null, "a ticket without a task shows no task");
+  assert.deepEqual([all.columns[5].tickets.length, all.columns[5].hidden], [12, 0], "Show all shows every ticket");
+  assert.equal(board.columns[4].tickets[0].row, null, "a ticket without a task shows no task");
 });
 
 test("an In progress ticket shows its task, joined by its task name or its id; what waits comes first", () => {
@@ -328,10 +329,12 @@ test("an In progress ticket shows its task, joined by its task name or its id; w
   assert.equal(ticketTask(tickets[0], [{ name: "run" }])?.name, "run");
   assert.equal(ticketTask(tickets[3], [{ name: "run" }]), null);
   const [board] = phoneBoards([{ root: ROOT, list: { tasks, tickets }, error: "" }], [worker("run [work]", "working")], tools, ["in-progress"]);
-  const column = board.columns[3];
-  assert.deepEqual(column.tickets.map((one) => one.ticket.id), ["ask", "run", "old", "none"], "waits, working, ended, no task");
-  assert.deepEqual([column.tickets[0].row?.status, column.tickets[0].row?.answer?.kind], ["has a question for you", "questions"]);
-  assert.deepEqual([column.tickets[1].row?.status, column.tickets[1].row?.answer], ["Work run working", null]);
+  const waiting = board.columns[3];
+  const column = board.columns[4];
+  assert.deepEqual(waiting.tickets.map((one) => one.ticket.id), ["ask"], "the question stands in Waiting for answer");
+  assert.deepEqual(column.tickets.map((one) => one.ticket.id), ["run", "old", "none"], "working, ended, no task");
+  assert.deepEqual([waiting.tickets[0].row?.status, waiting.tickets[0].row?.answer?.kind], ["has a question for you", "questions"]);
+  assert.deepEqual([column.tickets[0].row?.status, column.tickets[0].row?.answer], ["Work run working", null]);
   assert.deepEqual(inProgressPlace(null, { updated: 4 }), { rank: 3, time: 4 });
 });
 
@@ -346,6 +349,30 @@ test("a ticket whose task is in its plan phase stands in Planning with its task 
   assert.notEqual(planning.tickets[0].row, null, "it shows its task row");
   assert.deepEqual(progress.tickets.map((one) => one.ticket.id), ["work"], "and not in In progress");
   assert.deepEqual(board.columns[1].tickets.map((one) => one.ticket.id), ["n1"], "Scheduled keeps the queue");
+});
+
+test("a ticket whose task waits for a reply stands in Waiting for answer with its task row (ticket add-another-column-between-planning-and)", () => {
+  const tasks = [
+    info("ask", { ...REPORT("needs-decision", "decision"), questions: [QUESTION], about: "Asks" }),
+    info("allow", { ...REPORT("needs-decision", "permission"), about: "Needs a rule" }),
+    info("prompt", { state: "working", about: "At a prompt" }),
+    info("plan", { state: "planning", plan: FILE, about: "Plan" }),
+    info("work", { state: "working", about: "Busy" }),
+  ];
+  const tickets = ["ask", "allow", "prompt", "plan", "work"].map((id) => ticket(id, "in-progress"));
+  const workers = [worker("prompt [work]", "blocked"), worker("work [work]", "working")];
+  const [board] = phoneBoards([{ root: ROOT, list: { tasks, tickets }, error: "" }], workers, tools, viewFromText(null).open);
+  const column = (status: string) => board.columns.find((one) => one.status === status)!;
+  const waiting = column("waiting");
+  assert.deepEqual([waiting.name, waiting.open], ["Waiting for answer", true], "open at first (user decision 5)");
+  assert.deepEqual(waiting.tickets.map((one) => one.ticket.id).sort(), ["allow", "ask", "prompt"], "a question, a permission and a prompt wait");
+  assert.ok(waiting.tickets.every((one) => one.row !== null), "each shows its task row");
+  assert.deepEqual(column("planning").tickets.map((one) => one.ticket.id), ["plan"], "a plan ready for Approve stays in Planning");
+  assert.deepEqual(column("in-progress").tickets.map((one) => one.ticket.id), ["work"], "and the running task stands in Working");
+  // After the answer the worker runs again: the ticket goes back to Working.
+  const [after] = phoneBoards([{ root: ROOT, list: { tasks, tickets }, error: "" }], [...workers, worker("ask [work]", "working", { startedAt: 20 })], tools, []);
+  assert.ok(!after.columns.find((one) => one.status === "waiting")!.tickets.some((one) => one.ticket.id === "ask"), "the answered ticket leaves Waiting for answer");
+  assert.ok(after.columns.find((one) => one.status === "in-progress")!.tickets.some((one) => one.ticket.id === "ask"), "and stands in Working");
 });
 
 test("the answer block: the open questions, or the confirm of a check result", () => {

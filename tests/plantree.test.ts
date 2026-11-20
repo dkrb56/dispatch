@@ -148,7 +148,7 @@ test("the state word of a card", () => {
   assert.equal(planStateWord("new", null), "Scheduled");
   assert.equal(planStateWord("done", "done"), "Done");
   assert.equal(planStateWord("canceled", null), "Canceled");
-  assert.equal(planStateWord("in-progress", null), "In progress");
+  assert.equal(planStateWord("in-progress", null), "Working");
   assert.equal(planStateWord("in-progress", "planning"), "Plan run");
   assert.equal(planStateWord("in-progress", "plan-ready"), "Plan ready");
   assert.equal(planStateWord("in-progress", "queued"), "Plan ready");

@@ -1591,7 +1591,7 @@ button.task-head:hover {
 }
 
 /* The window "Old sessions": one row per session, grouped by project. The window "What's new" has the same frame. */
-/* The tickets board (ticket tickets): a wide window with six columns. Each card has the frame of a
+/* The tickets board (ticket tickets): a wide window with seven columns. Each card has the frame of a
    task card: the title, the type tag, the date and the state line, and the buttons of its column. */
 #tickets {
   width: 94vw;
@@ -2246,7 +2246,7 @@ button.task-head:hover {
 .focus-board .tickets-columns {
   display: grid;
   flex: 1;
-  grid-template-columns: repeat(6, minmax(180px, 1fr));
+  grid-template-columns: repeat(7, minmax(180px, 1fr));
   gap: 10px;
   min-height: 0;
   padding: 12px;

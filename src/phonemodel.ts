@@ -97,6 +97,9 @@ export type PhonePhase =
   | "merge"
   | "none";
 
+/** The board column of an In progress ticket (`InProgressView` of tickets.ts). */
+export type PhoneInProgressView = "planning" | "waiting" | "in-progress";
+
 /** The rules of the other modules, as the page and the tests pass them. */
 export interface PhoneTools {
   listedTasks<T>(tasks: readonly T[], view: (task: T) => PhoneView): T[];
@@ -113,16 +116,16 @@ export interface PhoneTools {
   }): { about: string; now: string };
   groupCount(state: { waits: number; working: number; paused?: boolean }): { text: string; kind: string };
   countText(tickets: readonly Pick<PhoneTicket, "status">[]): string;
-  /** The six columns of the board in their order (`COLUMNS` of tickets.ts). */
+  /** The seven columns of the board in their order (`COLUMNS` of tickets.ts). */
   columns: readonly { status: string; name: string }[];
   /**
-   * The tickets of a column in their order (`boardTickets` of tickets.ts): `planning` says that the task
-   * of an In progress ticket is in its plan phase, so the ticket stands in Planning.
+   * The tickets of a column in their order (`boardTickets` of tickets.ts): `view` gives the column of an
+   * In progress ticket: Planning, Waiting for answer or Working.
    */
   columnTickets(
     tickets: readonly PhoneTicket[],
     status: string,
-    planning: (ticket: PhoneTicket) => boolean,
+    view: (ticket: PhoneTicket) => PhoneInProgressView,
     place?: (ticket: PhoneTicket) => { rank: number; time: number },
   ): PhoneTicket[];
   /** The cards of a column to draw and how many stay hidden (`columnCards` of tickets.ts, without a search). */
@@ -240,11 +243,14 @@ export function folderName(path: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : path;
 }
 
-/** How the phone shows a project: the cards of today, or the six columns of the tickets board. */
+/** How the phone shows a project: the cards of today, or the seven columns of the tickets board. */
 export type PhoneLayout = "cards" | "board";
 
-/** The columns of the board that are open before the user taps a column head (user decision 2). */
-export const OPEN_FIRST: readonly string[] = ["in-progress"];
+/**
+ * The columns of the board that are open before the user taps a column head (user decision 2; Waiting
+ * for answer by user decision 5 of ticket add-another-column-between-planning-and).
+ */
+export const OPEN_FIRST: readonly string[] = ["waiting", "in-progress"];
 
 /**
  * The choices of the phone: the projects with a folded card and the projects it hides, each as a
@@ -562,7 +568,7 @@ export function inProgressPlace(task: PhoneTask | null, ticket: Pick<PhoneTicket
 }
 
 /**
- * The board of each project, in the order of `projects`: the six columns with their tickets in the
+ * The board of each project, in the order of `projects`: the seven columns with their tickets in the
  * board order. `open` lists the open columns; `showAll` the keys `<root>\n<status>` of the columns
  * whose Show all the user tapped.
  */
@@ -581,9 +587,16 @@ export function phoneBoards(
     const tickets = list?.tickets ?? [];
     const place = (ticket: PhoneTicket) => inProgressPlace(ticketTask(ticket, tasks), ticket, merging);
     // Planning: an In progress ticket whose task is in its plan phase, until Approve (ticket ticket-board-update-update-to-columns).
-    const planning = (ticket: PhoneTicket) => ticketTask(ticket, tasks)?.info?.state === "planning";
+    // Waiting for answer: its task waits for a reply of the user (ticket add-another-column-between-planning-and, user decision 3).
+    const view = (ticket: PhoneTicket): PhoneInProgressView => {
+      const task = ticketTask(ticket, tasks);
+      if (!task) return "in-progress";
+      const phase = phonePhase(task);
+      if (phase === "question" || phase === "permission" || phase === "prompt") return "waiting";
+      return task.info?.state === "planning" ? "planning" : "in-progress";
+    };
     const columns = tools.columns.map(({ status, name }): PhoneColumn => {
-      const all = tools.columnTickets(tickets, status, planning, status === "in-progress" || status === "planning" ? place : undefined);
+      const all = tools.columnTickets(tickets, status, view, status === "in-progress" || status === "planning" || status === "waiting" ? place : undefined);
       const { shown, hidden } = tools.columnCards(all, status, showAll.has(showAllKey(root, status)));
       return {
         status,
