@@ -48,6 +48,7 @@ test("the footer has three buttons in the order Ask, Revise, Approve, each with 
     assert.match(FOOTER, action, key);
   }
   assert.match(FOOTER, /<button id="decisions-approve" class="primary"/);
+  assert.match(CSS, /\.decisions-action \{[^}]*align-self: flex-start/);
   assert.doesNotMatch(HTML, /Send back to the planner|Approve with these decisions/);
 });
 

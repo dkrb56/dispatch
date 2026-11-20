@@ -7063,6 +7063,7 @@ button.ticket-level {
   display: flex;
   flex: 1 1 0;
   flex-direction: column;
+  align-self: flex-start;
   gap: 4px;
   min-width: 160px;
 }
