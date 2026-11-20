@@ -5,7 +5,7 @@
 // context: it uses only the browser features that exist there.
 import "./phone.css";
 import { doneTasks, listedTasks, runStarting } from "../overview";
-import { folderName, homeScreenHint, keyAddress, keyFromAddress, keyFromText, oldKeyText, type PhoneCard, phoneCards, type PhoneProject, type PhoneRow, type PhoneTaskList, type PhoneTools, type PhoneWorker } from "../phonemodel";
+import { folderName, homeScreenHint, keyAddress, keyFromAddress, keyFromText, oldKeyText, type PhoneCard, type PhoneChoices, phoneCards, type PhoneProject, type PhoneRow, type PhoneTaskList, type PhoneTools, type PhoneWorker, pathKey, shownRoots, toggleRoot, viewFromText, viewToText } from "../phonemodel";
 import { countText, type Ticket } from "../tickets";
 import { taskTldr } from "../tldr";
 import { groupCount } from "../topbar";
@@ -13,6 +13,8 @@ import { groupCount } from "../topbar";
 const PROTOCOL = 1;
 const KEY_STORE = "dispatch-phone-key";
 const HINT_DONE_STORE = "dispatch-phone-hint-done";
+/** The folded and the hidden projects of this phone; a Home Screen icon has its own copy. */
+const VIEW_STORE = "dispatch-phone-view";
 const WRONG_KEY = "the key is wrong";
 const CONNECT_WAIT_MS = 10_000;
 const RETRY_FIRST_MS = 1000;
@@ -39,7 +41,17 @@ function element<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", 
 const app = document.querySelector<HTMLElement>("#app")!;
 const top = element("header", "top");
 const updatedEl = element("span");
-top.append(element("h1", "", "Dispatch"), updatedEl);
+const projectsBtn = element("button", "projects-btn", "Projects");
+projectsBtn.type = "button";
+projectsBtn.setAttribute("aria-expanded", "false");
+projectsBtn.hidden = true;
+top.append(element("h1", "", "Dispatch"), projectsBtn, updatedEl);
+const panelEl = element("section", "projects-panel");
+panelEl.hidden = true;
+const panelRows = element("div", "projects-rows");
+const panelDone = element("button", "", "Done");
+panelDone.type = "button";
+panelEl.append(element("p", "none", "Untick a project to hide its card on this phone."), panelRows, panelDone);
 const messageEl = element("p", "message");
 messageEl.hidden = true;
 const keyForm = element("form", "key-form");
@@ -57,7 +69,7 @@ const hintDoneEl = element("button", "", "Got it");
 hintDoneEl.type = "button";
 hintEl.append(element("p", "", "Connected. To keep Dispatch on this phone, tap Share, then Add to Home Screen."), hintDoneEl);
 const cardsEl = element("main", "cards");
-app.append(top, messageEl, keyForm, hintEl, cardsEl);
+app.append(top, panelEl, messageEl, keyForm, hintEl, cardsEl);
 
 function showMessage(text: string): void {
   messageEl.textContent = text;
@@ -89,6 +101,24 @@ function hintDismissed(): boolean {
     return localStorage.getItem(HINT_DONE_STORE) !== null;
   } catch {
     return false;
+  }
+}
+
+function readChoices(): PhoneChoices {
+  try {
+    return viewFromText(localStorage.getItem(VIEW_STORE));
+  } catch {
+    return viewFromText(null);
+  }
+}
+
+let choices = readChoices();
+
+function saveChoices(): void {
+  try {
+    localStorage.setItem(VIEW_STORE, viewToText(choices));
+  } catch {
+    // The choices then hold until the page closes.
   }
 }
 
@@ -138,6 +168,8 @@ function askForKey(text: string): void {
   updatedEl.textContent = "";
   cardsEl.replaceChildren();
   cards.clear();
+  projectsBtn.hidden = true;
+  panelEl.hidden = true;
   hintEl.hidden = true;
   showMessage(text);
   keyForm.hidden = false;
@@ -171,6 +203,7 @@ function connect(): void {
       connected = true;
       retryWait = RETRY_FIRST_MS;
       keyForm.hidden = true;
+      projectsBtn.hidden = false;
       if (key) storeKey(key);
       showMessage("");
       hintEl.hidden = !homeScreenHint(standalone, hintDismissed());
@@ -248,7 +281,7 @@ async function round(): Promise<void> {
     roots = (await call<string[]>("workspaces_get")) ?? [];
     workers = (await call<PhoneWorker[]>("worker_list")) ?? [];
     draw();
-    for (const root of roots) {
+    for (const root of shownRoots(roots, choices)) {
       try {
         lists.set(root, { list: await call<PhoneTaskList>("task_list", { cwd: root }), error: "" });
       } catch (error) {
@@ -257,7 +290,8 @@ async function round(): Promise<void> {
       }
       draw();
     }
-    for (const root of [...lists.keys()]) if (!roots.includes(root)) lists.delete(root);
+    const shown = shownRoots(roots, choices);
+    for (const root of [...lists.keys()]) if (!shown.includes(root)) lists.delete(root);
     updatedEl.textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
   } catch (error) {
     if (connected) showMessage(`The computer did not answer: ${error}`);
@@ -271,6 +305,9 @@ interface CardView {
   el: HTMLElement;
   nameEl: HTMLElement;
   countEl: HTMLElement;
+  head: HTMLElement;
+  /** Everything below the head; a fold hides it. */
+  rest: HTMLElement;
   bodyEl: HTMLElement;
   ticketsEl: HTMLElement;
   errorEl: HTMLElement;
@@ -297,10 +334,14 @@ function cardView(root: string): CardView {
   if (known) return known;
   const el = element("section", "card");
   el.dataset.root = root;
-  const head = element("div", "card-head");
-  const nameEl = element("h2", "", folderName(root));
+  const head = element("button", "card-head");
+  head.type = "button";
+  const nameEl = element("span", "card-name", folderName(root));
   const countEl = element("span", "count");
-  head.append(nameEl, countEl);
+  const arrowEl = element("span", "arrow", "▾");
+  arrowEl.setAttribute("aria-hidden", "true");
+  head.append(nameEl, countEl, arrowEl);
+  const rest = element("div", "card-rest");
   const bodyEl = element("div");
   const errorEl = element("p", "card-error");
   errorEl.hidden = true;
@@ -353,14 +394,29 @@ function cardView(root: string): CardView {
       .catch((error) => note(`Not added: ${error}`))
       .finally(() => (send.disabled = false));
   });
-  el.append(head, bodyEl, errorEl, element("h3", "", "Tickets"), line, box, noteEl);
-  const view = { el, nameEl, countEl, bodyEl, ticketsEl, errorEl };
+  rest.append(bodyEl, errorEl, element("h3", "", "Tickets"), line, box, noteEl);
+  el.append(head, rest);
+  head.addEventListener("click", () => {
+    choices = toggleRoot(choices, "folded", root);
+    saveChoices();
+    showFold(view, root);
+  });
+  const view = { el, nameEl, countEl, head, rest, bodyEl, ticketsEl, errorEl };
   cards.set(root, view);
   return view;
 }
 
+/** A card shows its head only while its project is folded. */
+function showFold(view: CardView, root: string): void {
+  const folded = choices.folded.includes(pathKey(root));
+  view.rest.hidden = folded;
+  view.el.classList.toggle("folded", folded);
+  view.head.setAttribute("aria-expanded", String(!folded));
+}
+
 function drawCard(card: PhoneCard): HTMLElement {
   const view = cardView(card.root);
+  showFold(view, card.root);
   view.nameEl.textContent = card.name;
   view.countEl.className = `count ${card.count.kind}`;
   view.countEl.textContent = card.count.text;
@@ -375,13 +431,58 @@ function drawCard(card: PhoneCard): HTMLElement {
   return view.el;
 }
 
-function draw(): void {
-  const projects: PhoneProject[] = roots.map((root) => ({ root, list: lists.get(root)?.list ?? null, error: lists.get(root)?.error ?? "" }));
-  const els = phoneCards(projects, workers, tools).map(drawCard);
-  for (const root of [...cards.keys()]) if (!roots.includes(root)) cards.delete(root);
-  if (els.length !== cardsEl.children.length || els.some((el, at) => cardsEl.children[at] !== el)) cardsEl.replaceChildren(...els);
-  showMessage(roots.length === 0 ? "No project of this computer is open in a connected Dispatch window. Open one, and it shows here." : "");
+/** The rows of the Projects panel: one box per root. A row stays while the roots stay, so a tap is never lost. */
+const panelBoxes = new Map<string, HTMLInputElement>();
+
+function drawPanel(): void {
+  if (roots.length !== panelBoxes.size || roots.some((root) => !panelBoxes.has(root))) {
+    panelBoxes.clear();
+    panelRows.replaceChildren(
+      ...roots.map((root) => {
+        const row = element("label", "projects-row");
+        const box = element("input");
+        box.type = "checkbox";
+        box.addEventListener("change", () => {
+          choices = toggleRoot(choices, "hidden", root);
+          saveChoices();
+          // A project that shows again needs its first read.
+          if (box.checked) {
+            lastRound = 0;
+            scheduleRound();
+          }
+          draw();
+        });
+        panelBoxes.set(root, box);
+        row.append(box, element("span", "", folderName(root)));
+        return row;
+      }),
+    );
+  }
+  for (const [root, box] of panelBoxes) box.checked = !choices.hidden.includes(pathKey(root));
 }
+
+function draw(): void {
+  drawPanel();
+  const shown = shownRoots(roots, choices);
+  const projects: PhoneProject[] = shown.map((root) => ({ root, list: lists.get(root)?.list ?? null, error: lists.get(root)?.error ?? "" }));
+  const els = phoneCards(projects, workers, tools).map(drawCard);
+  for (const root of [...cards.keys()]) if (!shown.includes(root)) cards.delete(root);
+  if (els.length !== cardsEl.children.length || els.some((el, at) => cardsEl.children[at] !== el)) cardsEl.replaceChildren(...els);
+  showMessage(
+    roots.length === 0
+      ? "No project of this computer is open in a connected Dispatch window. Open one, and it shows here."
+      : shown.length === 0
+        ? "All projects are hidden on this phone. Tap Projects to show them."
+        : "",
+  );
+}
+
+function showPanel(open: boolean): void {
+  panelEl.hidden = !open;
+  projectsBtn.setAttribute("aria-expanded", String(open));
+}
+projectsBtn.addEventListener("click", () => showPanel(panelEl.hidden === true));
+panelDone.addEventListener("click", () => showPanel(false));
 
 keyForm.addEventListener("submit", (event) => {
   event.preventDefault();

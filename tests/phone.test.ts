@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { doneTasks, listedTasks, runStarting } from "../src/overview.ts";
 import { phoneLink, phoneSetup } from "../src/phonelink.ts";
-import { homeScreenHint, keyAddress, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneCards, phonePhase, phoneStatus, phoneTasks, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
+import { homeScreenHint, keyAddress, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneCards, phonePhase, phoneStatus, phoneTasks, shownRoots, toggleRoot, viewFromText, viewToText, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
 import { countText, type Ticket } from "../src/tickets.ts";
 import { taskTldr } from "../src/tldr.ts";
 import { groupCount } from "../src/topbar.ts";
@@ -220,4 +220,40 @@ test("the phone code uses nothing that a plain http page lacks and draws no mark
     const code = read(path);
     for (const word of ["crypto.randomUUID", "navigator.clipboard", "innerHTML", "driver_state"]) assert.ok(!code.includes(word), `${path}: ${word}`);
   }
+});
+
+const BS = String.fromCharCode(92);
+
+test("the stored view reads back what it wrote, and a broken text gives empty lists", () => {
+  const view = { folded: [`d:${BS}work${BS}alpha`], hidden: ["d:/work/beta"] };
+  assert.deepEqual(viewFromText(viewToText(view)), view);
+  for (const text of ["", "{", "null", "7", '"x"', "[]", null, undefined]) assert.deepEqual(viewFromText(text), { folded: [], hidden: [] }, String(text));
+  assert.deepEqual(viewFromText('{"folded":"a","hidden":[1,"b","b",""]}'), { folded: [], hidden: ["b"] }, "bad values drop out");
+});
+
+test("a toggle adds a root to a list and then takes it out", () => {
+  const none = { folded: [], hidden: [] };
+  const once = toggleRoot(none, "folded", `D:${BS}Work${BS}Alpha${BS}`);
+  assert.deepEqual(once, { folded: [`d:${BS}work${BS}alpha`], hidden: [] });
+  assert.deepEqual(none, { folded: [], hidden: [] }, "the old view stays");
+  assert.deepEqual(toggleRoot(once, "folded", `d:${BS}work${BS}alpha`), none);
+  assert.deepEqual(toggleRoot(once, "hidden", ROOT).hidden, [`d:${BS}work${BS}alpha`], "the other list is separate");
+});
+
+test("the roots that show keep their order and match by path key", () => {
+  const roots = [`D:${BS}work${BS}alpha`, `D:${BS}work${BS}Beta${BS}`, "D:/work/gamma"];
+  const view = { folded: [], hidden: [`d:${BS}work${BS}beta`] };
+  assert.deepEqual(shownRoots(roots, view), [roots[0], roots[2]]);
+  assert.deepEqual(shownRoots(roots, { folded: [], hidden: [] }), roots);
+  assert.deepEqual(shownRoots(roots, { folded: [`d:${BS}work${BS}alpha`], hidden: [] }), roots, "a fold hides no project");
+});
+
+test("the page reads task_list only for the projects that show", () => {
+  const code = read("../src/phone/main.ts");
+  const start = code.indexOf("async function round(");
+  assert.ok(start > 0);
+  const body = code.slice(start, code.indexOf("\n}\n", start));
+  assert.ok(body.includes("for (const root of shownRoots(roots, choices))"), "the loop runs over the shown roots");
+  assert.ok(!body.includes("of roots)"), "no loop over all roots");
+  assert.equal(body.split('"task_list"').length - 1, 1, "one task_list call");
 });

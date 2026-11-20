@@ -180,6 +180,45 @@ export function folderName(path: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : path;
 }
 
+/** The choices of the phone: the projects with a folded card and the projects it hides, each as a `pathKey`. */
+export interface PhoneChoices {
+  folded: string[];
+  hidden: string[];
+}
+
+const keyList = (value: unknown): string[] => (Array.isArray(value) ? [...new Set(value.filter((one): one is string => typeof one === "string" && one !== ""))] : []);
+
+/** The stored choices of the phone from a text; a broken or empty text gives two empty lists. */
+export function viewFromText(text: string | null | undefined): PhoneChoices {
+  try {
+    const value: unknown = JSON.parse(text ?? "");
+    if (value && typeof value === "object") {
+      const { folded, hidden } = value as Record<string, unknown>;
+      return { folded: keyList(folded), hidden: keyList(hidden) };
+    }
+  } catch {
+    // A broken text counts as no choice.
+  }
+  return { folded: [], hidden: [] };
+}
+
+/** The choices of the phone as the text to store. */
+export function viewToText(view: PhoneChoices): string {
+  return JSON.stringify({ folded: keyList(view.folded), hidden: keyList(view.hidden) });
+}
+
+/** One root added to a list of the view, or taken out when it is in the list. The view itself stays as it is. */
+export function toggleRoot(view: PhoneChoices, list: keyof PhoneChoices, root: string): PhoneChoices {
+  const key = pathKey(root);
+  const now = view[list];
+  return { ...view, [list]: now.includes(key) ? now.filter((one) => one !== key) : [...now, key] };
+}
+
+/** The roots that show on the phone: those that are not hidden, in their order. */
+export function shownRoots(roots: readonly string[], view: PhoneChoices): string[] {
+  return roots.filter((root) => !view.hidden.includes(pathKey(root)));
+}
+
 /** A worker belongs to a project when its folder is the project folder or lies below it. */
 export function workerInProject(worker: Pick<PhoneWorker, "cwd">, root: string): boolean {
   const folder = pathKey(worker.cwd);

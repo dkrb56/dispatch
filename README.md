@@ -63,7 +63,7 @@ With several hosts, each project name gets ` · <host name>` after it, so two pr
 
 ### On your phone
 
-The host also serves a small page with only the Overview: one column of project cards with the tasks in work, the newest finished tasks and the tickets. You can add a ticket there.
+The host also serves a small page with only the Overview: one column of project cards with the tasks in work, the newest finished tasks and the tickets. You can add a ticket there. Tap the name of a card to fold it to one line, and tap again to open it. The button **Projects** lists all projects; untick one to hide its card. The phone keeps both choices on the phone only: the icon on the Home Screen and the browser each keep their own.
 
 1. Install Tailscale on the phone and sign in to the same tailnet as the computer.
 2. On the computer: Options → **Phone** → **Start and show the code**. Dispatch restarts, the terminals of this window end, and the code shows.

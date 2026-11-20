@@ -49,7 +49,7 @@ body {
 
 .top {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
@@ -109,12 +109,64 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  text-align: left;
 }
 
-.card-head h2 {
+.card-name {
+  flex: 1;
   min-width: 0;
-  margin: 0;
   font-size: 17px;
+  font-weight: 600;
+}
+
+.arrow {
+  flex: none;
+  color: var(--muted);
+  transition: transform 0.15s;
+}
+
+.card.folded .arrow {
+  transform: rotate(-90deg);
+}
+
+.projects-btn {
+  margin-left: auto;
+}
+
+.projects-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.projects-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.projects-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+}
+
+.projects-row input {
+  flex: none;
+  width: 22px;
+  min-height: 0;
+  height: 22px;
+  padding: 0;
 }
 
 .count {
