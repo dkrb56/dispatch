@@ -191,7 +191,7 @@ test("the page: the terminal below the board has its wrapper, its button, its dr
   assert.doesNotMatch(css, /body\.resizing \.focus-body > :not\(\.side-resize\)/);
   assert.match(css, /#focus\.rows > \.focus-col:not\(\.min\):has\(\.focus-work\.stacked > \.focus-terminal:not\(\[hidden\]\)\)\s*\{[^}]*min-height/);
   const main = read("../src/main.ts");
-  assert.match(main, /termHead\.append\(mapElement\("span", "", "Terminal"\), termSpacer, termSplitEl, termClose\);/);
+  assert.match(main, /termHead\.append\(mapElement\("span", "", "Terminal"\), termSpacer, detailsEls\.terminal, termSplitEl, termClose\);/);
   assert.match(main, /workEl\.classList\.toggle\("stacked", below\);/);
   assert.match(main, /termSplit: toggleTermSplit\(parseTermSplit\(/);
   assert.match(main, /saveFocusSize\(key, \{ termHeight: Math\.round\(term\.height\) \}\)/);
@@ -217,21 +217,25 @@ test("the page: the column tabs and the Details switch of the column have their 
   const main = read("../src/main.ts");
   // The Workers button of the head and the × of the Workers bar went; the tabs took their place.
   assert.doesNotMatch(main, /workersEl|workersOpen|setWorkersOpen|workers-hide/);
-  assert.match(main, /main\.append\(tabRowEl, triageEl, boardEl, agentsEl, commandsEl\);/);
   assert.match(main, /setColumnTab\(column, "workers"\);/);
   assert.match(main, /saveFocusSize\(projectKey\(column\.host, column\.root\), \{ tab \}\);/);
   // The switch is off at the start and not stored (user decision 2); the poll reaches its pane.
-  assert.match(main, /detailsOn: false/);
+  assert.match(main, /detailsOn: \{ triage: false, agents: false, terminal: false \}/);
   assert.doesNotMatch(main, /saveFocusSize\([^)]*detailsOn/);
   assert.match(main, /\.\.\.tabPanes\(activeId \?\? ""\), \.\.\.focusDetailPanes\(\)/);
-  // The switch stands at the right end of the tabs and turns on the band of all three panes.
-  assert.match(main, /tabRowEl\.append\(tabSpacer, detailsEl\);/);
-  assert.match(main, /for \(const slot of \[column\.triageEl, column\.agentsEl, column\.termEl\]\) slot\.classList\.toggle\("details", on\);/);
+  // Ticket issues-with-details-button: one switch per pane, in a head line above it, shown only with its
+  // pane; each turns on the band of its own pane only.
+  assert.match(main, /main\.append\(tabRowEl, triageHeadEl, triageEl, boardEl, agentsHeadEl, agentsEl, commandsEl\);/);
+  assert.match(main, /termHead\.append\(mapElement\("span", "", "Terminal"\), termSpacer, detailsEls\.terminal, termSplitEl, termClose\);/);
+  assert.match(main, /column\.triageHeadEl\.hidden = shown !== "triage" \|\| !triage;/);
+  assert.match(main, /column\.agentsHeadEl\.hidden = shown !== "workers" \|\| !agents;/);
+  assert.match(main, /detailSlot\(column, panel\)\.classList\.toggle\("details", on\);/);
+  assert.doesNotMatch(main, /tabSpacer|detailsEl\b/);
   const html = read("../index.html");
   assert.match(html, /<b>Tickets<\/b> shows the tickets board[^<]*<b>Workers<\/b> shows the agent view/);
   assert.match(html, /<b>Triage<\/b> as the first tab/);
   assert.match(html, /Each project remembers its tab after a restart/);
-  assert.match(html, /The <b>Details<\/b> switch at the right of the tabs shows the side panels of the Triage, Workers and terminal panes with Environment, Context and Outputs[^<]*off at each start/);
+  assert.match(html, /The Triage, Workers and terminal panes each have their own <b>Details<\/b> switch above them; it shows the side panels of that pane with Environment, Context and Outputs[^<]*off at each start/);
   assert.doesNotMatch(html, /<b>Workers<\/b> in the head of a column/);
 });
 

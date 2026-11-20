@@ -8048,26 +8048,6 @@ body.chats-sized .focus-side {
   border-color: var(--accent-line);
 }
 
-.focus-terminal-button {
-  flex: none;
-  padding: 4px 10px;
-  border: 1px solid var(--hairline);
-  border-radius: 6px;
-  background: var(--card);
-  color: var(--text);
-  font: inherit;
-  cursor: pointer;
-}
-
-.focus-terminal-button:hover:not(:disabled) {
-  border-color: var(--accent-line);
-}
-
-.focus-terminal-button:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
 /* The terminal of Open terminal in focus mode, between the tasks and the board, with a drag edge on
    its right (ticket when-terminal-is-open-in-focus-mode-it). */
 .focus-terminal {
@@ -8132,6 +8112,12 @@ body.chats-sized .focus-side {
   font-size: calc(12px * var(--text-scale));
 }
 
+/* The head line with the Details switch above the Triage and Workers panes (ticket
+   issues-with-details-button): hidden without its pane. */
+.focus-pane-head[hidden] {
+  display: none;
+}
+
 .focus-terminal-close {
   flex: none;
   padding: 0 6px;
@@ -8179,10 +8165,11 @@ body.chats-sized .focus-side {
   display: none;
 }
 
-/* The Details switch of a column (tickets title-project-rail-focus-as-the-only, no-details-mode): the
-   look of the Nightmode switch, at the right of the tabs after a divider. On, the Triage, Workers and
-   terminal panes show their side panels above the terminal, as a slim band in two columns (one column
-   in a very narrow terminal panel), so On never shows nothing. */
+/* The Details switch of a pane (tickets title-project-rail-focus-as-the-only, no-details-mode,
+   issues-with-details-button): the look of the Nightmode switch, in the head line above its pane. On,
+   that pane shows its side panels above the terminal, as a slim band in two columns (one column in a
+   very narrow terminal panel), so On never shows nothing. The Terminal switch has the same look, at
+   the right of the tabs after a divider. */
 .focus-tabs > .focus-terminal-details {
   margin-left: 6px;
   padding-left: 10px;

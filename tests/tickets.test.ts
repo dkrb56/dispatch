@@ -564,11 +564,14 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   assert.match(MAIN, /if \(triage \|\| \(agents && projectNoTriage\(refKey\(ref\)\)\)\) return;/);
   // User decision 2: the note and a Chat button where triage would stand (in Focus, above the tickets board).
   assert.match(MAIN, /const NO_TRIAGE_NOTE = "No triage in this project";/);
-  assert.match(MAIN, /const boardNoteEl = mapElement\("span", "focus-board-note", NO_TRIAGE_NOTE\);\n[\s\S]*?\n  boardHead\.append\(terminal, boardNoteEl, boardCountEl, boardSearchEl\);/);
-  assert.match(MAIN, /mapElement\("button", "focus-terminal-button", "Open terminal"\)/);
+  assert.match(MAIN, /const boardNoteEl = mapElement\("span", "focus-board-note", NO_TRIAGE_NOTE\);\n[\s\S]*?\n  boardHead\.append\(boardNoteEl, boardCountEl, boardSearchEl\);/);
+  // Ticket issues-with-details-button: the Terminal switch stands right after the tab buttons, not in the board head.
+  assert.match(MAIN, /const terminal = stripSwitch\("focus-terminal-details focus-terminal-switch"\);/);
+  assert.match(MAIN, /tabRowEl\.append\(tabButtons\.triage, tabButtons\.tickets, tabButtons\.workers, terminal\);/);
+  assert.doesNotMatch(MAIN, /focus-terminal-button/);
   assert.match(MAIN, /async function openProjectTerminal\([\s\S]*?panes\.has\(kept\)\) return;/);
-  assert.match(CSS, /\.focus-terminal-button \{/);
-  assert.match(HTML, /<b>Open terminal<\/b> button at the left above it/);
+  assert.doesNotMatch(CSS, /\.focus-terminal-button/);
+  assert.match(HTML, /the <b>Terminal<\/b> switch at the right of the tabs; it has no Triage tab/);
   assert.match(MAIN, /projectNoTriage\(key\) \? openProjectChat\(ref\) : ensureWorkspace\(ref\)\.then\(renderOverview\)/);
   assert.match(MAIN, /const triageRuns = triagePane\(key\) !== null \|\| projectNoTriage\(key\);/);
 
@@ -582,11 +585,11 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   assert.match(CSS, /\.focus-terminal\[hidden\] \{\s*display: none;/);
   assert.match(HTML, /In Focus the terminal opens between the task list and the board/);
 
-  // Ticket when-terminal-is-open-say-that-it-s-open: the board button says so and is disabled while the terminal is open.
-  assert.match(MAIN, /column\.termButton\.disabled = !!terminal;/);
-  assert.match(MAIN, /column\.termButton\.textContent = terminal \? "Terminal open" : "Open terminal";/);
-  assert.match(CSS, /\.focus-terminal-button:disabled \{/);
-  assert.match(HTML, /the button says <b>Terminal open<\/b> and is greyed out/);
+  // Tickets when-terminal-is-open-say-that-it-s-open, issues-with-details-button: the Terminal switch is on
+  // while the terminal is open, and off closes it as × does.
+  assert.match(MAIN, /column\.termButton\.setAttribute\("aria-checked", String\(!!terminal\)\);/);
+  assert.match(MAIN, /if \(pane\) void closePane\(pane\.id\)\.then\(\(\) => renderFocus\(\)\);\n    else void openProjectTerminal\(ref\);/);
+  assert.match(HTML, /While its terminal is open, the switch is on; turn it off to close the terminal\./);
 });
 
 test("no triage: Focus shows the tickets board where triage would stand", () => {

@@ -940,8 +940,9 @@ function projectTerminalPane(ref: ProjectRef): Pane | undefined {
 }
 
 /**
- * The Open terminal button above the tickets board (ticket move-this-chat-button-to-the-left-side):
- * one terminal per project. While its pane is open, a click does nothing (user decision 1).
+ * The Terminal switch at the right of the tabs of a Focus column turned on (tickets
+ * move-this-chat-button-to-the-left-side, issues-with-details-button): one terminal per project.
+ * While its pane is open, a call does nothing (user decision 1).
  */
 async function openProjectTerminal(ref: ProjectRef): Promise<void> {
   const key = refKey(ref);
@@ -11836,7 +11837,7 @@ interface FocusColumn {
   triageEl: HTMLElement;
   /**
    * The tickets board of the project, in the Tickets tab (ticket in-focus-mode-i-want-to-se-ticket-board,
-   * title-project-rail-focus-as-the-only): a head line with Open terminal, the note of a project with
+   * title-project-rail-focus-as-the-only): a head line with the note of a project with
    * "No triage" and the count, then the five columns. Made once and kept, so a render at each poll
    * draws only the columns again.
    */
@@ -11855,6 +11856,10 @@ interface FocusColumn {
   termEl: HTMLElement;
   termSlotEl: HTMLElement;
   termHandle: HTMLElement;
+  /**
+   * The Terminal switch at the right of the tab buttons (ticket issues-with-details-button): on opens the
+   * terminal of the project, off closes it as the × above it does.
+   */
   termButton: HTMLButtonElement;
   /**
    * The wrapper of the terminal, its handle and the board: a row, or with the class `stacked` the
@@ -11864,12 +11869,16 @@ interface FocusColumn {
   /** The button in the head of the terminal that puts it below the board or back beside it. */
   termSplitEl: HTMLButtonElement;
   /**
-   * The Details switch at the right of the tabs (ticket no-details-mode): on, the Triage, Workers and
-   * terminal panes of the column show their side panels (Environment, Context, Outputs). Off at each
-   * start of the app; not stored (user decision 2 of title-project-rail-focus-as-the-only).
+   * The Details switches above the Triage, Workers and terminal panes (tickets no-details-mode,
+   * issues-with-details-button): on, the pane of that switch shows its side panels (Environment,
+   * Context, Outputs). Off at each start of the app; not stored (user decision 2 of
+   * title-project-rail-focus-as-the-only).
    */
-  detailsEl: HTMLButtonElement;
-  detailsOn: boolean;
+  detailsEls: Record<DetailPanel, HTMLButtonElement>;
+  detailsOn: Record<DetailPanel, boolean>;
+  /** The head lines with the Details switch above the Triage and Workers slots; shown only with their pane. */
+  triageHeadEl: HTMLElement;
+  agentsHeadEl: HTMLElement;
   /** The search box of the Chats section (ticket no-details-mode): each word must stand in the title or the folder of a chat. */
   chatSearchEl: HTMLInputElement;
   agentsEl: HTMLElement;
@@ -12475,15 +12484,22 @@ function focusColumn(ref: ProjectRef): FocusColumn {
     tickets: tabButton("tickets", "Tickets", "The tickets board of this project; the number counts the tickets in Backlog, New and In progress", ticketsCountEl),
     workers: tabButton("workers", "Workers", "The agent view of Claude Code with the workers of this project; the number counts the workers that work or wait for you", workersCountEl),
   };
-  tabRowEl.append(tabButtons.triage, tabButtons.tickets, tabButtons.workers);
+  // The Terminal switch right after the tabs (ticket issues-with-details-button): on opens the terminal
+  // of the project, off closes it as the × does; `renderFocus` sets its state.
+  const terminal = stripSwitch("focus-terminal-details focus-terminal-switch");
+  terminal.querySelector(".auto-switch-label")!.textContent = "Terminal";
+  terminal.title = TERMINAL_OFF_TITLE;
+  terminal.addEventListener("click", () => {
+    const pane = projectTerminalPane(ref);
+    if (pane) void closePane(pane.id).then(() => renderFocus());
+    else void openProjectTerminal(ref);
+  });
+  tabRowEl.append(tabButtons.triage, tabButtons.tickets, tabButtons.workers, terminal);
   // The tickets board of the project (ticket in-focus-mode-i-want-to-se-ticket-board), in the Tickets tab.
   const boardEl = mapElement("div", "focus-board");
   boardEl.hidden = true;
   const boardHead = mapElement("div", "focus-board-head");
   const boardCountEl = mapElement("span", "focus-board-count");
-  const terminal = mapElement("button", "focus-terminal-button", "Open terminal");
-  terminal.title = "Opens a Claude Code terminal in the project folder for a question; it starts no task; one at a time";
-  terminal.addEventListener("click", () => void openProjectTerminal(ref));
   // The note shows only in a project with "No triage"; `renderFocus` hides it in the others.
   const boardNoteEl = mapElement("span", "focus-board-note", NO_TRIAGE_NOTE);
   // The search of the board (ticket add-search-to-ticket-board): in the head, outside the columns,
@@ -12492,7 +12508,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   boardSearchEl.type = "search";
   boardSearchEl.placeholder = "Search tickets";
   boardSearchEl.setAttribute("aria-label", `Search the tickets of ${projectName(ref)}`);
-  boardHead.append(terminal, boardNoteEl, boardCountEl, boardSearchEl);
+  boardHead.append(boardNoteEl, boardCountEl, boardSearchEl);
   // The large auto-start switch above the board (ticket i-need-more-prominent-button-for).
   const autoEl = mapElement("div", "auto-switch");
   autoEl.dataset.project = key;
@@ -12506,8 +12522,29 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   autoEl.append(autoButton, autoNight, mapElement("span", "auto-switch-detail"));
   const boardColumnsEl = mapElement("div", "tickets-columns");
   boardEl.append(boardHead, autoEl, boardColumnsEl);
+  // The Details switch of a panel (tickets title-project-rail-focus-as-the-only, no-details-mode,
+  // issues-with-details-button): in the head line above its pane; off at the start.
+  const detailsSwitch = (panel: DetailPanel): HTMLButtonElement => {
+    const button = stripSwitch("focus-terminal-details");
+    button.querySelector(".auto-switch-label")!.textContent = "Details";
+    button.dataset.panel = panel;
+    button.title = DETAILS_OFF_TITLE[panel];
+    return button;
+  };
+  const detailsEls: Record<DetailPanel, HTMLButtonElement> = { triage: detailsSwitch("triage"), agents: detailsSwitch("agents"), terminal: detailsSwitch("terminal") };
+  // The head lines stand before their slots: `moveInto` and the Start triage button replace the children of a slot.
+  const paneHead = (panel: DetailPanel): HTMLElement => {
+    const line = mapElement("div", "focus-terminal-head focus-pane-head");
+    line.hidden = true;
+    const spacer = mapElement("span", "");
+    spacer.style.flex = "1";
+    line.append(spacer, detailsEls[panel]);
+    return line;
+  };
+  const triageHeadEl = paneHead("triage");
+  const agentsHeadEl = paneHead("agents");
   // The shown tab fills the area; the Commands terminals stay below it in every tab.
-  main.append(tabRowEl, triageEl, boardEl, agentsEl, commandsEl);
+  main.append(tabRowEl, triageHeadEl, triageEl, boardEl, agentsHeadEl, agentsEl, commandsEl);
   // Drag handles: the left panel against the chat, and this column against the next one.
   const sideHandle = resizeHandle("side-resize", "Drag to make the panel of tasks wider or narrower; double-click for the usual width");
   // The terminal of Open terminal, between the tasks and the board (ticket when-terminal-is-open-in-focus-mode-it).
@@ -12525,20 +12562,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   });
   // The place of the terminal: beside the board or below it (ticket i-need-an-option-to-split-terinal-and).
   const termSplitEl = mapElement("button", "focus-terminal-split");
-  // The Details switch (tickets title-project-rail-focus-as-the-only, no-details-mode): at the right end
-  // of the tabs; the side panels of the Triage, Workers and terminal panes, off at the start.
-  const detailsEl = mapElement("button", "focus-terminal-details");
-  detailsEl.setAttribute("role", "switch");
-  detailsEl.setAttribute("aria-checked", "false");
-  detailsEl.title = DETAILS_OFF_TITLE;
-  const detailsSwitch = mapElement("span", "switch");
-  detailsSwitch.setAttribute("aria-hidden", "true");
-  detailsSwitch.append(mapElement("span", "knob"));
-  detailsEl.append(mapElement("span", "", "Details"), detailsSwitch);
-  const tabSpacer = mapElement("span", "focus-tabs-spacer");
-  tabSpacer.style.flex = "1";
-  tabRowEl.append(tabSpacer, detailsEl);
-  termHead.append(mapElement("span", "", "Terminal"), termSpacer, termSplitEl, termClose);
+  termHead.append(mapElement("span", "", "Terminal"), termSpacer, detailsEls.terminal, termSplitEl, termClose);
   // The search of the Chats section (ticket no-details-mode): it stays one element, so a redraw keeps its text.
   const chatSearchEl = mapElement("input", "focus-chat-search");
   chatSearchEl.type = "search";
@@ -12564,7 +12588,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   dragTerm(termHandle, key, termEl, workEl);
   dragColumns(colHandle, key, el);
   const tab = focusSizes()[key]?.tab;
-  const column: FocusColumn = { host, root, el, dotEl, pathEl, sideEl, tabButtons, ticketsCountEl, workersCountEl, tab, triageEl, boardEl, boardNoteEl, boardCountEl, boardSearchEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, workEl, termSplitEl, detailsEl, detailsOn: false, chatSearchEl, agentsEl, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, restoreEl, colHandle };
+  const column: FocusColumn = { host, root, el, dotEl, pathEl, sideEl, tabButtons, ticketsCountEl, workersCountEl, tab, triageEl, boardEl, boardNoteEl, boardCountEl, boardSearchEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, workEl, termSplitEl, detailsEls, detailsOn: { triage: false, agents: false, terminal: false }, triageHeadEl, agentsHeadEl, chatSearchEl, agentsEl, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, restoreEl, colHandle };
   // A click anywhere on a strip brings the column back; a button or a drag edge keeps its own action.
   el.addEventListener("click", (event) => {
     if (!el.classList.contains("min")) return;
@@ -12577,7 +12601,9 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   for (const [name, button] of Object.entries(tabButtons) as [ColumnTab, HTMLButtonElement][]) {
     button.addEventListener("click", () => setColumnTab(column, name));
   }
-  detailsEl.addEventListener("click", () => setColumnDetails(column, !column.detailsOn));
+  for (const [panel, button] of Object.entries(detailsEls) as [DetailPanel, HTMLButtonElement][]) {
+    button.addEventListener("click", () => setColumnDetails(column, panel, !column.detailsOn[panel]));
+  }
   boardSearchEl.addEventListener("input", () => renderFocusBoard(column, false));
   close.addEventListener("click", () => askRemoveProject(ref));
   // The column that the user works in is the project of Setup and Rules: a click in it (not on a
@@ -12650,6 +12676,10 @@ function showColumnTab(column: FocusColumn): ColumnTab {
   column.triageEl.hidden = shown !== "triage";
   column.boardEl.hidden = shown !== "tickets";
   column.agentsEl.hidden = shown !== "workers";
+  // A Details switch shows only above a shown pane (ticket issues-with-details-button).
+  const { triage, agents } = workspacePanes(column);
+  column.triageHeadEl.hidden = shown !== "triage" || !triage;
+  column.agentsHeadEl.hidden = shown !== "workers" || !agents;
   for (const [name, button] of Object.entries(column.tabButtons) as [ColumnTab, HTMLButtonElement][]) {
     button.hidden = !tabs.includes(name);
     button.classList.toggle("active", name === shown);
@@ -12678,35 +12708,54 @@ function setColumnTab(column: FocusColumn, tab: ColumnTab): void {
   renderFocus();
 }
 
-const DETAILS_OFF_TITLE = "Show the side panels of the triage chat, the Workers and the terminal of this project: Environment, Context and Outputs";
+/** A panel of a Focus column with its own Details switch (ticket issues-with-details-button). */
+type DetailPanel = "triage" | "agents" | "terminal";
 
-/** The Triage, Workers and terminal panes of a column, each while it stands in its slot of the column. */
-function columnDetailPanes(column: FocusColumn): Pane[] {
+const DETAILS_OFF_TITLE: Record<DetailPanel, string> = {
+  triage: "Show the side panels of the triage chat: Environment, Context and Outputs",
+  agents: "Show the side panels of the Workers: Environment, Context and Outputs",
+  terminal: "Show the side panels of the terminal: Environment, Context and Outputs",
+};
+
+const TERMINAL_OFF_TITLE = "Opens a Claude Code terminal in the project folder for a question; it starts no task; one at a time";
+
+/** The slot of a panel that carries the class `details`. */
+function detailSlot(column: FocusColumn, panel: DetailPanel): HTMLElement {
+  return panel === "triage" ? column.triageEl : panel === "agents" ? column.agentsEl : column.termEl;
+}
+
+/** The pane of a panel of a column while it stands in its slot of the column, else none. */
+function columnDetailPane(column: FocusColumn, panel: DetailPanel): Pane | undefined {
   const { triage, agents } = workspacePanes(column);
-  const terminal = projectTerminalPane(column);
-  const placed: [Pane | undefined, HTMLElement][] = [[triage, column.triageEl], [agents, column.agentsEl], [terminal, column.termSlotEl]];
-  return placed.flatMap(([pane, slot]) => (pane && pane.el.parentElement === slot ? [pane] : []));
+  const pane = panel === "triage" ? triage : panel === "agents" ? agents : projectTerminalPane(column);
+  const slot = panel === "triage" ? column.triageEl : panel === "agents" ? column.agentsEl : column.termSlotEl;
+  return pane && pane.el.parentElement === slot ? pane : undefined;
 }
 
 /**
- * Turns the Details switch of a column on or off (ticket no-details-mode): the class `details` shows
- * the side panels of the Triage, Workers and terminal panes, and the next poll reads their data at once.
+ * Turns the Details switch of one panel of a column on or off (tickets no-details-mode,
+ * issues-with-details-button): the class `details` shows the side panels of that pane only, and the
+ * next poll reads its data at once.
  */
-function setColumnDetails(column: FocusColumn, on: boolean): void {
-  column.detailsOn = on;
-  for (const slot of [column.triageEl, column.agentsEl, column.termEl]) slot.classList.toggle("details", on);
-  column.detailsEl.setAttribute("aria-checked", String(on));
-  column.detailsEl.title = on ? "Hide the side panels of this project" : DETAILS_OFF_TITLE;
-  for (const pane of columnDetailPanes(column)) {
+function setColumnDetails(column: FocusColumn, panel: DetailPanel, on: boolean): void {
+  column.detailsOn[panel] = on;
+  detailSlot(column, panel).classList.toggle("details", on);
+  column.detailsEls[panel].setAttribute("aria-checked", String(on));
+  column.detailsEls[panel].title = on ? "Hide the side panels of this pane" : DETAILS_OFF_TITLE[panel];
+  const pane = columnDetailPane(column, panel);
+  if (pane) {
     pane.sideDue = 0;
     requestAnimationFrame(() => fitPane(pane));
   }
 }
 
-/** The panes of the columns of Focus whose Details switch is on: `pollSide` reads their data. */
+/** The panes of the columns of Focus whose own Details switch is on: `pollSide` reads their data. */
 function focusDetailPanes(): Pane[] {
   if (!focusOn) return [];
-  return [...focusColumns.values()].flatMap((column) => (column.detailsOn && column.el.isConnected ? columnDetailPanes(column) : []));
+  const panels: DetailPanel[] = ["triage", "agents", "terminal"];
+  return [...focusColumns.values()].flatMap((column) =>
+    column.el.isConnected ? panels.flatMap((panel) => (column.detailsOn[panel] ? (columnDetailPane(column, panel) ?? []) : [])) : [],
+  );
 }
 
 /**
@@ -12791,7 +12840,7 @@ function renderFocus(): void {
       // The chat runs in a program outside the host: a click checks again and starts no second chat.
       if (triageNotes.has(key)) column.triageEl.append(mapElement("p", "map-muted", OUTSIDE_NOTE));
     }
-    // The tickets board of every project, in the Tickets tab, under the button Open terminal (ticket
+    // The tickets board of every project, in the Tickets tab (ticket
     // in-focus-mode-i-want-to-se-ticket-board); the note "No triage" shows only in such a project.
     column.boardNoteEl.hidden = !projectNoTriage(key);
     if (shownTab === "tickets") {
@@ -12811,12 +12860,13 @@ function renderFocus(): void {
     else column.termSlotEl.replaceChildren();
     column.termEl.hidden = !terminal;
     column.termHandle.hidden = !terminal;
-    // The board button says that the terminal is open and cannot be clicked then (ticket when-terminal-is-open-say-that-it-s-open).
-    column.termButton.disabled = !!terminal;
-    column.termButton.textContent = terminal ? "Terminal open" : "Open terminal";
-    column.termButton.title = terminal
-      ? "This project's terminal is open; close it with × above it"
-      : "Opens a Claude Code terminal in the project folder for a question; it starts no task; one at a time";
+    // The Terminal switch shows whether the terminal is open (ticket issues-with-details-button).
+    column.termButton.setAttribute("aria-checked", String(!!terminal));
+    column.termButton.title = !terminal
+      ? TERMINAL_OFF_TITLE
+      : terminal.joined
+        ? "Close this terminal here; it keeps running in the other window"
+        : "Close this terminal and end its Claude session";
     // A terminal of another window closes only here (ticket if-terminal-in-non-triage-mode-is-opened, decision 1).
     const termClose = column.termEl.querySelector<HTMLButtonElement>(".focus-terminal-close");
     if (termClose) {
