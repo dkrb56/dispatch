@@ -4295,12 +4295,12 @@ button.ticket-level {
 }
 
 /* The Setup pipeline and Options windows (ticket redesign-the-setup-pipeline-and-options), after the design canvas
-   "Dispatch Setup and Options redesign": 880 by 640 px, a header with an icon, a list of sections at the left, a body
+   "Dispatch Setup and Options redesign", at most 1120 by 820 px (ticket too-cramped), a header with an icon, a list of sections at the left, a body
    that shows one section and scrolls, and a footer. Every colour is a token of :root, so each theme works. */
 #setup,
 #options {
-  width: min(92vw, 880px);
-  height: min(86vh, 640px);
+  width: min(94vw, 1120px);
+  height: min(90vh, 820px);
   padding: 0;
   box-sizing: border-box;
   border: 1px solid var(--line);

@@ -221,9 +221,9 @@ test("the Options dialog has one fixed size and its body scrolls", () => {
       .filter((rule) => rule.selectors.includes(selector))
       .flatMap((rule) => rule.declarations.filter(([name]) => name === property).map(([, value]) => value))
       .pop();
-  // One height on every tab, so the tabs stay in place; as wide as the design, 880 px (redesign-the-setup-pipeline-and-options, decision 1).
-  assert.equal(get("#options", "height"), "min(86vh, 640px)");
-  assert.equal(get("#options", "width"), "min(92vw, 880px)");
+  // One height on every tab, so the tabs stay in place; at most 1120 by 820 px (too-cramped; first set by redesign-the-setup-pipeline-and-options).
+  assert.equal(get("#options", "height"), "min(90vh, 820px)");
+  assert.equal(get("#options", "width"), "min(94vw, 1120px)");
   assert.equal(get("#options", "max-height"), undefined, "no max-height of the wide layout");
   assert.equal(get("#options-body", "overflow-y"), "auto", "the body scrolls in a small window");
   // The shared frame still gives Rules and Help their height.
