@@ -9,7 +9,7 @@ import { phoneLink, phoneSetup } from "../src/phonelink.ts";
 import { replyText } from "../src/answers.ts";
 import { confirmChoice, confirmQuestion } from "../src/confirm.ts";
 import { homeScreenHint, inProgressPlace, keyAddress, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, phoneBoards, phoneCards, phonePhase, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, reportMark, showAllKey, shownRoots, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
-import { columnCards, columnTickets, COLUMNS, countText, type Ticket, type TicketStatus } from "../src/tickets.ts";
+import { boardTickets, type BoardColumn, columnCards, COLUMNS, countText, type Ticket } from "../src/tickets.ts";
 import { taskTldr } from "../src/tldr.ts";
 import { groupCount } from "../src/topbar.ts";
 
@@ -25,8 +25,9 @@ const tools: PhoneTools = {
   groupCount,
   countText: (tickets) => countText(tickets as readonly Pick<Ticket, "status">[]),
   columns: COLUMNS,
-  columnTickets: (tickets, status, place) => columnTickets(tickets as Ticket[], status as TicketStatus, place as ((ticket: Ticket) => { rank: number; time: number }) | undefined),
-  columnCards: (cards, status, showAll) => columnCards(cards, status as TicketStatus, false, showAll),
+  columnTickets: (tickets, status, planning, place) =>
+    boardTickets(tickets as Ticket[], status as BoardColumn, planning as (ticket: Ticket) => boolean, place as ((ticket: Ticket) => { rank: number; time: number }) | undefined),
+  columnCards: (cards, status, showAll) => columnCards(cards, status as BoardColumn, false, showAll),
   confirmQuestion,
   replyText,
   confirmChoice,
@@ -284,7 +285,7 @@ test("a column opens and closes, one choice for all projects", () => {
   assert.deepEqual(viewFromText(viewToText(opened)).open, ["in-progress", "new"], "the choice survives a reload");
 });
 
-test("the board has the five columns with their tickets in the board order, only In progress open at first", () => {
+test("the board has the six columns with their tickets in the board order, only In progress open at first", () => {
   const tickets = [
     ticket("b1", "backlog", { updated: 3 }),
     ticket("n2", "new", { order: 2 }),
@@ -297,17 +298,18 @@ test("the board has the five columns with their tickets in the board order, only
   assert.equal(board.name, "alpha");
   assert.deepEqual(board.columns.map((column) => [column.name, column.count, column.open]), [
     ["Backlog", 1, false],
-    ["New", 2, false],
+    ["Scheduled", 2, false],
+    ["Planning", 0, false],
     ["In progress", 1, true],
     ["Done", 12, false],
     ["Canceled", 1, false],
   ]);
-  assert.deepEqual(board.columns[1].tickets.map((one) => one.ticket.id), ["n1", "n2"], "New goes by the queue");
-  const done = board.columns[3];
+  assert.deepEqual(board.columns[1].tickets.map((one) => one.ticket.id), ["n1", "n2"], "Scheduled goes by the queue");
+  const done = board.columns[4];
   assert.deepEqual([done.tickets.length, done.hidden, done.tickets[0].ticket.id], [10, 2, "d11"], "Done shows its 10 newest");
   const [all] = phoneBoards([{ root: ROOT, list: { tasks: [], tickets }, error: "" }], [], tools, [], new Set([showAllKey(ROOT, "done")]));
-  assert.deepEqual([all.columns[3].tickets.length, all.columns[3].hidden], [12, 0], "Show all shows every ticket");
-  assert.equal(board.columns[2].tickets[0].row, null, "a ticket without a task shows no task");
+  assert.deepEqual([all.columns[4].tickets.length, all.columns[4].hidden], [12, 0], "Show all shows every ticket");
+  assert.equal(board.columns[3].tickets[0].row, null, "a ticket without a task shows no task");
 });
 
 test("an In progress ticket shows its task, joined by its task name or its id; what waits comes first", () => {
@@ -326,11 +328,24 @@ test("an In progress ticket shows its task, joined by its task name or its id; w
   assert.equal(ticketTask(tickets[0], [{ name: "run" }])?.name, "run");
   assert.equal(ticketTask(tickets[3], [{ name: "run" }]), null);
   const [board] = phoneBoards([{ root: ROOT, list: { tasks, tickets }, error: "" }], [worker("run [work]", "working")], tools, ["in-progress"]);
-  const column = board.columns[2];
+  const column = board.columns[3];
   assert.deepEqual(column.tickets.map((one) => one.ticket.id), ["ask", "run", "old", "none"], "waits, working, ended, no task");
   assert.deepEqual([column.tickets[0].row?.status, column.tickets[0].row?.answer?.kind], ["has a question for you", "questions"]);
   assert.deepEqual([column.tickets[1].row?.status, column.tickets[1].row?.answer], ["Work run working", null]);
   assert.deepEqual(inProgressPlace(null, { updated: 4 }), { rank: 3, time: 4 });
+});
+
+test("a ticket whose task is in its plan phase stands in Planning with its task row (ticket ticket-board-update-update-to-columns)", () => {
+  const tasks = [info("plan", { state: "planning", plan: FILE, about: "Plan" }), info("work", { state: "working", about: "Busy" })];
+  const tickets = [ticket("plan", "in-progress", { updated: 3 }), ticket("work", "in-progress", { updated: 2 }), ticket("n1", "new", { order: 1 })];
+  const [board] = phoneBoards([{ root: ROOT, list: { tasks, tickets }, error: "" }], [], tools, ["planning", "in-progress"]);
+  const planning = board.columns.find((column) => column.status === "planning")!;
+  const progress = board.columns.find((column) => column.status === "in-progress")!;
+  assert.deepEqual([planning.name, planning.count, planning.open], ["Planning", 1, true]);
+  assert.deepEqual(planning.tickets.map((one) => one.ticket.id), ["plan"], "the planning ticket stands in Planning");
+  assert.notEqual(planning.tickets[0].row, null, "it shows its task row");
+  assert.deepEqual(progress.tickets.map((one) => one.ticket.id), ["work"], "and not in In progress");
+  assert.deepEqual(board.columns[1].tickets.map((one) => one.ticket.id), ["n1"], "Scheduled keeps the queue");
 });
 
 test("the answer block: the open questions, or the confirm of a check result", () => {

@@ -35,7 +35,7 @@ export function planDone(status: string): boolean {
   return status === "done" || status === "canceled";
 }
 
-/** The ticket waits to start: New or Backlog. */
+/** The ticket waits to start: Scheduled or Backlog. */
 function waiting(status: string): boolean {
   return status === "new" || status === "backlog";
 }
@@ -65,7 +65,7 @@ export function flowTickets<T extends PlanTicket>(tickets: readonly T[]): T[] {
   return tickets.filter((ticket) => linked.has(ticket.id));
 }
 
-/** "Not in the flow": the open tickets (Backlog, New, In progress) without an arrow (user decision 6). */
+/** "Not in the flow": the open tickets (Backlog, Scheduled, Planning, In progress) without an arrow (user decision 6). */
 export function notInFlow<T extends PlanTicket>(tickets: readonly T[]): T[] {
   const linked = new Set(planArrows(tickets).flatMap((arrow) => [arrow.from, arrow.to]));
   return tickets.filter((ticket) => !linked.has(ticket.id) && OPEN.includes(ticket.status));
@@ -174,8 +174,8 @@ function snap(value: number): number {
 }
 
 /**
- * The badge of a card. `next`: New or Backlog, and every ticket before it is done. `early`: in work
- * (In progress) while a ticket before it is not done. `waits`: New or Backlog while a ticket before
+ * The badge of a card. `next`: Scheduled or Backlog, and every ticket before it is done. `early`: in work
+ * (In progress) while a ticket before it is not done. `waits`: Scheduled or Backlog while a ticket before
  * it is not done. Null for the other cards.
  */
 export type PlanBadge = "next" | "early" | "waits" | null;
@@ -203,7 +203,7 @@ export function planBadges(tickets: readonly PlanTicket[]): Map<string, PlanBadg
  */
 export function planStateWord(status: string, phase: string | null): string {
   if (status === "backlog") return "Backlog";
-  if (status === "new") return "New";
+  if (status === "new") return "Scheduled";
   if (status === "done") return "Done";
   if (status === "canceled") return "Canceled";
   if (phase === null) return "In progress";
@@ -445,7 +445,7 @@ export function boxHits(places: readonly { id: string; x: number; y: number }[],
 }
 
 // Plan the flow (ticket plan-view-plan-the-flow-and-confirm): the arrows change in a draft, and
-// Confirm writes them and sorts the queue of New by them. These are the pure rules of the draft.
+// Confirm writes them and sorts the queue of Scheduled by them. These are the pure rules of the draft.
 
 /** A ticket added while planning: `key` is its id in the draft (no real ticket has it); its list `after` is in the draft. */
 export interface PlanAddedTicket {

@@ -13,6 +13,7 @@ import {
   columnCards,
   columnOf,
   COLUMNS,
+  boardTickets,
   columnTickets,
   countText,
   DROP_COLUMNS,
@@ -119,12 +120,13 @@ test("triage gets the images, the line with the id and the title, then the words
   assert.equal(ticketMessage({ id: "x", title: "X", summary: "x" }), "Ticket x: X\n\nx");
 });
 
-test("the five columns, the columns that take a drop, and the order of each column", () => {
+test("the six columns, the columns that take a drop, and the order of each column", () => {
   assert.deepEqual(
     COLUMNS.map((column) => column.name),
-    ["Backlog", "New", "In progress", "Done", "Canceled"],
-    "Backlog first, left of New (ticket tickets-backlog)",
+    ["Backlog", "Scheduled", "Planning", "In progress", "Done", "Canceled"],
+    "Backlog first, left of Scheduled (ticket tickets-backlog), then Planning (ticket ticket-board-update-update-to-columns)",
   );
+  assert.equal(columnOf("planning"), "new", "Planning is a view, no stored status");
   assert.deepEqual(DROP_COLUMNS, ["backlog", "new", "done", "canceled"], "In progress follows the task");
   assert.equal(columnOf("backlog"), "backlog");
   assert.equal(columnOf("todo"), "new", "an old Todo ticket shows in New");
@@ -136,6 +138,32 @@ test("the five columns, the columns that take a drop, and the order of each colu
   assert.deepEqual(ids(columnTickets(list, "canceled")), []);
   const later = [ticket("b-old", "backlog", null, 1, 1), ticket("b-young", "backlog", null, 2, 9), ticket("n", "new", 1)];
   assert.deepEqual(ids(columnTickets(later, "backlog")), ["b-young", "b-old"], "Backlog newest change first");
+});
+
+test("Planning holds the In progress tickets whose task plans, until Approve (ticket ticket-board-update-update-to-columns)", () => {
+  const list = [
+    ticket("plan", "in-progress", null, 1, 3),
+    ticket("work", "in-progress", null, 2, 4),
+    ticket("n2", "new", 2),
+    ticket("n1", "new", 1),
+    ticket("b", "backlog", null, 1),
+    ticket("d", "done", null, 1),
+    ticket("c", "canceled", null, 1),
+  ];
+  const planning = new Set(["plan"]);
+  const plans = (one: { id: string }) => planning.has(one.id);
+  assert.deepEqual(ids(boardTickets(list, "planning", plans)), ["plan"], "the planning ticket stands in Planning");
+  assert.deepEqual(ids(boardTickets(list, "in-progress", plans)), ["work"], "and not in In progress");
+  assert.deepEqual(ids(boardTickets(list, "new", plans)), ["n1", "n2"], "Scheduled is the queue in its order");
+  for (const status of ["backlog", "done", "canceled"] as const) {
+    assert.deepEqual(ids(boardTickets(list, status, plans)), ids(columnTickets(list, status)), `${status} is unchanged`);
+  }
+  planning.delete("plan");
+  assert.deepEqual(ids(boardTickets(list, "planning", plans)), [], "after Approve the ticket leaves Planning");
+  assert.deepEqual(ids(boardTickets(list, "in-progress", plans)), ["work", "plan"], "and stands in In progress");
+  planning.add("plan").add("work");
+  const place = (one: { id: string }) => ({ rank: one.id === "plan" ? 0 : 1, time: 0 });
+  assert.deepEqual(ids(boardTickets(list, "planning", plans, place)), ["plan", "work"], "Planning goes in the order of In progress");
 });
 
 test("Dispatch never sends a Backlog ticket, and the head buttons move the shown cards (ticket tickets-backlog)", () => {
@@ -150,8 +178,8 @@ test("Dispatch never sends a Backlog ticket, and the head buttons move the shown
   assert.equal(dropChanges({ status: "backlog" }, "new", ["now", "next", "later"], ["now", "next"]), true);
   assert.match(MAIN, /ticket_move_all/);
   assert.match(MAIN, /All → Backlog/);
-  assert.match(MAIN, /All → New/);
-  assert.match(CSS, /repeat\(5, minmax\(180px, 1fr\)\)/);
+  assert.match(MAIN, /All → Scheduled/);
+  assert.match(CSS, /repeat\(6, minmax\(180px, 1fr\)\)/);
 });
 
 test("a drop moves the card on the board at once, by the rule of ticket_move (ticket moving-ticket-from-cancelled-to-done)", () => {
@@ -287,8 +315,8 @@ test("the end words, the failure colour, the types and the search", () => {
 });
 
 test("the texts of the chat and the counts of the board", () => {
-  assert.equal(addedText({ title: "Fix the bar" }), 'Ticket "Fix the bar" is in New: Dispatch sends it when triage is free.');
-  assert.equal(addedText({ title: "Fix the bar" }, true), 'Ticket "Fix the bar" is in New: the project is paused, it waits for Resume.');
+  assert.equal(addedText({ title: "Fix the bar" }), 'Ticket "Fix the bar" is in Scheduled: Dispatch sends it when triage is free.');
+  assert.equal(addedText({ title: "Fix the bar" }, true), 'Ticket "Fix the bar" is in Scheduled: the project is paused, it waits for Resume.');
   assert.equal(waitingText(0), "");
   assert.equal(waitingText(1), "1 ticket waits: Dispatch sends it when triage is free.");
   assert.equal(waitingText(3), "3 tickets wait: Dispatch sends them one at a time when triage is free.");
@@ -337,8 +365,8 @@ test("the tickets meet the page: the commands, the board, the dispatcher, the bo
   assert.match(MAIN, /drop\.status === "done" \? USER_DONE/);
   // The Help names the board, its columns, the queue, the sign and Open terminal, and no longer Todo or Ask triage.
   const help = HTML.slice(HTML.indexOf("<h3>Tickets</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
-  for (const name of ["Backlog", "New", "In progress", "Done", "Canceled", "five columns", "All → Backlog", "All → New", "yellow !", "<b>Open terminal</b>", "tickets.jsonl", "Ticket &lt;id&gt;: &lt;title&gt;"]) assert.ok(help.includes(name), name);
-  for (const name of ["<b>Drag a card.</b>", "on Backlog, New, Done or Canceled", "done by hand", "does not drag", "bottom-right corner", "keeps the size", "double-click"]) assert.ok(help.includes(name), name);
+  for (const name of ["Backlog", "Scheduled", "Planning", "In progress", "Done", "Canceled", "six columns", "All → Backlog", "All → Scheduled", "yellow !", "<b>Open terminal</b>", "tickets.jsonl", "Ticket &lt;id&gt;: &lt;title&gt;"]) assert.ok(help.includes(name), name);
+  for (const name of ["<b>Drag a card.</b>", "on Backlog, Scheduled, Done or Canceled", "done by hand", "does not drag", "bottom-right corner", "keeps the size", "double-click"]) assert.ok(help.includes(name), name);
   for (const gone of ["<b>Todo</b>", "→ Todo", "<b>Ask triage</b>", "Questions go at once"]) assert.ok(!HTML.includes(gone), gone);
   assert.doesNotMatch(HTML, /<b>Planned/);
 });
@@ -409,7 +437,7 @@ test("tickets start their plan: the next plan ticket keeps the queue and the lim
 });
 
 test("tickets start their plan: the line of the chat for a new ticket", () => {
-  assert.equal(addedText({ title: "Faster board" }, false, true), 'Ticket "Faster board" is in New: Dispatch starts its plan.');
+  assert.equal(addedText({ title: "Faster board" }, false, true), 'Ticket "Faster board" is in Scheduled: Dispatch starts its plan.');
   assert.equal(addedText({ title: "Faster board" }, false, false), addedText({ title: "Faster board" }));
   assert.equal(addedText({ title: "Faster board" }, true, true), addedText({ title: "Faster board" }, true), "paused: it waits for Resume");
 });
@@ -448,10 +476,10 @@ test("tickets start their plan: the Setup switch, the Help and the README", () =
   assert.ok(tickets.includes("With <b>Tickets start their plan</b> on in Setup pipeline"), "a visible item");
   for (const fact of ["question mark", "fewer than 3 workers", "goes to triage", "one line into the triage chat"]) assert.ok(tickets.includes(fact), fact);
   assert.ok(section("Project settings").includes("<li><b>Tickets start their plan.</b>"));
-  assert.ok(section("Night mode").includes("With <b>Tickets start their plan</b> on, the New tickets start their plans at night too"));
+  assert.ok(section("Night mode").includes("With <b>Tickets start their plan</b> on, the Scheduled tickets start their plans at night too"));
   assert.ok(section("What Setup pipeline changes").includes("Push after the merge and Tickets start their plan adds one line to the section"));
   const readme = read("../README.md");
-  assert.ok(readme.includes('"Tickets start their plan" starts the plan run of a New ticket without triage'));
+  assert.ok(readme.includes('"Tickets start their plan" starts the plan run of a Scheduled ticket without triage'));
 });
 
 test("board in progress: a running task without a ticket gets one, a linked or stopped task does not", () => {
@@ -540,7 +568,7 @@ test("no triage: a failed plan start stays in New with its error and a Retry but
 
 test("no triage: the line of the chat for a new ticket says Dispatch starts its plan", () => {
   assert.match(MAIN, /return addedText\(ticket, projectPaused\(key\), projectNoTriage\(key\) \|\| \(\(projectTasks\.get\(key\)\?\.ticketsStartPlans \?\? false\) && ticketRoute\(ticket\) === "plan"\)\);/);
-  assert.equal(addedText({ title: "Why slow?" }, false, true), 'Ticket "Why slow?" is in New: Dispatch starts its plan.');
+  assert.equal(addedText({ title: "Why slow?" }, false, true), 'Ticket "Why slow?" is in Scheduled: Dispatch starts its plan.');
 });
 
 test("no triage: no line goes to a triage chat, and a queued line leaves the queue quietly", () => {
@@ -660,7 +688,7 @@ test("no triage: the Setup switch, the Help and the README", () => {
   assert.ok(HTML.includes("With No triage on, the button is <b>Ask about this plan in a Chat</b>"));
   const readme = read("../README.md");
   assert.ok(readme.includes('"No triage" runs the project without a triage chat'));
-  assert.ok(readme.includes('with the switch "No triage", starts the plan run of every New ticket itself'));
+  assert.ok(readme.includes('with the switch "No triage", starts the plan run of every Scheduled ticket itself'));
 });
 
 // Ticket ticket-form-optional-fields-on-a-new: the level of the plan run and the optional fields.
@@ -717,7 +745,7 @@ test("the Add ticket window adds to New without the board", () => {
     assert.ok(HTML.includes(`id="${id}"`), id);
   }
   const tools = MAIN.slice(MAIN.indexOf("function projectTools("), MAIN.indexOf("showOldButton(oldEl, key);"));
-  assert.match(tools, /tool\("\+ Ticket", `Add a ticket to New of \$\{name\}; the board stays closed`, \(\) => openAddTicket\(ref\)\)/);
+  assert.match(tools, /tool\("\+ Ticket", `Add a ticket to Scheduled of \$\{name\}; the board stays closed`, \(\) => openAddTicket\(ref\)\)/);
   assert.match(tools, /addTicket\.classList\.add\("project-add-ticket"\)/);
   assert.match(tools, /el\.append\(tickets, addTicket, /);
   const line = MAIN.slice(MAIN.indexOf("function ticketsLine("), MAIN.indexOf("/** Shows or hides the Overview."));
@@ -852,10 +880,10 @@ test("edit and details: ✎ edits a waiting ticket in the ticket window, a close
   for (const id of ["ticket-details", "ticket-details-title", "ticket-details-close", "ticket-details-body"]) assert.ok(HTML.includes(`id="${id}"`), id);
   assert.match(CSS, /#ticket-details \{/);
   assert.match(CSS, /#ticket-add-title-box \{/);
-  assert.ok(HTML.includes("<li><b>✎</b> on a ticket in Backlog or New opens the window Edit ticket"));
-  assert.ok(HTML.includes("Dispatch does not start a New ticket while you edit it."));
+  assert.ok(HTML.includes("<li><b>✎</b> on a ticket in Backlog or Scheduled opens the window Edit ticket"));
+  assert.ok(HTML.includes("Dispatch does not start a Scheduled ticket while you edit it."));
   assert.ok(HTML.includes("Click the title of a Done or Canceled ticket to open <b>Ticket details</b>"));
-  assert.ok(read("../README.md").includes("✎ on a Backlog or New ticket opens it in the same window to change it, and a click on the title of a Done or Canceled ticket shows its details with its brief, plan, report and log."));
+  assert.ok(read("../README.md").includes("✎ on a Backlog or Scheduled ticket opens it in the same window to change it, and a click on the title of a Done or Canceled ticket shows its details with its brief, plan, report and log."));
 });
 
 // Ticket subtickets: the parts of a plan as a chain of tickets.
@@ -935,17 +963,17 @@ test("a right-click on the board adds a ticket to New or Backlog", () => {
   assert.match(fill, /column\.addEventListener\("contextmenu", /);
   assert.match(fill, /openBoardMenu\(event, key\)/);
   assert.match(fill, /closest\("input, textarea, select"\)/);
-  assert.ok(fill.includes('item("New ticket in New", "new", '));
+  assert.ok(fill.includes('item("New ticket in Scheduled", "new", '));
   assert.ok(fill.includes('item("New ticket in Backlog", "backlog", '));
   assert.match(fill, /openAddTicket\(project, column\)/);
   assert.match(fill, /closest\("dialog"\)/);
   assert.match(MAIN, /function openAddTicket\(ref: ProjectRef, column: "new" \| "backlog" = "new"\): void \{/);
-  assert.ok(MAIN.includes("The ticket goes to Backlog. Dispatch does not start it: drag it to New when it should go."));
+  assert.ok(MAIN.includes("The ticket goes to Backlog. Dispatch does not start it: drag it to Scheduled when it should go."));
   assert.match(MAIN, /"New ticket · Backlog"/);
   assert.match(CSS, /\.ticket-menu \{[^}]*position: fixed;/);
   assert.match(CSS, /\.ticket-menu button \{/);
-  assert.ok(HTML.includes("A right-click on the board opens a menu: New ticket in New, or New ticket in Backlog; a Backlog ticket waits until you drag it to New."));
-  assert.ok(read("../README.md").includes("a right-click on the board offers a new ticket in New or in Backlog"));
+  assert.ok(HTML.includes("A right-click on the board opens a menu: New ticket in Scheduled, or New ticket in Backlog; a Backlog ticket waits until you drag it to Scheduled."));
+  assert.ok(read("../README.md").includes("a right-click on the board offers a new ticket in Scheduled or in Backlog"));
 });
 
 test("a right-click on selected text in a terminal opens the New ticket window with it (ticket i-want-to-allow-terminal-inside-the)", () => {
@@ -956,7 +984,7 @@ test("a right-click on selected text in a terminal opens the New ticket window w
   assert.match(start, /openTicketFromText\(\{ host: pane\.host, root \}, text\)/);
   assert.match(MAIN, /function openTicketFromText\(ref: ProjectRef, text: string\): void \{/);
   assert.ok(HTML.includes("A right-click on selected text in a terminal opens a menu with <b>New ticket from selection</b>"));
-  assert.ok(HTML.includes("it writes them into <code>.dispatch/new-tickets/</code>, and they appear at the end of New at the next refresh."));
+  assert.ok(HTML.includes("it writes them into <code>.dispatch/new-tickets/</code>, and they appear at the end of Scheduled at the next refresh."));
 });
 
 test("a ticket that comes back into New loses its send marks (ticket i-cant-dragged-canceled-ticket-back-to)", () => {
@@ -969,7 +997,7 @@ test("a ticket that comes back into New loses its send marks (ticket i-cant-drag
   assert.match(body, /reentersNew\(current\.status, status\)/);
   assert.match(body, /sentTickets\.delete\(/);
   assert.match(body, /"ticket_claim", \{ cwd, id, release: true \}/);
-  assert.ok(HTML.includes("A stopped ticket that you move back to New or Backlog stays there; from New it starts again from the start, and its old files go to <code>.dispatch/old</code>."));
+  assert.ok(HTML.includes("A stopped ticket that you move back to Scheduled or Backlog stays there; from Scheduled it starts again from the start, and its old files go to <code>.dispatch/old</code>."));
 });
 
 test("Done and Canceled show their newest 10 tickets; Show all and a search show every card (ticket done-and-canceled-show-only-the-newest)", () => {
@@ -1106,7 +1134,7 @@ test("the task list puts running tasks first", () => {
   assert.ok(working > 0 && waits > working && approved > waits, "working, then waits, then approved");
   assert.match(MAIN, /pendingIndex\(tasks, \(task\) => taskRank\(task\) === 0\)/);
   const columns = MAIN.slice(MAIN.indexOf("function fillTicketColumns("), MAIN.indexOf("function fillTicketColumns(") + 3000);
-  assert.match(columns, /columnTickets\(shown, status, status === "in-progress" \? ticketPlace : undefined\)/);
+  assert.match(columns, /boardTickets\(shown, status, planning, status === "in-progress" \|\| status === "planning" \? ticketPlace : undefined\)/);
   const card = MAIN.slice(MAIN.indexOf("function ticketCard("), MAIN.indexOf("function startTicketDrag("));
   assert.ok(card.indexOf('classList.add("parts")') > card.indexOf('classList.add("approved")'), "parts after approved");
   assert.match(CSS, /\.ticket-card\.in-progress\.parts \{\s*border-style: dashed;\s*border-color: var\(--text-2\);/);

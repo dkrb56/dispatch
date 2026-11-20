@@ -95,7 +95,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, bulkIds, canDrag, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
+import { addedText, boardTickets, bulkIds, canDrag, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketMatches, ticketMessage, ticketRoute, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
@@ -8105,14 +8105,14 @@ function renderAddTicket(): void {
   addTicketProjectEl.replaceChildren(mapElement("b", "", projectName(ref)), mapElement("span", "ticket-add-folder", ref.root));
   const edit = addTicketEdit;
   const backlog = !edit && addTicketColumn === "backlog";
-  addTicketProjectEl.title = `The ticket goes to ${backlog ? "Backlog" : "New"} of ${projectName(ref)}: ${ticketsFilePath(ref.root)}`;
+  addTicketProjectEl.title = `The ticket goes to ${backlog ? "Backlog" : "Scheduled"} of ${projectName(ref)}: ${ticketsFilePath(ref.root)}`;
   addTicketTitleEl.textContent = edit ? "Edit ticket" : backlog ? "New ticket · Backlog" : "New ticket";
   addTicketSaveEl.textContent = edit ? "Save" : "Add";
   addTicketSaveEl.title = edit
     ? "Save the changes of the ticket (Enter in the Goal box)"
     : backlog
       ? "Add the ticket to Backlog (Enter in the Goal box)"
-      : "Add the ticket at the end of New (Enter in the Goal box)";
+      : "Add the ticket at the end of Scheduled (Enter in the Goal box)";
   document.querySelector<HTMLElement>("#ticket-add-close")!.title = edit ? "Close (Esc) without a save" : "Close (Esc); your text stays for the next time";
   if (edit) {
     addTicketNoteEl.textContent = "Save changes the ticket; it keeps its place.";
@@ -8121,12 +8121,12 @@ function renderAddTicket(): void {
     return;
   }
   addTicketNoteEl.textContent = backlog
-    ? "The ticket goes to Backlog. Dispatch does not start it: drag it to New when it should go."
+    ? "The ticket goes to Backlog. Dispatch does not start it: drag it to Scheduled when it should go."
     : projectPaused(key)
-      ? "The ticket goes to the end of New. The project is paused: the ticket waits for Resume."
+      ? "The ticket goes to the end of Scheduled. The project is paused: the ticket waits for Resume."
       : projectNoTriage(key)
-        ? "The ticket goes to the end of New. Dispatch starts its plan."
-        : "The ticket goes to the end of New. Dispatch sends it when triage is free.";
+        ? "The ticket goes to the end of Scheduled. Dispatch starts its plan."
+        : "The ticket goes to the end of Scheduled. Dispatch sends it when triage is free.";
   showAddTicketError();
   addTicketBodyEl.replaceChildren(addTicketForm(addTicketDraft(key)));
 }
@@ -8210,7 +8210,7 @@ function addTicketForm(draft: TicketDraft, edit: TicketEdit | null = null): HTML
   const goal = mapElement("textarea");
   goal.rows = 6;
   goal.value = draft.text;
-  goal.placeholder = edit ? "What is the ticket about? Enter saves. Shift+Enter makes a new line." : "What is the ticket about? Enter adds it to New. Shift+Enter makes a new line.";
+  goal.placeholder = edit ? "What is the ticket about? Enter saves. Shift+Enter makes a new line." : "What is the ticket about? Enter adds it to Scheduled. Shift+Enter makes a new line.";
   goal.addEventListener("input", () => (draft.text = goal.value));
   goal.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
@@ -8426,7 +8426,8 @@ function renderTicketDetails(): void {
   const tickets = record?.tickets ?? [];
   const shown = ticketDetails;
   const body: HTMLElement[] = [mapElement("h3", "ticket-details-name", ticket.title)];
-  const column = COLUMNS.find((one) => one.status === ticket.status)?.name ?? ticket.status;
+  const planTask = record && ticket.status === "in-progress" ? projectTaskList(record).find((task) => task.name === (ticket.task || ticket.id)) : undefined;
+  const column = planTask?.info?.state === "planning" ? "Planning" : (COLUMNS.find((one) => one.status === ticket.status)?.name ?? ticket.status);
   const meta = mapElement("div", "ticket-details-meta");
   const end = mapElement("span", endFailed(ticket) ? "failed" : "", endWord(ticket) ? `${column} · ${endWord(ticket)}` : column);
   meta.append(mapElement("span", "", ticket.id), mapElement("span", "", typeName(ticket.type)), mapElement("span", "", levelLabel(levelOf(ticket))), end);
@@ -9314,7 +9315,7 @@ function showTicketButtons(): void {
     const tickets = projectTickets(button.dataset.project ?? "");
     const { waiting } = ticketCounts(tickets);
     button.textContent = waiting > 0 ? `Tickets ${waiting}` : "Tickets";
-    button.title = `The tickets board of this project: ${countText(tickets)}. Dispatch sends the New tickets to triage one at a time, in their order.`;
+    button.title = `The tickets board of this project: ${countText(tickets)}. Dispatch sends the Scheduled tickets to triage one at a time, in their order.`;
   }
   showPauseButtons();
   showActionButtons();
@@ -9518,8 +9519,10 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
     const task = taskByName.get(ticket.task || ticket.id);
     return task ? { rank: taskRank(task), time: taskTime(task) } : { rank: 3, time: ticket.updated };
   };
+  // Planning: an In progress ticket whose task is in its plan phase, until Approve (ticket ticket-board-update-update-to-columns).
+  const planning = (ticket: Ticket) => taskByName.get(ticket.task || ticket.id)?.info?.state === "planning";
   const columns = COLUMNS.map(({ status, name }) => {
-    const items = columnTickets(shown, status, status === "in-progress" ? ticketPlace : undefined);
+    const items = boardTickets(shown, status, planning, status === "in-progress" || status === "planning" ? ticketPlace : undefined);
     const { shown: cards, hidden } = columnCards(items, status, search.trim() !== "", showAll.has(status));
     const column = mapElement("section", "tickets-column");
     column.dataset.status = status;
@@ -9533,9 +9536,9 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
       const count = `${ids.length} ${ids.length === 1 ? "ticket" : "tickets"}`;
       const title =
         to === "backlog"
-          ? `Move the ${count} shown in New to Backlog: Dispatch does not send them`
-          : `Move the ${count} shown in Backlog to the end of the queue of New: Dispatch sends them in their turn`;
-      head.append(ticketButton(to === "backlog" ? "All → Backlog" : "All → New", title, () => void moveAllTickets(key, ids, to), ids.length === 0));
+          ? `Move the ${count} shown in Scheduled to Backlog: Dispatch does not send them`
+          : `Move the ${count} shown in Backlog to the end of the queue of Scheduled: Dispatch sends them in their turn`;
+      head.append(ticketButton(to === "backlog" ? "All → Backlog" : "All → Scheduled", title, () => void moveAllTickets(key, ids, to), ids.length === 0));
     }
     const list = mapElement("div", "tickets-list");
     // The form of a part stands in Backlog (ticket subtickets).
@@ -9565,8 +9568,9 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
     }
     if (items.length === 0 && !form && loose.length === 0) {
       const none = paused ? PAUSED_NEW_EMPTY : "No tickets. A message to triage lands here, and Dispatch sends it when triage is free.";
-      const backlog = "No tickets. Dispatch never sends a Backlog ticket: drag it to New when it should go.";
-      list.append(mapElement("p", "tickets-none", status === "new" ? none : status === "backlog" ? backlog : "No tickets"));
+      const backlog = "No tickets. Dispatch never sends a Backlog ticket: drag it to Scheduled when it should go.";
+      const planningNone = "No tickets. A ticket comes here when its plan starts, and stays until you approve the plan.";
+      list.append(mapElement("p", "tickets-none", status === "new" ? none : status === "backlog" ? backlog : status === "planning" ? planningNone : "No tickets"));
     }
     column.append(head, list);
     // The right-click menu of the board (ticket i-need-a-right-mouse-click-option-to-add): in every
@@ -9588,7 +9592,7 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
 /** The open right-click menu of a board and the listeners that close it. */
 let boardMenu: { el: HTMLElement; off: () => void } | null = null;
 
-/** Opens the right-click menu of a board at the mouse: a new ticket in New or in Backlog. */
+/** Opens the right-click menu of a board at the mouse: a new ticket in Scheduled or in Backlog. */
 function openBoardMenu(event: MouseEvent, key: string): void {
   const ref = ticketsRef && refKey(ticketsRef) === key ? ticketsRef : focusColumns.get(key);
   if (!ref) return;
@@ -9609,7 +9613,7 @@ function openBoardMenu(event: MouseEvent, key: string): void {
     return button;
   };
   menu.append(
-    item("New ticket in New", "new", "Open the New ticket window; the ticket goes to the end of New"),
+    item("New ticket in Scheduled", "new", "Open the New ticket window; the ticket goes to the end of Scheduled"),
     item("New ticket in Backlog", "backlog", "Open the New ticket window; the ticket waits in Backlog"),
   );
   // A modal dialog stands in the top layer: the menu goes into the dialog of the board.
@@ -9839,7 +9843,7 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   }
   if (draggable) {
     const grip = mapElement("span", "entry-grip", "⠿");
-    grip.title = "Drag the card to Backlog, New, Done or Canceled, or to another place in the queue of New";
+    grip.title = "Drag the card to Backlog, Scheduled, Done or Canceled, or to another place in the queue of Scheduled";
     grip.setAttribute("aria-hidden", "true");
     top.append(grip);
     // The buttons and the rename box keep their pointer: a drag starts on the rest of the card.
@@ -9941,7 +9945,7 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
       ticketButton("×", "Cancel this ticket: it goes to Canceled, and Dispatch does not send it", () => void moveTicket(project, ticket.id, "canceled", queueIdsWithout(project, ticket.id))),
     );
   } else if (ticket.status === "canceled" || ticket.status === "backlog") {
-    tools.append(ticketButton("→ New", "Back to New, at the end of the queue: Dispatch sends it to triage in its turn", () => void moveTicket(project, ticket.id, "new", [...queueIds, ticket.id])));
+    tools.append(ticketButton("→ Scheduled", "Back to Scheduled, at the end of the queue: Dispatch sends it to triage in its turn", () => void moveTicket(project, ticket.id, "new", [...queueIds, ticket.id])));
   }
   // A part that waits in Backlog moves in its chain, opens in the form, and goes to Canceled (ticket subtickets, user decision 3).
   const waitingPart = !!ticket.parent && ticket.status === "backlog";
@@ -11986,7 +11990,7 @@ function projectTools(ref: ProjectRef): { el: HTMLElement; oldEl: HTMLButtonElem
   tickets.classList.add("project-tickets");
   tickets.dataset.project = key;
   // A new ticket in its own window, without the board (ticket give-the-app-an-add-ticket-button-that-i).
-  const addTicket = tool("+ Ticket", `Add a ticket to New of ${name}; the board stays closed`, () => openAddTicket(ref));
+  const addTicket = tool("+ Ticket", `Add a ticket to Scheduled of ${name}; the board stays closed`, () => openAddTicket(ref));
   addTicket.classList.add("project-add-ticket");
   // The window Token usage (ticket token-usage) of this project.
   const tokensButton = tool("Tokens", `How many tokens ${name} used, when and by whom: the window Token usage`, () => openTokens(ref));
@@ -12535,7 +12539,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   const workersCountEl = mapElement("span", "focus-tab-count");
   const tabButtons: Record<ColumnTab, HTMLButtonElement> = {
     triage: tabButton("triage", "Triage", "The triage chat of this project"),
-    tickets: tabButton("tickets", "Tickets", "The tickets board of this project; the number counts the tickets in Backlog, New and In progress", ticketsCountEl),
+    tickets: tabButton("tickets", "Tickets", "The tickets board of this project; the number counts the tickets in Backlog, Scheduled, Planning and In progress", ticketsCountEl),
     workers: tabButton("workers", "Workers", "The agent view of Claude Code with the workers of this project; the number counts the workers that work or wait for you", workersCountEl),
   };
   // The Terminal switch right after the tabs (ticket issues-with-details-button): on opens the terminal
@@ -14344,7 +14348,7 @@ function ticketsLine(host: HostId, root: string, tickets: readonly Ticket[]): HT
   button.title = "Open the tickets board of this project";
   button.addEventListener("click", () => openTickets({ host, root }));
   const add = mapElement("button", "overview-add-ticket", "+ Ticket");
-  add.title = "Add a ticket to New of this project; the board stays closed";
+  add.title = "Add a ticket to Scheduled of this project; the board stays closed";
   // A press on the button is no drag of the Overview card.
   add.addEventListener("pointerdown", (event) => event.stopPropagation());
   add.addEventListener("click", (event) => {
@@ -14730,7 +14734,8 @@ function planReveal(id: string): void {
 /** The tickets of a project (by its key) in the board order, as the Plan view takes them. */
 function planBoardTickets(key: string): Ticket[] {
   const record = projectTasks.get(key);
-  return record ? COLUMNS.flatMap((column) => columnTickets(record.tickets, column.status)) : [];
+  // Planning is a view of In progress: its tickets come with In progress, once.
+  return record ? COLUMNS.flatMap((column) => (column.status === "planning" ? [] : columnTickets(record.tickets, column.status))) : [];
 }
 
 /** Plan the flow: starts the draft of the project of the view with the arrows of the board, or keeps the one that runs. */
@@ -15025,7 +15030,8 @@ function renderPlan(): void {
     return;
   }
   // The board order: the columns of the board, each in its own order.
-  const tickets = COLUMNS.flatMap((column) => columnTickets(record.tickets, column.status));
+  // Planning is a view of In progress: its tickets come with In progress, once.
+  const tickets = COLUMNS.flatMap((column) => (column.status === "planning" ? [] : columnTickets(record.tickets, column.status)));
   const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]));
   const queueIds = queueOrder(record.tickets).map((ticket) => ticket.id);
   const key = refKey(ref);
@@ -15094,7 +15100,7 @@ function renderPlan(): void {
       barButton(
         planConfirming ? "Confirming…" : "Confirm and reorder tickets",
         "plan-flow-confirm",
-        "Save the arrows and sort the queue of New by them; no ticket changes its column and nothing starts",
+        "Save the arrows and sort the queue of Scheduled by them; no ticket changes its column and nothing starts",
         () => void planConfirm(),
         changes.count === 0 || planConfirming,
       ),
@@ -15633,7 +15639,7 @@ function renderPlan(): void {
       const marks = queueMarks(queueIds, [...sorted, ...addedKeys], addedKeys);
       const queueList = mapElement("section", "plan-side-part plan-queue");
       queueList.append(mapElement("h3", "", `Queue after Confirm (${sorted.length})`));
-      if (marks.length === 0) queueList.append(mapElement("p", "plan-none", "No ticket waits in New."));
+      if (marks.length === 0) queueList.append(mapElement("p", "plan-none", "No ticket waits in Scheduled."));
       marks.forEach((one, at) => {
         const row = idRow(one.id);
         row.prepend(mapElement("span", "plan-queue-place", addedKeys.includes(one.id) ? "–" : `#${at + 1}`));

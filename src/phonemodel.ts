@@ -113,10 +113,18 @@ export interface PhoneTools {
   }): { about: string; now: string };
   groupCount(state: { waits: number; working: number; paused?: boolean }): { text: string; kind: string };
   countText(tickets: readonly Pick<PhoneTicket, "status">[]): string;
-  /** The five columns of the board in their order (`COLUMNS` of tickets.ts). */
+  /** The six columns of the board in their order (`COLUMNS` of tickets.ts). */
   columns: readonly { status: string; name: string }[];
-  /** The tickets of a column in their order (`columnTickets` of tickets.ts). */
-  columnTickets(tickets: readonly PhoneTicket[], status: string, place?: (ticket: PhoneTicket) => { rank: number; time: number }): PhoneTicket[];
+  /**
+   * The tickets of a column in their order (`boardTickets` of tickets.ts): `planning` says that the task
+   * of an In progress ticket is in its plan phase, so the ticket stands in Planning.
+   */
+  columnTickets(
+    tickets: readonly PhoneTicket[],
+    status: string,
+    planning: (ticket: PhoneTicket) => boolean,
+    place?: (ticket: PhoneTicket) => { rank: number; time: number },
+  ): PhoneTicket[];
   /** The cards of a column to draw and how many stay hidden (`columnCards` of tickets.ts, without a search). */
   columnCards(cards: readonly PhoneTicket[], status: string, showAll: boolean): { shown: PhoneTicket[]; hidden: number };
   /** The question of a check result that waits for a confirmation (`confirmQuestion` of confirm.ts). */
@@ -232,7 +240,7 @@ export function folderName(path: string): string {
   return parts.length > 0 ? parts[parts.length - 1] : path;
 }
 
-/** How the phone shows a project: the cards of today, or the five columns of the tickets board. */
+/** How the phone shows a project: the cards of today, or the six columns of the tickets board. */
 export type PhoneLayout = "cards" | "board";
 
 /** The columns of the board that are open before the user taps a column head (user decision 2). */
@@ -554,7 +562,7 @@ export function inProgressPlace(task: PhoneTask | null, ticket: Pick<PhoneTicket
 }
 
 /**
- * The board of each project, in the order of `projects`: the five columns with their tickets in the
+ * The board of each project, in the order of `projects`: the six columns with their tickets in the
  * board order. `open` lists the open columns; `showAll` the keys `<root>\n<status>` of the columns
  * whose Show all the user tapped.
  */
@@ -572,8 +580,10 @@ export function phoneBoards(
     const merging = list?.merging;
     const tickets = list?.tickets ?? [];
     const place = (ticket: PhoneTicket) => inProgressPlace(ticketTask(ticket, tasks), ticket, merging);
+    // Planning: an In progress ticket whose task is in its plan phase, until Approve (ticket ticket-board-update-update-to-columns).
+    const planning = (ticket: PhoneTicket) => ticketTask(ticket, tasks)?.info?.state === "planning";
     const columns = tools.columns.map(({ status, name }): PhoneColumn => {
-      const all = tools.columnTickets(tickets, status, status === "in-progress" ? place : undefined);
+      const all = tools.columnTickets(tickets, status, planning, status === "in-progress" || status === "planning" ? place : undefined);
       const { shown, hidden } = tools.columnCards(all, status, showAll.has(showAllKey(root, status)));
       return {
         status,
@@ -581,7 +591,7 @@ export function phoneBoards(
         count: all.length,
         open: open.includes(status),
         tickets: shown.map((ticket) => {
-          const task = status === "in-progress" ? ticketTask(ticket, tasks) : null;
+          const task = ticket.status === "in-progress" ? ticketTask(ticket, tasks) : null;
           return { ticket, row: task ? taskRow(task, merging, tools, sent) : null };
         }),
         hidden,

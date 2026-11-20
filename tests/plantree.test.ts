@@ -145,7 +145,7 @@ test("the badges: next up, started early and waits", () => {
 
 test("the state word of a card", () => {
   assert.equal(planStateWord("backlog", null), "Backlog");
-  assert.equal(planStateWord("new", null), "New");
+  assert.equal(planStateWord("new", null), "Scheduled");
   assert.equal(planStateWord("done", "done"), "Done");
   assert.equal(planStateWord("canceled", null), "Canceled");
   assert.equal(planStateWord("in-progress", null), "In progress");

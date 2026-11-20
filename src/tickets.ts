@@ -5,8 +5,14 @@
 // sends (ticket tickets-backlog): the user moves them to New. No imports and no access to the page, so a
 // test can load this file with Node (tests/tickets.test.ts).
 
-/** The columns of the board, as the field `status` of a ticket. */
+/** The statuses of a ticket, as the field `status`; the board shows `new` in the column Scheduled. */
 export type TicketStatus = "backlog" | "new" | "in-progress" | "done" | "canceled";
+
+/**
+ * The columns of the board: the statuses plus `planning`, a view of the `in-progress` tickets whose
+ * task is in its plan phase (ticket ticket-board-update-update-to-columns). No ticket stores `planning`.
+ */
+export type BoardColumn = TicketStatus | "planning";
 
 /** One ticket, as `task_list` gives it (`tickets::Ticket` in Rust). */
 export interface Ticket {
@@ -100,10 +106,14 @@ export const FIELDS: readonly { key: keyof TicketFields; label: string; fix: boo
   { key: "expect", label: "What I expect", fix: true },
 ];
 
-/** The five columns of the board, in their order: Backlog first, left of New (ticket tickets-backlog, user decision 6). */
-export const COLUMNS: readonly { status: TicketStatus; name: string }[] = [
+/**
+ * The six columns of the board, in their order: Backlog first (ticket tickets-backlog, user decision 6),
+ * then Scheduled (status `new`, the queue), then Planning (ticket ticket-board-update-update-to-columns).
+ */
+export const COLUMNS: readonly { status: BoardColumn; name: string }[] = [
   { status: "backlog", name: "Backlog" },
-  { status: "new", name: "New" },
+  { status: "new", name: "Scheduled" },
+  { status: "planning", name: "Planning" },
   { status: "in-progress", name: "In progress" },
   { status: "done", name: "Done" },
   { status: "canceled", name: "Canceled" },
@@ -269,9 +279,9 @@ export function fitWindowPlace(place: { left: number; top: number }, size: { wid
   return { left: fit(place.left, size.width, view.width), top: fit(place.top, size.height, view.height) };
 }
 
-/** The column of a status; an unknown one, and the old `todo`, is New. */
+/** The status of a status word; an unknown one, the old `todo` and the view column `planning` are `new`. */
 export function columnOf(status: string): TicketStatus {
-  return COLUMNS.some((column) => column.status === status) ? (status as TicketStatus) : "new";
+  return status !== "planning" && COLUMNS.some((column) => column.status === status) ? (status as TicketStatus) : "new";
 }
 
 /** The types of a ticket in their order, with the word of the tag. */
@@ -420,8 +430,8 @@ export function endFailed(ticket: Pick<Ticket, "status" | "note">): boolean {
  * `plan`: the ticket starts its own plan (switch "Tickets start their plan", ticket simpler-process-tickets).
  */
 export function addedText(ticket: Pick<Ticket, "title">, paused = false, plan = false): string {
-  if (paused) return `Ticket "${ticket.title}" is in New: the project is paused, it waits for Resume.`;
-  return plan ? `Ticket "${ticket.title}" is in New: Dispatch starts its plan.` : `Ticket "${ticket.title}" is in New: Dispatch sends it when triage is free.`;
+  if (paused) return `Ticket "${ticket.title}" is in Scheduled: the project is paused, it waits for Resume.`;
+  return plan ? `Ticket "${ticket.title}" is in Scheduled: Dispatch starts its plan.` : `Ticket "${ticket.title}" is in Scheduled: Dispatch sends it when triage is free.`;
 }
 
 /**
@@ -486,6 +496,23 @@ export function columnTickets<T extends Pick<Ticket, "id" | "status" | "order" |
   return shown;
 }
 
+/**
+ * The cards of one board column (ticket ticket-board-update-update-to-columns). Planning holds the
+ * `in-progress` tickets for which `planning` says that their task is in its plan phase (from the plan
+ * start until Approve), in the order of In progress; In progress holds the other `in-progress` tickets.
+ * Every other column is `columnTickets` of its status. Display only: the stored status stays `in-progress`.
+ */
+export function boardTickets<T extends Pick<Ticket, "id" | "status" | "order" | "created" | "updated"> & Partial<Pick<Ticket, "parent" | "part">>>(
+  tickets: readonly T[],
+  column: BoardColumn,
+  planning: (ticket: T) => boolean,
+  place?: (ticket: T) => { rank: number; time: number },
+): T[] {
+  if (column !== "planning" && column !== "in-progress") return columnTickets(tickets, column);
+  const all = columnTickets(tickets, "in-progress", place);
+  return all.filter((ticket) => planning(ticket) === (column === "planning"));
+}
+
 /** Done and Canceled show only this many cards until the user clicks Show all (ticket done-and-canceled-show-only-the-newest). */
 export const CLOSED_COLUMN_LIMIT = 10;
 
@@ -493,7 +520,7 @@ export const CLOSED_COLUMN_LIMIT = 10;
  * The cards of a column to draw, and how many stay hidden. Only Done and Canceled are cut, to their
  * newest `CLOSED_COLUMN_LIMIT` cards; a search or Show all shows every card.
  */
-export function columnCards<T>(cards: readonly T[], status: TicketStatus, searching: boolean, showAll: boolean): { shown: T[]; hidden: number } {
+export function columnCards<T>(cards: readonly T[], status: BoardColumn, searching: boolean, showAll: boolean): { shown: T[]; hidden: number } {
   const cut = (status === "done" || status === "canceled") && !searching && !showAll && cards.length > CLOSED_COLUMN_LIMIT;
   return cut ? { shown: cards.slice(0, CLOSED_COLUMN_LIMIT), hidden: cards.length - CLOSED_COLUMN_LIMIT } : { shown: [...cards], hidden: 0 };
 }
