@@ -1346,6 +1346,7 @@ function draw(): void {
 function showPanel(open: boolean): void {
   panelEl.hidden = !open;
   projectsBtn.setAttribute("aria-expanded", String(open));
+  if (open) window.scrollTo(0, 0);
 }
 projectsBtn.addEventListener("click", () => showPanel(panelEl.hidden === true));
 panelDone.addEventListener("click", () => showPanel(false));

@@ -252,6 +252,17 @@ test("the page has no manifest, which would drop the key from the saved address"
   assert.ok(page.includes("viewport-fit=cover") && page.includes("apple-touch-icon") && page.includes("apple-mobile-web-app-capable"));
 });
 
+test("the top of the phone home stays fixed and covers the status bar area", () => {
+  const css = read("../src/phone/phone.css");
+  const rule = (sel: string) => css.slice(css.indexOf(`${sel} {`), css.indexOf("}", css.indexOf(`${sel} {`)));
+  const top = rule(".top");
+  for (const part of ["position: sticky", "top: 0", "background: var(--bg)", "env(safe-area-inset-top)"]) assert.ok(top.includes(part), part);
+  assert.ok(!rule("#app").includes("safe-area-inset-top"));
+  const main = read("../src/phone/main.ts");
+  const fn = main.slice(main.indexOf("function showPanel("));
+  assert.ok(fn.slice(0, fn.indexOf("\n}")).includes("window.scrollTo(0, 0)"));
+});
+
 test("the phone code uses nothing that a plain http page lacks and draws no markup", () => {
   for (const path of ["../src/phone/main.ts", "../src/phonemodel.ts", "../src/phonelink.ts"]) {
     const code = read(path);
