@@ -52,6 +52,19 @@ export function runCostText(models: RunModelUsage[] | undefined): string {
   return tokens ? `${tokens} · ${runModelText(models)}` : "";
 }
 
+/**
+ * The tokens of one reply for the total of the Map: its context (input, cache write, cache read) plus
+ * its output. A reply with an id counts once: `seen` holds the ids that came; a known id gives 0.
+ * A reply without an id always counts.
+ */
+export function replyTokens(seen: Set<string>, id: string | undefined, context: number, output: number): number {
+  if (id) {
+    if (seen.has(id)) return 0;
+    seen.add(id);
+  }
+  return context + output;
+}
+
 /** The tooltip lines of a run row for its tokens: one line per model with the exact numbers, then the rule. Empty without models. */
 export function runTokensTitle(models: RunModelUsage[] | undefined): string {
   if (!models || models.length === 0) return "";
@@ -61,6 +74,7 @@ export function runTokensTitle(models: RunModelUsage[] | undefined): string {
       `${usage.model}: input ${exact(usage.input)}, cache write ${exact(usage.cacheWrite)}, cache read ${exact(usage.cacheRead)}, output ${exact(usage.output)}; total ${exact(totalOf(usage))}.`,
   );
   lines.push("The agents of this run count with it; a reply counts once, under the first run that has it.");
+  lines.push("Each reply reads the whole conversation again, so the cache reads repeat. The Map shows the same total, the written tokens and the size of the last context.");
   return lines.join("\n");
 }
 

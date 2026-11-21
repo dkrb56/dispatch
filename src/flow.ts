@@ -4,6 +4,7 @@
 
 import { call, type HostId } from "./backend";
 import { drawLinks, type Link } from "./links";
+import { replyTokens, tokenText } from "./workerrow";
 
 /** A new read this often while the view is open. Claude Code writes a line when a call starts or ends. */
 const FLOW_READ_MS = 500;
@@ -137,6 +138,8 @@ function fileName(path: string): string {
 /** Opens the worker view in `host` and keeps it new until `close`. */
 export function openFlow(host: HTMLElement, target: FlowTarget, actions: FlowActions): FlowView {
   const actors = new Map<string, Actor>();
+  // The total of the card per file key: context + output of each reply, once per reply id.
+  const sums = new Map<string, { seen: Set<string>; total: number }>();
   const positions: Record<string, number> = {};
   const files = new Map<string, { added: number; removed: number; edits: number }>();
   let open = true;
@@ -157,6 +160,7 @@ export function openFlow(host: HTMLElement, target: FlowTarget, actions: FlowAct
   const take = (file: FlowFile) => {
     if (file.restart) {
       actors.delete(file.key);
+      sums.delete(file.key);
       // The files of a restarted transcript come again with its events.
       if (file.key === "main") files.clear();
     }
@@ -192,6 +196,17 @@ export function openFlow(host: HTMLElement, target: FlowTarget, actions: FlowAct
         who.text = event.text ?? null;
       } else if (event.kind === "tokens") {
         who.context = event.context ?? who.context;
+        // The total of the card: a reply that another file already counted does not count again.
+        const id = event.id;
+        const counted = id !== undefined && [...sums].some(([key, other]) => key !== file.key && other.seen.has(id));
+        if (!counted) {
+          let entry = sums.get(file.key);
+          if (!entry) {
+            entry = { seen: new Set(), total: 0 };
+            sums.set(file.key, entry);
+          }
+          entry.total += replyTokens(entry.seen, id, event.context ?? 0, event.output ?? 0);
+        }
         // One reply can come on several lines; its output counts once.
         if (!event.id || !who.replies.has(event.id)) {
           who.output += event.output ?? 0;
@@ -356,8 +371,12 @@ export function openFlow(host: HTMLElement, target: FlowTarget, actions: FlowAct
     const all = [main, ...agents];
     const written = all.reduce((sum, who) => sum + who.output, 0);
     const total = element("div", "flow-total");
-    total.append(element("b", "", tokens(written)), element("span", "flow-muted", " tokens written"));
-    side.append(total, element("h3", "", "By agent"));
+    const everything = [...sums.values()].reduce((sum, entry) => sum + entry.total, 0);
+    total.title = "Every token that the worker and its agents read and wrote, over all replies; the task card shows the same number. Each reply reads the whole conversation again, so the cache reads repeat.";
+    total.append(element("b", "", tokenText(everything)), element("span", "flow-muted", " tokens in all"));
+    const writtenLine = element("div", "flow-muted", `${tokens(written)} written`);
+    writtenLine.title = "The tokens that the worker and its agents wrote";
+    side.append(total, writtenLine, element("h3", "", "By agent"));
     for (const who of all.slice(0, AGENTS_SHOWN + 1)) {
       const row = element("div", "flow-row");
       row.append(element("span", "", who.key === "main" ? "worker itself" : (who.description ?? who.key)), element("span", "flow-num", `${tokens(who.output)} · ${tokens(who.context)} ctx`));

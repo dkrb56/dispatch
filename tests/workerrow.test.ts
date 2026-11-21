@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { agentsText, fileRowTitle, reportChip, rowParts, runChip, runCostText, runModelText, runTokensText, runTokensTitle, stepRows, tokenText } from "../src/workerrow.ts";
+import { agentsText, fileRowTitle, reportChip, rowParts, runChip, runCostText, runModelText, runTokensText, replyTokens, runTokensTitle, stepRows, tokenText } from "../src/workerrow.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const HTML = read("../index.html");
@@ -106,8 +106,28 @@ test("the tooltip of a run: one line per model with the exact numbers, then the 
       "claude-fable-5-1: input 804, cache write 163,035, cache read 2,996,664, output 31,303; total 3,191,806.",
       "claude-opus-5-5: input 37, cache write 424,384, cache read 4,621,868, output 17,786; total 5,064,075.",
       "The agents of this run count with it; a reply counts once, under the first run that has it.",
+      "Each reply reads the whole conversation again, so the cache reads repeat. The Map shows the same total, the written tokens and the size of the last context.",
     ].join("\n"),
   );
+});
+
+test("a reply counts once in the total of the Map", () => {
+  const seen = new Set<string>();
+  assert.equal(replyTokens(seen, "a", 100, 10), 110);
+  assert.equal(replyTokens(seen, "a", 100, 10), 0);
+  assert.equal(replyTokens(seen, undefined, 5, 1), 6);
+  assert.equal(replyTokens(seen, undefined, 5, 1), 6);
+  // Two replies equal the card total of the same four counts.
+  const two = new Set<string>();
+  const sum = replyTokens(two, "x", 1 + 2 + 3, 4) + replyTokens(two, "y", 10 + 20 + 30, 40);
+  assert.equal(tokenText(sum), runTokensText([{ model: "m", input: 11, cacheWrite: 22, cacheRead: 33, output: 44 }]).replace(" tokens", ""));
+});
+
+test("the Map shows the total of the card", () => {
+  const FLOW = read("../src/flow.ts");
+  assert.match(FLOW, /import \{[^}]*\breplyTokens\b[^}]*\} from "\.\/workerrow"/);
+  assert.match(FLOW, /import \{[^}]*\btokenText\b[^}]*\} from "\.\/workerrow"/);
+  assert.match(FLOW, /tokens in all/);
 });
 
 // Ticket card-run-rows: the first line of a run row has no tokens; a second line shows the tokens of
