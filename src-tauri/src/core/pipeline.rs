@@ -5136,6 +5136,9 @@ pub struct BranchInfo {
     /// Why the last merge of this task stopped halfway and Dispatch cancelled it (ticket
     /// title-auto-merge-left-the-main-checkout): the text of `.dispatch/merge/<ticket>.aborted`, or empty.
     aborted: String,
+    /// The short hash of the tip of the base while the branch waits for Merge, or empty (ticket
+    /// auto-merge-keep-finish-order-and-re-gate): the window sends one re-gate reply per base commit.
+    base_head: String,
 }
 
 /// Reads a branch file: the lines `branch:`, `base:`, `merge:` and `push:`. None without the file.
@@ -5694,6 +5697,9 @@ fn task_branch(project: &Project, ticket: &str, current: &str, check_merged: boo
                 eprintln!("branch file of {ticket} not written after the outside merge: {error}");
             }
         }
+    }
+    if info.exists {
+        info.base_head = git(&project.root, &["rev-parse", "--short", &format!("refs/heads/{}", info.base)]).map(|head| head.trim().to_string()).unwrap_or_default();
     }
     Some((info, changed))
 }
@@ -11932,6 +11938,8 @@ if (args[0] === 'agents') {
         let branch = listed_branch(&project, "t-1");
         assert!(branch.exists && !branch.checked_out && branch.note.is_empty(), "{branch:?}");
         assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        // The tip of the base while the branch waits (ticket auto-merge-keep-finish-order-and-re-gate).
+        assert_eq!(branch.base_head, git_out(&project, &["rev-parse", "--short", &base]));
         // The card files come onto the base with the read after the switch back (ticket merge-issue).
         assert_eq!(git_out(&project, &["log", "-1", "--format=%s", &base]), "Dispatch: brief, plan and report of t-1; settings");
         let tree = git_out(&project, &["ls-tree", "-r", "--name-only", &base, ".dispatch"]);
@@ -11952,6 +11960,7 @@ if (args[0] === 'agents') {
         assert!(git(&project.root, &["rev-parse", "--verify", "--quiet", "refs/heads/task/t-1"]).is_none(), "the branch was not deleted");
         let branch = listed_branch(&project, "t-1");
         assert!(branch.merge.starts_with("done ") && !branch.exists, "{branch:?}");
+        assert!(branch.base_head.is_empty(), "{branch:?}");
         assert_no_merge_left(&project);
         clean(&project);
     }

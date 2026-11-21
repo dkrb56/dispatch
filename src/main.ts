@@ -128,7 +128,7 @@ import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, l
 import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
 import { chooseNightMerge, chooseStart, nightPlan, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
-import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
+import { failLines, freshOnly, type GateRefusal, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { autoMergeNote, type AutoMergeFacts, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
 import { type ContextBlock, TLDR_LABEL, contextBlocks, formatLines, tldrBlock } from "./decisions-context";
 import {
@@ -2351,6 +2351,11 @@ interface BranchInfo {
    * <reason>` or `no-upstream`; empty or absent without one.
    */
   push?: string;
+  /**
+   * The short hash of the tip of the base while the branch waits for Merge (ticket
+   * auto-merge-keep-finish-order-and-re-gate); empty, or absent from an older host.
+   */
+  baseHead?: string;
 }
 
 /** A decision of a plan, with its options; the recommended one is first. */
@@ -2507,6 +2512,8 @@ function storeProjectTasks(key: string, record: ProjectTasks, readAt: number): v
     if (missing && missingFileGone(missing, { plan: Boolean(info.plan), branchFile: Boolean(info.branch) })) actionErrors.delete(info.name);
     const branch = info.branch;
     if (!branch) continue;
+    // A merged branch needs no old refusal (ticket auto-merge-keep-finish-order-and-re-gate).
+    if (branch.merge) oldRefusals.delete(info.name);
     const error = actionErrors.get(info.name);
     if (error && refusalGoes(error, { merged: Boolean(branch.merge), dirty: info.leftovers ?? record.dirty })) actionErrors.delete(info.name);
     const old = before?.infos.find((one) => one.name === info.name);
@@ -2873,7 +2880,7 @@ function approvePlans(): void {
         night,
         auto: project.autoMerge,
         gate: project.gate.trim() !== "",
-        tasks: tasks.map((task) => ({ name: task.name, waits: mergeWaits(task), state: task.info?.header?.state ?? null, busy: busyTasks.has(task.name), tried: mergeTried(task), held: mergeHeld(task) })),
+        tasks: tasks.map((task) => ({ name: task.name, waits: mergeWaits(task), state: task.info?.header?.state ?? null, busy: busyTasks.has(task.name), tried: mergeTried(task), held: mergeHeld(task), reportTime: task.info?.report?.modified ?? null })),
       });
       const merge = name ? tasks.find((task) => task.name === name) : undefined;
       if (merge) {
@@ -6985,6 +6992,56 @@ function autoMergeComes(task: Task): boolean {
 /** When the user clicked Merge in this window, by task name: the card says since when it merges. */
 const mergeStarts = new Map<string, number>();
 
+/**
+ * The re-gate replies of this window (ticket auto-merge-keep-finish-order-and-re-gate), by project key
+ * and task name: the base head for which Dispatch asked the work run for a new gate run, and when.
+ * One reply per base commit; a restart of the window forgets them.
+ */
+const regated = new Map<string, { head: string; at: number }>();
+
+/**
+ * The gate refusal before a re-gate reply, by task name: the error text, the time of the gate log and
+ * the time of the reply. The card shows it as old until the next merge try or the merge.
+ */
+const oldRefusals = new Map<string, { error: string; logTime: number; sentAt: number }>();
+
+/** The key of `regated`: the project and the task, without the report time. */
+function regateKey(task: Task): string {
+  return `regate:${projectKey(taskHost(task), taskCwd(task))}:${task.name}`;
+}
+
+/** The base commit of a waiting branch; the report time from an older host without `baseHead`. */
+function regateHead(task: Task): string {
+  return task.info?.branch?.baseHead || String(task.info?.report?.modified ?? "");
+}
+
+/** The words of the re-gate reply (user decision 3), with the name of the base branch. */
+function regateText(base: string): string {
+  return `${base} changed after your gate. Run build, tests and nettest.ps1 -Gate again on the merged code, then commit.`;
+}
+
+/**
+ * Asks the work run of the task for a new gate run after a refusal whose only failed check is
+ * `fresh` (ticket auto-merge-keep-finish-order-and-re-gate): once per base commit. The refusal stays
+ * on the card as old, with the time of its gate log.
+ */
+async function regateTask(task: Task, base: string, refusal: GateRefusal, error: string): Promise<void> {
+  const key = regateKey(task);
+  const head = regateHead(task);
+  if (regated.get(key)?.head === head) return;
+  const sentAt = Date.now();
+  regated.set(key, { head, at: sentAt });
+  let logTime = sentAt;
+  try {
+    logTime = (await statFile(taskHost(task), null, refusal.log))?.modified ?? sentAt;
+  } catch {
+    logTime = sentAt;
+  }
+  oldRefusals.set(task.name, { error, logTime, sentAt });
+  const line = `Auto-merge: the gate of ${task.name} was older than ${base}; Dispatch asked the work run for a new gate run.`;
+  await taskAction(task, "task_reply", { id: task.name, text: regateText(base) }, line);
+}
+
 /** The merge of the task runs now: clicked in this window, or the merge lock of its project names it. */
 function mergeRunning(task: Task): boolean {
   return mergeStarts.has(task.name) || (task.project ? task.project.merging : mergingTask) === task.name;
@@ -7003,7 +7060,11 @@ async function mergeTask(task: Task, by: "click" | "night" | "auto" = "click"): 
   busyTasks.add(task.name);
   mergeStarts.set(task.name, Date.now());
   actionErrors.delete(task.name);
+  oldRefusals.delete(task.name);
   renderChats();
+  // A refusal only for "fresh" with the switch on, after a click too (user decision 2): the re-gate
+  // reply goes out after the `finally`, because `taskAction` takes `busyTasks` itself.
+  let regate: { refusal: GateRefusal; error: string } | null = null;
   try {
     const host = taskHost(task);
     const cwd = taskCwd(task);
@@ -7026,6 +7087,8 @@ async function mergeTask(task: Task, by: "click" | "night" | "auto" = "click"): 
     tellTriage(projectFor(host, cwd), line);
   } catch (error) {
     actionErrors.set(task.name, String(error));
+    const refusal = gateRefusal(String(error));
+    if (refusal && freshOnly(refusal.tail) && autoMergeFacts(task).on) regate = { refusal, error: String(error) };
   } finally {
     busyTasks.delete(task.name);
     mergeStarts.delete(task.name);
@@ -7037,6 +7100,7 @@ async function mergeTask(task: Task, by: "click" | "night" | "auto" = "click"): 
     }
     renderChats();
   }
+  if (regate) await regateTask(task, branch.base, regate.refusal, regate.error);
 }
 
 /** The card of a branch that waits for the Merge click: what Merge does, the gate, and the button. */
@@ -7102,51 +7166,78 @@ function mergeCard(task: Task): HTMLElement {
   // (ticket merge-fail-list). Every other refusal keeps its one text.
   const refusal = gateRefusal(actionErrors.get(task.name) ?? "");
   if (refusal) {
-    const head = document.createElement("div");
-    head.className = "card-reason";
-    head.textContent = refusalHeadline(refusal);
-    const list = document.createElement("ul");
-    list.className = "merge-fails";
-    for (const line of failLines(refusal.tail)) {
-      const item = document.createElement("li");
-      item.textContent = line.text;
-      if (line.text !== line.full) item.title = line.full;
-      list.append(item);
-    }
-    const row = document.createElement("button");
-    row.className = "chat report merge-log";
-    row.title = `Open the whole gate log: ${refusal.log}`;
-    const name = document.createElement("span");
-    name.textContent = "Gate log";
-    name.prepend(eyeIcon());
-    const where = document.createElement("span");
-    where.className = "when";
-    where.textContent = logName(refusal.log);
-    row.append(name, where);
-    row.addEventListener("click", () => {
-      void (async () => {
-        let entry: FileEntry | null = null;
-        try {
-          entry = await statFile(taskHost(task), null, refusal.log);
-        } catch {
-          entry = null;
-        }
-        if (entry) {
-          await openViewer(entry);
-          return;
-        }
-        const missing = document.createElement("div");
-        missing.className = "card-reason";
-        missing.textContent = `The log is not there: ${refusal.log}`;
-        row.replaceWith(missing);
-      })();
-    });
-    card.append(head, list, row);
+    card.append(...refusalBlock(task, refusal, null));
     return card;
   }
+  // The refusal before a re-gate reply, as old (ticket auto-merge-keep-finish-order-and-re-gate).
+  const old = oldRefusals.get(task.name);
+  const before = old ? gateRefusal(old.error) : null;
+  if (old && before) card.append(...refusalBlock(task, before, old));
   const error = actionError(task);
   if (error) card.append(error);
   return card;
+}
+
+/**
+ * The lines of a gate refusal (ticket merge-fail-list): the first line, one line per failed check and
+ * the row of the gate log. `old`: the refusal before a re-gate reply (ticket
+ * auto-merge-keep-finish-order-and-re-gate), drawn as old with the time of its gate log.
+ */
+function refusalBlock(task: Task, refusal: GateRefusal, old: { logTime: number; sentAt: number } | null): HTMLElement[] {
+  const base = task.info?.branch?.base ?? "the base";
+  const head = document.createElement("div");
+  head.className = "card-reason";
+  head.textContent = old ? `Refused before the new gate run · gate log of ${chatTime(old.logTime)}` : refusalHeadline(refusal);
+  const list = document.createElement("ul");
+  list.className = old ? "merge-fails old" : "merge-fails";
+  for (const line of failLines(refusal.tail)) {
+    const item = document.createElement("li");
+    item.textContent = line.text;
+    if (line.text !== line.full) item.title = line.full;
+    list.append(item);
+  }
+  const row = document.createElement("button");
+  row.className = old ? "chat report merge-log old" : "chat report merge-log";
+  row.title = `Open the whole gate log: ${refusal.log}`;
+  const name = document.createElement("span");
+  name.textContent = "Gate log";
+  name.prepend(eyeIcon());
+  const where = document.createElement("span");
+  where.className = "when";
+  where.textContent = logName(refusal.log);
+  row.append(name, where);
+  row.addEventListener("click", () => {
+    void (async () => {
+      let entry: FileEntry | null = null;
+      try {
+        entry = await statFile(taskHost(task), null, refusal.log);
+      } catch {
+        entry = null;
+      }
+      if (entry) {
+        await openViewer(entry);
+        return;
+      }
+      const missing = document.createElement("div");
+      missing.className = "card-reason";
+      missing.textContent = `The log is not there: ${refusal.log}`;
+      row.replaceWith(missing);
+    })();
+  });
+  const lines: HTMLElement[] = [head];
+  if (old) {
+    const sent = document.createElement("div");
+    sent.className = "card-reason";
+    sent.textContent = `Dispatch asked the work run for a new gate run on ${chatTime(old.sentAt)}, because ${base} changed after the gate.`;
+    lines.push(sent);
+  } else if (freshOnly(refusal.tail) && regated.get(regateKey(task))?.head === regateHead(task)) {
+    const already = document.createElement("div");
+    already.className = "card-reason";
+    already.textContent = `Dispatch asked for a new gate run on this ${base} commit already. Click Merge, or answer the work run yourself.`;
+    lines.push(already);
+  }
+  lines.push(list, row);
+  return lines;
 }
 
 // The checks picked after the work run (ticket test-picker-an-agent-picks-the-checks): the driver
@@ -10555,6 +10646,16 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     const checks = checksRow(info?.checks ?? []) ?? pickedRow(info);
     if (checks) body.append(checks);
     if (info?.branch) body.append(branchRow(info.branch, task.project ? task.project.pushAfterMerge : pushAfterMerge));
+    // The refusal before a re-gate reply, as old, while the new work run runs (ticket
+    // auto-merge-keep-finish-order-and-re-gate): the Merge card is not drawn then.
+    const old = oldRefusals.get(task.name);
+    const before = old ? gateRefusal(old.error) : null;
+    if (old && before && task.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) {
+      const card = document.createElement("div");
+      card.className = "task-card";
+      card.append(...refusalBlock(task, before, old));
+      body.append(card);
+    }
     // Stop stands under the runs that it stops.
     const stop = stopRow(task);
     if (stop) body.append(stop);

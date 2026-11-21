@@ -219,7 +219,7 @@ test("main.ts: approvePlans marks a task with leftovers as blocked, and the queu
 
 // Night merge (ticket task-branches-blocked-work, user decision 3): the replay is screen 2, a night in
 // which the HUD task needed the fix of t-pathids, and t-pathids waited all night for the Merge click.
-const waiting = (name: string, more: Partial<MergeCandidate> = {}): MergeCandidate => ({ name, waits: true, state: "done", busy: false, tried: false, ...more });
+const waiting = (name: string, more: Partial<MergeCandidate> = {}): MergeCandidate => ({ name, waits: true, state: "done", busy: false, tried: false, reportTime: 100, ...more });
 const mergeNight = (tasks: MergeCandidate[], more: Partial<MergeFacts> = {}): MergeFacts => ({ merging: null, running: null, leased: null, night: true, gate: true, tasks, ...more });
 
 test("night mode merges a done task whose branch waits, then the queue goes on", () => {
@@ -293,6 +293,23 @@ test("auto-merge: a held task is skipped, the next one merges, and it merges onc
   assert.equal(chooseNightMerge(autoDay([waiting("a", { held: false })])), "a");
 });
 
+// Ticket auto-merge-keep-finish-order-and-re-gate: the tasks merge in the order of their done reports.
+test("auto-merge: the task with the older done report merges first", () => {
+  const newer = waiting("newer", { reportTime: 200 });
+  const older = waiting("older", { reportTime: 100 });
+  assert.equal(chooseNightMerge(autoDay([newer, older])), "older", "the list has the newest task first");
+  assert.equal(chooseNightMerge(mergeNight([newer, older])), "older", "night mode keeps the same order");
+  assert.equal(chooseNightMerge(autoDay([newer, { ...older, tried: true }])), "newer", "the newer one comes when the older one was tried");
+  assert.equal(chooseNightMerge(autoDay([waiting("none", { reportTime: null }), older])), "older", "a task without a report time comes last");
+});
+
+test("auto-merge: a held older task does not stop a newer one (user decision 1)", () => {
+  const newer = waiting("newer", { reportTime: 200 });
+  const older = waiting("older", { reportTime: 100, held: true });
+  assert.equal(chooseNightMerge(autoDay([newer, older])), "newer");
+  assert.equal(chooseNightMerge(autoDay([newer, { ...older, held: false }])), "older", "once it is free the older one goes first");
+});
+
 test("night mode without the switch ignores held", () => {
   assert.equal(chooseNightMerge(mergeNight([waiting("a", { held: true })])), "a");
 });
@@ -302,6 +319,7 @@ test("main.ts: approvePlans merges at night before a start, and the line for tri
   const merge = body.indexOf("chooseNightMerge(");
   assert.ok(merge > body.indexOf("nightDefaults(") && merge < body.indexOf("chooseStart("), "the night merge runs after the night answers and before a start");
   assert.match(body, /gate: project\.gate\.trim\(\) !== ""/);
+  assert.match(body, /reportTime: task\.info\?\.report\?\.modified \?\? null/, "the order of the done reports (ticket auto-merge-keep-finish-order-and-re-gate)");
   assert.match(body, /void mergeTask\(merge, night \? "night" : "auto"\);\n\s*continue;/);
   assert.match(MAIN, /`Night mode merged branch \$\{branch\.name\} of \$\{task\.name\}/);
   assert.doesNotMatch(MAIN, /Night mode never merges/);

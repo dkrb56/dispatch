@@ -200,6 +200,8 @@ export interface MergeCandidate {
   tried: boolean;
   /** The task cannot merge yet: the checkout is on its branch, or its files have uncommitted changes. */
   held?: boolean;
+  /** The time of the report file in milliseconds, or null: the tasks merge in the order of their done reports. */
+  reportTime?: number | null;
 }
 
 /** The facts of one project for the night merge and for "Auto-merge finished tasks". */
@@ -217,12 +219,23 @@ export interface MergeFacts extends BusyFacts {
 /**
  * The task whose branch Dispatch merges by itself at this poll, or null (ticket
  * task-branches-blocked-work): night mode or the switch "Auto-merge finished tasks" on, a gate command,
- * the project not busy and no click of any of its tasks running, and the first task whose branch waits
- * for Merge with a done report and no earlier try for that report. With the switch on, a held task is
+ * the project not busy and no click of any of its tasks running, and the task with the oldest done report
+ * whose branch waits for Merge and that has no earlier try for that report. With the switch on, a held task is
  * skipped and keeps its try. The merge runs the gate first, so a check that fails merges nothing and
  * the branch waits for the user.
  */
 export function chooseNightMerge(facts: MergeFacts): string | null {
   if ((!facts.night && !facts.auto) || !facts.gate || projectBusy(facts) || facts.tasks.some((task) => task.busy)) return null;
-  return facts.tasks.find((task) => task.waits && task.state === "done" && !task.tried && !(facts.auto && task.held))?.name ?? null;
+  // The order of the done reports (ticket auto-merge-keep-finish-order-and-re-gate): the oldest report first,
+  // a task without a report time last. A tried task was refused and waits for the user; a held task (with the
+  // switch on) waits for the user too, and the next task merges meanwhile.
+  const order = facts.tasks
+    .filter((task) => task.waits && task.state === "done")
+    .sort((a, b) => (a.reportTime ?? null) === (b.reportTime ?? null) ? 0 : a.reportTime == null ? 1 : b.reportTime == null ? -1 : a.reportTime - b.reportTime);
+  for (const task of order) {
+    if (task.tried) continue;
+    if (facts.auto && task.held) continue;
+    return task.name;
+  }
+  return null;
 }

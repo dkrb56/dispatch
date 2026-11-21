@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { FAIL_CUT, failLines, gateRefusal, logName, refusalHeadline } from "../src/mergefail.ts";
+import { FAIL_CUT, failLines, freshOnly, gateRefusal, logName, refusalHeadline } from "../src/mergefail.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const FIXTURE = read("./fixtures/merge-gate-fail.txt").replace(/\n$/, "").split("\n");
@@ -81,6 +81,17 @@ test("a long line is cut with an ellipsis and keeps its whole text for the toolt
   assert.equal(short.text, short.full);
 });
 
+// Ticket auto-merge-keep-finish-order-and-re-gate: a refusal only for "fresh" gets a new gate run.
+test("freshOnly: true only when the one failed check is the fresh line", () => {
+  const fresh = "fresh: FAIL main's side of the merge changed 3 files a gate run uses";
+  assert.equal(freshOnly(["build: ok", fresh, "tests: 0 failed", "FAIL"]), true);
+  assert.equal(freshOnly([fresh]), true);
+  assert.equal(freshOnly(FIXTURE), false, "the fixture has four FAIL lines");
+  assert.equal(freshOnly(["build: ok", "tests: 3 failed", "stopped after 60 s"]), false, "no FAIL line");
+  assert.equal(freshOnly([]), false);
+  assert.equal(freshOnly(["freshness: FAIL x"]), false);
+});
+
 test("the merge card uses the module, and actionError is unchanged", () => {
   const card = MAIN.slice(MAIN.indexOf("function mergeCard("), MAIN.indexOf("function branchRow("));
   assert.match(card, /gateRefusal\(/);
@@ -93,4 +104,19 @@ test("the merge card uses the module, and actionError is unchanged", () => {
     error.replace(/\s+/g, " "),
     'function actionError(task: Task): HTMLElement | null { const error = actionErrors.get(task.name); if (!error) return null; const reason = document.createElement("div"); reason.className = "card-reason"; reason.textContent = error; return reason;',
   );
+});
+
+test("main.ts: a fresh-only refusal sends the re-gate reply once per base commit, and the card shows it as old", () => {
+  const merge = MAIN.slice(MAIN.indexOf("async function mergeTask("), MAIN.indexOf("function mergeCard("));
+  assert.match(merge, /freshOnly\(refusal\.tail\)/);
+  const end = merge.indexOf("} finally {");
+  assert.ok(merge.indexOf("regateTask(") > end, "the reply goes out after the finally block");
+  const regate = MAIN.slice(MAIN.indexOf("async function regateTask("), MAIN.indexOf("\n}\n", MAIN.indexOf("async function regateTask(")));
+  assert.match(regate, /regated\.get\(key\)\?\.head === head\) return;/);
+  assert.match(regate, /taskAction\(task, "task_reply", \{ id: task\.name, text: regateText\(base\) \}, line\)/);
+  assert.ok(MAIN.includes("`${base} changed after your gate. Run build, tests and nettest.ps1 -Gate again on the merged code, then commit.`"));
+  const card = MAIN.slice(MAIN.indexOf("function mergeCard("), MAIN.indexOf("function branchRow("));
+  assert.ok(card.includes("function refusalBlock("), "refusalBlock stands between mergeCard and branchRow");
+  assert.match(card, /Refused before the new gate run/);
+  assert.match(card, /Dispatch asked the work run for a new gate run on/);
 });

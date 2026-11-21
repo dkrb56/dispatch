@@ -67,6 +67,16 @@ export function failLines(tail: readonly string[]): FailLine[] {
   return [cut(last === undefined ? "No line of the log says FAIL, and the log has no lines." : `No line of the log says FAIL. Its last line: ${last.trim()}`)];
 }
 
+/**
+ * True when the only failed check of a log tail is the `fresh` line (ticket
+ * auto-merge-keep-finish-order-and-re-gate): the base moved after the gate run, and a new gate run on
+ * the merged code repairs it. A tail without a FAIL line gives false.
+ */
+export function freshOnly(tail: readonly string[]): boolean {
+  const lines = failLines(tail);
+  return lines.length > 0 && lines.every((line) => /^fresh: FAIL\b/.test(line.full));
+}
+
 /** The file name of a log path with `\` or `/`. */
 export function logName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;

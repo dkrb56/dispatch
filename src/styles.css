@@ -1408,6 +1408,12 @@ button.task-head:hover {
   overflow-wrap: anywhere;
 }
 
+/* A refusal before a re-gate reply (ticket auto-merge-keep-finish-order-and-re-gate): shown as old. */
+.task-card .merge-fails.old,
+.task-card button.merge-log.old {
+  opacity: 0.6;
+}
+
 /* The row that opens the whole gate log: the look of the report row in the card body. */
 .task-card button.merge-log {
   margin-top: 6px;
