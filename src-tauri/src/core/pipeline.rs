@@ -3353,6 +3353,9 @@ const WORK_DEFAULT: (&str, &str) = ("opus", "xhigh");
 /// each option of the script is denied by name (ticket a-plan-run-can-write-only-into-dispatch).
 /// The `Edit` rules stand here relative to the project; the worker script puts the project folder
 /// in front of them at run time, because a relative rule follows a `cd` of the session's shell.
+/// The last two lines name the settings file of the workers, which keeps the claude.ai connectors
+/// out of the plan run too (ticket keep-the-claude-ai-connectors-out-of-the). Its agent limit
+/// changes nothing here: the plan run has no Agent tool.
 fn plan_fixed_lines(project: &Project) -> Result<Vec<String>, String> {
     let rule_path = project.rule_path();
     let script = script_command(&project.reports_text());
@@ -3367,7 +3370,7 @@ fn plan_fixed_lines(project: &Project) -> Result<Vec<String>, String> {
     } else {
         (format!("WebFetch,{plans}"), format!("{briefs},Bash({script} *)"))
     };
-    Ok(vec![
+    let mut lines = vec![
         "--permission-mode".to_string(),
         "dontAsk".to_string(),
         "--tools".to_string(),
@@ -3376,7 +3379,9 @@ fn plan_fixed_lines(project: &Project) -> Result<Vec<String>, String> {
         allowed,
         "--disallowedTools".to_string(),
         denied,
-    ])
+    ];
+    lines.extend(settings_lines());
+    Ok(lines)
 }
 
 /// Claude Code reads the maximum number of agents at the same time from this variable.
@@ -3384,19 +3389,44 @@ const AGENTS_VARIABLE: &str = "CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS";
 /// The name of the tool that starts an agent.
 const AGENT_TOOL: &str = "Agent";
 
-/// The settings that give the agent limit to a worker. `None` means no limit from this app.
-fn agent_settings(agents: &str) -> Result<Option<Value>, String> {
+/// The setting of Claude Code that keeps the claude.ai connectors (Gmail, Slack, Claude Docs,
+/// Calendar, Drive) out of a session.
+const NO_CONNECTORS_SETTING: &str = "disableClaudeAiConnectors";
+
+/// The settings of the workers, for the plan run and the work run: always without the claude.ai
+/// connectors, plus the agent limit when the user set one (an empty `agents` is no limit from
+/// this app). The connectors joined a run a few seconds after its start; each one changed the
+/// tool list, so the next replies wrote the cache again (ticket
+/// keep-the-claude-ai-connectors-out-of-the: 44k and 78k tokens written in place of a cache read).
+/// No worker uses them. The setting stands in this file and not in `.claude/settings.json`, so the
+/// user's own chats keep the connectors. MCP servers of the user or the project stay.
+fn agent_settings(agents: &str) -> Result<Value, String> {
+    let mut settings = Map::new();
+    settings.insert(NO_CONNECTORS_SETTING.to_string(), Value::Bool(true));
     match agents {
-        "" => Ok(None),
+        "" => {}
         // A session without the tool starts no agent.
-        "0" => Ok(Some(json!({ "permissions": { "deny": [AGENT_TOOL] } }))),
+        "0" => {
+            settings.insert("permissions".to_string(), json!({ "deny": [AGENT_TOOL] }));
+        }
         count => {
             let count: u32 = count.parse().map_err(|_| format!("invalid number of agents: {count}"))?;
             let mut env = Map::new();
             env.insert(AGENTS_VARIABLE.to_string(), Value::String(count.to_string()));
-            Ok(Some(json!({ "env": env })))
+            settings.insert("env".to_string(), Value::Object(env));
         }
     }
+    Ok(Value::Object(settings))
+}
+
+/// The settings file of the workers holds the setting that keeps the claude.ai connectors out.
+fn worker_settings_current(project: &Project) -> bool {
+    read_settings(&project.worker_settings()).is_ok_and(|settings| settings.get(NO_CONNECTORS_SETTING) == Some(&Value::Bool(true)))
+}
+
+/// The two lines that name the settings file of the workers.
+fn settings_lines() -> [String; 2] {
+    ["--settings".to_string(), worker_settings_text()]
 }
 
 /// Reads the agent limit from the settings file of the workers.
@@ -3460,8 +3490,9 @@ fn worker_settings_text() -> String {
 }
 
 /// The work options file has the fixed part of this version. An older file lacks it.
-/// A file that names the settings file of the workers must name it relative to the project: a
-/// file of an older version names it with an absolute path (also of the old layout).
+/// The file must name the settings file of the workers, relative to the project: a file of an
+/// older version names it with an absolute path (also of the old layout), or names it only with
+/// an agent limit. The settings file must hold the setting without the claude.ai connectors.
 fn work_flags_current(project: &Project) -> bool {
     let Ok(text) = fs::read_to_string(project.work_flags()) else { return false };
     let text = text.replace("\r\n", "\n");
@@ -3470,29 +3501,29 @@ fn work_flags_current(project: &Project) -> bool {
     // The same reading as `read_worker_flags`: the limit counts only when the file names the settings.
     let agents = if lines.contains(&"--settings") { read_agent_limit(&project.worker_settings()) } else { String::new() };
     let fixed = work_fixed_lines(&agents).join("\n");
-    let settings_here = lines.iter().position(|line| *line == "--settings").map_or(true, |at| lines.get(at + 1) == Some(&settings.as_str()));
-    text.contains(&fixed) && settings_here
+    // The settings file is always named (it keeps the claude.ai connectors out) and holds the setting.
+    let settings_here = lines.iter().position(|line| *line == "--settings").is_some_and(|at| lines.get(at + 1) == Some(&settings.as_str()));
+    text.contains(&fixed) && settings_here && worker_settings_current(project)
 }
 
 /// The plan options file has the fixed part of this version, with the plans folder of this
 /// project in its Write rule. A file from the old layout or from another computer names another folder.
+/// The settings file that the fixed part names must hold the setting without the claude.ai connectors.
 fn plan_flags_current(project: &Project) -> bool {
     let Ok(fixed) = plan_fixed_lines(project) else { return false };
-    fs::read_to_string(project.plan_flags()).is_ok_and(|text| text.replace("\r\n", "\n").contains(&fixed.join("\n")))
+    fs::read_to_string(project.plan_flags()).is_ok_and(|text| text.replace("\r\n", "\n").contains(&fixed.join("\n"))) && worker_settings_current(project)
 }
 
 /// The lines of `work-flags.txt`: the choice of the user, the fixed part, then the settings file
-/// with the agent limit when the user set one. The settings file is written here.
+/// of the workers. The settings file is written here, always: it keeps the claude.ai connectors
+/// out of each run, and holds the agent limit when the user set one.
 fn work_flag_lines(project: &Project, work: &Choice, agents: &str) -> Result<Vec<String>, String> {
     let mut lines = choice_lines(work)?;
     lines.extend(work_fixed_lines(agents));
-    if let Some(settings) = agent_settings(agents)? {
-        let file = project.worker_settings();
-        write_file(&file, &format!("{}\n", serde_json::to_string_pretty(&settings).map_err(err)?))?;
-        lines.push("--settings".to_string());
-        // Relative to the project with `/`: each computer and each shell reads it the same.
-        lines.push(worker_settings_text());
-    }
+    let settings = agent_settings(agents)?;
+    write_file(&project.worker_settings(), &format!("{}\n", serde_json::to_string_pretty(&settings).map_err(err)?))?;
+    // Relative to the project with `/`: each computer and each shell reads it the same.
+    lines.extend(settings_lines());
     Ok(lines)
 }
 
@@ -7570,10 +7601,13 @@ pub(crate) mod tests {
     /// The fixed part of `work-flags.txt`, as lines.
     const WORK_FIXED: &str = "--permission-mode\nauto\n--tools\nRead,Edit,Write,Glob,Grep,Bash,ToolSearch,Agent\n--disallowedTools\nAskUserQuestion,SendMessage\n";
 
+    /// The two lines that name the settings file of the workers, at the end of both options files.
+    const SETTINGS: &str = "--settings\n.dispatch/worker-settings.json\n";
+
     /// The expected text of `plan-flags.txt` for a choice: the choice lines, then the fixed part
     /// with the plans folder of this scratch project in its Edit rule.
     fn plan_lines(project: &Project, choice_lines: &str) -> String {
-        format!("{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,WebFetch,Write\n--allowedTools\n{}\n--disallowedTools\n{}\n", plan_allowed(project), plan_denied(project))
+        format!("{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,WebFetch,Write\n--allowedTools\n{}\n--disallowedTools\n{}\n{SETTINGS}", plan_allowed(project), plan_denied(project))
     }
 
     /// The allow list of a plan run with "Measure before the plan" off.
@@ -7613,7 +7647,7 @@ pub(crate) mod tests {
         assert!(project.briefs().is_dir() && project.plans().is_dir());
         assert_eq!(read(&project.plan_flags()), plan_lines(&project, "--model\nfable\n--effort\nxhigh\n"));
         assert!(read(&project.plan_flags()).contains(",Edit(.dispatch/plans/**)\n"), "the Edit rule names the plans folder relative to the project");
-        assert_eq!(read(&project.work_flags()), format!("--model\nopus\n--effort\nxhigh\n{WORK_FIXED}"));
+        assert_eq!(read(&project.work_flags()), format!("--model\nopus\n--effort\nxhigh\n{WORK_FIXED}{SETTINGS}"));
         assert_eq!(read(&project.script()), WORKER_SCRIPT);
 
         let settings = read_settings(&project.local_settings()).unwrap();
@@ -7731,10 +7765,15 @@ pub(crate) mod tests {
         assert_eq!(read_worker_flags(&project).agents, "0");
         assert!(work_flags_current(&project));
 
-        // No agent limit: the settings file is not named, and the limit reads as empty.
+        assert_eq!(read_settings(&project.worker_settings()).unwrap()["disableClaudeAiConnectors"], json!(true), "no connectors with a limit");
+
+        // No agent limit: the settings file is still named (it keeps the claude.ai connectors out),
+        // and the limit reads as empty.
         write_worker_flags(&project, &choice("fable", "xhigh"), &choice("opus", "xhigh"), "").unwrap();
-        assert_eq!(read(&project.work_flags()), format!("--model\nopus\n--effort\nxhigh\n{WORK_FIXED}"));
+        assert_eq!(read(&project.work_flags()), format!("--model\nopus\n--effort\nxhigh\n{WORK_FIXED}{SETTINGS}"));
+        assert_eq!(Value::Object(read_settings(&project.worker_settings()).unwrap()), json!({ "disableClaudeAiConnectors": true }));
         assert_eq!(read_worker_flags(&project).agents, "");
+        assert!(work_flags_current(&project) && plan_flags_current(&project));
         clean(&project);
     }
 
@@ -9203,7 +9242,7 @@ if (args[0] === 'agents') {
         let rule = project.rule_path();
         let script = script_command(&project.reports_text());
         format!(
-            "{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,WebFetch,Write\n--allowedTools\nBash({script} measure *),WebFetch,Edit({rule}/plans/**),Edit({rule}/measure/**)\n--disallowedTools\nEdit({rule}/briefs/**),Bash({script} plan *),Bash({script} approve *),Bash({script} reply *),Bash({script} status *),Bash({script} stop *),Bash({script} resume *),Bash({script} merge *),Bash({script} -*),Bash({script} * -*)\n"
+            "{choice_lines}--permission-mode\ndontAsk\n--tools\nRead,Grep,Glob,Bash,WebFetch,Write\n--allowedTools\nBash({script} measure *),WebFetch,Edit({rule}/plans/**),Edit({rule}/measure/**)\n--disallowedTools\nEdit({rule}/briefs/**),Bash({script} plan *),Bash({script} approve *),Bash({script} reply *),Bash({script} status *),Bash({script} stop *),Bash({script} resume *),Bash({script} merge *),Bash({script} -*),Bash({script} * -*)\n{SETTINGS}"
         )
     }
 
@@ -9643,9 +9682,12 @@ if (args[0] === 'agents') {
         let start = last_call(&fake);
         assert!(start[0].starts_with("Plan ticket t-1. Read the brief "), "{start:?}");
         assert_eq!(&start[1..6], ["--bg", "--name", "t-1 [plan]", "--model", "fable"]);
-        assert_eq!(start[start.len() - 5], "Read,Grep,Glob,Bash,WebFetch,Write");
-        assert_eq!(start[start.len() - 3], absolute_rules(&project, &plan_allowed(&project)));
-        assert_eq!(start.last().unwrap(), &absolute_rules(&project, &plan_denied(&project)));
+        assert_eq!(start[start.len() - 7], "Read,Grep,Glob,Bash,WebFetch,Write");
+        assert_eq!(start[start.len() - 5], absolute_rules(&project, &plan_allowed(&project)));
+        assert_eq!(start[start.len() - 3], absolute_rules(&project, &plan_denied(&project)));
+        // The plan run loads the settings file of the workers, without the claude.ai connectors.
+        assert_eq!(start[start.len() - 2], "--settings");
+        assert_eq!(start.last().unwrap(), &project.worker_settings().to_string_lossy(), "{start:?}");
         // The session file names the session of the plan run (ticket task-tokens); claude printed bg-1.
         assert!(out.contains("bg-1"), "the script writes the output of claude on: {out}");
         assert_eq!(read(&project.session_file("t-1")), "plan sess-1\n");
@@ -9685,7 +9727,8 @@ if (args[0] === 'agents') {
         fs::remove_file(project.task_checks_file("t-1")).unwrap();
         // No resume: a new session with the name of the work run and the work options.
         assert!(!resume.iter().any(|arg| arg == "--resume"), "{resume:?}");
-        assert_eq!(&resume[1..], ["--bg", "--name", "t-1 [work]", "--model", "opus", "--effort", "xhigh", "--permission-mode", "auto", "--tools", "Read,Edit,Write,Glob,Grep,Bash,ToolSearch,Agent", "--disallowedTools", "AskUserQuestion,SendMessage"]);
+        let settings = project.worker_settings().to_string_lossy().into_owned();
+        assert_eq!(&resume[1..], ["--bg", "--name", "t-1 [work]", "--model", "opus", "--effort", "xhigh", "--permission-mode", "auto", "--tools", "Read,Edit,Write,Glob,Grep,Bash,ToolSearch,Agent", "--disallowedTools", "AskUserQuestion,SendMessage", "--settings", settings.as_str()]);
         // claude runs in the project folder, whatever the folder of the caller is.
         assert_eq!(Path::new(read(&fake.join("cwd.txt")).trim()), project.root.as_path());
 
@@ -9870,7 +9913,7 @@ if (args[0] === 'agents') {
         fs::remove_file(project.reports.join("work-tools.txt")).unwrap();
         assert_eq!(
             &last_call(&fake)[1..],
-            ["--bg", "--name", "t-1 [work]", "--model", "sonnet", "--effort", "medium", "--permission-mode", "auto", "--tools", "Read,Edit,Write,Glob,Grep,Bash,ToolSearch,Agent,Skill", "--disallowedTools", "AskUserQuestion,SendMessage"]
+            ["--bg", "--name", "t-1 [work]", "--model", "sonnet", "--effort", "medium", "--permission-mode", "auto", "--tools", "Read,Edit,Write,Glob,Grep,Bash,ToolSearch,Agent,Skill", "--disallowedTools", "AskUserQuestion,SendMessage", "--settings", settings.as_str()]
         );
         let (code, out) = run_script(&project, &fake, "done", &["plan", "t-1"]);
         assert_eq!(code, 0, "{out}");
@@ -9907,7 +9950,8 @@ if (args[0] === 'agents') {
             last_call(&fake),
             [
                 "The user stopped this run in Dispatch and now resumes it. Go on where you stopped.", "--resume", "sess-1", "--bg", "--name", "t-1 [work]",
-                "--model", "opus", "--effort", "xhigh", "--permission-mode", "auto", "--tools", "Read,Edit,Write,Glob,Grep,Bash,ToolSearch,Agent", "--disallowedTools", "AskUserQuestion,SendMessage"
+                "--model", "opus", "--effort", "xhigh", "--permission-mode", "auto", "--tools", "Read,Edit,Write,Glob,Grep,Bash,ToolSearch,Agent", "--disallowedTools", "AskUserQuestion,SendMessage",
+                "--settings", settings.as_str()
             ]
         );
         // A task that is not stopped is not resumed.
@@ -9924,7 +9968,8 @@ if (args[0] === 'agents') {
         assert_eq!(read(&project.reports.join("t-1.state")), "planning\n");
         let plan = last_call(&fake);
         assert_eq!(&plan[1..8], ["--resume", "sess-1", "--bg", "--name", "t-1 [plan]", "--model", "fable"]);
-        assert_eq!(plan.last().unwrap(), &absolute_rules(&project, &plan_denied(&project)));
+        assert_eq!(plan[plan.len() - 3], absolute_rules(&project, &plan_denied(&project)));
+        assert_eq!(plan[plan.len() - 2..], ["--settings", settings.as_str()]);
         // A claude that fails writes stopped back, so the card shows Resume again.
         write_file(&project.reports.join("t-1.state"), "stopped\n").unwrap();
         write_file(&fake.join("fail.txt"), "3").unwrap();
