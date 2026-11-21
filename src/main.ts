@@ -34,6 +34,7 @@ import { chatSlotStep, type FoldPart, type Folds, foldOpen, parseFolds, setFold,
 import {
   arrowDiff,
   boxHits,
+  clampOffset,
   collapsedTree,
   comesAfter,
   comesBefore,
@@ -55,9 +56,14 @@ import {
   PLAN_BOX_TITLE,
   PLAN_CARD_HEIGHT,
   PLAN_CARD_WIDTH,
+  PLAN_COLUMN_STEP,
+  PLAN_GRID,
+  PLAN_PAD,
   planArrows,
   planBadges,
+  planCentre,
   planLayout,
+  planShelf,
   planSort,
   planStateWord,
   queueMarks,
@@ -71,6 +77,7 @@ import {
   type PlanArrow,
   type PlanDraft,
   type PlanGroup,
+  type PlanOffset,
   type PlanPlace,
   type PlanTicket,
 } from "./plantree";
@@ -14611,6 +14618,10 @@ const planGroupsSavedAt = new Map<string, number>();
 let planBoxDragging = false;
 /** The places of the cards of the last render, on the canvas; the selection box hits them. */
 let planPlaces: PlanPlace[] = [];
+/** The place of the canvas on the board of each project, by project key: a drag moves it, a render keeps it (ticket plan-mode-is-unusable-on-wide-screen). */
+const planOffsets = new Map<string, PlanOffset>();
+/** The size of the canvas of the last render: a pan keeps part of it inside the board. */
+let planCanvasSize = { width: 0, height: 0 };
 /** The next render gives the keyboard to the title box of the selected group (user decision 2). */
 let planFocusTitle = false;
 /** The names of the four colours of a comment or group: the colours of the app (user decision 1). */
@@ -14652,12 +14663,17 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
   planFlowButton.type = "button";
   planFlowButton.title = "Edit the arrows in a draft; nothing is saved until you click Confirm";
   planFlowButton.addEventListener("click", planStartFlow);
+  const planCentreButton = mapElement("button", "plan-tool plan-centre", "Centre the tree");
+  planCentreButton.type = "button";
+  planCentreButton.title = "Move the board so that the root card stands in the middle";
+  planCentreButton.addEventListener("click", planCentreTree);
   planToolbarEl.append(
     label,
     planCountEl,
     planFlowButton,
     toolButton("Collapse all", "Collapse every comment and group into its stacked card", true),
     toolButton("Expand all", "Open every group: its tickets show in the tree inside a box", false),
+    planCentreButton,
     planNoteEl,
   );
   planFlowBarEl.hidden = true;
@@ -14683,23 +14699,70 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
     } else return;
     event.preventDefault();
   });
-  // The selection box: a drag with the left button on the empty board.
-  let start: { x: number; y: number; pointer: number; extend: boolean } | null = null;
+  // The empty board (ticket plan-mode-is-unusable-on-wide-screen, user decision 1): a drag with the
+  // left button moves the canvas; a Shift-drag draws the selection box, a Ctrl-drag draws it and adds
+  // to the selection. A drag with the middle button moves the canvas from anywhere on the board. A
+  // click without a move selects nothing.
+  let start: {
+    x: number;
+    y: number;
+    pointer: number;
+    mode: "box" | "pan";
+    extend: boolean;
+    clientX: number;
+    clientY: number;
+    from: PlanOffset;
+    key: string;
+    clears: boolean;
+  } | null = null;
   let boxEl: HTMLElement | null = null;
+  let panned = false;
   const canvasOf = () => planBoardEl.querySelector<HTMLElement>(".plan-canvas");
   const at = (event: PointerEvent) => {
     const rect = canvasOf()?.getBoundingClientRect();
     return { x: event.clientX - (rect?.left ?? 0), y: event.clientY - (rect?.top ?? 0) };
   };
+  /** The target is the empty board: the board, the canvas, the shelf heading, the note or the inside of a comment box. */
+  const emptyAt = (target: EventTarget | null) => target === planBoardEl || (target instanceof HTMLElement && target.matches(".plan-canvas, .plan-shelf-title, .plan-empty, .plan-group-box"));
+  const offsetOf = (key: string, canvas: HTMLElement): PlanOffset => planOffsets.get(key) ?? { x: canvas.offsetLeft, y: canvas.offsetTop };
   planBoardEl.addEventListener("pointerdown", (event) => {
     const canvas = canvasOf();
-    if (event.button !== 0 || !canvas || (event.target !== planBoardEl && event.target !== canvas)) return;
+    const ref = planProject();
+    if (!canvas || !ref) return;
+    const middle = event.button === 1;
+    if (!middle && (event.button !== 0 || !emptyAt(event.target))) return;
+    if (middle) event.preventDefault();
     planBoardEl.focus({ preventScroll: true });
-    start = { ...at(event), pointer: event.pointerId, extend: event.shiftKey || event.ctrlKey || event.metaKey };
+    const key = refKey(ref);
+    const box = !middle && (event.shiftKey || event.ctrlKey || event.metaKey);
+    start = {
+      ...at(event),
+      pointer: event.pointerId,
+      mode: box ? "box" : "pan",
+      extend: box && (event.ctrlKey || event.metaKey),
+      clientX: event.clientX,
+      clientY: event.clientY,
+      from: offsetOf(key, canvas),
+      key,
+      clears: !middle,
+    };
     planBoardEl.setPointerCapture(event.pointerId);
+  });
+  // No autoscroll of the browser on a press of the middle button.
+  planBoardEl.addEventListener("mousedown", (event) => {
+    if (event.button === 1) event.preventDefault();
   });
   planBoardEl.addEventListener("pointermove", (event) => {
     if (!start || event.pointerId !== start.pointer) return;
+    if (start.mode === "pan") {
+      const dx = event.clientX - start.clientX;
+      const dy = event.clientY - start.clientY;
+      if (!panned && Math.hypot(dx, dy) < 4) return;
+      panned = true;
+      planBoardEl.classList.add("panning");
+      planPlaceCanvas(start.key, { x: start.from.x + dx, y: start.from.y + dy });
+      return;
+    }
     const now = at(event);
     if (!planBoxDragging && Math.hypot(now.x - start.x, now.y - start.y) < 4) return;
     planBoxDragging = true;
@@ -14716,6 +14779,14 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
     if (!start || event.pointerId !== start.pointer) return;
     const begin = start;
     start = null;
+    if (begin.mode === "pan") {
+      const moved = panned;
+      panned = false;
+      planBoardEl.classList.remove("panning");
+      // A click on the empty board clears the selection.
+      if (!moved && !cancel && begin.clears) planClearSelection();
+      return;
+    }
     boxEl?.remove();
     boxEl = null;
     const dragged = planBoxDragging;
@@ -14739,6 +14810,35 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
   };
   planBoardEl.addEventListener("pointerup", (event) => finish(event, false));
   planBoardEl.addEventListener("pointercancel", (event) => finish(event, true));
+  // The wheel moves the board up and down, with Shift left and right; the board does not scroll.
+  planBoardEl.addEventListener(
+    "wheel",
+    (event) => {
+      const canvas = canvasOf();
+      const ref = planProject();
+      if (event.ctrlKey || !canvas || !ref) return;
+      event.preventDefault();
+      const unit = event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? planBoardEl.clientHeight : 1;
+      const sideways = event.shiftKey && event.deltaX === 0;
+      const dx = (sideways ? event.deltaY : event.deltaX) * unit;
+      const dy = (sideways ? 0 : event.deltaY) * unit;
+      const key = refKey(ref);
+      const from = offsetOf(key, canvas);
+      planPlaceCanvas(key, { x: from.x - dx, y: from.y - dy });
+    },
+    { passive: false },
+  );
+  // The right-click menu of the board (user decision 3): a card that is not selected is selected first.
+  planBoardEl.addEventListener("contextmenu", (event) => {
+    const ref = planProject();
+    if (!ref || !canvasOf()) return;
+    event.preventDefault();
+    closeBoardMenu();
+    const card = event.target instanceof Element ? event.target.closest<HTMLElement>(".plan-ticket, .plan-group") : null;
+    const id = card?.dataset.ticket ?? (card?.dataset.group ? groupNodeId(card.dataset.group) : undefined);
+    if (id && !planSelected.has(id)) planSelect([id]);
+    planBoardMenu(event, ref);
+  });
   planSelectEl.addEventListener("change", () => {
     try {
       localStorage.setItem(PLAN_PROJECT_KEY, planSelectEl.value);
@@ -14753,6 +14853,30 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
     renderPlan();
     void refreshFocusTasks();
   });
+}
+
+/**
+ * Puts the canvas at an offset on the board, kept so that part of it stays inside; the dots of the
+ * board move with it. Without `canvas` it moves the canvas on the board. A hidden board keeps the offset as it is.
+ */
+function planPlaceCanvas(key: string, offset: PlanOffset, canvas = planBoardEl.querySelector<HTMLElement>(".plan-canvas")): void {
+  const board = { width: planBoardEl.clientWidth, height: planBoardEl.clientHeight };
+  const kept = board.width > 0 ? clampOffset(offset, board, planCanvasSize) : offset;
+  if (board.width > 0) planOffsets.set(key, kept);
+  if (canvas) {
+    canvas.style.left = `${kept.x}px`;
+    canvas.style.top = `${kept.y}px`;
+  }
+  // The dots: a dot stands at each corner of the 50 px grid of the canvas.
+  planBoardEl.style.backgroundPosition = `${kept.x - PLAN_GRID / 2}px ${kept.y - PLAN_GRID / 2}px`;
+}
+
+/** Centre the tree: the next render puts the root card in the middle of the board again. */
+function planCentreTree(): void {
+  const ref = planProject();
+  if (!ref) return;
+  planOffsets.delete(refKey(ref));
+  renderPlan();
 }
 
 /** The projects of the select: the ones of the Map (focus mode, else the open workspaces). */
@@ -14842,6 +14966,39 @@ function planSelectionMenu(event: MouseEvent): void {
     item("Group and collapse (G)", "Put the selected tickets into a group that stands as one card in the tree", () => planAddGroup(true)),
     item("Clear selection (Esc)", "Select nothing", planClearSelection),
   );
+  showMenu(menu, event, null);
+}
+
+/** The right-click menu of the board: a new ticket, Plan the flow, Centre the tree, and comment and group for the selected cards. */
+function planBoardMenu(event: MouseEvent, ref: ProjectRef): void {
+  const project: ProjectRef = { host: ref.host, root: ref.root };
+  const key = refKey(ref);
+  const menu = mapElement("div", "ticket-menu plan-board-menu");
+  menu.setAttribute("role", "menu");
+  const item = (label: string, title: string, act: () => void, off = false): HTMLButtonElement => {
+    const button = mapElement("button", "", label);
+    button.type = "button";
+    button.title = title;
+    button.disabled = off;
+    button.setAttribute("role", "menuitem");
+    button.addEventListener("click", () => {
+      closeBoardMenu();
+      act();
+    });
+    return button;
+  };
+  menu.append(
+    item("New ticket in Scheduled", "Open the New ticket window; the ticket goes to the end of Scheduled", () => openAddTicket(project, "new")),
+    item("New ticket in Backlog", "Open the New ticket window; the ticket waits in Backlog", () => openAddTicket(project, "backlog")),
+    item("Plan the flow", "Edit the arrows in a draft; nothing is saved until you click Confirm", planStartFlow, planDrafts.has(key) || !projectTasks.has(key)),
+    item("Centre the tree", "Move the board so that the root card stands in the middle", planCentreTree),
+  );
+  if (planSelected.size > 0) {
+    menu.append(
+      item("Add comment (C)", "Draw an open box with a title around the selected tickets", () => planAddGroup(false)),
+      item("Group and collapse (G)", "Put the selected tickets into a group that stands as one card in the tree", () => planAddGroup(true)),
+    );
+  }
   showMenu(menu, event, null);
 }
 
@@ -15244,7 +15401,15 @@ function renderPlan(): void {
   const planName = (id: string) => addedOf(id)?.text ?? id;
   // The collapsed groups stand for their tickets; the layout takes the nodes unchanged.
   const tree = collapsedTree(layoutList, groups);
-  const layout = planLayout(tree.nodes);
+  const treeLayout = planLayout(tree.nodes);
+  // The open tickets without an arrow stand on a shelf under the tree, as many in a row as the board
+  // holds (ticket plan-mode-is-unusable-on-wide-screen). A card of the tree is not on the shelf.
+  const boardSize = { width: planBoardEl.clientWidth, height: planBoardEl.clientHeight };
+  const inTree = new Set(treeLayout.cards.map((card) => card.id));
+  const looseIds = notInFlow(flow).flatMap((one) => (byId.has(one.id) && !inTree.has(one.id) ? [one.id] : []));
+  const perRow = boardSize.width > 0 ? Math.floor((boardSize.width - 2 * PLAN_PAD) / PLAN_COLUMN_STEP) : 4;
+  const shelf = planShelf(looseIds, treeLayout, perRow);
+  const layout = shelf.layout;
   planPlaces = layout.cards;
   const badges = planBadges(flow);
   const ticketArrows = planArrows(flow);
@@ -15299,7 +15464,7 @@ function renderPlan(): void {
   }
 
   // The selection keeps only what the tree still shows.
-  const shown = new Set(layout.cards.map((card) => card.id));
+  const shown = new Set([...layout.cards, ...shelf.cards].map((card) => card.id));
   planSelected = new Set([...planSelected].filter((id) => shown.has(id)));
   if (planSelectedGroup !== null && !groups.some((group) => group.id === planSelectedGroup)) planSelectedGroup = null;
   // A selected arrow is an arrow of the tickets whose line in the tree is not merged.
@@ -15314,6 +15479,9 @@ function renderPlan(): void {
   const canvas = mapElement("div", "plan-canvas");
   canvas.style.width = `${layout.width}px`;
   canvas.style.height = `${layout.height}px`;
+  // The first render of a project puts the root card in the middle of the board; then a drag moves it.
+  planCanvasSize = { width: layout.width, height: layout.height };
+  planPlaceCanvas(key, planOffsets.get(key) ?? (boardSize.width > 0 ? planCentre(boardSize, layout) : { x: 0, y: 0 }), canvas);
   const svg = planSvg("svg", { class: "plan-wires", width: layout.width, height: layout.height, "aria-hidden": "true" });
   const marker = planSvg("marker", { id: "plan-head", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: "auto-start-reverse" });
   marker.append(planSvg("path", { d: "M 0 1 L 9 5 L 0 9 z", class: "plan-head" }));
@@ -15515,9 +15683,53 @@ function renderPlan(): void {
     if (draft) el.append(plusButton(ticket.id));
     canvas.append(el);
   }
-  const children: HTMLElement[] = [canvas];
-  if (flowTickets(flow).length === 0) children.push(mapElement("p", "map-muted plan-empty", draft ? "No arrow yet: click Place on a ticket of Not in the flow." : "No ticket of this project has an arrow yet."));
-  planBoardEl.replaceChildren(...children);
+  // Not in the flow (ticket plan-mode-is-unusable-on-wide-screen): a card per open ticket without an
+  // arrow on the shelf. The selection box and the comment boxes take only the cards of the tree.
+  if (shelf.title) {
+    const shelfEl = mapElement("div", "plan-shelf");
+    const heading = mapElement("div", "plan-shelf-title", `Not in the flow (${shelf.cards.length})`);
+    heading.style.left = `${shelf.title.x}px`;
+    heading.style.top = `${shelf.title.y}px`;
+    shelfEl.append(heading);
+    for (const card of shelf.cards) {
+      const ticket = byId.get(card.id);
+      if (!ticket) continue;
+      const state = planCardState(ticket, queueIds, record);
+      const el = mapElement("div", `plan-card plan-ticket ${ticket.status}${planSelected.has(ticket.id) ? " selected" : ""}`);
+      el.dataset.ticket = ticket.id;
+      el.style.left = `${card.x}px`;
+      el.style.top = `${card.y}px`;
+      el.title = draft && !picking ? `${ticket.title}\nClick to place it: then click the ticket that it comes after` : ticket.title;
+      const top = mapElement("div", "plan-card-top");
+      const dot = mapElement("span", `plan-dot ${state.dot}`);
+      dot.setAttribute("aria-hidden", "true");
+      top.append(dot, mapElement("span", "plan-name", ticket.id));
+      const line = mapElement("div", "plan-state", state.word);
+      if (state.detail) {
+        line.append(" · ");
+        const detail = mapElement("span", "", state.detail);
+        if (state.since) detail.dataset.runSince = String(state.since);
+        line.append(detail);
+      }
+      el.append(top, line);
+      // While an arrow is drawn or a ticket placed, a click picks it; while planning it places it; else it selects.
+      el.addEventListener("click", (event) => {
+        if (picking) planPickCard(ticket.id);
+        else if (draft) planPlace(ticket.id);
+        else planSelect(toggleSelection(planSelected, ticket.id, event.shiftKey || event.ctrlKey || event.metaKey));
+      });
+      shelfEl.append(el);
+    }
+    canvas.append(shelfEl);
+  }
+  if (flowTickets(flow).length === 0) {
+    // The note stands under the root card, above the shelf.
+    const note = mapElement("p", "map-muted plan-empty", draft ? "No arrow yet: click a ticket of Not in the flow to place it." : "No ticket of this project has an arrow yet.");
+    note.style.left = `${layout.root.x + PLAN_CARD_WIDTH / 2}px`;
+    note.style.top = `${layout.root.y + PLAN_CARD_HEIGHT + 12}px`;
+    canvas.append(note);
+  }
+  planBoardEl.replaceChildren(canvas);
 
   // The side panel waits while the user types a title or the words of a new ticket, or picks in a
   // select; the next render after the blur draws it.

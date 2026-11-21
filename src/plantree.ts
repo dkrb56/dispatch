@@ -173,6 +173,87 @@ function snap(value: number): number {
   return Math.round(value / PLAN_GRID) * PLAN_GRID;
 }
 
+// Wide screen (ticket plan-mode-is-unusable-on-wide-screen): the open tickets without an arrow stand
+// as cards on a shelf under the tree, the tree starts in the middle of the board, and a drag moves
+// the canvas on the board.
+
+/** The step between two rows of the shelf: a card and a gap, two slots of the grid. */
+export const PLAN_SHELF_ROW_STEP = 2 * PLAN_GRID;
+/** The part of the canvas, in px, that a pan keeps inside the board on each side. */
+export const PLAN_PAN_KEEP = 100;
+
+/** The shelf of "Not in the flow" under the tree. */
+export interface PlanShelf {
+  /** The layout of the tree, moved to the right when the shelf is wider than the free space at its left; with the new canvas size. */
+  layout: PlanLayout;
+  /** The places of the shelf cards, in the order of the ids; `row` is the row of the shelf. */
+  cards: PlanPlace[];
+  /** The top left corner of the heading; null without a shelf card. */
+  title: { x: number; y: number } | null;
+}
+
+/**
+ * The shelf: the cards of `ids` in rows of at most `perRow` cards below the tree, each row centred
+ * under the root, every corner on the 50 px grid. The heading stands one slot above the first row.
+ * When a row would start left of the free space, the tree and the shelf move right together.
+ */
+export function planShelf(ids: readonly string[], layout: PlanLayout, perRow = 4): PlanShelf {
+  if (ids.length === 0) return { layout, cards: [], title: null };
+  const across = Math.max(1, Math.floor(perRow));
+  const treeBottom = layout.height - PLAN_PAD;
+  const titleY = Math.ceil((treeBottom + PLAN_GRID) / PLAN_GRID) * PLAN_GRID;
+  const firstY = titleY + PLAN_GRID;
+  const cards: PlanPlace[] = ids.map((id, at) => {
+    const row = Math.floor(at / across);
+    const inRow = Math.min(across, ids.length - row * across);
+    const left = snap(layout.root.x - ((inRow - 1) / 2) * PLAN_COLUMN_STEP);
+    return { id, row, x: left + (at % across) * PLAN_COLUMN_STEP, y: firstY + row * PLAN_SHELF_ROW_STEP };
+  });
+  const shift = Math.max(0, PLAN_PAD - Math.min(...cards.map((card) => card.x)));
+  const moved = cards.map((card) => ({ ...card, x: card.x + shift }));
+  const right = Math.max(...moved.map((card) => card.x)) + PLAN_CARD_WIDTH + PLAN_PAD;
+  const bottom = Math.max(...moved.map((card) => card.y)) + PLAN_CARD_HEIGHT + PLAN_PAD;
+  return {
+    layout: {
+      ...layout,
+      root: { x: layout.root.x + shift, y: layout.root.y },
+      cards: layout.cards.map((card) => ({ ...card, x: card.x + shift })),
+      width: Math.max(layout.width + shift, right),
+      height: Math.max(layout.height, bottom),
+    },
+    cards: moved,
+    title: { x: Math.min(...moved.map((card) => card.x)), y: titleY },
+  };
+}
+
+/** A size in px: of the board or of the canvas. */
+export interface PlanSize {
+  width: number;
+  height: number;
+}
+
+/** The place of the canvas on the board: the left and top of the canvas in px. */
+export interface PlanOffset {
+  x: number;
+  y: number;
+}
+
+/** The offset that puts the centre of the root card at the middle of the board, the top of the canvas at the top of the board. */
+export function planCentre(board: PlanSize, layout: Pick<PlanLayout, "root">): PlanOffset {
+  return { x: Math.round(board.width / 2 - (layout.root.x + PLAN_CARD_WIDTH / 2)), y: 0 };
+}
+
+/** The offset kept so that at least `PLAN_PAN_KEEP` px of the canvas (all of a smaller canvas) stays inside the board on each axis. */
+export function clampOffset(offset: PlanOffset, board: PlanSize, canvas: PlanSize): PlanOffset {
+  const axis = (value: number, boardSize: number, canvasSize: number) => {
+    const keep = Math.min(PLAN_PAN_KEEP, canvasSize);
+    const low = keep - canvasSize;
+    const high = Math.max(low, boardSize - keep);
+    return Math.min(high, Math.max(low, value));
+  };
+  return { x: axis(offset.x, board.width, canvas.width), y: axis(offset.y, board.height, canvas.height) };
+}
+
 /**
  * The badge of a card. `next`: Scheduled or Backlog, and every ticket before it is done. `early`: in work
  * (In progress) while a ticket before it is not done. `waits`: Scheduled or Backlog while a ticket before

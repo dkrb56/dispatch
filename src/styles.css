@@ -10419,7 +10419,7 @@ svg.links {
 /* ---------------------------------------------------------------------------------------------
    The Plan view (ticket feature-plan-view-a-tree-of-the-project): the tickets of one project as a
    tree on the dots of the Overview, with a toolbar on top and a side panel at the right. The cards
-   stand on the 50px grid: the canvas has the margin of an Overview card, so a corner lands on a dot.
+   stand on the 50px grid: the dots of the board move with the canvas, so a corner lands on a dot.
    --------------------------------------------------------------------------------------------- */
 
 #plan {
@@ -10472,15 +10472,22 @@ svg.links {
 }
 
 /* The dots of the Overview (overview-dot-grid), the same tile and offset. */
+/* The board does not scroll: a drag or the wheel moves the canvas on it, and main.ts moves the dots
+   with the canvas (ticket plan-mode-is-unusable-on-wide-screen). */
 #plan .plan-board {
   position: relative;
   flex: 1;
   min-width: 0;
-  overflow: auto;
+  overflow: hidden;
+  cursor: grab;
   background-image: radial-gradient(circle, var(--line) 1px, transparent 1.5px);
   background-size: 50px 50px;
   background-position: -5px -9px;
   background-attachment: local;
+}
+
+#plan .plan-board.panning {
+  cursor: grabbing;
 }
 
 #plan .plan-board > .map-none {
@@ -10488,14 +10495,32 @@ svg.links {
 }
 
 .plan-canvas {
-  position: relative;
-  margin: 16px 20px 32px 20px;
+  position: absolute;
+  top: 0;
+  left: 0;
 }
 
+/* Under the root card, centred on it; main.ts sets its place. */
 .plan-empty {
   position: absolute;
-  top: 160px;
-  left: 20px;
+  margin: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+/* Not in the flow: the shelf of cards under the tree. */
+.plan-shelf {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.plan-shelf-title {
+  position: absolute;
+  color: var(--muted);
+  font-size: calc(13px * var(--text-scale));
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .plan-wires {

@@ -8,6 +8,7 @@ import {
   arrowDiff,
   arrowRefusal,
   boxHits,
+  clampOffset,
   collapsedTree,
   comesAfter,
   comesBefore,
@@ -30,11 +31,15 @@ import {
   PLAN_COLUMN_STEP,
   PLAN_GRID,
   PLAN_PAD,
+  PLAN_PAN_KEEP,
   PLAN_ROW_STEP,
+  PLAN_SHELF_ROW_STEP,
   planArrows,
   planBadges,
+  planCentre,
   planLayout,
   planRows,
+  planShelf,
   planSort,
   planStateWord,
   queueMarks,
@@ -183,6 +188,13 @@ test("the page has the Plan button, its canvas and its Help, and main.ts draws i
   assert.match(main, /"plan_confirm"/);
   assert.match(css, /\.plan-arrow\.added \{/);
   assert.match(css, /\.plan-arrow\.removed \{[^}]*stroke-dasharray/);
+  // Ticket plan-mode-is-unusable-on-wide-screen: the right-click menu, the pan, the shelf and their Help.
+  assert.match(main, /planBoardEl\.addEventListener\("contextmenu"/);
+  assert.match(main, /planBoardEl\.addEventListener\(\s*"wheel"/);
+  assert.match(main, /"plan-shelf"/);
+  assert.match(html, /<b>Centre the tree<\/b>/);
+  assert.match(html, /Shift-drag on the empty board draws a box/);
+  assert.ok(/#plan \.plan-board \{[^}]*\}/.exec(css)?.[0].includes("overflow: hidden"), "the Plan board does not scroll");
 });
 
 const g = (id: string, tickets: string[], collapsed = true, title = "Group"): PlanGroup => ({ id, title, color: 0, collapsed, tickets });
@@ -428,4 +440,72 @@ test("the change list names each change and counts them", () => {
   assert.equal(draftChanges(TREE, back).count, 0);
   // Taken out.
   assert.ok(draftChanges(TREE, takenOut(TREE, makeDraft(TREE), "e")).lines.includes("Taken out: e"));
+});
+
+// Ticket plan-mode-is-unusable-on-wide-screen: the shelf of "Not in the flow", the centring and the pan limit.
+
+test("the shelf puts the loose tickets in centred rows under the tree, on the 50 px grid", () => {
+  const lone = planLayout([t("x", "new")]);
+  assert.deepEqual(planShelf([], lone), { layout: lone, cards: [], title: null }, "no loose ticket: no shelf");
+  const shelf = planShelf(["a", "b", "c", "d", "e"], lone, 4);
+  const treeBottom = lone.root.y + PLAN_CARD_HEIGHT;
+  assert.deepEqual(
+    shelf.cards.map((card) => card.row),
+    [0, 0, 0, 0, 1],
+    "at most four cards in a row",
+  );
+  for (const card of shelf.cards) {
+    assert.equal(card.x % PLAN_GRID, 0, `${card.id} x on the grid`);
+    assert.equal(card.y % PLAN_GRID, 0, `${card.id} y on the grid`);
+    assert.ok(card.y > treeBottom, `${card.id} below the tree`);
+    assert.ok(card.x >= PLAN_PAD, `${card.id} inside the canvas`);
+  }
+  assert.equal(shelf.cards[1].x - shelf.cards[0].x, PLAN_COLUMN_STEP);
+  assert.equal(shelf.cards[4].y - shelf.cards[0].y, PLAN_SHELF_ROW_STEP);
+  // The rows are centred under the root: a row of one stands under it; the tree moved right with the shelf.
+  assert.equal(shelf.cards[4].x, shelf.layout.root.x);
+  assert.equal(Math.min(...shelf.cards.map((card) => card.x)), PLAN_PAD);
+  const middle = (shelf.cards[0].x + shelf.cards[3].x) / 2;
+  assert.ok(Math.abs(middle - shelf.layout.root.x) <= PLAN_GRID / 2);
+  // The heading stands above the first row and below the tree.
+  assert.ok(shelf.title !== null);
+  assert.equal(shelf.title.x, PLAN_PAD);
+  assert.ok(shelf.title.y > treeBottom && shelf.title.y < shelf.cards[0].y);
+  assert.equal(shelf.layout.width, Math.max(...shelf.cards.map((card) => card.x)) + PLAN_CARD_WIDTH + PLAN_PAD);
+  assert.equal(shelf.layout.height, shelf.cards[4].y + PLAN_CARD_HEIGHT + PLAN_PAD);
+});
+
+test("a shelf narrower than the tree keeps the tree; a wider one moves every tree card by the same amount", () => {
+  const layout = planLayout(TREE);
+  const narrow = planShelf(["f"], layout);
+  assert.deepEqual(narrow.layout.root, layout.root);
+  assert.deepEqual(narrow.layout.cards, layout.cards);
+  assert.equal(narrow.cards[0].x, layout.root.x);
+  assert.ok(narrow.cards[0].y > Math.max(...layout.cards.map((card) => card.y)) + PLAN_CARD_HEIGHT);
+  const wide = planShelf(["f", "g", "h", "i", "j", "k"], layout, 6);
+  const shift = wide.layout.root.x - layout.root.x;
+  assert.ok(shift > 0 && shift % PLAN_GRID === 0);
+  wide.layout.cards.forEach((card, at) => {
+    assert.equal(card.x - layout.cards[at].x, shift);
+    assert.equal(card.y, layout.cards[at].y);
+  });
+  assert.deepEqual(wide.layout.arrows, layout.arrows);
+});
+
+test("the centre puts the root card in the middle of the board, the canvas top at the board top", () => {
+  const layout = planShelf(["a", "b", "c"], planLayout([t("x", "new")]), 4).layout;
+  const offset = planCentre({ width: 2280, height: 900 }, layout);
+  assert.equal(offset.y, 0);
+  assert.equal(offset.x + layout.root.x + PLAN_CARD_WIDTH / 2, 1140);
+  assert.deepEqual(planCentre({ width: 300, height: 300 }, { root: { x: 50, y: 50 } }), { x: 0, y: 0 });
+});
+
+test("a pan keeps part of the canvas inside the board", () => {
+  const board = { width: 1000, height: 600 };
+  const canvas = { width: 1200, height: 500 };
+  assert.deepEqual(clampOffset({ x: 20, y: -30 }, board, canvas), { x: 20, y: -30 }, "inside: unchanged");
+  assert.deepEqual(clampOffset({ x: 5000, y: 5000 }, board, canvas), { x: board.width - PLAN_PAN_KEEP, y: board.height - PLAN_PAN_KEEP });
+  assert.deepEqual(clampOffset({ x: -5000, y: -5000 }, board, canvas), { x: PLAN_PAN_KEEP - canvas.width, y: PLAN_PAN_KEEP - canvas.height });
+  // A canvas smaller than the keep stays whole inside the board.
+  assert.deepEqual(clampOffset({ x: -50, y: 900 }, board, { width: 60, height: 40 }), { x: 0, y: 560 });
 });
