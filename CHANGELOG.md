@@ -2,6 +2,12 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.84 (2026-11-21)
+- The window waits up to 15 s at start for the host of this PC before it shows the error.
+- The phone page opens the Terminal of a project, starts it when none runs, and types into it.
+- The host asks the phone for a PIN before any phone call, Options sets and unlocks it, the page asks again before it types.
+- The phone page becomes a home with a fixed New ticket button and full screens for a plan, a question and a new ticket, with Back at the top and the buttons at the bottom; the Terminal view uses the same frame.
+
 ## 0.1.83 (2026-11-21)
 - The Map shows the same token total as the task card, with the written tokens under it. Tooltips say what each number counts.
 - A finished worker that still looks busy no longer stops night mode in its project.
