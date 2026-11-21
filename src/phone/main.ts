@@ -66,6 +66,7 @@ import {
   PIN_ERRORS,
   pinMessage,
   rowAction,
+  rowTile,
   screenRow,
   allRows,
   showAllKey,
@@ -974,8 +975,32 @@ function rowElement(row: PhoneRow, root: string): HTMLElement {
   return made;
 }
 
-function part(title: string, rows: readonly PhoneRow[], none: string, root: string): HTMLElement[] {
-  return [element("h3", "", title), ...(rows.length > 0 ? rows.map((row) => rowElement(row, root)) : [element("p", "none", none)])];
+/**
+ * A task of the In work list (ticket phone-page-a-task-row-is-one-coloured): one tile in the colour of
+ * its kind, with a dot, the short line of `rowTile` and the title. A tile that opens a screen is one
+ * button; else an article, with Cancel approval below its lines for a queued approval.
+ */
+function tileElement(row: PhoneRow, root: string): HTMLElement {
+  const tile = rowTile(row);
+  const opens = tile.opens;
+  const made = opens ? element("button", `tile ${tile.tone}`) : element("article", `tile ${tile.tone}`);
+  const head = element("span", "tile-head");
+  const dot = element("span", "tile-dot");
+  dot.setAttribute("aria-hidden", "true");
+  head.append(dot, element("span", "tile-line", tile.line));
+  made.append(head, element("span", "tile-title", row.about || row.name));
+  if (opens) {
+    (made as HTMLButtonElement).type = "button";
+    made.addEventListener("click", () => openScreen({ kind: opens.kind, root, mark: opens.mark }));
+  } else if (rowAction(row)?.kind === "cancel") {
+    made.append(...cancelButton(row.plan!, root));
+  }
+  return made;
+}
+
+function part(title: string, rows: readonly PhoneRow[], none: string, root: string, tiles = false): HTMLElement[] {
+  const draw = tiles ? tileElement : rowElement;
+  return [element("h3", "", title), ...(rows.length > 0 ? rows.map((row) => draw(row, root)) : [element("p", "none", none)])];
 }
 
 function shortTime(time: number): string {
@@ -1238,7 +1263,7 @@ function drawCard(card: PhoneCard): HTMLElement {
   view.ticketsEl.textContent = card.tickets;
   view.bodyEl.replaceChildren(
     ...(card.loaded
-      ? [...part("In work", card.inWork, "Nothing in work", card.root), ...part("Done", card.done, "Nothing done yet", card.root)]
+      ? [...part("In work", card.inWork, "Nothing in work", card.root, true), ...part("Done", card.done, "Nothing done yet", card.root)]
       : [element("p", "none", "Reading the tasks…")]),
   );
   return view.el;

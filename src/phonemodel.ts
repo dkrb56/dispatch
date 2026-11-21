@@ -798,6 +798,41 @@ export function rowAction(row: Pick<PhoneRow, "answer" | "plan">): PhoneRowActio
   return null;
 }
 
+/**
+ * The tile of a task in the In work list of the Cards view (ticket phone-page-a-task-row-is-one-coloured):
+ * its colour from the kind of the row, one short line, and the screen that a tap opens (a ready plan
+ * or an unsent answer; null else).
+ */
+export interface PhoneTile {
+  tone: "wait" | "work" | "fail" | "plain";
+  line: string;
+  opens: { kind: "plan" | "answer"; mark: string } | null;
+}
+
+const TILE_TONES: Record<StatusKind, PhoneTile["tone"]> = { waits: "wait", working: "work", failed: "fail", done: "plain" };
+
+export function rowTile(row: Pick<PhoneRow, "kind" | "status" | "answer" | "plan">): PhoneTile {
+  const tone = TILE_TONES[row.kind];
+  if (row.plan) {
+    if (row.plan.state === "ready") {
+      const count = row.plan.decisions.length;
+      const decisions = count === 0 ? "" : ` · ${count} decision${count === 1 ? "" : "s"}`;
+      return { tone, line: `Plan ready${decisions} · tap to review`, opens: { kind: "plan", mark: row.plan.mark } };
+    }
+    if (row.plan.state === "approved") return { tone, line: "Approved · starts when the computer is free", opens: null };
+    return { tone, line: "Sent back · a new plan comes", opens: null };
+  }
+  if (row.answer) {
+    if (row.answer.sent) return { tone, line: "Answer sent · it goes on when the computer starts it", opens: null };
+    const line = row.answer.kind === "confirm" ? "Check result · tap to confirm" : "Question · tap to answer";
+    return { tone, line, opens: { kind: "answer", mark: row.answer.mark } };
+  }
+  const status = row.status.trim();
+  if (status === "Plan run working") return { tone, line: "Planning", opens: null };
+  if (status === "Work run working" || status === "Worker working") return { tone, line: "Working", opens: null };
+  return { tone, line: status.charAt(0).toUpperCase() + status.slice(1), opens: null };
+}
+
 /** Every task row of the cards or of the boards: the rows in work and done, or the row of each ticket. */
 export function allRows(shown: readonly (PhoneCard | PhoneBoard)[]): PhoneRow[] {
   return shown.flatMap((one) =>

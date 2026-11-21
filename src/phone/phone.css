@@ -722,6 +722,77 @@ body.screen-open #app > :not(.screen) {
   line-height: 1;
 }
 
+/* A task of the In work list is one coloured tile (ticket phone-page-a-task-row-is-one-coloured). */
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text-2);
+  font: inherit;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.tile.wait {
+  border-color: var(--wait);
+  background: var(--wait-bg);
+  color: var(--wait);
+}
+
+.tile.work {
+  border-color: var(--work);
+  background: var(--work-bg);
+  color: var(--work);
+}
+
+.tile.fail {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.tile-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tile-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.tile-line {
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tile-title {
+  color: var(--text);
+}
+
+.tile > button {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.tile .answer-error {
+  margin: 4px 0 0;
+}
+
 .option {
   width: 100%;
   min-height: 44px;

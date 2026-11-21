@@ -9,7 +9,7 @@ import { phoneLink, phonePinOk, phoneSetup } from "../src/phonelink.ts";
 import { replyText } from "../src/answers.ts";
 import { confirmChoice, confirmQuestion } from "../src/confirm.ts";
 import { defaultChoice } from "../src/checks.ts";
-import { allRows, approvalQueued, homeScreenHint, inProgressPlace, keyAddress, keyBytes, pasteBytes, PHONE_KEYS, terminalLabel, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, PIN_ERRORS, pinMessage, phoneApproval, phoneBoards, phoneCards, phonePhase, phonePlan, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, planMark, reportMark, rowAction, screenRow, showAllKey, shownRoots, ticketProjects, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneRow, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
+import { allRows, approvalQueued, homeScreenHint, inProgressPlace, keyAddress, keyBytes, pasteBytes, PHONE_KEYS, terminalLabel, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, PIN_ERRORS, pinMessage, phoneApproval, phoneBoards, phoneCards, phonePhase, phonePlan, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, planMark, reportMark, rowAction, rowTile, screenRow, showAllKey, shownRoots, ticketProjects, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneRow, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
 import { boardTickets, type BoardColumn, columnCards, type InProgressView, COLUMNS, countText, type Ticket } from "../src/tickets.ts";
 import { taskTldr } from "../src/tldr.ts";
 import { groupCount } from "../src/topbar.ts";
@@ -532,6 +532,31 @@ test("a row offers Review plan, Cancel approval, Answer or Confirm, or a note af
   const check = task({ ...REPORT("needs-decision", "decision"), questions: [{ number: 1, text: "Agree?", options: ["Keep", "Change"] }], checkResult: ["- a: yes"] });
   assert.deepEqual(rowAction(row({ answer: phoneAnswer(check, tools, new Set()) })), { kind: "answer", label: "Confirm" });
   assert.equal(rowAction(row({})), null, "a plain row offers nothing");
+});
+
+test("a tile of In work has the colour of its kind, a short line and the screen that a tap opens", () => {
+  const ready = phonePlan(task(READY), tools, new Set())!;
+  assert.equal(ready.decisions.length, 2);
+  assert.deepEqual(rowTile(row({ plan: ready })), { tone: "wait", line: "Plan ready · 2 decisions · tap to review", opens: { kind: "plan", mark: ready.mark } });
+  assert.equal(rowTile(row({ plan: { ...ready, decisions: ready.decisions.slice(0, 1) } })).line, "Plan ready · 1 decision · tap to review");
+  assert.equal(rowTile(row({ plan: { ...ready, decisions: [] } })).line, "Plan ready · tap to review");
+  const approved = phonePlan(task({ ...READY, approved: 5 }), tools, new Set())!;
+  assert.deepEqual(rowTile(row({ kind: "done", plan: approved })), { tone: "plain", line: "Approved · starts when the computer is free", opens: null });
+  const rejected = phonePlan(task(READY), tools, new Set([planMark(task(READY))]))!;
+  assert.deepEqual(rowTile(row({ plan: rejected })), { tone: "wait", line: "Sent back · a new plan comes", opens: null });
+  const ask = task({ ...REPORT("needs-decision", "decision"), questions: [QUESTION] });
+  const question = phoneAnswer(ask, tools, new Set())!;
+  assert.deepEqual(rowTile(row({ answer: question })), { tone: "wait", line: "Question · tap to answer", opens: { kind: "answer", mark: question.mark } });
+  assert.deepEqual(rowTile(row({ answer: phoneAnswer(ask, tools, new Set([reportMark(ask)])) })), { tone: "wait", line: "Answer sent · it goes on when the computer starts it", opens: null });
+  const check = task({ ...REPORT("needs-decision", "decision"), questions: [{ number: 1, text: "Agree?", options: ["Keep", "Change"] }], checkResult: ["- a: yes"] });
+  const confirm = phoneAnswer(check, tools, new Set())!;
+  assert.deepEqual(rowTile(row({ answer: confirm })), { tone: "wait", line: "Check result · tap to confirm", opens: { kind: "answer", mark: confirm.mark } });
+  assert.deepEqual(rowTile(row({ kind: "working", status: "Plan run working" })), { tone: "work", line: "Planning", opens: null });
+  assert.deepEqual(rowTile(row({ kind: "working", status: "Work run working" })), { tone: "work", line: "Working", opens: null });
+  assert.deepEqual(rowTile(row({ kind: "working", status: "Worker working" })), { tone: "work", line: "Working", opens: null });
+  assert.deepEqual(rowTile(row({ status: "needs a permission" })), { tone: "wait", line: "Needs a permission", opens: null });
+  assert.deepEqual(rowTile(row({ kind: "failed", status: "stopped" })), { tone: "fail", line: "Stopped", opens: null });
+  assert.deepEqual(rowTile(row({ kind: "done", status: "done" })), { tone: "plain", line: "Done", opens: null });
 });
 
 test("the row of an open screen is found by its plan mark or its report mark, over cards and boards", () => {
