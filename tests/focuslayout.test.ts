@@ -186,6 +186,8 @@ test("the page: the terminal below the board has its wrapper, its button, its dr
   assert.match(css, /\.focus-work\.stacked\s*\{[^}]*flex-direction:\s*column-reverse/);
   assert.match(css, /\.focus-work\.stacked > \.focus-terminal\s*\{[^}]*width:\s*auto/);
   assert.match(css, /\.focus-work\.stacked > \.term-resize\s*\{[^}]*height:\s*5px[^}]*cursor:\s*row-resize/);
+  assert.match(css, /\.focus-terminal\s*\{[^}]*padding:\s*0 0 14px 14px/);
+  assert.match(css, /\.focus-terminal \.term\s*\{[^}]*padding-top:\s*0/);
   // During a drag the panels do not take the pointer, but the handle in the wrapper keeps it.
   assert.match(css, /body\.resizing \.focus-body :is\(\.focus-side, \.focus-terminal, \.focus-main\)\s*\{[^}]*pointer-events:\s*none/);
   assert.doesNotMatch(css, /body\.resizing \.focus-body > :not\(\.side-resize\)/);

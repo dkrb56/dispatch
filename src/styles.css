@@ -8165,11 +8165,11 @@ body.chats-sized .focus-side {
   display: flex;
   flex: none;
   flex-direction: column;
-  gap: 6px;
+  gap: 2px;
   box-sizing: border-box;
   width: calc(420px * var(--text-scale));
   min-width: 0;
-  padding: 0 0 14px;
+  padding: 0 0 14px 14px;
 }
 
 .focus-terminal[hidden] {
@@ -8270,6 +8270,11 @@ body.chats-sized .focus-side {
   min-width: 0;
   border: 0;
   border-radius: 12px;
+}
+
+/* too-horizontal-space-between-terminal: the head line above already gives room. */
+.focus-terminal .term {
+  padding-top: 0;
 }
 
 .focus-terminal .side {
