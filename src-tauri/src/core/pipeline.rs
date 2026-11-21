@@ -1448,6 +1448,7 @@ and, after the user's choice, <ticket-id>.checks; the merge runs these checks be
 Checks at the gate gives them to the gate command.
 <ticket-id>.models, when it exists, gives the model and the effort of a run of the task: a line
 `plan <model> <effort>` or `work <model> <effort>` replaces those of the options file.
+work-tools.txt, when it exists, adds one tool name per line to the --tools list of the work run.
 The script finds the project from its own folder, and the options files name paths relative to the
 project, so a clone on another path or computer needs no change.
 #>
@@ -1506,8 +1507,23 @@ function Read-Flags([string]$Name) {
 # The options of a run with the model and the effort of the task: the line of the run in
 # <ticket-id>.models (`plan <model> <effort>` or `work <model> <effort>`, `-` for no value) replaces
 # the value after --model and after --effort, or goes in front when the options file lacks it.
+# For the work run, each tool name of work-tools.txt (one per line; # starts a note) that the list
+# after --tools lacks goes at its end.
 function Run-Flags([string]$Run) {
   $lines = @(Read-Flags "$Run-flags.txt")
+  $tools = Join-Path $Reports 'work-tools.txt'
+  if ($Run -eq 'work' -and (Test-Path -LiteralPath $tools)) {
+    $at = [Array]::IndexOf([string[]]($lines | ForEach-Object { $_.Trim() }), '--tools')
+    if ($at -ge 0 -and $at + 1 -lt $lines.Count) {
+      $list = @($lines[$at + 1].Trim() -split ',' | Where-Object { $_ -ne '' })
+      foreach ($name in @(Get-Content -LiteralPath $tools)) {
+        $name = $name.Trim()
+        if ($name -notmatch '^[A-Za-z][A-Za-z0-9_-]*$' -or $list -contains $name) { continue }
+        $list += $name
+      }
+      $lines[$at + 1] = $list -join ','
+    }
+  }
   $file = Join-Path $Reports "$Id.models"
   if (-not $Id -or -not (Test-Path -LiteralPath $file)) { return $lines }
   $line = @(Get-Content -LiteralPath $file | Where-Object { ($_.Trim() -split '\s+')[0] -eq $Run }) | Select-Object -First 1
@@ -2914,7 +2930,7 @@ fn plan(project: &Project) -> Result<Plan, String> {
                 && work_flags_current(project)
                 && project.joins_tickets(),
             detail: format!(
-                "The folder .dispatch in the project for the task files: the reports of the workers, a folder for the briefs, a folder for the plans, and the state of each task. {} Git joins the lines of the tickets file of two computers (.dispatch/.gitattributes). The options of the two runs go into plan-flags.txt and work-flags.txt, one argument per line; the files start with the defaults (plan run: {} {}, work run: {} {}). The work run names its permission mode ({}) and its tool list, so that the file says in full what the new session of the work run gets; an older file gets these lines and the paths of this folder, its choice stays. The files name this folder relative to the project, so they are the same on each computer.{}",
+                "The folder .dispatch in the project for the task files: the reports of the workers, a folder for the briefs, a folder for the plans, and the state of each task. {} Git joins the lines of the tickets file of two computers (.dispatch/.gitattributes). The options of the two runs go into plan-flags.txt and work-flags.txt, one argument per line; the files start with the defaults (plan run: {} {}, work run: {} {}). The work run names its permission mode ({}) and its tool list, so that the file says in full what the new session of the work run gets. The work run gets only Read, Edit, Write, Glob, Grep, Bash, ToolSearch and Agent (no Agent with \"no agents\"); one tool name per line in .dispatch/work-tools.txt adds one more tool. An older file gets these lines and the paths of this folder, its choice stays. The files name this folder relative to the project, so they are the same on each computer.{}",
                 if options.ignore_tasks {
                     "Git ignores it (Task files local only is on): the task files stay on this computer, and a clone has none. Approve does not count them as changes."
                 } else {
@@ -2924,7 +2940,7 @@ fn plan(project: &Project) -> Result<Plan, String> {
                 PLAN_DEFAULT.1,
                 WORK_DEFAULT.0,
                 WORK_DEFAULT.1,
-                WORK_FIXED_FLAGS[1],
+                WORK_PERMISSION_MODE,
                 old_reports
                     .as_ref()
                     .map(|old| format!(
@@ -3419,7 +3435,23 @@ fn plan_flag_lines(project: &Project, plan: &Choice) -> Result<Vec<String>, Stri
 /// copy; a question goes into the report. No SendMessage: a worker sends no message to a chat
 /// (cross-session messaging of Claude Code reaches triage and every other session of the user);
 /// its questions and results reach the user only through the report and the Tasks card.
-const WORK_FIXED_FLAGS: [&str; 6] = ["--permission-mode", "auto", "--tools", "default", "--disallowedTools", "AskUserQuestion,SendMessage"];
+/// The tool list is short (ticket give-the-work-run-only-the-tools-it-uses): `--tools default`
+/// gave each reply about 27k tokens of tools that a worker never used (Workflow, Artifact, the
+/// skill list). Read, Edit, Grep, Glob and Bash do the work; Write makes the report, a new file
+/// that Edit cannot make. ToolSearch must stay: `--tools` limits only the built-in tools, MCP
+/// tools come anyway, and without ToolSearch they load in full into each reply (the plan run went
+/// from 14k to 52k); with it they stay deferred and the worker finds one on demand. Agent stays
+/// unless the agent limit is "no agents" (`"0"`), so the setting of the Workers bar keeps its
+/// meaning. A project adds one more tool with one name per line in `.dispatch/work-tools.txt`;
+/// the script reads that file at each work start.
+const WORK_PERMISSION_MODE: &str = "auto";
+const WORK_TOOLS: &str = "Read,Edit,Write,Glob,Grep,Bash,ToolSearch";
+
+/// The fixed part of the work run for an agent limit.
+fn work_fixed_lines(agents: &str) -> Vec<String> {
+    let tools = if agents == "0" { WORK_TOOLS.to_string() } else { format!("{WORK_TOOLS},{AGENT_TOOL}") };
+    ["--permission-mode", WORK_PERMISSION_MODE, "--tools", &tools, "--disallowedTools", "AskUserQuestion,SendMessage"].map(str::to_string).to_vec()
+}
 
 /// The settings file of the workers as `work-flags.txt` names it: relative to the project, so the
 /// file is the same on each computer (ticket second-computer). The script makes it absolute.
@@ -3431,11 +3463,13 @@ fn worker_settings_text() -> String {
 /// A file that names the settings file of the workers must name it relative to the project: a
 /// file of an older version names it with an absolute path (also of the old layout).
 fn work_flags_current(project: &Project) -> bool {
-    let fixed = WORK_FIXED_FLAGS.join("\n");
     let Ok(text) = fs::read_to_string(project.work_flags()) else { return false };
     let text = text.replace("\r\n", "\n");
     let settings = worker_settings_text();
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    // The same reading as `read_worker_flags`: the limit counts only when the file names the settings.
+    let agents = if lines.contains(&"--settings") { read_agent_limit(&project.worker_settings()) } else { String::new() };
+    let fixed = work_fixed_lines(&agents).join("\n");
     let settings_here = lines.iter().position(|line| *line == "--settings").map_or(true, |at| lines.get(at + 1) == Some(&settings.as_str()));
     text.contains(&fixed) && settings_here
 }
@@ -3451,7 +3485,7 @@ fn plan_flags_current(project: &Project) -> bool {
 /// with the agent limit when the user set one. The settings file is written here.
 fn work_flag_lines(project: &Project, work: &Choice, agents: &str) -> Result<Vec<String>, String> {
     let mut lines = choice_lines(work)?;
-    lines.extend(WORK_FIXED_FLAGS.iter().map(|flag| flag.to_string()));
+    lines.extend(work_fixed_lines(agents));
     if let Some(settings) = agent_settings(agents)? {
         let file = project.worker_settings();
         write_file(&file, &format!("{}\n", serde_json::to_string_pretty(&settings).map_err(err)?))?;
@@ -7534,7 +7568,7 @@ pub(crate) mod tests {
     }
 
     /// The fixed part of `work-flags.txt`, as lines.
-    const WORK_FIXED: &str = "--permission-mode\nauto\n--tools\ndefault\n--disallowedTools\nAskUserQuestion,SendMessage\n";
+    const WORK_FIXED: &str = "--permission-mode\nauto\n--tools\nRead,Edit,Write,Glob,Grep,Bash,ToolSearch,Agent\n--disallowedTools\nAskUserQuestion,SendMessage\n";
 
     /// The expected text of `plan-flags.txt` for a choice: the choice lines, then the fixed part
     /// with the plans folder of this scratch project in its Edit rule.
@@ -7687,6 +7721,15 @@ pub(crate) mod tests {
         assert_eq!((flags.plan.model.as_str(), flags.plan.effort.as_str()), ("", "high"));
         assert_eq!((flags.work.model.as_str(), flags.work.effort.as_str()), ("opus", ""));
         assert_eq!(flags.agents, "2");
+        assert!(work.contains("\n--tools\nRead,Edit,Write,Glob,Grep,Bash,ToolSearch,Agent\n"), "a limit keeps the Agent tool: {work}");
+        assert!(work_flags_current(&project));
+
+        // "No agents": the work run gets no Agent tool, and the file stays current.
+        write_worker_flags(&project, &choice("", "high"), &choice("opus", ""), "0").unwrap();
+        let work = read(&project.work_flags());
+        assert!(work.contains("\n--tools\nRead,Edit,Write,Glob,Grep,Bash,ToolSearch\n--disallowedTools\n"), "{work}");
+        assert_eq!(read_worker_flags(&project).agents, "0");
+        assert!(work_flags_current(&project));
 
         // No agent limit: the settings file is not named, and the limit reads as empty.
         write_worker_flags(&project, &choice("fable", "xhigh"), &choice("opus", "xhigh"), "").unwrap();
@@ -9642,7 +9685,7 @@ if (args[0] === 'agents') {
         fs::remove_file(project.task_checks_file("t-1")).unwrap();
         // No resume: a new session with the name of the work run and the work options.
         assert!(!resume.iter().any(|arg| arg == "--resume"), "{resume:?}");
-        assert_eq!(&resume[1..], ["--bg", "--name", "t-1 [work]", "--model", "opus", "--effort", "xhigh", "--permission-mode", "auto", "--tools", "default", "--disallowedTools", "AskUserQuestion,SendMessage"]);
+        assert_eq!(&resume[1..], ["--bg", "--name", "t-1 [work]", "--model", "opus", "--effort", "xhigh", "--permission-mode", "auto", "--tools", "Read,Edit,Write,Glob,Grep,Bash,ToolSearch,Agent", "--disallowedTools", "AskUserQuestion,SendMessage"]);
         // claude runs in the project folder, whatever the folder of the caller is.
         assert_eq!(Path::new(read(&fake.join("cwd.txt")).trim()), project.root.as_path());
 
@@ -9819,11 +9862,15 @@ if (args[0] === 'agents') {
         assert_eq!(code, 0, "{out}");
         assert_eq!(&last_call(&fake)[6..10], ["--model", "sonnet", "--effort", "medium"]);
         write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        // work-tools.txt adds a tool to the work run (ticket give-the-work-run-only-the-tools-it-uses):
+        // a note, a name that stands in the list already and a name that is not a tool name are skipped.
+        write_file(&project.reports.join("work-tools.txt"), "Skill\n# note\n\nRead\nbad name!\nSkill\n").unwrap();
         let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
         assert_eq!(code, 0, "{out}");
+        fs::remove_file(project.reports.join("work-tools.txt")).unwrap();
         assert_eq!(
             &last_call(&fake)[1..],
-            ["--bg", "--name", "t-1 [work]", "--model", "sonnet", "--effort", "medium", "--permission-mode", "auto", "--tools", "default", "--disallowedTools", "AskUserQuestion,SendMessage"]
+            ["--bg", "--name", "t-1 [work]", "--model", "sonnet", "--effort", "medium", "--permission-mode", "auto", "--tools", "Read,Edit,Write,Glob,Grep,Bash,ToolSearch,Agent,Skill", "--disallowedTools", "AskUserQuestion,SendMessage"]
         );
         let (code, out) = run_script(&project, &fake, "done", &["plan", "t-1"]);
         assert_eq!(code, 0, "{out}");
@@ -9860,7 +9907,7 @@ if (args[0] === 'agents') {
             last_call(&fake),
             [
                 "The user stopped this run in Dispatch and now resumes it. Go on where you stopped.", "--resume", "sess-1", "--bg", "--name", "t-1 [work]",
-                "--model", "opus", "--effort", "xhigh", "--permission-mode", "auto", "--tools", "default", "--disallowedTools", "AskUserQuestion,SendMessage"
+                "--model", "opus", "--effort", "xhigh", "--permission-mode", "auto", "--tools", "Read,Edit,Write,Glob,Grep,Bash,ToolSearch,Agent", "--disallowedTools", "AskUserQuestion,SendMessage"
             ]
         );
         // A task that is not stopped is not resumed.
