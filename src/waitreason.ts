@@ -20,6 +20,8 @@ export interface WaitFacts {
   paused?: boolean;
   /** The other task whose branch the main checkout is on, with the note why Dispatch did not switch back. */
   checkout?: { task: string; branch: string; base: string; note: string } | null;
+  /** The other task that uses the work folder of the project now (ticket work-run-in-the-work-folder), or null. */
+  folder?: string | null;
 }
 
 /** The reason in two lengths. */
@@ -33,7 +35,7 @@ export interface WaitReason {
 /**
  * The reason, or null when nothing holds the work run back. A pause comes first (Resume is the one
  * click that frees the queue), then a merge (it holds the main checkout and runs its gate there),
- * then the running work run.
+ * then the work folder that another task uses (ticket work-run-in-the-work-folder), then the running work run.
  */
 export function waitReason(facts: WaitFacts): WaitReason | null {
   if (facts.paused) {
@@ -46,6 +48,12 @@ export function waitReason(facts: WaitFacts): WaitReason | null {
     return {
       short: `Waits for the merge of ${facts.merging}.`,
       full: `Its work run starts when the merge of ${facts.merging} ends.`,
+    };
+  }
+  if (facts.folder) {
+    return {
+      short: `Waits for the work folder, which ${facts.folder} uses.`,
+      full: `Its work run starts when the work run of ${facts.folder} ends and the work folder is free.`,
     };
   }
   if (facts.editing) {
@@ -88,6 +96,12 @@ export function answerWait(facts: WaitFacts): WaitReason | null {
     return {
       short: `Your answers wait for the merge of ${facts.merging}.`,
       full: `Your answers go to the worker when the merge of ${facts.merging} ends.`,
+    };
+  }
+  if (facts.folder) {
+    return {
+      short: `Your answers wait for the work folder, which ${facts.folder} uses.`,
+      full: `Your answers go to the worker when the work run of ${facts.folder} ends and the work folder is free.`,
     };
   }
   if (facts.editing) {

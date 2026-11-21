@@ -2400,6 +2400,10 @@ interface TaskListReply {
   tickets: Ticket[];
   /** The task whose branch Dispatch merges now (ticket task-branches). Absent from an older host. */
   merging?: string | null;
+  /** "Work folder" works in the project: the switch, Task branches and git (ticket work-run-in-the-work-folder). Absent from an older host. */
+  workFolders?: boolean;
+  /** The task that the record of the work folder names, or null; it can be stale. Absent from an older host. */
+  workFolderUser?: string | null;
   /** The gate command of the merge step; empty without one. Absent from an older host. */
   gate?: string;
   /** The actions of the Actions panel and their last runs (ticket project-actions). Absent from an older host. */
@@ -2446,6 +2450,10 @@ interface ProjectTasks {
   tickets: Ticket[];
   /** The task whose branch Dispatch merges now: Approve waits for it (ticket task-branches). */
   merging: string | null;
+  /** The work run of a task works in the work folder of the project (ticket work-run-in-the-work-folder). */
+  workFolders: boolean;
+  /** The task that the record of the work folder names, or null; it can be stale. */
+  workFolderUser: string | null;
   /** The gate command of the merge step; empty without one. */
   gate: string;
   /** The actions of the Actions panel and their last runs (ticket project-actions). */
@@ -2473,6 +2481,8 @@ function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTa
     setup: reply.setup ?? null,
     tickets: reply.tickets ?? [],
     merging: reply.merging ?? null,
+    workFolders: reply.workFolders ?? false,
+    workFolderUser: reply.workFolderUser ?? null,
     gate: reply.gate ?? "",
     actions: reply.actions ?? EMPTY_ACTIONS,
   };
@@ -5652,8 +5662,12 @@ function waitFacts(task: Task): WaitFacts {
   const merging = task.project ? task.project.merging : mergingTask;
   // A paused project queues an Approve click (ticket pause-tasks, user decision 3).
   const paused = task.project?.paused ?? projectTasks.get(tasksFolder)?.paused ?? false;
+  // The work folder of the project (ticket work-run-in-the-work-folder): its user holds it while that
+  // user's work run runs; a stale record gives no wait.
+  const user = task.project?.workFolders ? task.project.workFolderUser : null;
+  const folder = user && user !== task.name && editing === user ? user : null;
   // Only the changes in files of the task hold it (ticket leftover-files-block-tasks); an older host gives the whole project.
-  return { editing: editing && editing !== task.name ? editing : null, dirty: task.info?.leftovers ?? task.project?.dirty ?? dirtyLines, merging, paused, checkout: otherCheckout(task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos), task.name) };
+  return { editing: editing && editing !== task.name ? editing : null, folder, dirty: task.info?.leftovers ?? task.project?.dirty ?? dirtyLines, merging, paused, checkout: otherCheckout(task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos), task.name) };
 }
 
 /** Fills a text box with one child per part of the lines (headings, labels, numbers, bullets, gaps). */

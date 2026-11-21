@@ -44,6 +44,11 @@ const MERGE_IGNORE: &str = "merge/";
 /// The line of `.dispatch/.gitignore` that keeps the logs of the check runs out of git (ticket
 /// test-picker-an-agent-picks-the-checks).
 const CHECKS_IGNORE: &str = "checks/";
+/// The line of `.dispatch/.gitignore` that keeps the work folder and its record out of git (ticket
+/// work-run-in-the-work-folder): else `git status` of a project that tracks `.dispatch` lists the folder.
+const WORK_IGNORE: &str = "work/";
+/// The time limit of the set-up command of the work folder in seconds, when its file names none.
+const SETUP_LIMIT: u32 = 3600;
 /// The time limit of the gate command in seconds, when its file names none.
 const GATE_LIMIT: u32 = 14400;
 /// The prefix of a task branch: the branch of ticket `t-1` is `task/t-1`.
@@ -182,13 +187,17 @@ pub struct Options {
     /// confirms a result that still arrives with its first option (ticket
     /// confirm-a-check-step-s-result-on-the). Off at the start; a settings file without the field is off.
     confirm_results: bool,
+    /// The work run works in the work folder `.dispatch/work/1`, a git worktree of the project
+    /// (docs/work-folders.md, ticket work-run-in-the-work-folder). Needs task branches. Off at the
+    /// start; a settings file without the field is off.
+    work_folders: bool,
 }
 
 // A settings file of an older version has a field for answers in the triage chat. Serde drops a
 // field it does not know, so such a file reads without an error.
 impl Default for Options {
     fn default() -> Self {
-        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, pick_checks: false, full_checks_nightly: false, full_checks_at: 0, full_checks_after: 0, push_after_merge: false, auto_merge: false, tickets_start_plans: false, no_triage: true, confirm_results: false }
+        Options { short_reports: true, triage_name: true, auto_approve: false, measure_before_plan: false, task_branches: false, ignore_tasks: false, notes_in_git: false, paused: false, start_plain_plans: false, checks_at_gate: false, pick_checks: false, full_checks_nightly: false, full_checks_at: 0, full_checks_after: 0, push_after_merge: false, auto_merge: false, tickets_start_plans: false, no_triage: true, confirm_results: false, work_folders: false }
     }
 }
 
@@ -229,6 +238,15 @@ fn pick_rule(reports: &str, script: &str) -> String {
 fn branches_rule(reports: &str, script: &str) -> String {
     format!(
         "- Task branches is on in this project. The plan verb of the script writes the base branch (the current branch) into `{reports}/<ticket-id>.branch`. Approve makes the branch `{BRANCH_PREFIX}<ticket-id>` from that base and checks it out in the main checkout; the work run commits on that branch, switches no branch, and never merges or pushes. A work run that stops with a question or fails first commits its own files by name on the branch as `<ticket-id> WIP`; the next run adds its own commit. When a run forgot that commit, Dispatch makes it: the changed files of the task that are not newer than the report go onto the branch as `<ticket-id> WIP (Dispatch: files of the work run)`. At each start of a run (Approve and each reply) Dispatch brings the newer commits of the base into the branch with a merge commit; when a file outside `{reports}` changed on both sides, the branch stays as it is and the prompt of the run says so. When the report is written, Dispatch switches the checkout back to the base and commits the task files there. Uncommitted changes outside the files of the task go along with the switch to the branch and back; a change in a file of the task, or in a file that the branch holds in another version, holds the switch, and the task card names the file. The user merges the branch with the Merge button in the task card of Dispatch, and night mode of Dispatch merges a task with a done report by itself when the project has a gate command: the script merges it with `--no-ff` into the base, after the gate command of `{reports}/merge-gate.txt` passed on the merged code; the tracked files that the gate command changed go into a commit of their own after the merge commit, `<ticket-id>: files that the merge gate wrote`. Triage never runs `{script} merge`; the local settings deny it that verb.
+"
+    )
+}
+
+/// The line of the "Background workers" section for a project with "Work folder" on and task branches
+/// on (ticket work-run-in-the-work-folder). `reports` is the reports folder with `/`.
+fn work_folders_rule(reports: &str) -> String {
+    format!(
+        "- Work folder is on in this project: a work run works in the work folder `{reports}/work/1`, a git worktree of the project that Dispatch makes once and keeps. Approve, a reply, a resume and the Run checks button of a task check out its branch `{BRANCH_PREFIX}<ticket-id>` there and run there, in place of the switch of the main checkout that the line of Task branches names; one task uses the work folder at a time, and another task waits until it is free. The project folder stays on the base branch, and Dispatch never switches it. The worker writes its report and every other task file by their full paths in `{reports}` of the project folder; the work folder has no copy of them. A change that a run left uncommitted in the work folder is committed on its branch as `<ticket-id> WIP (Dispatch: files of the work run)` before the folder is used again. An uncommitted change of the user in the project folder holds no Approve and no reply.
 "
     )
 }
@@ -376,6 +394,9 @@ pub struct Plan {
     measure_commands: String,
     /// The text of `merge-gate.txt`, for the box under the switch "Task branches".
     merge_gate: String,
+    /// The text of `work-setup.txt`, for the box under the switch "Work folder" (ticket
+    /// work-run-in-the-work-folder).
+    work_setup: String,
     /// The text of `checks.txt`, for the box "Checks" (ticket task-checks). Without the file, the
     /// tests that Dispatch found in the project.
     checks: String,
@@ -412,6 +433,19 @@ pub struct ProjectRoot {
     no_triage: bool,
 }
 
+/// The project of a work folder of Dispatch (ticket work-run-in-the-work-folder): a folder whose last
+/// three parts are `.dispatch`, `work` and digits, in a project folder that has `.dispatch`. None for
+/// any other folder, so a worktree of the user keeps its own root.
+fn work_folder_project(top: &Path) -> Option<PathBuf> {
+    let number = top.file_name()?.to_str()?;
+    let work = top.parent()?;
+    let tasks = work.parent()?;
+    let project = tasks.parent()?;
+    let is = |path: &Path, name: &str| path.file_name().and_then(|part| part.to_str()).is_some_and(|part| part.eq_ignore_ascii_case(name));
+    let digits = !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit());
+    (digits && is(work, "work") && is(tasks, TASKS_DIR) && project.join(TASKS_DIR).is_dir()).then(|| project.to_path_buf())
+}
+
 impl Project {
     /// `cwd` is a folder in the project. In a git repository, the project is the top folder.
     pub(crate) fn find(cwd: &str) -> Result<Project, String> {
@@ -422,6 +456,9 @@ impl Project {
         let top = git(cwd, &["rev-parse", "--show-toplevel"])
             .map(|top| PathBuf::from(top.trim().replace('/', "\\")))
             .filter(|top| top.is_dir());
+        // A work folder of Dispatch (`<project>\.dispatch\work\<n>`, ticket work-run-in-the-work-folder)
+        // is a git worktree, so git gives the work folder as the top; its project is two levels up.
+        let top = top.map(|top| work_folder_project(&top).unwrap_or(top));
         let in_git = top.is_some();
         let root = top.unwrap_or_else(|| cwd.to_path_buf());
         // The task files are in the project, so git tracks them and a clone has them, unless the
@@ -738,6 +775,62 @@ impl Project {
         list_limit(&self.merge_gate_file(), GATE_LIMIT)
     }
 
+    /// The set-up command of the work folder, one line (ticket work-run-in-the-work-folder): it runs
+    /// once in a new work folder, for example `npm ci`.
+    pub(crate) fn work_setup_file(&self) -> PathBuf {
+        self.reports.join("work-setup.txt")
+    }
+
+    /// The folder of the work folders and their records. Git ignores it through `.dispatch/.gitignore`.
+    fn work_dir(&self) -> PathBuf {
+        self.reports.join("work")
+    }
+
+    /// The one work folder of the project: a git worktree that Dispatch makes once and keeps. The
+    /// worker script makes and uses it; the Rust code reads only its record.
+    #[cfg(test)]
+    fn work_folder(&self) -> PathBuf {
+        self.work_dir().join("1")
+    }
+
+    /// The record of the work folder: the lines `ticket:`, `use:`, `pid:`, `job:` and `since:`.
+    fn work_record(&self) -> PathBuf {
+        self.work_dir().join("1.record")
+    }
+
+    /// "Work folder" works in the project: a git repository, task branches and the switch.
+    pub(crate) fn work_folders_on(&self) -> bool {
+        let options = self.options();
+        self.in_git && options.task_branches && options.work_folders
+    }
+
+    /// The set-up command of the work folder: the first line of its file that is not empty and not a
+    /// comment; empty without one.
+    fn work_setup(&self) -> String {
+        fs::read_to_string(self.work_setup_file())
+            .unwrap_or_default()
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty() && !line.starts_with('#'))
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The time limit of the set-up command in seconds: a first line `# limit <seconds>`, else `SETUP_LIMIT`.
+    fn work_setup_limit(&self) -> u32 {
+        list_limit(&self.work_setup_file(), SETUP_LIMIT)
+    }
+
+    /// The ticket that the record of the work folder names, or none without a record. The record can be
+    /// stale (its run ended); the page shows a wait only while that task's work run runs.
+    fn work_folder_user(&self) -> Option<String> {
+        let text = fs::read_to_string(self.work_record()).ok()?;
+        text.lines()
+            .find_map(|line| line.trim().strip_prefix("ticket:"))
+            .map(|ticket| ticket.trim().to_string())
+            .filter(|ticket| !ticket.is_empty())
+    }
+
     /// The ticket whose merge holds the merge lock, while the lock is younger than the time limit of
     /// the gate (a lock of a crashed merge is not shown for ever; the script removes it).
     fn merging(&self) -> Option<String> {
@@ -948,6 +1041,14 @@ impl Project {
         let no_triage = if options.no_triage { no_triage_rule(&reports, &script) } else { String::new() };
         // "Confirm check results automatically" (ticket confirm-a-check-step-s-result-on-the): off, the line is empty.
         let confirm = if options.confirm_results { confirm_rule() } else { String::new() };
+        // "Work folder" (ticket work-run-in-the-work-folder): off, the line is empty and the first
+        // bullet keeps the sentence of the version before.
+        let work_folders = if self.work_folders_on() { work_folders_rule(&reports) } else { String::new() };
+        let worker_place = if self.work_folders_on() {
+            format!("A plan run works in the main checkout; a work run works in the work folder `{reports}/work/1`, a git worktree of the project on the branch of its task (`worktree.bgIsolation` is `none`).")
+        } else {
+            "A worker works in the main checkout (`worktree.bgIsolation` is `none`).".to_string()
+        };
         // The same for "Task files local only" (ticket ignore-tasks): off, the sentence of the version before.
         let tasks_git = if self.options().ignore_tasks {
             format!("git ignores `{reports}/`: the task files stay on this computer, and a clone has none")
@@ -955,14 +1056,14 @@ impl Project {
             format!("Dispatch commits the files of `{reports}/` itself")
         };
         format!(
-            "- A task is two runs of one worker. The plan run reads the code and writes a plan. The work run is a new session that reads the brief and the approved plan and executes the plan. Triage starts and resumes a worker only with the script `{reports}/{SCRIPT_NAME}`, never with `claude --bg` or `claude --resume` directly. A worker works in the main checkout (`worktree.bgIsolation` is `none`).
+            "- A task is two runs of one worker. The plan run reads the code and writes a plan. The work run is a new session that reads the brief and the approved plan and executes the plan. Triage starts and resumes a worker only with the script `{reports}/{SCRIPT_NAME}`, never with `claude --bg` or `claude --resume` directly. {worker_place}
 - Triage writes each brief to `{reports}/briefs/<ticket-id>.md`: the user's words, the constraints, and the command that proves the work. The brief says nothing about the approach; the plan run decides that. A ticket message with the block `Part N of M of ticket <id>` is a part of that ticket: triage copies the block into the brief as the section `## Parent and earlier parts`, after the user's words.
 - A message that Dispatch sends from its tickets board starts with the line `Ticket <id>: <title>`. Triage uses that id as the ticket id of the task. Dispatch keeps the tickets file `{reports}/tickets.jsonl`; triage and the workers do not edit it.
 {tickets}{no_triage}- `{script} plan <ticket-id>` starts the plan run on the options in `{reports}/plan-flags.txt`, with the model and the effort of `{reports}/<ticket-id>.models` when it has them (the level of the ticket): without the Edit tool, without the Agent tool and without a prompt; its Write tool may write only into `{reports}/plans/`. The plan run writes the plan to `{reports}/plans/<ticket-id>.md`, changes nothing else, and ends its turn.
 {measure}- A plan has these sections: Summary (3 lines maximum: what changes, how many files, how many decisions and whether one is `HOLD`; the task card of Dispatch shows these lines); Goal; TL;DR (2 to 4 lines in plain words for the user, 25 words maximum each: what changes for the user and why, everyday words, few technical names; the Decisions window shows them under the Goal); Acceptance (commands with the expected output); Files to change (each with the symbol or an anchor line, the change and the reason); Files read (one fact each); Notes for the work run (the facts from the code that the other sections do not hold, because the work run starts without the context of the plan run: how the touched code works, why an anchor was chosen, traps it saw, and the command that showed a fact; one fact per line, 15 lines maximum); Steps; Decisions (each a numbered item with its question, and under it one list item per option, because Dispatch shows each option as a button: first `- Default:` with the recommended choice, or `- HOLD:` instead when only the user takes it, then at least one real alternative as `- Other:`; each option one short line, its reason after it as `Recommended: …` or `Not recommended: …`; each question, option and reason in everyday words for the user, who does not read the code: what changes for the user and what the user sees or does, not how the code does it; no file, function or command names and no terms of the code, or a short explanation of a term that must stay; the technical detail goes into Files to change, Notes for the work run or Steps; a question 20 words maximum and an option 15 words maximum, its reason not counted; for example, not `No: they follow the same rule; Setup pipeline still offers Commit to git` but `No, these files stop no task; you can still commit them in Setup pipeline`; the word HOLD stands in no other line of this section); Do not touch; Size (files); Work run (the advice of the plan run for the work run of this task: the line `model: <model>` (fable, opus, sonnet or haiku), the line `effort: <effort>` (low, medium, high, xhigh or max), then one line with the reason in plain words; the task card of Dispatch shows the advice at Approve, the user can change it, and the work run uses the result); Parts (optional: only when the work is too large for one work run, and never in the plan of a part: the Steps of the plan are the first piece, and the parts follow in their order after its work run; each part a numbered item `N. <title>` with the list lines `Level:` (simple, medium or hard), `Type:` (fix, feature, refactor or content), `Goal:` and the optional lines `Why:`, `Done when:`, `Do not change:`, `Context:`, `What I see:` and `What I expect:`; the task card of Dispatch shows the parts before Approve, and Approve opens one Backlog ticket per part, linked to the ticket of the plan; when a part is done, Dispatch moves the next one to New). No code in a plan.
 {checks}{gate_checks}- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which starts the work run as a new session on the options in `{reports}/work-flags.txt`, with the model and the effort of `{reports}/<ticket-id>.models` when it has them, with the brief, the plan and the user's decisions as its input, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The one other yes is night mode, which the user turns on per project in Dispatch: Dispatch then approves a ready plan by itself, takes the recommended option of each decision and records it in the plan as DEFAULT DECISION; a `HOLD:` decision, a paused project, an uncommitted change in a file of the task, or a part whose parent ticket has no ticked night box keep the plan waiting for the click. The script refuses when an uncommitted change outside `{reports}/` touches a file of the task (a path of the section Files to change of its plan, or a file that its task branch changed), when the worker still runs, or when the task was stopped; other uncommitted changes stay where they are and hold no task ({tasks_git}).
 {plain}- The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It commits only the files that it changed, each by name, never with `git add -A`, `git add .` or `git commit -a`, and leaves every other change as it is. It never pushes or merges. The user decides the push.
-{branches}{push}{auto_merge}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification says in the worker's own words what it ran and what that showed. Dispatch reads the commands of the work run from the transcripts and shows each under the report with its exit code and its last lines. A done report whose work run ran no command, or without a run of a chosen check, counts as working, and its ticket stays open.
+{branches}{work_folders}{push}{auto_merge}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification says in the worker's own words what it ran and what that showed. Dispatch reads the commands of the work run from the transcripts and shows each under the report with its exit code and its last lines. A done report whose work run ran no command, or without a run of a chosen check, counts as working, and its ticket stays open.
 - A worker starts no session and sends no message to a chat. It has no question tool. A question for the user goes into the report under the heading `## Questions`: numbered items, each with its options as list items, the recommended option first. Each option is one short line, because Dispatch shows it as a button and sends it back word for word; the question and each option follow the rule of plain words of the Decisions of a plan; the details stand above the questions. The worker then writes `state: needs-decision` and `needs: decision` and ends its turn. `needs: permission` means: a refused tool call stopped the work; the report then has `state: needs-decision`, no `## Questions`, and names the refused call as sent, the refusal text and the permission rule that would allow it, and the work goes on with a follow-up `Continue` once the user changed the rule. An option of a question is never a change of a permission rule. The user answers in the task card of Dispatch, and the answer arrives as a follow-up `Answer to question N: <option>`. An answered question never comes back unchanged: after the answer the worker takes the question out of its report or writes what it decided and did, and ends with `state: done` or a new question. A follow-up `Continue` after an answer means: take the answers as given and go on.
 - A check step whose result the user confirms (a step of the project rules that picks or judges something for the user) writes the report with the section `## Check result`: the result as the step gave it, one item per line, a reason after each item where the step gives one. Under `## Questions` it puts one question only, which names the step and asks whether the user agrees, with two options: the first keeps the result as it is, the second changes it. Then it writes `state: needs-decision` and `needs: decision` and ends its turn. Dispatch shows the result on the task card with a box for changes and a Confirm button; the answer arrives as `Answer to question N: <first option>` or `Answer to question N: <second option>: <the user's words>`. The run applies the words and goes on; the final report keeps `## Check result` with the confirmed result, and the task card has a row that opens it.
 {confirm}- A follow-up goes through `{script} reply <ticket-id> \"<message>\"` and quotes the user's words exactly. The script takes the options of the run from `{reports}/<ticket-id>.state`.
@@ -1451,6 +1552,8 @@ Checks at the gate gives them to the gate command.
 work-tools.txt, when it exists, adds one tool name per line to the --tools list of the work run.
 The script finds the project from its own folder, and the options files name paths relative to the
 project, so a clone on another path or computer needs no change.
+With Work folder on (workFolders and taskBranches in options.json), approve, reply, resume of a work run and check <ticket-id> work in the work folder work\1, a git worktree on the task branch;
+work-setup.txt runs once in a new one, work\1.record names the task that uses it, and a second task is refused until the folder is free.
 #>
 param(
   [Parameter(Mandatory = $true, Position = 0)]
@@ -1627,8 +1730,9 @@ function Resume-Target([string]$Run) {
 # with the exit code of claude; a claude that is not found counts as exit code 1. A failure also
 # checks out $BranchOnFailure again when one is given: the branch before the task branch. Gives the
 # lines that claude printed (claude --bg prints the job id) and writes them on to the caller.
-function Run-Claude([string[]]$Arguments, [string]$StateOnFailure, [string]$BranchOnFailure) {
-  Push-Location -LiteralPath $Project
+# $RunIn, when given, is the folder of the run in place of the project folder (the work folder).
+function Run-Claude([string[]]$Arguments, [string]$StateOnFailure, [string]$BranchOnFailure, [string]$RunIn) {
+  Push-Location -LiteralPath $(if ($RunIn) { $RunIn } else { $Project })
   $global:LASTEXITCODE = 0
   $printed = @(& claude @Arguments)
   $ok = $?
@@ -1756,11 +1860,13 @@ function Exit-Lock([string]$Lock) {
 
 # Runs git in the project folder. Gives the exit code and the lines of stdout and stderr. Windows
 # PowerShell turns the stderr lines of a native command into errors, so the preference is local.
-function Invoke-Git([string[]]$A) {
+# Invoke-GitAt runs it in the folder $Dir (the work folder).
+function Invoke-GitAt([string]$Dir, [string[]]$A) {
   $ErrorActionPreference = 'Continue'
-  $lines = @(& git -C $Project @A 2>&1 | ForEach-Object { "$_" })
+  $lines = @(& git -C $Dir @A 2>&1 | ForEach-Object { "$_" })
   [pscustomobject]@{ Code = $LASTEXITCODE; Lines = $lines; Text = ($lines -join "`n").Trim() }
 }
+function Invoke-Git([string[]]$A) { Invoke-GitAt $Project $A }
 
 # The paths that a git command lists, unquoted, without the message lines of git ("warning: in the
 # working copy of …" comes through stderr); none when git fails. A Windows path holds no colon.
@@ -1775,6 +1881,141 @@ function Branches-On {
   $file = Join-Path $Reports 'options.json'
   if (-not (Test-Path -LiteralPath $file)) { return $false }
   try { return [bool]((Get-Content -LiteralPath $file -Raw) | ConvertFrom-Json).taskBranches } catch { return $false }
+}
+
+# The setting "Work folder" of the project (ticket work-run-in-the-work-folder): on with Task branches
+# and the field workFolders in a git repository; off without the file or the field.
+function Folders-On {
+  (Branches-On) -and (Option-On 'workFolders') -and (Test-Path -LiteralPath (Join-Path $Project '.git'))
+}
+# The one work folder of the project, a git worktree, and its record.
+function Work-Folder { Join-Path $Reports 'work\1' }
+function Work-Record { Join-Path $Reports 'work\1.record' }
+
+# The record of the work folder (rule 5 of docs/work-folders.md): the lines ticket, use (work or
+# check), pid (of the script that wrote it), job (of the claude run, or -) and since. $null without it.
+function Read-Record {
+  $file = Work-Record
+  if (-not (Test-Path -LiteralPath $file)) { return $null }
+  $record = @{ ticket = ''; use = ''; pid = ''; job = ''; since = '' }
+  foreach ($line in Get-Content -LiteralPath $file) {
+    if ($line -match '^\s*(ticket|use|pid|job|since):\s*(.*?)\s*$') { $record[$Matches[1]] = $Matches[2] }
+  }
+  [pscustomobject]$record
+}
+function Write-Record([string]$Use, [string]$Job) {
+  [IO.File]::WriteAllText((Work-Record), "ticket: $Id`nuse: $Use`npid: $PID`njob: $Job`nsince: $((Get-Date).ToString('o'))`n")
+}
+
+# The ticket that holds the work folder: the script of the record still runs, or the use is work and
+# the work run of that ticket still runs or waits at a prompt. Else $null: a stale record is
+# overwritten by the next user. No file time and no reflog decides.
+function Record-Holder {
+  $record = Read-Record
+  if ($null -eq $record -or -not $record.ticket) { return $null }
+  $other = 0
+  if ([int]::TryParse($record.pid, [ref]$other) -and $other -ne $PID -and $null -ne (Get-Process -Id $other -ErrorAction SilentlyContinue)) { return $record.ticket }
+  if ($record.use -eq 'work') {
+    $state = Worker-State (Find-Worker (Get-Workers) $record.ticket 'work')
+    if ($state -eq 'working' -or $state -eq 'blocked') { return $record.ticket }
+  }
+  $null
+}
+
+# The job id of the newest worker named "<ticket> [work]", or - (for the record).
+function Work-Job {
+  $workers = @()
+  try {
+    $text = (& claude agents --json --all) -join "`n"
+    if ($LASTEXITCODE -eq 0) { $workers = @($text | ConvertFrom-Json | ForEach-Object { $_ }) }
+  } catch { }
+  $worker = Find-Worker $workers $Id 'work'
+  if ($null -eq $worker -or "$($worker.name)" -ne (Run-Name 'work') -or -not $worker.id) { return '-' }
+  "$($worker.id)"
+}
+
+# Takes the work folder for the task (ticket work-run-in-the-work-folder) and gives the note for the
+# prompt, or ''. $Use is work (approve, reply, resume) or check (check <ticket-id>). The folder is made
+# once: a git worktree of the base, without .dispatch when the project tracks it, then the set-up
+# command; a failed set-up removes the folder again. Then a change that a run left is committed on
+# its task branch as WIP (or dropped on any other checkout), the task branch is checked out, and for
+# work it takes the newer commits of the base. The settings of Claude Code that the work folder does
+# not track come from the project folder. Last, the record names this task.
+function Enter-WorkFolder([string]$Use) {
+  $holder = Record-Holder
+  if ($holder) { Refuse "the work folder of this project is in use (task $holder); the run starts when it is free" }
+  $folder = Work-Folder
+  $info = Ensure-BranchFile
+  Invoke-Git @('worktree', 'prune') | Out-Null
+  if (-not (Test-Path -LiteralPath (Join-Path $folder '.git'))) {
+    $parent = Split-Path -Parent $folder
+    if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    if (Test-Path -LiteralPath $folder) { Remove-Item -LiteralPath $folder -Recurse -Force }
+    # --detach: the base is checked out in the project folder, and git checks out a branch in one folder only.
+    $made = Invoke-Git @('worktree', 'add', '--detach', $folder, $info.base)
+    if ($made.Code -ne 0) { Refuse "git could not make the work folder $folder (exit code $($made.Code)): $($made.Text)" }
+    $failed = ''
+    if (Tracks-Tasks 'HEAD') {
+      $sparse = Invoke-GitAt $folder @('sparse-checkout', 'set', '--no-cone', '/*', '!/.dispatch/')
+      if ($sparse.Code -ne 0) { $failed = "git could not leave .dispatch out of the work folder: $($sparse.Text)" }
+    }
+    $setup = "$(@(Command-Lines 'work-setup.txt') | Select-Object -First 1)"
+    if (-not $failed -and $setup) {
+      $log = Join-Path $Reports 'work\1-setup.log'
+      $code = Run-Measured $setup $log (Command-Limit 'work-setup.txt' 3600) $folder
+      if ($code -ne 0) { $failed = "the set-up command of the work folder failed with exit code $code ($setup; the log is $log)" }
+    }
+    if ($failed) {
+      Invoke-Git @('worktree', 'remove', '--force', $folder) | Out-Null
+      if (Test-Path -LiteralPath $folder) { Remove-Item -LiteralPath $folder -Recurse -Force -ErrorAction SilentlyContinue }
+      Invoke-Git @('worktree', 'prune') | Out-Null
+      Refuse "${failed}; Dispatch removed the work folder, and the next start makes it again"
+    }
+  }
+  # Only Dispatch and its workers write in the work folder, so it is cleaned without a question.
+  if ((Invoke-GitAt $folder @('rev-parse', '-q', '--verify', 'MERGE_HEAD')).Code -eq 0) { Invoke-GitAt $folder @('merge', '--abort') | Out-Null }
+  $left = @((Invoke-GitAt $folder @('status', '--porcelain')).Lines | Where-Object { $_ })
+  if ($left.Count -gt 0) {
+    $on = (Invoke-GitAt $folder @('symbolic-ref', '--short', '-q', 'HEAD')).Text
+    if ($on.StartsWith('task/')) {
+      Invoke-GitAt $folder @('add', '-A', '--', '.', ':(exclude).claude/settings.json', ':(exclude).claude/settings.local.json') | Out-Null
+      $staged = (Invoke-GitAt $folder @('diff', '--cached', '--quiet')).Code -ne 0
+      if ($staged) {
+        $wip = Invoke-GitAt $folder @('commit', '-q', '-m', "$($on.Substring(5)) WIP (Dispatch: files of the work run)")
+        if ($wip.Code -ne 0) { Refuse "git could not commit the files that a run left in the work folder on ${on}: $($wip.Text)" }
+      }
+    }
+    Invoke-GitAt $folder @('reset', '-q', '--hard') | Out-Null
+    Invoke-GitAt $folder @('clean', '-fdq') | Out-Null
+  }
+  $note = ''
+  if ((Invoke-Git @('rev-parse', '--verify', '--quiet', "refs/heads/$($info.branch)")).Code -eq 0) {
+    $out = Invoke-GitAt $folder @('checkout', '-q', $info.branch)
+    if ($out.Code -ne 0) { Refuse "git could not check out $($info.branch) in the work folder: $($out.Text)" }
+    if ($Use -eq 'work') {
+      $merge = Invoke-GitAt $folder @('merge', '-q', '--no-edit', $info.base)
+      if ($merge.Code -ne 0) {
+        Invoke-GitAt $folder @('merge', '--abort') | Out-Null
+        $why = (($merge.Text -replace '"', "'") -replace "`r?`n", ' ').Trim().TrimEnd('.')
+        if (-not $why) { $why = "git merge ended with exit code $($merge.Code)" }
+        $note = " Dispatch could not bring the newer commits of $($info.base) into this branch: $why."
+      }
+    }
+  } else {
+    $out = Invoke-GitAt $folder @('checkout', '-q', '-b', $info.branch, $info.base)
+    if ($out.Code -ne 0) { Refuse "git could not make $($info.branch) in the work folder: $($out.Text)" }
+  }
+  # A session reads .claude of its start folder (open point 2 of docs/work-folders.md).
+  foreach ($name in @('settings.json', 'settings.local.json')) {
+    $source = Join-Path $Project ".claude\$name"
+    if (-not (Test-Path -LiteralPath $source)) { continue }
+    if ((Invoke-GitAt $folder @('ls-files', '--error-unmatch', '--', ".claude/$name")).Code -eq 0) { continue }
+    $target = Join-Path $folder '.claude'
+    if (-not (Test-Path -LiteralPath $target)) { New-Item -ItemType Directory -Path $target -Force | Out-Null }
+    Copy-Item -LiteralPath $source -Destination (Join-Path $target $name) -Force
+  }
+  Write-Record $Use '-'
+  $note
 }
 
 # The setting "Task files local only" of the project in options.json; off without the file or the field.
@@ -2253,14 +2494,15 @@ function Sync-Note {
 
 # Runs one measuring command with cmd.exe in the project folder, its output into the log. The
 # command goes into a batch file next to the log, so a redirect of its own stays its own. A command
-# that runs longer than the limit is ended with its process tree; the result is then 124.
-function Run-Measured([string]$Command, [string]$Log, [int]$Limit) {
+# that runs longer than the limit is ended with its process tree; the result is then 124. $RunIn,
+# when given, is the folder of the command in place of the project folder (the work folder).
+function Run-Measured([string]$Command, [string]$Log, [int]$Limit, [string]$RunIn) {
   $batch = [IO.Path]::ChangeExtension($Log, '.cmd')
   [IO.File]::WriteAllText($batch, "@echo off`r`n$Command`r`n")
   $info = New-Object System.Diagnostics.ProcessStartInfo
   $info.FileName = $env:ComSpec
   $info.Arguments = "/d /s /c `"`"$batch`" > `"$Log`" 2>&1`""
-  $info.WorkingDirectory = $Project
+  $info.WorkingDirectory = if ($RunIn) { $RunIn } else { $Project }
   $info.UseShellExecute = $false
   $info.CreateNoWindow = $true
   $process = [Diagnostics.Process]::Start($info)
@@ -2300,8 +2542,9 @@ function Clear-Picks {
 # places 'run' and 'full' each result goes to the console as "<name>: exit <code>", not into the pipeline. With -StopAtFailure the
 # run ends at the first failed check and gives its name, exit code, command and log; else it gives
 # $null after every check ran. $List and $Checked, when given, replace the list file and the results
-# file of the task (the full run).
-function Run-Checks([string]$Place, [scriptblock]$LogOf, [int]$Limit, [switch]$StopAtFailure, [string]$List, [string]$Checked) {
+# file of the task (the full run). $RunIn, when given, is the folder of the checks (the work folder);
+# not $Folder: $LogOf of the verb check reads its own $folder, and PowerShell names ignore case.
+function Run-Checks([string]$Place, [scriptblock]$LogOf, [int]$Limit, [switch]$StopAtFailure, [string]$List, [string]$Checked, [string]$RunIn) {
   $checked = if ($Checked) { $Checked } else { Join-Path $Reports "$Id.checked" }
   [IO.File]::WriteAllText($checked, "running`t$((Get-Date).ToString('o'))`t$Place`n")
   $n = 0
@@ -2313,7 +2556,7 @@ function Run-Checks([string]$Place, [scriptblock]$LogOf, [int]$Limit, [switch]$S
     if (-not $name -or -not $command) { continue }
     $log = & $LogOf $n
     $started = Get-Date
-    $code = Run-Measured $command $log $Limit
+    $code = Run-Measured $command $log $Limit $RunIn
     $seconds = [int][Math]::Round(((Get-Date) - $started).TotalSeconds)
     [IO.File]::AppendAllText($checked, "$name`t$code`t$seconds`n")
     # The merge verb prints its merge line first: Dispatch reads the first line of its output.
@@ -2333,6 +2576,16 @@ function Run-Checks([string]$Place, [scriptblock]$LogOf, [int]$Limit, [switch]$S
 # is the end of that run. A failed claude writes $StateOnFailure back when one is given.
 function Resume-Run([string]$Run, $Worker, [string]$Text, [string]$State, [string]$StateOnFailure) {
   $flags = Run-Flags $Run
+  # Work folder (ticket work-run-in-the-work-folder): a work run goes on in the work folder on the
+  # branch of its task; the project folder is not switched, and its changes hold nothing.
+  if ($Run -eq 'work' -and (Folders-On)) {
+    $Text += Enter-WorkFolder 'work'
+    if ($State) { Set-State $State }
+    $printed = Run-Claude (@($Text, '--resume', $Worker.sessionId, '--bg', '--name', (Run-Name $Run)) + $flags) $StateOnFailure '' (Work-Folder)
+    Save-Session $Run $printed
+    Write-Record 'work' (Work-Job)
+    return
+  }
   # Task branches: a work run goes on on the branch of its task, also after Dispatch switched back.
   $branch = if ($Run -eq 'work' -and (Branches-On)) { Read-BranchFile $Id } else { $null }
   $tracked = $null -ne $branch -and -not $branch.merge
@@ -2398,7 +2651,9 @@ switch ($Verb) {
     Need-Id
     $plan = Join-Path $Reports "plans\$Id.md"
     if (-not (Test-Path -LiteralPath $plan)) { Refuse "no plan at $plan" }
-    if (Test-Path -LiteralPath (Join-Path $Project '.git')) {
+    # Work folder (ticket work-run-in-the-work-folder): the work run uses its own folder, so an
+    # uncommitted change of the user in the project folder holds no Approve.
+    if ((Test-Path -LiteralPath (Join-Path $Project '.git')) -and -not (Folders-On)) {
       # Only a change in a file of this task holds it (ticket leftover-files-block-tasks); the other
       # changes stay where they are. The task files in .dispatch do not count: Dispatch commits them
       # itself, and triage can write a brief at any time. The staged files of a running merge are no
@@ -2440,8 +2695,16 @@ switch ($Verb) {
       }
     }
     # Task branches: the work run works on the branch of the task; a failed start checks out the branch before.
+    # Work folder: it works in the work folder on that branch, and the project folder stays on the base.
     $back = ''
-    if (Branches-On) {
+    $folder = ''
+    if (Folders-On) {
+      $note = Enter-WorkFolder 'work'
+      $folder = Work-Folder
+      $info = Read-BranchFile $Id
+      $prompt += " Work folder is on: this run works in the folder $folder, a checkout of the branch $($info.branch) of this task; the project folder $Project stays on $($info.base). Commit in the work folder; switch no branch, merge nothing, push nothing. Write the report and every task file by their full paths in $Reports; the work folder has no copy of them. When this run stops with a question or fails, first commit its own changed files by name on this branch with the message $Id WIP."
+      $prompt += $note
+    } elseif (Branches-On) {
       $back = Enter-TaskBranch
       $prompt += " Task branches is on: the checkout is on the branch $((Read-BranchFile $Id).branch) of this task. Commit there; switch no branch, merge nothing, push nothing. When this run stops with a question or fails, first commit its own changed files by name on this branch with the message $Id WIP."
       # An existing branch (a new plan after an earlier work run) takes the newer commits of the base.
@@ -2452,9 +2715,10 @@ switch ($Verb) {
     # and nothing of the context of the plan run (ticket work-fresh-session); the model switch stays.
     # The name keeps the session with the task and marks it as the work run: Dispatch and this script
     # find a worker by its name.
-    $printed = Run-Claude (@($prompt, '--bg', '--name', (Run-Name 'work')) + $flags) 'planning' $back
+    $printed = Run-Claude (@($prompt, '--bg', '--name', (Run-Name 'work')) + $flags) 'planning' $back $folder
     Set-State 'working'
     Save-Session 'work' $printed
+    if ($folder) { Write-Record 'work' (Work-Job) }
   }
   'reply' {
     Need-Id
@@ -2614,9 +2878,18 @@ switch ($Verb) {
     # merge lock stays free: it guards the checkout, and Dispatch waits for it at the switch back.
     Enter-Lock (Lock-Path) $limit 'check run'
     try {
-      Run-Checks 'run' { param($n) Join-Path $folder "$n.log" } $limit | Out-Null
+      # Work folder (ticket work-run-in-the-work-folder): the checks run in the work folder on the task
+      # branch, and the record names this run until it ends.
+      if (Folders-On) {
+        Enter-WorkFolder 'check' | Out-Null
+        Run-Checks 'run' { param($n) Join-Path $folder "$n.log" } $limit -RunIn (Work-Folder) | Out-Null
+      } else {
+        Run-Checks 'run' { param($n) Join-Path $folder "$n.log" } $limit | Out-Null
+      }
     } finally {
       Exit-Lock (Lock-Path)
+      $record = Read-Record
+      if ($null -ne $record -and $record.pid -eq "$PID") { Remove-Item -LiteralPath (Work-Record) -Force -ErrorAction SilentlyContinue }
     }
   }
   'stop' {
@@ -3049,12 +3322,15 @@ fn plan(project: &Project) -> Result<Plan, String> {
         ignore_step(project, options.ignore_tasks),
         notes_step(project, options.notes_in_git),
         checks_step(project, checks_saved, &found_checks),
+        // Last, so the positions that `apply` reads stay as they were.
+        work_folders_step(project, options.work_folders && options.task_branches),
     ];
     let measure_commands = fs::read_to_string(project.measure_commands_file()).unwrap_or_default().replace("\r\n", "\n");
     let merge_gate = fs::read_to_string(project.merge_gate_file()).unwrap_or_default().replace("\r\n", "\n");
+    let work_setup = fs::read_to_string(project.work_setup_file()).unwrap_or_default().replace("\r\n", "\n");
     let checks = if checks_saved { fs::read_to_string(project.checks_file()).unwrap_or_default().replace("\r\n", "\n") } else { found_checks };
     let checks_all = fs::read_to_string(project.checks_all_file()).unwrap_or_default().replace("\r\n", "\n");
-    Ok(Plan { root: show(project.root.clone()), git: project.in_git, options, steps, measure_commands, merge_gate, checks, checks_all, full_checks: read_full_run(project) })
+    Ok(Plan { root: show(project.root.clone()), git: project.in_git, options, steps, measure_commands, merge_gate, work_setup, checks, checks_all, full_checks: read_full_run(project) })
 }
 
 /// The tests that Dispatch finds in the files of the project, as lines of the list of checks.
@@ -3097,6 +3373,39 @@ fn branches_step(project: &Project, on: bool) -> Step {
         detail: format!(
             "Each task works on its own branch {BRANCH_PREFIX}<ticket-id>, made at Approve from the branch that the checkout was on at the plan run (the base, in {reports}/<ticket-id>.branch). The worker commits there and never merges or pushes. When the report is written, Dispatch switches the checkout back to the base and commits the task files there. The task card then shows Merge: the worker script merges the branch with --no-ff into the base, runs {gate} on the merged code (at most {limit} s; a first line \"# limit <seconds>\" of {reports}/merge-gate.txt changes that), and commits the merge or takes it back. One merge at a time; the log goes into {reports}/merge/<ticket-id>.log. Apply adds the line {MERGE_IGNORE} to {reports}/.gitignore. The section in CLAUDE.md and the deny rules (step Allow rules) say so. The push stays with you.",
             limit = project.merge_gate_limit(),
+        ),
+        rules: None,
+    }
+}
+
+/// The step "Work folder" (ticket work-run-in-the-work-folder). Off (or without task branches), it is
+/// done and changes nothing. On, it is done when git ignores the folder of the work folders; Apply
+/// adds the ignore line.
+fn work_folders_step(project: &Project, on: bool) -> Step {
+    let target = project.work_setup_file().to_string_lossy().into_owned();
+    if !on {
+        return Step {
+            title: "Work folder",
+            target,
+            done: true,
+            detail: "Off. The work run works in the main checkout, as today.".to_string(),
+            rules: None,
+        };
+    }
+    let reports = project.reports_text();
+    let limit = project.work_setup_limit();
+    let setup = project.work_setup();
+    let setup = if setup.is_empty() {
+        format!("No set-up command runs there: the box under the switch sets one, with a time limit of {limit} s unless a first line \"# limit <seconds>\" changes it.")
+    } else {
+        format!("After Dispatch made it, the set-up command {setup} runs there once (at most {limit} s; a first line \"# limit <seconds>\" of {reports}/work-setup.txt changes that, and the log goes into {reports}/work/1-setup.log); a failed set-up command removes the folder again, and the next Approve tries again.")
+    };
+    Step {
+        title: "Work folder",
+        target,
+        done: project.ignores(WORK_IGNORE),
+        detail: format!(
+            "The work run of a task works in the work folder {reports}/work/1, a git worktree of the project that Dispatch makes at the first Approve and keeps. {setup} Approve, a reply, a resume and Run checks check out the task branch there; the project folder stays on the base. The record {reports}/work/1.record names the task that uses the folder; a second task waits. Apply adds the line {WORK_IGNORE} to {reports}/.gitignore. The section in CLAUDE.md says so. The Merge still runs in the project folder in this version."
         ),
         rules: None,
     }
@@ -5702,7 +6011,9 @@ fn worker_runs_in(json: &str, root: &Path, ticket: &str) -> Option<bool> {
 /// branch file; the next task read commits it with the task files. While the checkout is on the base,
 /// a newer report of the branch comes onto the base in one commit (ticket stale-report-loop). The
 /// flag says that the checkout or a task file changed, so the task read reads the files again.
-fn task_branch(project: &Project, ticket: &str, current: &str, check_merged: bool) -> Option<(BranchInfo, bool)> {
+/// With `work_folders` (ticket work-run-in-the-work-folder) a task branch carries no card file, so no
+/// report comes from it.
+fn task_branch(project: &Project, ticket: &str, current: &str, check_merged: bool, work_folders: bool) -> Option<(BranchInfo, bool)> {
     let mut info = read_branch_file(&project.branch_file(ticket))?;
     let exists = |name: &str| git(&project.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_some();
     info.exists = info.merge.is_empty() && exists(&info.name);
@@ -5720,7 +6031,7 @@ fn task_branch(project: &Project, ticket: &str, current: &str, check_merged: boo
             }
             Err(note) => info.note = note,
         }
-    } else if info.exists && !info.checked_out && current == info.base {
+    } else if info.exists && !info.checked_out && current == info.base && !work_folders {
         match report_from_branch(project, ticket, &info) {
             Ok(true) => {
                 changed = true;
@@ -5863,6 +6174,12 @@ pub struct TaskList {
     repairs: Vec<String>,
     /// The ticket whose merge runs now (ticket task-branches): Approve waits for it.
     merging: Option<String>,
+    /// "Work folder" works in the project (ticket work-run-in-the-work-folder): the switch, task
+    /// branches and git.
+    work_folders: bool,
+    /// The ticket that the record of the work folder names, or none. The page shows the wait for the
+    /// folder only while the work run of that ticket runs.
+    work_folder_user: Option<String>,
     /// The gate command of the merge step, for the Merge card; empty without one.
     gate: String,
     /// The actions of the Actions panel and their last runs (ticket project-actions).
@@ -6260,6 +6577,8 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     }
     if project.in_git && (project.options().task_branches || tasks.iter().any(|task| project.branch_file(&task.name).is_file())) {
         let current = if merging.is_none() { current_branch(&project).unwrap_or_default() } else { String::new() };
+        // "Work folder" (ticket work-run-in-the-work-folder): a task branch carries no card file.
+        let work_folders = project.work_folders_on();
         for task in tasks.iter_mut() {
             // Only a branch whose card shows Merge is checked for an outside merge (ticket
             // merged-outside): a report that waits for nobody, or a stopped task. A worker that asked
@@ -6268,7 +6587,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             let header = task.header.as_ref();
             let waits = header.is_some_and(|header| matches!(header.needs.as_str(), "decision" | "permission") || header.state == "needs-decision");
             let check = merging.is_none() && ((task.report.is_some() && !waits) || task.state == "stopped");
-            if let Some((branch, changed)) = task_branch(project, &task.name, &current, check) {
+            if let Some((branch, changed)) = task_branch(project, &task.name, &current, check, work_folders) {
                 task.branch = Some(branch);
                 moved |= changed;
             }
@@ -6283,8 +6602,17 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     if !dirty.is_empty() {
         // A script of an older version refuses an approval on any change, until Apply.
         let current = fs::read_to_string(project.script()).is_ok_and(|text| text.replace("\r\n", "\n") == WORKER_SCRIPT);
+        // "Work folder" (ticket work-run-in-the-work-folder): the work run uses its own folder, so an
+        // uncommitted change of the user in the project folder holds no task.
+        let work_folders = project.work_folders_on();
         for task in tasks.iter_mut() {
-            task.leftovers = if current { task_leftovers(&dirty, &task_files(project, &task.name, task.branch.as_ref())) } else { dirty.clone() };
+            task.leftovers = if work_folders {
+                Vec::new()
+            } else if current {
+                task_leftovers(&dirty, &task_files(project, &task.name, task.branch.as_ref()))
+            } else {
+                dirty.clone()
+            };
         }
     }
     let setup = setup_time(&project);
@@ -6308,6 +6636,8 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             tickets,
             repairs,
             merging,
+            work_folders: project.work_folders_on(),
+            work_folder_user: project.work_folder_user(),
             gate: project.merge_gate(),
             actions,
         },
@@ -6883,6 +7213,10 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
         } else {
             remove_notes_block(project)?;
         }
+    }
+    // "Work folder" (ticket work-run-in-the-work-folder): off, the step is done and writes nothing.
+    if !done(12) {
+        ignore_line(project, WORK_IGNORE)?;
     }
     Ok(())
 }
@@ -7470,6 +7804,19 @@ pub fn set_merge_gate(cwd: String, text: String) -> Result<Plan, String> {
     }
     let text = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
     write_file(&project.merge_gate_file(), &text)?;
+    plan(&project)
+}
+
+/// Saves the set-up command of the work folder (ticket work-run-in-the-work-folder): the text of the
+/// box, each line trimmed, empty lines at the end dropped.
+pub fn set_work_setup(cwd: String, text: String) -> Result<Plan, String> {
+    let project = Project::find(&cwd)?;
+    let mut lines: Vec<&str> = text.lines().map(str::trim).collect();
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    let text = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
+    write_file(&project.work_setup_file(), &text)?;
     plan(&project)
 }
 
@@ -11419,6 +11766,299 @@ if (args[0] === 'agents') {
         assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
         for (at, file) in files.iter().enumerate() {
             assert!(fs::read(file).unwrap() == first[at], "{} changed with the switch", file.display());
+        }
+        clean(&project);
+    }
+
+    /// Turns "Work folder" (ticket work-run-in-the-work-folder) on or off in the settings file, as the switch does.
+    fn set_work_folders(project: &Project, on: bool) {
+        let options = Options { work_folders: on, ..project.options() };
+        write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
+    }
+
+    /// `branch_project` with "Work folder" on, Apply done and the setup committed.
+    fn work_project(name: &str) -> (Project, PathBuf, String) {
+        let (project, fake, base) = branch_project(name);
+        set_work_folders(&project, true);
+        apply(&project, &[]).unwrap();
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        git_out(&project, &["add", "--all"]);
+        git_out(&project, &["commit", "-q", "-m", "work folder setup"]);
+        (project, fake, base)
+    }
+
+    /// Two paths name the same folder, without case.
+    fn same_folder(one: &str, two: &Path) -> bool {
+        one.trim().trim_end_matches('\\').eq_ignore_ascii_case(two.to_string_lossy().trim_end_matches('\\'))
+    }
+
+    /// Ticket work-run-in-the-work-folder: a settings file without the field has the switch off.
+    #[test]
+    fn an_old_settings_file_has_work_folders_off() {
+        let project = git_scratch("work-folders-old");
+        apply(&project, &[]).unwrap();
+        // The settings file of 0.1.84 with Task branches on: no field for this switch.
+        write_file(&project.options_file(), "{\n  \"shortReports\": true,\n  \"triageName\": true,\n  \"taskBranches\": true,\n  \"noTriage\": true\n}\n").unwrap();
+        assert!(!project.options().work_folders);
+        assert!(!project.work_folders_on());
+        let shown = serde_json::to_value(&plan(&project).unwrap().options).unwrap();
+        assert_eq!(shown["workFolders"], json!(false));
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        assert!(!list.work_folders && list.work_folder_user.is_none());
+        let value = serde_json::to_value(&list).unwrap();
+        assert_eq!((value["workFolders"].clone(), value["workFolderUser"].clone()), (json!(false), json!(null)));
+        assert!(!Options::default().work_folders);
+        clean(&project);
+    }
+
+    /// Ticket work-run-in-the-work-folder: off, or on without Task branches, the section, the script, the
+    /// options files and the steps are those of today. On with Task branches, the section gets one line
+    /// after the line of Task branches and one other sentence in its first line; the steps "Section in
+    /// CLAUDE.md" and "Work folder" open, and Apply adds the ignore line and closes them.
+    #[test]
+    fn work_folders_changes_only_its_line_and_step() {
+        let project = git_scratch("work-folders-section");
+        apply(&project, &[0]).unwrap();
+        let files = [project.script(), project.plan_flags(), project.work_flags()];
+        let first: Vec<Vec<u8>> = files.iter().map(|file| fs::read(file).unwrap()).collect();
+        let old_place = "A worker works in the main checkout (`worktree.bgIsolation` is `none`).\n";
+        let new_place = "A plan run works in the main checkout; a work run works in the work folder `.dispatch/work/1`, a git worktree of the project on the branch of its task (`worktree.bgIsolation` is `none`).\n";
+        let off = project.section_body();
+        assert!(off.contains(old_place) && !off.contains("Work folder is on"), "{off}");
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        let step = |project: &Project| plan(project).unwrap().steps.into_iter().last().unwrap();
+        let last = step(&project);
+        assert_eq!((last.title, last.done, last.detail.as_str()), ("Work folder", true, "Off. The work run works in the main checkout, as today."));
+
+        // On without Task branches: nothing changes.
+        set_work_folders(&project, true);
+        assert_eq!(project.section_body(), off);
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        assert!(step(&project).done && !project.work_folders_on());
+
+        // Task branches on, the switch off: the text of Task branches as today.
+        set_work_folders(&project, false);
+        set_branches(&project, true);
+        apply(&project, &[]).unwrap();
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        let branches = project.section_body();
+        assert!(branches.contains(old_place));
+
+        // On with Task branches: the line after the line of Task branches, and the sentence of the first line.
+        set_work_folders(&project, true);
+        assert!(project.work_folders_on());
+        let body = project.section_body();
+        let rule = work_folders_rule(".dispatch");
+        let script = script_command(".dispatch");
+        assert!(body.contains(&format!("{}{rule}- A worker ends with a report", branches_rule(".dispatch", &script))), "{body}");
+        assert!(body.contains(new_place) && !body.contains(old_place), "{body}");
+        assert_eq!(body.replacen(&rule, "", 1).replacen(new_place, old_place, 1), branches);
+        assert_eq!(open_steps(&project), vec!["Section in CLAUDE.md", "Work folder"]);
+        let detail = step(&project).detail;
+        assert!(detail.contains(".dispatch/work/1") && detail.contains("No set-up command runs there") && detail.contains("a time limit of 3600 s"), "{detail}");
+        assert!(!project.ignores(WORK_IGNORE));
+        apply(&project, &[]).unwrap();
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        assert!(project.ignores(WORK_IGNORE));
+        assert!(read(&project.instructions()).contains(&rule));
+        // The box of the set-up command: the step names the command and its limit.
+        let shown = set_work_setup(project.root.to_string_lossy().into_owned(), "# limit 900  \nnpm ci\n\n".to_string()).unwrap();
+        assert_eq!(shown.work_setup, "# limit 900\nnpm ci\n");
+        let detail = step(&project).detail;
+        assert!(detail.contains("the set-up command npm ci runs there once (at most 900 s"), "{detail}");
+        for (at, file) in files.iter().enumerate() {
+            assert!(fs::read(file).unwrap() == first[at], "{} changed with the switch", file.display());
+        }
+
+        // Off again: the text of Task branches, and only the section step opens.
+        set_work_folders(&project, false);
+        assert_eq!(project.section_body(), branches);
+        assert_eq!(open_steps(&project), vec!["Section in CLAUDE.md"]);
+        apply(&project, &[]).unwrap();
+        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        for (at, file) in files.iter().enumerate() {
+            assert!(fs::read(file).unwrap() == first[at], "{} changed with the switch", file.display());
+        }
+        clean(&project);
+    }
+
+    /// Ticket work-run-in-the-work-folder: git gives a work folder as the top of its worktree; the
+    /// project of a worker that runs there is the folder that holds `.dispatch/work/<n>`. A worktree of
+    /// the user elsewhere keeps its own root.
+    #[test]
+    fn project_find_maps_a_work_folder_to_its_project() {
+        let project = git_scratch("find-work-folder");
+        write_file(&project.root.join("README.md"), "scratch project\n").unwrap();
+        write_file(&project.reports.join(".gitignore"), "work/\n").unwrap();
+        git_out(&project, &["add", "--all"]);
+        git_out(&project, &["commit", "-q", "-m", "scratch"]);
+        let work = project.work_folder();
+        git_out(&project, &["worktree", "add", "--detach", &work.to_string_lossy(), "HEAD"]);
+        let canonical = |path: &Path| fs::canonicalize(path).unwrap();
+        let found = Project::find(&work.to_string_lossy()).unwrap();
+        assert_eq!(canonical(&found.root), canonical(&project.root));
+        assert!(found.in_git);
+        let inner = work.join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        assert_eq!(canonical(&Project::find(&inner.to_string_lossy()).unwrap().root), canonical(&project.root));
+        // The report of the task stands in the project, and the worker in the work folder finds it.
+        let cwd = work.to_string_lossy().into_owned();
+        assert!(!Project::has_report(Some(&cwd), Some("t-1 [work]")));
+        write_file(&project.reports.join("t-1.md"), "state: done\nneeds: nothing\nfiles: none\nplan: p\n").unwrap();
+        assert!(Project::has_report(Some(&cwd), Some("t-1 [work]")));
+        // A worktree of the user next to the project is its own root.
+        let other = project.root.parent().unwrap().join("user-tree");
+        git_out(&project, &["worktree", "add", "--detach", &other.to_string_lossy(), "HEAD"]);
+        assert_eq!(canonical(&Project::find(&other.to_string_lossy()).unwrap().root), canonical(&other));
+        assert!(work_folder_project(&project.root).is_none());
+        assert!(work_folder_project(&project.reports.join("work").join("x1")).is_none());
+        clean(&project);
+    }
+
+    /// Ticket work-run-in-the-work-folder: with the switch on, Approve makes the work folder, checks out
+    /// the task branch there and starts the work run in it; the project folder stays on the base, the
+    /// report lands in the project, and the task read switches nothing. A file that the run left in the
+    /// work folder goes onto its branch as WIP before the next task takes the folder.
+    #[test]
+    fn approve_with_the_work_folder_runs_in_the_work_folder() {
+        let (project, fake, base) = work_project("work-approve");
+        let base_head = git_out(&project, &["rev-parse", &base]);
+        let folder = project.work_folder();
+        // User decision 1: a failed set-up command removes the new work folder, and the next Approve tries again.
+        write_file(&project.work_setup_file(), "cmd /c exit 3\n").unwrap();
+        write_file(&project.briefs().join("t-1.md"), "# t-1: a scratch task\n").unwrap();
+        write_file(&project.reports.join("fake-name.txt"), "t-1").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["plan", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("the set-up command of the work folder failed with exit code 3 (cmd /c exit 3; the log is ") && out.contains("Dispatch removed the work folder"), "{out}");
+        assert!(!folder.exists());
+        assert_eq!(git_out(&project, &["worktree", "list", "--porcelain"]).lines().filter(|line| line.starts_with("worktree ")).count(), 1);
+        assert_eq!(read(&project.reports.join("t-1.state")).trim(), "planning");
+        // A set-up command that passes runs once, in the new work folder.
+        write_file(&project.work_setup_file(), "# limit 60\ncd\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        let setup_log = read(&project.reports.join("work").join("1-setup.log"));
+        assert!(same_folder(&setup_log, &folder), "{setup_log}");
+        assert!(same_folder(&read(&fake.join("cwd.txt")), &folder), "{} is not {}", read(&fake.join("cwd.txt")), folder.display());
+        assert_eq!(read(&fake.join("branches.txt")), "t-1 task/t-1\n");
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", "task/t-1"]), "t-1 work");
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        assert_eq!(git_out(&project, &["rev-parse", &base]), base_head);
+        assert!(!project.root.join("work-t-1.txt").exists(), "the work landed in the project folder");
+        let prompt = &last_call(&fake)[0];
+        assert!(prompt.contains(&format!("Work folder is on: this run works in the folder {}, a checkout of the branch task/t-1 of this task; the project folder {} stays on {base}.", folder.display(), project.root.display())), "{prompt}");
+        assert!(prompt.contains(&format!("Write the report to {}.", project.reports.join("t-1.md").display())), "{prompt}");
+        assert!(!prompt.contains("Task branches is on: the checkout"), "{prompt}");
+        let record = read(&project.work_record());
+        assert!(record.starts_with("ticket: t-1\nuse: work\npid: ") && record.contains("\njob: -\n"), "{record}");
+        // The folder holds no task files and is out of git of the project.
+        assert!(!folder.join(".dispatch").exists());
+        let status = git_out(&project, &["status", "--porcelain"]);
+        assert!(!status.contains("work/"), "{status}");
+        let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        assert!(list.work_folders && list.work_folder_user.as_deref() == Some("t-1"));
+
+        // The report: the task read switches nothing and takes no report from the branch.
+        write_report(&project, "t-1");
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.exists && !branch.checked_out && branch.note.is_empty() && branch.merge.is_empty(), "{branch:?}");
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        assert!(project.reports.join("t-1.md").is_file());
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_none(), "the work is on the base before the merge");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:.dispatch/t-1.md")]).is_some(), "the report is committed on the base");
+        assert_eq!(git_out(&project, &["rev-parse", "--abbrev-ref", "HEAD"]), base);
+
+        // A file that the run left: the next task commits it on task/t-1 as WIP, then takes the folder.
+        write_file(&folder.join("left.txt"), "left by the work run\n").unwrap();
+        let setup_time = file_entry(&project.reports.join("work").join("1-setup.log")).unwrap().modified;
+        plan_and_approve(&project, &fake, "t-2");
+        assert_eq!(file_entry(&project.reports.join("work").join("1-setup.log")).unwrap().modified, setup_time, "the set-up command ran again");
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", "task/t-1~1"]), "t-1 work");
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", "task/t-1"]), "t-1 WIP (Dispatch: files of the work run)");
+        assert_eq!(git_out(&project, &["show", "--name-only", "--format=", "task/t-1"]), "left.txt");
+        assert_eq!(run_git(&folder, &["symbolic-ref", "--short", "HEAD"]).unwrap().trim(), "task/t-2");
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", "task/t-2"]), "t-2 work");
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        assert!(read(&project.work_record()).starts_with("ticket: t-2\nuse: work\n"));
+        clean(&project);
+    }
+
+    /// Ticket work-run-in-the-work-folder: while the work run of t-1 runs in the work folder, Approve of
+    /// t-2 is refused with the name of t-1; nothing changes.
+    #[test]
+    fn a_second_task_waits_for_the_work_folder() {
+        let (project, fake, base) = work_project("work-wait");
+        plan_and_approve(&project, &fake, "t-1");
+        let folder = project.work_folder();
+        write_file(&project.briefs().join("t-2.md"), "# t-2: a scratch task\n").unwrap();
+        write_file(&project.reports.join("fake-name.txt"), "t-2").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["plan", "t-2"]);
+        assert_eq!(code, 0, "{out}");
+        let (code, out) = run_script_env(&project, &fake, "working", &["approve", "t-2"], &[("FAKE_NAME", "t-1 [work]")]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("the work folder of this project is in use (task t-1)"), "{out}");
+        assert_eq!(read(&project.reports.join("t-2.state")).trim(), "planning");
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        assert_eq!(run_git(&folder, &["symbolic-ref", "--short", "HEAD"]).unwrap().trim(), "task/t-1");
+        assert!(git(&project.root, &["rev-parse", "--verify", "--quiet", "refs/heads/task/t-2"]).is_none());
+        assert!(read(&project.work_record()).starts_with("ticket: t-1\n"));
+        // When the work run of t-1 has ended, t-2 takes the folder.
+        let (code, out) = run_script_env(&project, &fake, "done", &["approve", "t-2"], &[("FAKE_NAME", "t-1 [work]")]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(run_git(&folder, &["symbolic-ref", "--short", "HEAD"]).unwrap().trim(), "task/t-2");
+        clean(&project);
+    }
+
+    /// Ticket work-run-in-the-work-folder: a reply resumes the work run in the work folder on its branch,
+    /// the checks of a task run there, and an uncommitted change of the user in a file of a task holds
+    /// no Approve and is no leftover of the task.
+    #[test]
+    fn a_reply_and_run_checks_use_the_work_folder() {
+        let (project, fake, base) = work_project("work-reply");
+        let cwd = project.root.to_string_lossy().into_owned();
+        let folder = project.work_folder();
+        plan_and_approve(&project, &fake, "t-1");
+        // Something moved the work folder off the branch: the reply checks the branch out again.
+        run_git(&folder, &["checkout", "-q", "--detach"]).unwrap();
+        fs::remove_file(fake.join("cwd.txt")).unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["reply", "t-1", "go on"]);
+        assert_eq!(code, 0, "{out}");
+        let call = last_call(&fake);
+        assert!(call[0].starts_with("go on") && call.contains(&"--resume".to_string()), "{call:?}");
+        assert!(same_folder(&read(&fake.join("cwd.txt")), &folder), "{}", read(&fake.join("cwd.txt")));
+        assert_eq!(run_git(&folder, &["symbolic-ref", "--short", "HEAD"]).unwrap().trim(), "task/t-1");
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+
+        // The checks of the task run in the work folder.
+        set_pick(&project, true);
+        set_checks(cwd.clone(), "where | cd\n".to_string()).unwrap();
+        task_pick_choice(cwd.clone(), "t-1".into(), vec!["where".into()]).unwrap();
+        ignore_line(&project, CHECKS_IGNORE).unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["check", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("where: exit 0"), "{out}");
+        let log = read(&project.checks_dir().join("t-1").join("1.log"));
+        assert!(same_folder(&log, &folder), "{log}");
+        assert!(!project.work_record().exists(), "the check run left its record");
+
+        // A change of the user in a file of the plan of t-2 holds no Approve and is no leftover.
+        write_file(&project.briefs().join("t-2.md"), "# t-2: a scratch task\n").unwrap();
+        write_file(&project.reports.join("fake-name.txt"), "t-2").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["plan", "t-2"]);
+        assert_eq!(code, 0, "{out}");
+        write_file(&project.plans().join("t-2.md"), "# t-2: plan\n\n## Files to change\n- `README.md`: the change.\n").unwrap();
+        write_file(&project.root.join("README.md"), "changed by the user\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-2"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(read(&project.root.join("README.md")), "changed by the user\n");
+        assert_eq!(read(&folder.join("README.md")), "scratch project\n");
+        let list = task_list(cwd).unwrap();
+        assert!(list.dirty.iter().any(|line| line.ends_with("README.md")), "{:?}", list.dirty);
+        for task in &list.tasks {
+            assert!(task.leftovers.is_empty(), "{}: {:?}", task.name, task.leftovers);
         }
         clean(&project);
     }

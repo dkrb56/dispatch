@@ -181,6 +181,15 @@
                 <input type="checkbox" data-option="pushAfterMerge" />
                 <span><b>Push after the merge</b> Merge also pushes your branch to its upstream branch, never with force. A failed push leaves the merge on this computer and shows on the task card. <small class="when-on">Changes the step "Section in CLAUDE.md".</small><small class="when-off">Turn on Task branches first.</small></span>
               </label>
+              <label class="switch-row" data-under="taskBranches">
+                <input type="checkbox" data-option="workFolders" />
+                <span><b>Work folder</b> The work run of a task runs in a side folder of Dispatch (<code>.dispatch/work/1</code>, a git checkout of the task branch). Your project folder stays on your branch while it runs, and the worker still writes its report into the task folder of your project. A second task waits until the side folder is free. The Merge still runs in your project folder in this version. <small class="when-on">Changes the steps "Section in CLAUDE.md" and "Work folder".</small><small class="when-off">Turn on Task branches first.</small></span>
+              </label>
+              <div class="switch-field">
+                <label for="setup-work-setup">Set-up command of the side folder</label>
+                <textarea id="setup-work-setup" rows="2" spellcheck="false" placeholder="One command, for example: npm ci&#10;# limit 3600 as the first line sets the time limit in seconds" title="The command that runs once in the new side folder, with cmd.exe, for example to install the dependencies. Empty: none. The box saves when you leave it"></textarea>
+                <small>Runs once, when Dispatch makes the side folder. Empty: none.</small>
+              </div>
             </div>
             <div class="section-head">
               <div>

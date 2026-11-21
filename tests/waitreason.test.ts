@@ -172,3 +172,31 @@ test("answerWait: the text names the other task, its branch and the base; the sh
     assert.doesNotMatch(one.full, /Its work run starts/);
   }
 });
+
+// Ticket work-run-in-the-work-folder: a task waits for the work folder that another task uses, and
+// the switch "Work folder" stands under Task branches in Setup pipeline with the box of its set-up command.
+test("the work folder: the reason comes after a merge and before the work run, and the switch stands in index.html", () => {
+  assert.deepEqual(waitReason({ editing: "t-1", dirty: [], folder: "t-1" }), {
+    short: "Waits for the work folder, which t-1 uses.",
+    full: "Its work run starts when the work run of t-1 ends and the work folder is free.",
+  });
+  assert.equal(waitReason({ editing: "t-1", dirty: [], folder: "t-1", merging: "t-0" })?.short, "Waits for the merge of t-0.", "a merge comes first");
+  assert.equal(waitReason({ editing: "t-1", dirty: [], folder: null })?.short, "Waits for the work run of t-1.", "null changes nothing");
+  assert.equal(waitReason({ editing: "t-1", dirty: [] })?.short, "Waits for the work run of t-1.", "absent changes nothing");
+  assert.equal(waitReason({ editing: null, dirty: [" M a.ts"], folder: null })?.short, "Waits for 1 changed file of this task.");
+  assert.equal(waitReason({ editing: null, dirty: [], folder: null }), null);
+  assert.deepEqual(answerWait({ editing: "t-1", dirty: [], folder: "t-1" }), {
+    short: "Your answers wait for the work folder, which t-1 uses.",
+    full: "Your answers go to the worker when the work run of t-1 ends and the work folder is free.",
+  });
+  assert.match(answerWait({ editing: "t-1", dirty: [], folder: "t-1", merging: "t-0" })?.short ?? "", /merge of t-0/);
+  assert.equal(answerWait({ editing: "t-1", dirty: [], folder: null })?.short, "Your answers wait for the work run of t-1.");
+  const long = "a-long-ticket-name-with-many-parts";
+  for (const reason of [waitReason({ editing: long, dirty: [], folder: long }), answerWait({ editing: long, dirty: [], folder: long })]) {
+    assert.ok(reason);
+    assert.ok(words(reason.short) <= 12, reason.short);
+    assert.doesNotMatch(reason.short, /\n/);
+  }
+  assert.match(HTML, /<label class="switch-row" data-under="taskBranches">\s*<input type="checkbox" data-option="workFolders" \/>/);
+  assert.match(HTML, /<textarea id="setup-work-setup"/);
+});

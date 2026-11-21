@@ -57,6 +57,8 @@ interface Options {
   noTriage: boolean;
   /** A check step whose result a worker would show does not stop the work run, and Dispatch confirms a result that still arrives (ticket confirm-a-check-step-s-result-on-the). Off at the start. */
   confirmResults: boolean;
+  /** The work run works in the work folder `.dispatch/work/1`, a git worktree on the task branch; needs Task branches (ticket work-run-in-the-work-folder). Off at the start. */
+  workFolders: boolean;
 }
 
 /** The reply of the `pipeline_plan`, `pipeline_apply` and `set_project_options` commands. */
@@ -71,6 +73,8 @@ interface Plan {
   measureCommands: string;
   /** The text of `.dispatch/merge-gate.txt`: the gate command of the merge step. Absent from an older host. */
   mergeGate?: string;
+  /** The text of `.dispatch/work-setup.txt`: the set-up command of the work folder (ticket work-run-in-the-work-folder). Absent from an older host. */
+  workSetup?: string;
   /** The text of `.dispatch/checks.txt`: the checks that a task can run (ticket task-checks). Absent from an older host. */
   checks?: string;
   /** The text of `.dispatch/checks-all.txt`: the files whose change runs every check (ticket test-picker-an-agent-picks-the-checks). Absent from an older host. */
@@ -108,6 +112,8 @@ const optionEls = [...dialog.querySelectorAll<HTMLInputElement>("#setup input[da
 const measureEl = document.querySelector<HTMLTextAreaElement>("#setup-measure-commands")!;
 /** The box with the gate command of the merge step, under the switch "Task branches". */
 const gateEl = document.querySelector<HTMLTextAreaElement>("#setup-merge-gate")!;
+/** The box with the set-up command of the work folder, under the switch "Work folder" (ticket work-run-in-the-work-folder). */
+const setupEl = document.querySelector<HTMLTextAreaElement>("#setup-work-setup")!;
 /** The box with the checks of the project (ticket task-checks). It has no switch: an empty list is off. */
 const checksEl = document.querySelector<HTMLTextAreaElement>("#setup-checks")!;
 /** The button that adds the tests that Dispatch finds in the project to that box. */
@@ -366,6 +372,8 @@ function show(plan: Plan): void {
   measureEl.disabled = !plan.options.measureBeforePlan;
   if (document.activeElement !== gateEl) gateEl.value = plan.mergeGate ?? "";
   gateEl.disabled = !plan.options.taskBranches;
+  if (document.activeElement !== setupEl) setupEl.value = plan.workSetup ?? "";
+  setupEl.disabled = !(plan.options.taskBranches && plan.options.workFolders);
   if (document.activeElement !== checksEl) checksEl.value = plan.checks ?? "";
   checksEl.disabled = false;
   findChecksEl.disabled = false;
@@ -392,7 +400,7 @@ function show(plan: Plan): void {
 
 /** Asks the backend for the steps, or to do them, and shows the result. */
 async function run(
-  command: "pipeline_plan" | "pipeline_apply" | "set_project_options" | "set_measure_commands" | "set_merge_gate" | "set_checks" | "set_checks_all" | "find_checks",
+  command: "pipeline_plan" | "pipeline_apply" | "set_project_options" | "set_measure_commands" | "set_merge_gate" | "set_work_setup" | "set_checks" | "set_checks_all" | "find_checks",
   options?: Options,
   text?: string,
 ): Promise<void> {
@@ -437,6 +445,10 @@ export function initPipeline(
   // The gate command is saved the same way (ticket task-branches).
   gateEl.addEventListener("change", () => {
     if (folder) void run("set_merge_gate", undefined, gateEl.value);
+  });
+  // The set-up command of the work folder is saved the same way (ticket work-run-in-the-work-folder).
+  setupEl.addEventListener("change", () => {
+    if (folder) void run("set_work_setup", undefined, setupEl.value);
   });
   // The list of checks is saved the same way (ticket task-checks).
   checksEl.addEventListener("change", () => {
@@ -526,6 +538,8 @@ function open(host: HostId, target: string | null): void {
   measureEl.disabled = true;
   gateEl.value = "";
   gateEl.disabled = true;
+  setupEl.value = "";
+  setupEl.disabled = true;
   checksEl.value = "";
   checksEl.disabled = true;
   findChecksEl.disabled = true;

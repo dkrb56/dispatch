@@ -502,6 +502,7 @@ pub fn project_rules(core: &Core, cwd: String) -> Result<Rules, String> {
         ("Options of the work run", project.work_flags()),
         ("Measuring commands", project.measure_commands_file()),
         ("Merge gate command", project.merge_gate_file()),
+        ("Work folder set-up command", project.work_setup_file()),
     ] {
         if let Ok(flags) = fs::read_to_string(&path) {
             if !flags.trim().is_empty() {

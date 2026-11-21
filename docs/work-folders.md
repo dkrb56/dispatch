@@ -51,6 +51,10 @@ The user's decisions of 2026-11-21: the five rules; one work folder at the start
 - A set-up command of the project (one line, for example `npm ci`) runs after Dispatch makes the folder. Files that git does not track are absent until then.
 - Only Dispatch and its workers write in the folder. Thus Dispatch can clean it without a question: `git merge --abort`, `git reset --hard`, `git clean -fd`. Build output that git ignores stays.
 - The record of the folder names its user: the ticket, the kind of use (work run or merge) and the id of the job or process. The folder is free when that job or process has ended. A second user waits; its card says "waits for the work folder" and names the task that has it.
+- The switch: `workFolders` in `.dispatch/options.json`, "Work folder" under Task branches in Setup pipeline. It works only with Task branches on.
+- The set-up command: `.dispatch/work-setup.txt`, one command line; a first line `# limit <seconds>` sets its time limit (default 3600).
+- The record: `.dispatch/work/1.record`, with the lines `ticket:`, `use:` (`work` or `check`), `pid:`, `job:` and `since:`.
+- The set-up log: `.dispatch/work/1-setup.log`.
 - The design holds for more than one folder. More folders permit parallel work runs later; each costs disk space and one first build.
 
 ### Plan run
@@ -150,7 +154,7 @@ Still untried:
 ## Tasks that follow
 
 1. **Proof.** A scratch project, one real work run and one gated merge in a work folder; the answers to the open points in this file. No change of the app.
-2. **Work run in the work folder.** A project switch (only with Task branches on, off by default): the folder with its set-up command and its record; Approve, reply, stop, resume and the checks there; the report by its full path; the card names the wait for the folder. With the switch off, every text and step is the one of today.
+2. **Work run in the work folder** (ticket work-run-in-the-work-folder, 2026-11-21). A project switch (only with Task branches on, off by default): the folder with its set-up command and its record; Approve, reply, stop, resume and the checks there; the report by its full path; the card names the wait for the folder. With the switch off, every text and step is the one of today.
 3. **Merge in the work folder.** The merge commit, the checks and the gate there; the one-step move of the base; "same code, no new gate"; the cleaning of a left merge; auto-merge and Push after the merge.
 4. **Moving a project.** A task that waits on a branch of the old path (with card files on the branch) merges and answers with the switch on; Setup pipeline, the Help and the README say what the switch does.
 5. **Removing the old path.** Only on the user's word, after this project, Starminer and Rockhoppers ran with the switch on. The user turns the switch on per project in Setup pipeline.

@@ -247,6 +247,11 @@ pub fn set_merge_gate(cwd: String, text: String) -> Result<Plan, String> {
 }
 
 #[tauri::command(async)]
+pub fn set_work_setup(cwd: String, text: String) -> Result<Plan, String> {
+    pipeline::set_work_setup(cwd, text)
+}
+
+#[tauri::command(async)]
 pub fn set_checks(cwd: String, text: String) -> Result<Plan, String> {
     pipeline::set_checks(cwd, text)
 }
