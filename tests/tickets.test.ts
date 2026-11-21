@@ -20,6 +20,7 @@ import {
   columnOf,
   COLUMNS,
   boardTickets,
+  inProgressView,
   columnTickets,
   countText,
   DROP_COLUMNS,
@@ -150,6 +151,15 @@ test("the seven columns, the columns that take a drop, and the order of each col
   assert.deepEqual(ids(columnTickets(later, "backlog")), ["b-young", "b-old"], "Backlog newest change first");
 });
 
+test("the live worker decides the column before a stale task state (ticket when-i-approve-decision-ticket-jumps)", () => {
+  const base = { queued: false, waits: false, run: null, state: "" } as const;
+  assert.equal(inProgressView({ ...base, state: "planning", run: "work" }), "in-progress", "stale planning + work run");
+  assert.equal(inProgressView({ ...base, state: "planning", run: "plan" }), "planning");
+  assert.equal(inProgressView({ ...base, state: "planning" }), "planning", "planning and no run");
+  assert.equal(inProgressView({ ...base, state: "planning", queued: true, waits: true }), "in-progress", "a start holds the project");
+  assert.equal(inProgressView({ ...base, state: "planning", waits: true }), "waiting");
+});
+
 test("Planning holds the In progress tickets whose task plans, until Approve (ticket ticket-board-update-update-to-columns)", () => {
   const list = [
     ticket("plan", "in-progress", null, 1, 3),
@@ -198,10 +208,10 @@ test("Waiting for answer holds the In progress tickets whose task waits for a re
   // The desktop board: a question, a permission, a repeated question and a prompt go to Waiting for
   // answer; a plan that waits for Approve (kind plan or hold) goes there too (ticket put-a-ticket-whose-plan-waits-for).
   const helper = MAIN.slice(MAIN.indexOf("function taskBoardColumn("), MAIN.indexOf("function attentionWaits("));
-  assert.match(helper, /kind === "prompt" \|\| kind === "plan" \|\| kind === "hold"\) return "waiting"/);
+  assert.match(helper, /waits: kind === "question"[^\n]*kind === "prompt" \|\| kind === "plan" \|\| kind === "hold",/);
   assert.match(helper, /question[\s\S]*permission[\s\S]*repeat/);
-  assert.ok(helper.indexOf('return "waiting"') < helper.indexOf('"planning" ? "planning"'), "the wait goes before the plan phase");
-  assert.ok(helper.indexOf("approvalQueued(task)") < helper.indexOf('return "waiting"'), "a queued approval stands in Working");
+  assert.match(helper, /inProgressView\(\{/, "the rule of inProgressView puts the wait before the plan phase");
+  assert.match(helper, /queued: approvalQueued\(task\)/, "a queued approval stands in Working");
   assert.match(MAIN, /const view = \(ticket: Ticket\) => taskBoardColumn\(taskByName\.get\(ticket\.task \|\| ticket\.id\)\)/);
   assert.match(MAIN, /column\.status === "planning" \|\| column\.status === "waiting" \? \[\]/, "the Plan view takes each ticket once");
   assert.match(CSS, /grid-template-columns: repeat\(7, minmax\(180px, 1fr\)\);/);

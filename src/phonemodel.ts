@@ -715,6 +715,9 @@ export function phoneBoards(
       if (approvalQueued(task)) return "in-progress";
       const phase = phonePhase(task);
       if (phase === "question" || phase === "permission" || phase === "prompt" || phase === "plan-ready") return "waiting";
+      // A working worker decides before the task state, which can be older (ticket when-i-approve-decision-ticket-jumps).
+      const running = task.workers.find((worker) => worker.state === "working");
+      if (running) return workerRun(task, running) === "plan" ? "planning" : "in-progress";
       return task.info?.state === "planning" ? "planning" : "in-progress";
     };
     const columns = tools.columns.map(({ status, name }): PhoneColumn => {

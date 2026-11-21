@@ -102,7 +102,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, boardTickets, bulkIds, canDrag, clampColumnWidth, COLUMN_WIDTHS_KEY, columnWidthsKey, columnTemplate, parseColumnWidths, type BoardColumn, type ColumnWidth, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketGroups, ticketMatches, ticketMessage, ticketRoute, type InProgressView, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
+import { addedText, boardTickets, inProgressView, bulkIds, canDrag, clampColumnWidth, COLUMN_WIDTHS_KEY, columnWidthsKey, columnTemplate, parseColumnWidths, type BoardColumn, type ColumnWidth, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketGroups, ticketMatches, ticketMessage, ticketRoute, type InProgressView, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
@@ -7637,16 +7637,22 @@ function taskAttentionWait(task: Task): AttentionWait | null {
  * for answer when the task waits for a reply of the user (a question, a permission, a repeated question
  * or a prompt; user decision 3), also when its plan waits for Approve (ticket
  * put-a-ticket-whose-plan-waits-for), else Planning in its plan phase, else Working. An approval that
- * waits in the queue stands in Working (decision 1 of that ticket).
+ * waits in the queue stands in Working (decision 1 of that ticket). The live worker decides before the
+ * task state, which can be older than the worker list.
  */
 function taskBoardColumn(task: Task | undefined): InProgressView {
   if (!task) return "in-progress";
-  if (approvalQueued(task)) return "in-progress";
   // A plan that night mode approves stands in Working, as a queued approval (ticket task-card-show-that-night-mode-will).
   if (nightPlanOf(task)?.approves) return "in-progress";
   const kind = taskAttentionWait(task)?.kind;
-  if (kind === "question" || kind === "permission" || kind === "repeat" || kind === "prompt" || kind === "plan" || kind === "hold") return "waiting";
-  return task.info?.state === "planning" ? "planning" : "in-progress";
+  const running = task.workers.find((worker) => worker.state === "working");
+  // The live worker comes before the task state, and a start that holds the project stands in Working from the click (ticket when-i-approve-decision-ticket-jumps).
+  return inProgressView({
+    queued: approvalQueued(task) || startHolder(taskHost(task), taskCwd(task)) === task.name,
+    waits: kind === "question" || kind === "permission" || kind === "repeat" || kind === "prompt" || kind === "plan" || kind === "hold",
+    run: running ? liveRun(task, running) : null,
+    state: task.info?.state ?? "",
+  });
 }
 
 /** The waits of a list of tasks, for the signal. */

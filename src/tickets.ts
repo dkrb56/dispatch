@@ -584,6 +584,17 @@ export function boardTickets<T extends Pick<Ticket, "id" | "status" | "order" | 
   return all.filter((ticket) => view(ticket) === column);
 }
 
+/**
+ * The column of an In progress ticket from the facts of its task (ticket when-i-approve-decision-ticket-jumps).
+ * The live worker comes before the task state: the state file is older than the worker list while Approve runs.
+ */
+export function inProgressView(facts: { queued: boolean; waits: boolean; run: "plan" | "work" | null; state: string }): InProgressView {
+  if (facts.queued) return "in-progress";
+  if (facts.waits) return "waiting";
+  if (facts.run) return facts.run === "plan" ? "planning" : "in-progress";
+  return facts.state === "planning" ? "planning" : "in-progress";
+}
+
 /** Done and Canceled show only this many cards until the user clicks Show all (ticket done-and-canceled-show-only-the-newest). */
 export const CLOSED_COLUMN_LIMIT = 10;
 

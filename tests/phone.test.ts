@@ -353,6 +353,17 @@ test("a ticket whose task is in its plan phase stands in Planning with its task 
   assert.deepEqual(board.columns[1].tickets.map((one) => one.ticket.id), ["n1"], "Scheduled keeps the queue");
 });
 
+test("a stale planning state with a working work run stands in In progress, not Planning (ticket when-i-approve-decision-ticket-jumps)", () => {
+  const tasks = [info("x", { state: "planning", plan: FILE, about: "Approved" })];
+  const tickets = [ticket("x", "in-progress", { updated: 3 })];
+  const workers = [worker("x [plan]", "done"), worker("x [work]", "working")];
+  const [board] = phoneBoards([{ root: ROOT, list: { tasks, tickets }, error: "" }], workers, tools, ["planning", "in-progress"]);
+  const planning = board.columns.find((column) => column.status === "planning")!;
+  const progress = board.columns.find((column) => column.status === "in-progress")!;
+  assert.deepEqual(planning.tickets.map((one) => one.ticket.id), [], "not in Planning");
+  assert.deepEqual(progress.tickets.map((one) => one.ticket.id), ["x"], "in In progress");
+});
+
 test("a ticket whose task waits for a reply stands in Waiting for answer with its task row (ticket add-another-column-between-planning-and)", () => {
   const tasks = [
     info("ask", { ...REPORT("needs-decision", "decision"), questions: [QUESTION], about: "Asks" }),
