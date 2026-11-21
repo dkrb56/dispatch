@@ -48,6 +48,7 @@ test("the colours of the four kinds are the ones of the board", () => {
       ["triage", "#c98500"],
     ],
   );
+  assert.equal(KINDS.find((kind) => kind.kind === "triage")?.name, "Chats");
 });
 
 test("the buckets of the three ranges", () => {
@@ -78,7 +79,7 @@ test("the axis top and the bar heights; the sum of the bars is the total of the 
   assert.deepEqual(chart.axis, ["4M", "2M", "0"]);
   const nine = chart.bars[9];
   assert.deepEqual([nine.heights.work, nine.heights.plan, nine.heights.agent, nine.heights.triage], [50, 25, 0, 0]);
-  assert.equal(nine.tip, "09: 3M tokens: work 2M, plan 1M, agents 0, triage 0");
+  assert.equal(nine.tip, "09: 3M tokens: work 2M, plan 1M, agents 0, chats 0");
   assert.equal(chart.bars.reduce((sum, bar) => sum + bar.total, 0), 3_500_000, "the row of yesterday is in no bar of today");
   const week = bars(rows, buckets("7d", NOW));
   assert.equal(week.bars.reduce((sum, bar) => sum + bar.total, 0), 3_501_000);
@@ -113,10 +114,11 @@ test("the ranking: biggest first, the widths against the biggest row, the names 
   assert.equal(ranked[0].sub, "name-p · 2 runs · fable");
   assert.equal(ranked[1].sub, "name-p · chat · fable");
   assert.equal(ranked[0].mainKind, "work run");
+  assert.equal(ranked[1].mainKind, "chats");
   const sumOfWidths = (one: (typeof ranked)[0]) => one.widths.work + one.widths.plan + one.widths.agent + one.widths.triage;
   assert.ok(Math.abs(sumOfWidths(ranked[0]) - 100) < 1e-9);
   assert.ok(Math.abs(ranked[1].widths.triage - (2_400_000 / 5_301_100) * 100) < 1e-9);
-  assert.equal(ranked[0].tip, "work 3.4M · plan 1.3M · agents 600k · triage 0");
+  assert.equal(ranked[0].tip, "work 3.4M · plan 1.3M · agents 600k · chats 0");
   // A consumer without tokens has no row.
   assert.equal(ranked.some((one) => one.id === "t-0"), false);
 });

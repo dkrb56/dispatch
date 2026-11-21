@@ -4,7 +4,7 @@
 // file with Node (tests/tokens.test.ts). `src/main.ts` draws what these functions give.
 import { runModelText, tokenText } from "./workerrow.ts";
 
-/** Who used the tokens: a work run, a plan run, an agent of a run, or a triage chat with its agents. */
+/** Who used the tokens: a work run, a plan run, an agent of a run, or a chat with its agents. */
 export type Kind = "work" | "plan" | "agent" | "triage";
 
 /** The four kinds in the order of the bars, the legend and the segmented bars, with the colours of the board. */
@@ -12,7 +12,7 @@ export const KINDS: readonly { kind: Kind; name: string; color: string }[] = [
   { kind: "work", name: "Work runs", color: "#3987e5" },
   { kind: "plan", name: "Plan runs", color: "#d95926" },
   { kind: "agent", name: "Agents of the runs", color: "#199e70" },
-  { kind: "triage", name: "Triage chat", color: "#c98500" },
+  { kind: "triage", name: "Chats", color: "#c98500" },
 ];
 
 /** One row of `token_report`; the page adds the key of the project. */
@@ -164,7 +164,8 @@ export function bars(rows: readonly TokenRow[], list: readonly Bucket[]): { bars
 
 /** The short word of a kind in a tooltip. */
 export function kindWord(kind: Kind): string {
-  return kind === "agent" ? "agents" : kind;
+  if (kind === "agent") return "agents";
+  return kind === "triage" ? "chats" : kind;
 }
 
 /** The share of a part in a whole as "1.7%": one decimal under 10 %, none above; an empty whole gives "0%". */
@@ -192,12 +193,12 @@ function mainFamily(rows: readonly TokenRow[]): string {
   return best ? family(best[0]) : "";
 }
 
-/** The run kind with the most tokens of some rows, in words: "work run", "plan run", "agents", "triage chat". */
+/** The run kind with the most tokens of some rows, in words: "work run", "plan run", "agents", "chats". */
 function mainKind(rows: readonly TokenRow[]): string {
   const sums = emptyKinds();
   for (const row of rows) sums[row.kind] += rowTotal(row);
   const best = KINDS.map(({ kind }) => kind).reduce((a, b) => (sums[b] > sums[a] ? b : a));
-  return { work: "work run", plan: "plan run", agent: "agents", triage: "triage chat" }[best];
+  return { work: "work run", plan: "plan run", agent: "agents", triage: "chats" }[best];
 }
 
 /** One row of the list "Who used the most". */
