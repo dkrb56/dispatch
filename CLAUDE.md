@@ -1,5 +1,5 @@
 ## Background workers
-<!-- dispatch-section: 50aeb20e7def456d -->
+<!-- dispatch-section: 9a34bcf16e317b95 -->
 - A task is two runs of one worker. The plan run reads the code and writes a plan. The work run is a new session that reads the brief and the approved plan and executes the plan. Triage starts and resumes a worker only with the script `.dispatch/worker.ps1`, never with `claude --bg` or `claude --resume` directly. A worker works in the main checkout (`worktree.bgIsolation` is `none`).
 - Triage writes each brief to `.dispatch/briefs/<ticket-id>.md`: the user's words, the constraints, and the command that proves the work. The brief says nothing about the approach; the plan run decides that. A ticket message with the block `Part N of M of ticket <id>` is a part of that ticket: triage copies the block into the brief as the section `## Parent and earlier parts`, after the user's words.
 - A message that Dispatch sends from its tickets board starts with the line `Ticket <id>: <title>`. Triage uses that id as the ticket id of the task. Dispatch keeps the tickets file `.dispatch/tickets.jsonl`; triage and the workers do not edit it.
@@ -36,7 +36,6 @@
 
 ## Releases
 - The release task `release-<version>` also writes the entry of the version at the top of `CHANGELOG.md`: the heading `## <version> (<date>)`, then one `- ` line per change for the user since the last release, in plain words, with no ticket ids, no file names and no commit hashes. Dispatch shows these lines in its window "What's new" after the update.
-- The brief of a release task names that step and lists the commits since the last release.
 
 ## Test builds
 - A test copy builds into the one shared folder `D:\dev_projects\dispatch\src-tauri\target\test-copy` (`CARGO_TARGET_DIR`, absolute), never a folder of its own.
