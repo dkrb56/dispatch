@@ -228,7 +228,7 @@ fn pick_rule(reports: &str, script: &str) -> String {
 /// The line of the "Background workers" section for a project with "Task branches" on.
 fn branches_rule(reports: &str, script: &str) -> String {
     format!(
-        "- Task branches is on in this project. The plan verb of the script writes the base branch (the current branch) into `{reports}/<ticket-id>.branch`. Approve makes the branch `{BRANCH_PREFIX}<ticket-id>` from that base and checks it out in the main checkout; the work run commits on that branch, switches no branch, and never merges or pushes. A work run that stops with a question or fails first commits its own files by name on the branch as `<ticket-id> WIP`; the next run adds its own commit. When a run forgot that commit, Dispatch makes it: the changed files of the task that are not newer than the report go onto the branch as `<ticket-id> WIP (Dispatch: files of the work run)`. At each start of a run (Approve and each reply) Dispatch brings the newer commits of the base into the branch with a merge commit; when a file outside `{reports}` changed on both sides, the branch stays as it is and the prompt of the run says so. When the report is written, Dispatch switches the checkout back to the base and commits the task files there. Uncommitted changes outside the files of the task go along with the switch to the branch and back; a change in a file of the task holds the switch. The user merges the branch with the Merge button in the task card of Dispatch, and night mode of Dispatch merges a task with a done report by itself when the project has a gate command: the script merges it with `--no-ff` into the base, after the gate command of `{reports}/merge-gate.txt` passed on the merged code. Triage never runs `{script} merge`; the local settings deny it that verb.
+        "- Task branches is on in this project. The plan verb of the script writes the base branch (the current branch) into `{reports}/<ticket-id>.branch`. Approve makes the branch `{BRANCH_PREFIX}<ticket-id>` from that base and checks it out in the main checkout; the work run commits on that branch, switches no branch, and never merges or pushes. A work run that stops with a question or fails first commits its own files by name on the branch as `<ticket-id> WIP`; the next run adds its own commit. When a run forgot that commit, Dispatch makes it: the changed files of the task that are not newer than the report go onto the branch as `<ticket-id> WIP (Dispatch: files of the work run)`. At each start of a run (Approve and each reply) Dispatch brings the newer commits of the base into the branch with a merge commit; when a file outside `{reports}` changed on both sides, the branch stays as it is and the prompt of the run says so. When the report is written, Dispatch switches the checkout back to the base and commits the task files there. Uncommitted changes outside the files of the task go along with the switch to the branch and back; a change in a file of the task, or in a file that the branch holds in another version, holds the switch, and the task card names the file. The user merges the branch with the Merge button in the task card of Dispatch, and night mode of Dispatch merges a task with a done report by itself when the project has a gate command: the script merges it with `--no-ff` into the base, after the gate command of `{reports}/merge-gate.txt` passed on the merged code; the tracked files that the gate command changed go into a commit of their own after the merge commit, `<ticket-id>: files that the merge gate wrote`. Triage never runs `{script} merge`; the local settings deny it that verb.
 "
     )
 }
@@ -963,7 +963,7 @@ impl Project {
 {checks}{gate_checks}- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which starts the work run as a new session on the options in `{reports}/work-flags.txt`, with the model and the effort of `{reports}/<ticket-id>.models` when it has them, with the brief, the plan and the user's decisions as its input, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The one other yes is night mode, which the user turns on per project in Dispatch: Dispatch then approves a ready plan by itself, takes the recommended option of each decision and records it in the plan as DEFAULT DECISION; a `HOLD:` decision, a paused project, an uncommitted change in a file of the task, or a part whose parent ticket has no ticked night box keep the plan waiting for the click. The script refuses when an uncommitted change outside `{reports}/` touches a file of the task (a path of the section Files to change of its plan, or a file that its task branch changed), when the worker still runs, or when the task was stopped; other uncommitted changes stay where they are and hold no task ({tasks_git}).
 {plain}- The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It commits only the files that it changed, each by name, never with `git add -A`, `git add .` or `git commit -a`, and leaves every other change as it is. It never pushes or merges. The user decides the push.
 {branches}{push}{auto_merge}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification says in the worker's own words what it ran and what that showed. Dispatch reads the commands of the work run from the transcripts and shows each under the report with its exit code and its last lines. A done report whose work run ran no command, or without a run of a chosen check, counts as working, and its ticket stays open.
-- A worker starts no session and sends no message to a chat. It has no question tool. A question for the user goes into the report under the heading `## Questions`: numbered items, each with its options as list items, the recommended option first. Each option is one short line, because Dispatch shows it as a button and sends it back word for word; the question and each option follow the rule of plain words of the Decisions of a plan; the details stand above the questions. The worker then writes `state: needs-decision` and `needs: decision` and ends its turn, also when the question is about a permission. `needs: permission` means: a refused tool call stopped the work, the report names the refused call and the rule it needs, and the work goes on with a follow-up `Continue` once the user changed the rule. The user answers in the task card of Dispatch, and the answer arrives as a follow-up `Answer to question N: <option>`. An answered question never comes back unchanged: after the answer the worker takes the question out of its report or writes what it decided and did, and ends with `state: done` or a new question. A follow-up `Continue` after an answer means: take the answers as given and go on.
+- A worker starts no session and sends no message to a chat. It has no question tool. A question for the user goes into the report under the heading `## Questions`: numbered items, each with its options as list items, the recommended option first. Each option is one short line, because Dispatch shows it as a button and sends it back word for word; the question and each option follow the rule of plain words of the Decisions of a plan; the details stand above the questions. The worker then writes `state: needs-decision` and `needs: decision` and ends its turn. `needs: permission` means: a refused tool call stopped the work; the report then has `state: needs-decision`, no `## Questions`, and names the refused call as sent, the refusal text and the permission rule that would allow it, and the work goes on with a follow-up `Continue` once the user changed the rule. An option of a question is never a change of a permission rule. The user answers in the task card of Dispatch, and the answer arrives as a follow-up `Answer to question N: <option>`. An answered question never comes back unchanged: after the answer the worker takes the question out of its report or writes what it decided and did, and ends with `state: done` or a new question. A follow-up `Continue` after an answer means: take the answers as given and go on.
 - A check step whose result the user confirms (a step of the project rules that picks or judges something for the user) writes the report with the section `## Check result`: the result as the step gave it, one item per line, a reason after each item where the step gives one. Under `## Questions` it puts one question only, which names the step and asks whether the user agrees, with two options: the first keeps the result as it is, the second changes it. Then it writes `state: needs-decision` and `needs: decision` and ends its turn. Dispatch shows the result on the task card with a box for changes and a Confirm button; the answer arrives as `Answer to question N: <first option>` or `Answer to question N: <second option>: <the user's words>`. The run applies the words and goes on; the final report keeps `## Check result` with the confirmed result, and the task card has a row that opens it.
 {confirm}- A follow-up goes through `{script} reply <ticket-id> \"<message>\"` and quotes the user's words exactly. The script takes the options of the run from `{reports}/<ticket-id>.state`.
 - Triage does no implementation. It classifies, writes briefs, starts the plan run, shows the plan, relays the yes, checks results and reports to the user.
@@ -1762,6 +1762,14 @@ function Invoke-Git([string[]]$A) {
   [pscustomobject]@{ Code = $LASTEXITCODE; Lines = $lines; Text = ($lines -join "`n").Trim() }
 }
 
+# The paths that a git command lists, unquoted, without the message lines of git ("warning: in the
+# working copy of …" comes through stderr); none when git fails. A Windows path holds no colon.
+function Git-Paths([string[]]$A) {
+  $result = Invoke-Git (@('-c', 'core.quotePath=false') + $A)
+  if ($result.Code -ne 0) { return @() }
+  @($result.Lines | Where-Object { $_ -and $_ -notmatch '^(warning|error|fatal|hint): ' })
+}
+
 # The setting "Task branches" of the project in options.json; off without the file or the field.
 function Branches-On {
   $file = Join-Path $Reports 'options.json'
@@ -1843,19 +1851,37 @@ function Enter-TaskBranch {
   if ($current.StartsWith('task/')) { Refuse "the checkout is on $current, the branch of another task; Dispatch switches back to the base when that work run has ended" }
   $exists = (Invoke-Git @('rev-parse', '--verify', '--quiet', "refs/heads/$($info.branch)")).Code -eq 0
   $kept = @()
+  $synced = ''
   if ($exists) {
     $aligned = "$(Align-Tasks $info.branch)"
     if ($aligned) { Refuse "the checkout stays on ${current}: $aligned" }
     # The branch takes the newer commits of the base before the checkout (ticket merge-issue), so it
     # holds the card files as the base does; a clash leaves it as it was, and Sync-Note tells the
     # worker after the checkout. The card files that still differ go along by hand.
-    Sync-Base -Before | Out-Null
-    if (-not (Tasks-Local)) { $kept = Set-CardFilesAside $info.branch }
+    $synced = "$(Sync-Base -Before)"
   }
+  # An uncommitted file outside .dispatch that the target holds in another version holds the switch:
+  # git would refuse it (ticket bug-report-from-the-project-rockhoppers). The list comes before
+  # Set-CardFilesAside, so the refusal leaves the disk as it was.
+  $target = if ($exists) { $info.branch } else { $info.base }
+  $blocking = @(Switch-Blockers $target)
+  $why = if ($synced) { " (the newer commits of $($info.base) did not come into $($info.branch): $(($synced -replace "`r?`n", ' ').Trim().TrimEnd('.')))" } else { '' }
+  if ($blocking.Count -gt 0) { Refuse "the checkout stays on ${current}: $($info.branch) has another version of these uncommitted files, and git would overwrite them: $($blocking -join ', '); commit or stash them on $current, then try again$why" }
+  if ($exists -and -not (Tasks-Local)) { $kept = Set-CardFilesAside $info.branch }
   $result = if ($exists) { Invoke-Git @('checkout', '-q', $info.branch) } else { Invoke-Git @('checkout', '-q', '-b', $info.branch, $info.base) }
   Put-CardFiles $kept
-  if ($result.Code -ne 0) { Refuse "git could not check out $($info.branch): $($result.Text)" }
+  if ($result.Code -ne 0) { Refuse "git could not check out $($info.branch): $($result.Text)$why" }
   $current
+}
+
+# The uncommitted files outside .dispatch (changed tracked files and untracked files) that HEAD and
+# $Target hold in different versions: a checkout of $Target would overwrite them, so git refuses it.
+function Switch-Blockers([string]$Target) {
+  $dirty = @(Git-Paths @('diff', '--name-only', 'HEAD', '--', '.', ':(exclude).dispatch'))
+  $dirty += @(Git-Paths @('ls-files', '--others', '--exclude-standard', '--', '.', ':(exclude).dispatch'))
+  if ($dirty.Count -eq 0) { return @() }
+  $other = @(Git-Paths @('diff', '--name-only', '--no-renames', 'HEAD', $Target, '--', '.', ':(exclude).dispatch'))
+  @($dirty | Select-Object -Unique | Where-Object { $other -contains $_ })
 }
 
 # The card files that a checkout of $Target would delete or change (ticket merge-issue): the changed
@@ -1944,6 +1970,10 @@ function Merge-Branch($Info, [string]$Gate, [int]$Limit) {
       }
     }
   }
+  # The tracked files outside .dispatch that differ from the index before the checks and the gate
+  # (ticket bug-report-from-the-project-rockhoppers): the merged files match the index, so these are
+  # the changes of the user. A file that differs only after the gate is a file that the gate wrote.
+  $dirtyBefore = @(Git-Paths @('diff', '--name-only', '--', '.', ':(exclude).dispatch'))
   # Pick the checks after the work run: the ticked checks run on the merged code before the gate, and
   # the first failed one aborts the merge. With Checks at the gate and a gate command, the gate runs them.
   if ((Option-On 'pickChecks') -and -not ($Gate -and (Option-On 'checksAtGate'))) {
@@ -1976,6 +2006,14 @@ function Merge-Branch($Info, [string]$Gate, [int]$Limit) {
     return "git could not commit the merge: $($commit.Text)"
   }
   $script:Merged = (Invoke-Git @('rev-parse', '--short', 'HEAD')).Text
+  # The tracked files that the checks and the gate changed go into a commit of their own on the base,
+  # so no line of the gate (a log) stays uncommitted and holds the next switch to a task branch.
+  # Untracked files stay: they can be build output. A failure does not undo the merge.
+  $written = @(Git-Paths @('diff', '--name-only', 'HEAD', '--', '.', ':(exclude).dispatch') | Where-Object { $dirtyBefore -notcontains $_ })
+  if ($written.Count -gt 0) {
+    $own = Invoke-Git (@('commit', '-q', '-m', "${Id}: files that the merge gate wrote", '--') + $written)
+    if ($own.Code -ne 0) { [Console]::Error.WriteLine("warning: git could not commit the files that the merge gate wrote ($($written -join ', ')): $($own.Text)") }
+  }
   Invoke-Git @('branch', '-d', $branch) | Out-Null
   Write-BranchFile $branch $Info.base "done $script:Merged $((Get-Date).ToString('s'))"
   ''
@@ -12022,6 +12060,36 @@ if (args[0] === 'agents') {
         clean(&project);
     }
 
+    /// Ticket bug-report-from-the-project-rockhoppers: a gate that appends a line to a tracked file
+    /// left that change uncommitted on the base, and it held the next switch to an older task branch.
+    /// The merge commits the files that the gate wrote in a commit of their own; a change that was
+    /// there before the merge stays as it is.
+    #[test]
+    fn a_gate_that_writes_a_tracked_file_leaves_the_base_clean() {
+        let (project, fake, base) = branch_project("branch-gate-log");
+        let cwd = project.root.to_string_lossy().into_owned();
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        write_file(&project.root.join("logs").join("gate.md"), "# the log of the session\n").unwrap();
+        write_file(&project.root.join("other.txt"), "a file of the user\n").unwrap();
+        git_out(&project, &["add", "--", "logs/gate.md", "other.txt"]);
+        git_out(&project, &["commit", "-q", "-m", "the log and a file of the user"]);
+        write_file(&project.root.join("other.txt"), "a change of the user\n").unwrap();
+        set_merge_gate(cwd.clone(), "echo EVIDENCE>> logs\\gate.md\n".to_string()).unwrap();
+
+        let merged = task_merge(cwd, "t-1".to_string()).unwrap();
+        assert!(merged.starts_with("merged task/t-1"), "{merged}");
+        assert!(read(&project.root.join("logs").join("gate.md")).contains("EVIDENCE"));
+        assert_eq!(git_out(&project, &["status", "--porcelain", "--", "logs"]), "", "the line of the gate stayed uncommitted");
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", &base]), "t-1: files that the merge gate wrote");
+        assert_eq!(last_commit_files(&project, &base), ["logs/gate.md"]);
+        assert!(git_out(&project, &["log", "-1", "--format=%s", &format!("{base}~1")]).starts_with("Merge task/t-1 into "));
+        assert_eq!(git_out(&project, &["status", "--porcelain", "--untracked-files=no", "--", ".", NOT_TASKS]), "M other.txt");
+        clean(&project);
+    }
+
     /// Starts the merge verb of a ticket without a wait, with the fake `claude` first on PATH, as
     /// `run_script_env` runs it.
     fn spawn_merge(project: &Project, fake: &Path, ticket: &str) -> std::process::Child {
@@ -13044,6 +13112,34 @@ if (args[0] === 'agents') {
         let text = &last_call(&fake)[0];
         assert!(text.starts_with("Answer to question 1: Run the gate now Dispatch could not bring the newer commits of "), "{text}");
         assert!(text.contains(&format!("of {base} into this branch: ")) && text.contains("work-t-1.txt"), "{text}");
+        clean(&project);
+    }
+
+    /// Ticket bug-report-from-the-project-rockhoppers: the sync of the base fails, so the branch keeps
+    /// an old version of a file that the base has changed without a commit; git then refuses the
+    /// checkout. The reply refuses with the file, the reason and the sync reason, and changes nothing.
+    #[test]
+    fn a_leftover_change_that_the_branch_has_in_another_version_is_named() {
+        let (project, fake, _) = branch_project("reply-leftover");
+        let base = question_then_fix_on_the_base(&project, &fake, "work-t-1.txt", "another text of the base\n");
+        write_file(&project.root.join("logs").join("x.md"), "# the log\n").unwrap();
+        git_out(&project, &["add", "--", "logs/x.md"]);
+        git_out(&project, &["commit", "-q", "-m", "the log of another task"]);
+        write_file(&project.root.join("logs").join("x.md"), "# the log\nEVIDENCE of the gate\n").unwrap();
+        let tip = git_out(&project, &["rev-parse", "task/t-1"]);
+
+        let (code, out) = run_script(&project, &fake, "done", &["reply", "t-1", "Answer to question 1: Run the gate now"]);
+        assert_eq!(code, 2, "{out}");
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        assert_eq!(git_out(&project, &["rev-parse", "task/t-1"]), tip);
+        assert_eq!(read(&project.root.join("logs").join("x.md")), "# the log\nEVIDENCE of the gate\n");
+        assert!(out.contains("logs/x.md") && out.contains("has another version"), "{out}");
+        assert!(out.contains("commit or stash"), "{out}");
+        assert!(out.contains("changed on both sides") && out.contains("work-t-1.txt"), "{out}");
+        assert!(!out.contains("the branch of another task"), "{out}");
+        for file in ["plans/t-1.md", "t-1.branch", "t-1.md", "t-1.state"] {
+            assert!(project.root.join(TASKS_DIR).join(file).is_file(), "the refused reply deleted {file}");
+        }
         clean(&project);
     }
 
