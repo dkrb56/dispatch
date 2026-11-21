@@ -184,8 +184,11 @@ const cardsEl = element("main", "cards");
 /** The fixed New ticket button at the bottom of the home, in Cards and in Board (user decision 1). */
 const homeBar = element("nav", "home-bar");
 homeBar.hidden = true;
-const newTicketBtn = element("button", "primary", "New ticket");
+const newTicketBtn = element("button", "primary", "");
 newTicketBtn.type = "button";
+const plusSign = element("span", "plus", "+");
+plusSign.setAttribute("aria-hidden", "true");
+newTicketBtn.append(plusSign, "New ticket");
 homeBar.append(newTicketBtn);
 /**
  * The one full screen (ticket the-phone-page-follows-the-new-mobile): Plan, Question or New ticket. A

@@ -595,6 +595,18 @@ test("the New ticket screen picks the project of the last ticket when it shows, 
   assert.deepEqual(ticketProjects([], "D:/work/beta"), { roots: [], picked: null }, "no project shows");
 });
 
+test("the New ticket button of the phone home is filled accent blue with a plus sign", () => {
+  const css = read("../src/phone/phone.css");
+  const rule = (selector: string) => css.split("\n\n").find((block) => block.startsWith(`${selector} {`)) ?? "";
+  const home = rule(".home-bar > .primary");
+  assert.match(home, /background: var\(--accent\)/);
+  assert.match(home, /color: var\(--bg\)/);
+  assert.match(home, /min-height: 52px/);
+  const shared = css.slice(css.indexOf(".screen-bar > .primary,"), css.indexOf("}", css.indexOf(".screen-bar > .primary,")));
+  assert.doesNotMatch(shared, /background:/, "the shared rule of the screen bar keeps its look");
+  assert.match(read("../src/phone/main.ts"), /element\("span", "plus", "\+"\)/, "the button has a plus sign");
+});
+
 test("the Terminal view: the bytes of each key button, of a paste and the name of the terminal", () => {
   const keys = PHONE_KEYS.map((name) => [name, keyBytes(name, false), keyBytes(name, true)]);
   assert.deepEqual(keys, [

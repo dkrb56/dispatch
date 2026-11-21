@@ -713,6 +713,21 @@ body.screen-open #app > :not(.screen) {
   border-color: var(--accent);
 }
 
+.home-bar > .primary {
+  background: var(--accent);
+  color: var(--bg);
+  min-height: 52px;
+  border-radius: 12px;
+}
+
+.home-bar > .primary:active {
+  opacity: 0.85;
+}
+
+.home-bar > .primary .plus {
+  margin-right: 8px;
+}
+
 .row-open {
   display: flex;
   align-items: center;
