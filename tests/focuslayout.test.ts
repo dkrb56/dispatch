@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { applyAction, type ColumnChoices, columnStates, columnTabs, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, parseTab, parseTermSplit, shareField, toggleSplit, toggleTermSplit } from "../src/focuslayout.ts";
+import { applyAction, type ColumnChoices, columnStates, columnTabs, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, parseTab, parseTermSplit, shareField, titleAction, toggleSplit, toggleTermSplit } from "../src/focuslayout.ts";
 
 const KEYS = ["a", "b", "c"];
 
@@ -140,6 +140,13 @@ test("the stored tab: a known tab stays, a missing, unknown or unavailable one g
   assert.equal(parseTab("triage", columnTabs(false)), "tickets");
 });
 
+test("a click on the project name: strip, restore, or nothing", () => {
+  assert.equal(titleAction("normal", true), "minimize");
+  assert.equal(titleAction("normal", false), null);
+  assert.equal(titleAction("min", false), "restore");
+  assert.equal(titleAction("max", true), "restore");
+});
+
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 test("the page: a strip hides the body, main.ts uses the rule, the Help names both controls", () => {
@@ -156,6 +163,8 @@ test("the page: a strip hides the body, main.ts uses the rule, the Help names bo
   const html = read("../index.html");
   assert.match(html, /<b>–<\/b>[^<]*narrow strip/);
   assert.match(html, /<b>⤢<\/b>[^<]*whole width/);
+  assert.match(main, /titleAction\(/);
+  assert.match(html, /<b>–<\/b>[\s\S]*?A click on the name of the project/);
 });
 
 test("the page: the stacked layout has its rules, its button and its Help item", () => {

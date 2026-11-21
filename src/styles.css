@@ -8717,6 +8717,10 @@ body:not(.map-mode):not(.overview-mode) #stale-alert {
   font-size: calc(15px * var(--text-scale));
 }
 
+.focus-col > .focus-head > .focus-name {
+  cursor: pointer;
+}
+
 /* The folder shows as the tooltip of the name. */
 .focus-path {
   display: none;

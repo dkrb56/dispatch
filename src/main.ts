@@ -29,7 +29,7 @@ import { Terminal } from "@xterm/xterm";
 import { onReturn } from "./chatend";
 import { barHost, markedProject, showMark, watchArea } from "./focusmark";
 import { removeAnswer, removeTexts } from "./removeproject";
-import { type ColumnAction, type ColumnChoice, type ColumnTab, type FocusSplit, type TermSplit, applyAction, columnStates, columnTabs, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, parseTab, parseTermSplit, shareField, toggleSplit, toggleTermSplit } from "./focuslayout";
+import { type ColumnAction, type ColumnChoice, type ColumnTab, type FocusSplit, type TermSplit, applyAction, columnStates, columnTabs, dragPartner, liftShares, mayMinimize, parseChoice, parseSplit, parseTab, parseTermSplit, shareField, titleAction, toggleSplit, toggleTermSplit } from "./focuslayout";
 import { chatSlotStep, type FoldPart, type Folds, foldOpen, parseFolds, setFold, splitNewest } from "./focuslists";
 import {
   arrowDiff,
@@ -12588,6 +12588,7 @@ interface FocusColumn {
   stateEl: HTMLElement;
   /** The buttons – (minimize) and ⤢ (maximize) in the head of the column (focus-column-size). */
   minEl: HTMLButtonElement;
+  nameEl: HTMLElement;
   maxEl: HTMLButtonElement;
   /** The button of a strip or a bar that brings the project back. */
   restoreEl: HTMLButtonElement;
@@ -12861,6 +12862,11 @@ function applyFocusLayout(): void {
     const may = mayMinimize(keys, choices, key);
     column.minEl.disabled = !may;
     column.minEl.title = may ? `Make ${name} a ${thin} with its name and state` : `One ${place} always shows its contents`;
+    const hint = state === "max" ? "Click to give the layout of focus mode back"
+      : state === "min" ? `Click to bring back the ${place} of ${name}`
+      : may ? `Click to make ${name} a ${thin}` : `One ${place} always shows its contents`;
+    column.nameEl.title = `${column.root}
+${hint}`;
     column.restoreEl.textContent = stacked ? "↕" : "↔";
     column.restoreEl.title = `Bring back the ${place} of ${name}`;
   }
@@ -13095,6 +13101,14 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   name.className = "focus-name";
   name.textContent = projectName(ref);
   name.title = root;
+  // A click on the name does what – and ⤢ do; stopPropagation keeps the column click from undoing it.
+  name.addEventListener("click", (event) => {
+    event.stopPropagation();
+    const keys = focusProjects.map(refKey);
+    const choices = focusChoices();
+    const action = titleAction(columnStates(keys, choices)[key] ?? "normal", mayMinimize(keys, choices, key));
+    if (action) setColumnSize(key, action);
+  });
   const pathEl = document.createElement("span");
   pathEl.className = "focus-path";
   pathEl.textContent = root;
@@ -13300,7 +13314,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   dragTerm(termHandle, key, termEl, workEl);
   dragColumns(colHandle, key, el);
   const tab = focusSizes()[key]?.tab;
-  const column: FocusColumn = { host, root, el, dotEl, pathEl, sideEl, sideHandle, chatsButton: chats, tabButtons, ticketsCountEl, workersCountEl, tab, triageEl, boardEl, boardNoteEl, boardCountEl, boardSearchEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, termListEl, termAddEl, workEl, termSplitEl, detailsEls, detailsOn: { triage: false, agents: false, terminal: false }, triageHeadEl, agentsHeadEl, chatSearchEl, agentsEl, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, restoreEl, colHandle };
+  const column: FocusColumn = { host, root, el, dotEl, pathEl, sideEl, sideHandle, chatsButton: chats, tabButtons, ticketsCountEl, workersCountEl, tab, triageEl, boardEl, boardNoteEl, boardCountEl, boardSearchEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, termListEl, termAddEl, workEl, termSplitEl, detailsEls, detailsOn: { triage: false, agents: false, terminal: false }, triageHeadEl, agentsHeadEl, chatSearchEl, agentsEl, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, nameEl: name, maxEl, restoreEl, colHandle };
   // A click anywhere on a strip brings the column back; a button or a drag edge keeps its own action.
   el.addEventListener("click", (event) => {
     if (!el.classList.contains("min")) return;

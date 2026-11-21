@@ -139,6 +139,12 @@ export function mayMinimize(keys: readonly string[], choices: ColumnChoices, key
   return keys.some((known) => states[known] !== "min");
 }
 
+/** What a click on the project name in the head of a column does: null when nothing may change. */
+export function titleAction(state: ColumnState, mayMin: boolean): ColumnAction | null {
+  if (state === "min" || state === "max") return "restore";
+  return mayMin ? "minimize" : null;
+}
+
 /**
  * The column that a drag of the right edge of `key` resizes with it: the next column in order that
  * shows normal. None when `key` is not normal itself. A strip is never a partner.
