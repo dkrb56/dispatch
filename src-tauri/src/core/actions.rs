@@ -776,6 +776,11 @@ mod tests {
 
     /// The run file after its command step ended: polls up to 30 s.
     fn wait_step(cwd: &str, run_id: &str, index: usize) -> ActionRun {
+        wait_step_for(cwd, run_id, index, Duration::from_secs(30))
+    }
+
+    /// The run file after its command step ended: polls up to `most`.
+    fn wait_step_for(cwd: &str, run_id: &str, index: usize, most: Duration) -> ActionRun {
         let project = Project::find(cwd).unwrap();
         let began = Instant::now();
         loop {
@@ -783,7 +788,7 @@ mod tests {
             if run.steps[index].state != "running" {
                 return run;
             }
-            assert!(began.elapsed() < Duration::from_secs(30), "step {index} of {run_id} still runs");
+            assert!(began.elapsed() < most, "step {index} of {run_id} still runs after {most:?}");
             std::thread::sleep(Duration::from_millis(100));
         }
     }
@@ -863,13 +868,17 @@ mod tests {
         let run = wait_step(&cwd, &run.id, 0);
         let lines: Vec<&str> = run.steps[0].output.lines().collect();
         assert_eq!((lines.len(), lines[0], lines[199]), (200, "line 51", "line 250"));
-        // The time limit ends the process tree; the exit is `timeout`.
-        let action = Action { id: "slow".to_string(), name: "Slow".to_string(), steps: vec![Step::Command { command: "ping -n 30 127.0.0.1 >nul".to_string(), limit: Some(1) }] };
+        // The time limit ends the process tree; the exit is `timeout`. The command sleeps about
+        // 2 minutes; the bound of 60 s proves that the limit stopped the step long before the
+        // command could end by itself. The span also holds about 9 process starts (git, cmd, ping,
+        // taskkill), which a busy computer makes slow, so the bound keeps a wide margin.
+        let action = Action { id: "slow".to_string(), name: "Slow".to_string(), steps: vec![Step::Command { command: "ping -n 120 127.0.0.1 >nul".to_string(), limit: Some(1) }] };
         action_save(cwd.clone(), action).unwrap();
         let began = Instant::now();
+        let bound = Duration::from_secs(60);
         let run = action_run(cwd.clone(), "slow".to_string()).unwrap();
-        let run = wait_step(&cwd, &run.id, 0);
-        assert!(began.elapsed() < Duration::from_secs(15), "{:?}", began.elapsed());
+        let run = wait_step_for(&cwd, &run.id, 0, Duration::from_secs(90));
+        assert!(began.elapsed() < bound, "the step ended after {:?}, the bound is {bound:?}", began.elapsed());
         assert_eq!((run.steps[0].exit.as_deref(), run.state.as_str()), (Some("timeout"), "failed"));
         assert!(run.steps[0].note.contains("time limit of 1 s"), "{run:?}");
         // A command step of this process that no thread runs (Dispatch ended): the list marks it failed.
