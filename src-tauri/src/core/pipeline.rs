@@ -2101,15 +2101,17 @@ function Commit-Own([string[]]$Lines) {
 # -Before: the checkout is not on the branch yet (ticket merge-issue); the merge commit then moves the
 # ref of the branch only. Its .dispatch is the one of the base, so `git log <base>..<branch> --
 # .dispatch` does not list it.
+# It reads the base commit once (ticket bringing-main-into-a-task-branch-can); a commit that lands during the step comes in at the next sync.
 function Sync-Base([switch]$Before) {
   $info = Read-BranchFile $Id
   if ($null -eq $info -or -not $info.branch -or -not $info.base -or $info.merge) { return '' }
   $on = (Current-Branch) -eq $info.branch
   if ($on -eq [bool]$Before) { return '' }
   if ((Invoke-Git @('rev-parse', '--verify', '--quiet', "refs/heads/$($info.base)")).Code -ne 0) { return "the branch $($info.base) does not exist" }
-  if ((Invoke-Git @('merge-base', '--is-ancestor', $info.base, $info.branch)).Code -eq 0) { return '' }
+  $baseId = "$((Invoke-Git @('rev-parse', '--verify', "refs/heads/$($info.base)")).Lines | Select-Object -Last 1)".Trim()
+  if ((Invoke-Git @('merge-base', '--is-ancestor', $baseId, $info.branch)).Code -eq 0) { return '' }
   $tip = "$((Invoke-Git @('rev-parse', '--verify', "refs/heads/$($info.branch)")).Lines | Select-Object -Last 1)".Trim()
-  $merge = Invoke-Git @('merge-tree', '--write-tree', '--name-only', '--no-messages', $info.branch, $info.base)
+  $merge = Invoke-Git @('merge-tree', '--write-tree', '--name-only', '--no-messages', $info.branch, $baseId)
   $lines = @($merge.Lines | Where-Object { $_ })
   if (($merge.Code -ne 0 -and $merge.Code -ne 1) -or $lines.Count -eq 0) { return "git merge-tree failed: $($merge.Text)" }
   $clash = @($lines | Select-Object -Skip 1 | Where-Object { -not $_.StartsWith('.dispatch/') })
@@ -2120,8 +2122,8 @@ function Sync-Base([switch]$Before) {
   try {
     $built = (Invoke-Git @('read-tree', $lines[0])).Code -eq 0
     if ($built) { $built = (Invoke-Git @('rm', '--cached', '-r', '-q', '-f', '--ignore-unmatch', '--', '.dispatch')).Code -eq 0 }
-    if ($built -and (Invoke-Git @('rev-parse', '--verify', '--quiet', "$($info.base):.dispatch")).Code -eq 0) {
-      $built = (Invoke-Git @('read-tree', '--prefix=.dispatch/', "$($info.base):.dispatch")).Code -eq 0
+    if ($built -and (Invoke-Git @('rev-parse', '--verify', '--quiet', "${baseId}:.dispatch")).Code -eq 0) {
+      $built = (Invoke-Git @('read-tree', '--prefix=.dispatch/', "${baseId}:.dispatch")).Code -eq 0
     }
     $tree = if ($built) { Invoke-Git @('write-tree') } else { $null }
   } finally {
@@ -2129,7 +2131,7 @@ function Sync-Base([switch]$Before) {
     Remove-Item -LiteralPath $index -Force -ErrorAction SilentlyContinue
   }
   if ($null -eq $tree -or $tree.Code -ne 0) { return 'git could not build the merged tree' }
-  $commit = Invoke-Git @('commit-tree', "$($tree.Lines | Select-Object -Last 1)".Trim(), '-p', $tip, '-p', $info.base, '-m', "Merge $($info.base) into $($info.branch) (${Id}: the newer commits of the base)")
+  $commit = Invoke-Git @('commit-tree', "$($tree.Lines | Select-Object -Last 1)".Trim(), '-p', $tip, '-p', $baseId, '-m', "Merge $($info.base) into $($info.branch) (${Id}: the newer commits of the base)")
   if ($commit.Code -ne 0) { return "git could not make the merge commit: $($commit.Text)" }
   $made = "$($commit.Lines | Select-Object -Last 1)".Trim()
   $forward = if ($on) { Invoke-Git @('merge', '--ff-only', '-q', $made) } else { Invoke-Git @('update-ref', "refs/heads/$($info.branch)", $made, $tip) }
@@ -12940,6 +12942,75 @@ if (args[0] === 'agents') {
         let text = &last_call(&fake)[0];
         assert!(text.starts_with("Answer to question 1: Run the gate now Dispatch could not bring the newer commits of "), "{text}");
         assert!(text.contains(&format!("of {base} into this branch: ")) && text.contains("work-t-1.txt"), "{text}");
+        clean(&project);
+    }
+
+    /// A stand-in `git` in the folder `race-bin` next to the project: it runs the real git, and at the
+    /// first `merge-tree` while the file `race.txt` stands next to it, it commits `race.txt` on the
+    /// checked-out branch of the project right after the real `merge-tree` (ticket
+    /// bringing-main-into-a-task-branch-can). Gives the folder.
+    fn race_git(base: &Path) -> PathBuf {
+        let dir = base.join("race-bin");
+        write_file(&dir.join("git.cmd"), "@node \"%~dp0race-git.js\" %*\r\n").unwrap();
+        write_file(
+            &dir.join("race-git.js"),
+            "const fs = require('fs');
+const path = require('path');
+const { spawnSync } = require('child_process');
+const args = process.argv.slice(2);
+// The real git: the PATH without this folder.
+const own = path.resolve(__dirname).toLowerCase();
+const env = { ...process.env };
+const key = Object.keys(env).find((name) => name.toLowerCase() === 'path');
+env[key] = env[key].split(';').filter((part) => part && path.resolve(part).toLowerCase() !== own).join(';');
+const real = (more, io) => spawnSync('git', more, { stdio: io, env });
+const result = real(args, 'inherit');
+const trigger = path.join(__dirname, 'race.txt');
+if (args.includes('merge-tree') && fs.existsSync(trigger)) {
+  fs.unlinkSync(trigger);
+  const project = args[args.indexOf('-C') + 1];
+  fs.writeFileSync(path.join(project, 'race.txt'), 'lands during the sync\\n');
+  real(['-C', project, 'add', 'race.txt'], 'ignore');
+  real(['-C', project, 'commit', '-q', '-m', 'lands during the sync'], 'ignore');
+}
+process.exit(result.status === null ? 1 : result.status);
+",
+        )
+        .unwrap();
+        dir
+    }
+
+    /// Ticket bringing-main-into-a-task-branch-can (Starminer, 2026-11-21): a commit lands on the base
+    /// between the merge-tree and the merge commit of the sync. Each merge commit of the branch holds
+    /// every change of each of its parents.
+    #[test]
+    fn a_base_commit_during_the_sync_is_fully_in_or_out() {
+        let (project, fake, _) = branch_project("reply-race");
+        let base = question_then_fix_on_the_base(&project, &fake, "fix.txt", "the fix of another task\n");
+        let race = race_git(project.root.parent().unwrap());
+        write_file(&race.join("race.txt"), "on\n").unwrap();
+        let path = format!("{};{};{}", race.display(), fake.display(), std::env::var("PATH").unwrap_or_default());
+        let (code, out) = run_script_env(&project, &fake, "done", &["reply", "t-1", "Answer to question 1: Run the gate now"], &[("PATH", path.as_str())]);
+        assert_eq!(code, 0, "{out}");
+        assert!(!race.join("race.txt").exists(), "the stand-in git made no commit during the sync");
+        let merges = git_out(&project, &["log", "--merges", "--format=%H", &format!("{base}..task/t-1")]);
+        assert!(!merges.is_empty(), "the reply made no merge commit");
+        for merge in merges.lines() {
+            let parents: Vec<String> = git_out(&project, &["log", "-1", "--format=%P", merge]).split_whitespace().map(str::to_string).collect();
+            assert_eq!(parents.len(), 2, "{merge}: {parents:?}");
+            for (own, other) in [(&parents[0], &parents[1]), (&parents[1], &parents[0])] {
+                let fork = git_out(&project, &["merge-base", own, other]);
+                for file in git_out(&project, &["diff", "--name-only", &fork, own, "--", ".", NOT_TASKS]).lines() {
+                    assert!(
+                        git(&project.root, &["diff", "--quiet", own, merge, "--", file]).is_some(),
+                        "the merge {merge} lacks the change of {file} of its parent {own}"
+                    );
+                }
+            }
+        }
+        for file in ["race.txt", "fix.txt"] {
+            assert!(git(&project.root, &["cat-file", "-e", &format!("task/t-1:{file}")]).is_some(), "{file} is not in task/t-1");
+        }
         clean(&project);
     }
 
