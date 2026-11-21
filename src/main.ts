@@ -102,7 +102,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, boardTickets, bulkIds, canDrag, clampColumnWidth, COLUMN_WIDTHS_KEY, columnTemplate, parseColumnWidths, type BoardColumn, type ColumnWidth, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketGroups, ticketMatches, ticketMessage, ticketRoute, type InProgressView, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
+import { addedText, boardTickets, bulkIds, canDrag, clampColumnWidth, COLUMN_WIDTHS_KEY, columnWidthsKey, columnTemplate, parseColumnWidths, type BoardColumn, type ColumnWidth, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketGroups, ticketMatches, ticketMessage, ticketRoute, type InProgressView, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
@@ -9594,29 +9594,29 @@ function groupFrames(els: readonly HTMLElement[], marks: readonly ({ parent: str
   return out;
 }
 
-/** The saved widths of the board columns, one setting for every board (ticket each-column-in-ticket-board-should-have). */
-function columnWidths(): Record<BoardColumn, ColumnWidth> {
+/** The saved widths of the board columns of one project; the old shared key is the start value (ticket if-i-toggle-ticketboard-column-width-it). */
+function columnWidths(key: string): Record<BoardColumn, ColumnWidth> {
   try {
-    return parseColumnWidths(localStorage.getItem(COLUMN_WIDTHS_KEY));
+    return parseColumnWidths(localStorage.getItem(columnWidthsKey(key)) ?? localStorage.getItem(COLUMN_WIDTHS_KEY));
   } catch {
     return parseColumnWidths(null);
   }
 }
 
-function saveColumnWidths(widths: Record<BoardColumn, ColumnWidth>): void {
+function saveColumnWidths(key: string, widths: Record<BoardColumn, ColumnWidth>): void {
   try {
-    localStorage.setItem(COLUMN_WIDTHS_KEY, JSON.stringify(widths));
+    localStorage.setItem(columnWidthsKey(key), JSON.stringify(widths));
   } catch {
     // No storage: the widths hold until Dispatch closes.
   }
 }
 
-/** Sets the mode of a column on every board; Regular and Minimize keep the saved custom width. */
-function setColumnWidth(status: BoardColumn, mode: ColumnWidth["mode"], custom?: number): void {
-  const widths = columnWidths();
+/** Sets the mode of a column on the boards of this project; Regular and Minimize keep the saved custom width. */
+function setColumnWidth(key: string, status: BoardColumn, mode: ColumnWidth["mode"], custom?: number): void {
+  const widths = columnWidths(key);
   const saved = custom ?? widths[status].custom;
   widths[status] = saved === undefined ? { mode } : { mode, custom: saved };
-  saveColumnWidths(widths);
+  saveColumnWidths(key, widths);
   renderTickets();
 }
 
@@ -9625,13 +9625,13 @@ function setColumnWidth(status: BoardColumn, mode: ColumnWidth["mode"], custom?:
  * follows the pointer, and the drop saves mode Custom. `ticketDragging` holds the redraw meanwhile,
  * so the handle stays in the page.
  */
-function dragColumnWidth(event: PointerEvent, container: HTMLElement, column: HTMLElement, status: BoardColumn): void {
+function dragColumnWidth(event: PointerEvent, container: HTMLElement, column: HTMLElement, status: BoardColumn, key: string): void {
   if (event.button !== 0) return;
   event.preventDefault();
   event.stopPropagation();
   const handle = event.currentTarget as HTMLElement;
   handle.setPointerCapture(event.pointerId);
-  const widths = columnWidths();
+  const widths = columnWidths(key);
   const start = { x: event.clientX, width: column.getBoundingClientRect().width };
   let width: number | null = null;
   ticketDragging = true;
@@ -9649,7 +9649,7 @@ function dragColumnWidth(event: PointerEvent, container: HTMLElement, column: HT
       renderTickets();
       return;
     }
-    setColumnWidth(status, "custom", width);
+    setColumnWidth(key, status, "custom", width);
   };
   handle.addEventListener("pointermove", move);
   handle.addEventListener("pointerup", end);
@@ -9682,7 +9682,7 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
   // tickets of the project, so a search does not change the colours.
   const groups = ticketGroups(tickets);
   // The width of each column (ticket each-column-in-ticket-board-should-have): Minimize, Regular or Custom.
-  const widths = columnWidths();
+  const widths = columnWidths(key);
   container.style.gridTemplateColumns = columnTemplate(widths);
   const columns = COLUMNS.map(({ status, name }) => {
     const items = boardTickets(shown, status, view, status === "in-progress" || status === "planning" || status === "waiting" ? ticketPlace : undefined);
@@ -9696,7 +9696,7 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
     head.append(mapElement("b", "", name), mapElement("span", "tickets-column-count", String(items.length)));
     const sizes = mapElement("div", "tickets-column-width");
     const sizeButton = (mode: ColumnWidth["mode"], text: string, title: string, disabled = false) => {
-      const button = ticketButton(text, title, () => setColumnWidth(status, mode), disabled);
+      const button = ticketButton(text, title, () => setColumnWidth(key, status, mode), disabled);
       button.setAttribute("aria-pressed", String(width.mode === mode));
       button.addEventListener("pointerdown", (event) => event.stopPropagation());
       return button;
@@ -9766,7 +9766,7 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
     if (width.mode !== "min") {
       const handle = mapElement("div", "tickets-column-resize");
       handle.title = `Drag to set the width of ${name}`;
-      handle.addEventListener("pointerdown", (event) => dragColumnWidth(event, container, column, status));
+      handle.addEventListener("pointerdown", (event) => dragColumnWidth(event, container, column, status, key));
       handle.addEventListener("click", (event) => event.stopPropagation());
       column.append(handle);
     }
@@ -16114,7 +16114,7 @@ function parseFocusProjects(saved: unknown): ProjectRef[] {
 }
 
 /** The prefixes of the browser store whose rest is a project key. */
-const PROJECT_KEY_PREFIXES = ["triage:", "triage-role:", "triage-choice:", "triage-limit:", "triage-earlier:"];
+const PROJECT_KEY_PREFIXES = ["triage:", "triage-role:", "triage-choice:", "triage-limit:", "triage-earlier:", "board-column-widths:"];
 /** The records of the browser store that map project keys to a value. */
 const PROJECT_KEY_MAPS = ["overview-places", "overview-sizes", "focus-sizes"];
 

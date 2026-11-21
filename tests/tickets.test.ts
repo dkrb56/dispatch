@@ -13,6 +13,7 @@ import {
   COLUMN_CUSTOM_MAX,
   COLUMN_CUSTOM_MIN,
   COLUMN_WIDTHS_KEY,
+  columnWidthsKey,
   columnTemplate,
   CLOSED_COLUMN_LIMIT,
   columnCards,
@@ -339,6 +340,8 @@ test("the kept size of the tickets window reads back and fits the app window", (
 
 test("column widths: the saved text, the clamp and the grid template (ticket each-column-in-ticket-board-should-have)", () => {
   assert.equal(COLUMN_WIDTHS_KEY, "board-column-widths");
+  assert.equal(columnWidthsKey("d:/a"), "board-column-widths:d:/a");
+  assert.notEqual(columnWidthsKey("d:/a"), columnWidthsKey("d:/b"), "one key per project");
   const regular = parseColumnWidths(null);
   for (const { status } of COLUMNS) assert.deepEqual(regular[status], { mode: "regular" }, status);
   for (const broken of ["", "not json", "null", "[]", "5", '{"done":"min"}', '{"done":{"mode":"wide"}}']) {
@@ -370,7 +373,10 @@ test("column widths: the saved text, the clamp and the grid template (ticket eac
   const drag = MAIN.slice(MAIN.indexOf("function dragColumnWidth("), MAIN.indexOf("function fillTicketColumns("));
   assert.match(drag, /ticketDragging = true;/);
   assert.match(drag, /ticketDragging = false;/);
-  assert.match(drag, /setColumnWidth\(status, "custom", width\);/);
+  assert.match(drag, /setColumnWidth\(key, status, "custom", width\);/);
+  assert.match(fill, /columnWidths\(key\)/);
+  assert.match(fill, /setColumnWidth\(key, status, mode\)/);
+  assert.match(MAIN, /localStorage\.setItem\(columnWidthsKey\(key\), JSON\.stringify\(widths\)\)/);
   assert.match(CSS, /\.tickets-column\.minimized \.tickets-column-head > b \{\n  writing-mode: vertical-rl;/);
   assert.match(CSS, /\.tickets-column-resize \{[^}]*cursor: col-resize;/);
 });

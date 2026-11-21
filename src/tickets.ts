@@ -132,8 +132,13 @@ export interface ColumnWidth {
   custom?: number;
 }
 
-/** The localStorage key of the widths of the board columns, one setting for every board. */
+/** The old shared localStorage key of the board column widths (the start value of a project without its own entry) and the prefix of the key per project. */
 export const COLUMN_WIDTHS_KEY = "board-column-widths";
+
+/** The localStorage key of the column widths of one project. */
+export function columnWidthsKey(project: string): string {
+  return `${COLUMN_WIDTHS_KEY}:${project}`;
+}
 
 /** The width of a minimized column, and the limits of a custom width, in px. */
 export const COLUMN_MIN_WIDTH = 40;
