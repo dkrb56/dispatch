@@ -15,18 +15,24 @@ export function phoneLink(addresses: readonly string[], key: string | null | und
 
 /** What the Phone tab of Options shows: the next step, and the link once a code can show. */
 export interface PhoneSetup {
-  step: "start" | "tailscale" | "connect" | "scan";
+  step: "start" | "tailscale" | "connect" | "pin" | "scan";
   link: string | null;
 }
 
 /**
  * The step of the phone setup: `start` with the host off, `tailscale` when the host has no address
  * for the phone, `connect` when this window does not use the host (the phone then lists no project of
- * it), and `scan` when all is ready.
+ * it), `pin` while no PIN is set (ticket a-pin-unlocks-the-phone-page: the phone shows nothing without
+ * it; the code shows already), and `scan` when all is ready.
  */
-export function phoneSetup(running: boolean, addresses: readonly string[], key: string | null | undefined, windowUsesHost: boolean): PhoneSetup {
+export function phoneSetup(running: boolean, addresses: readonly string[], key: string | null | undefined, windowUsesHost: boolean, pinSet: boolean): PhoneSetup {
   if (!running) return { step: "start", link: null };
   const link = phoneLink(addresses, key);
   if (!link) return { step: "tailscale", link: null };
-  return { step: windowUsesHost ? "scan" : "connect", link };
+  return { step: !windowUsesHost ? "connect" : !pinSet ? "pin" : "scan", link };
+}
+
+/** The rule of a PIN of the phone: at least 6 digits, nothing else. The host checks the same rule. */
+export function phonePinOk(pin: string): boolean {
+  return /^\d{6,}$/.test(pin);
 }

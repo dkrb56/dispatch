@@ -644,6 +644,30 @@ input {
   flex: none;
 }
 
+/* The PIN screen (ticket a-pin-unlocks-the-phone-page): large digits in a box a thumb can use. */
+.pin-form .pin-note {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.pin-form .pin-note.pin-error {
+  color: var(--danger);
+}
+
+.pin-form input {
+  text-align: center;
+  font-size: 22px;
+  letter-spacing: 6px;
+}
+
+/* In the Terminal view the screen stands above the text box. */
+.term-view > .pin-form {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+}
+
 body.term-open #app > :not(.term-view) {
   display: none;
 }

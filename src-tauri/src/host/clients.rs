@@ -173,6 +173,19 @@ impl Clients {
         }
     }
 
+    /// The unlock of the phone `window` ended (ticket a-pin-unlocks-the-phone-page): it gets no more
+    /// terminal output. Its own terminals detach, as after a disconnect, and it leaves the joined ones.
+    /// The connection stays; after the PIN the page asks for its terminal again.
+    pub fn leave_all(&self, window: &str) {
+        let mut inner = self.lock();
+        for terminal in inner.terminals.values_mut() {
+            if terminal.owner == window {
+                terminal.attached = false;
+            }
+            terminal.viewers.remove(window);
+        }
+    }
+
     /// The report of `window` at each worker poll; `active` is true when the user used it since
     /// its last report. Gives whether `window` drives the automatic actions now.
     pub fn driver_state(&self, window: &str, active: bool) -> bool {
@@ -740,6 +753,31 @@ mod tests {
         clients.join("phone-1", "t-1").unwrap();
         clients.killed("t-1");
         assert!(!clients.phone_may_write("phone-1", "t-1"), "killed");
+    }
+
+    #[test]
+    fn a_phone_whose_unlock_ended_gets_no_more_output() {
+        let clients = Clients::new("k".into());
+        let (tx1, _rx1) = unbounded_channel();
+        let (tx2, mut rx2) = unbounded_channel();
+        clients.register("w-1", tx1, "0.0.0");
+        clients.register("phone-1", tx2, "0.0.0");
+        texts(&mut rx2);
+        clients.spawn("w-1", "t-1").unwrap();
+        clients.label("t-1", "project-terminal:d:\\a");
+        clients.join("phone-1", "t-1").unwrap();
+        clients.spawn("phone-1", "p-1").unwrap();
+        clients.label("p-1", "project-terminal:d:\\b");
+        texts(&mut rx2);
+        clients.leave_all("phone-1");
+        clients.emit(PTY_OUTPUT, output("t-1", "joined"));
+        clients.emit(PTY_OUTPUT, output("p-1", "own"));
+        assert!(texts(&mut rx2).is_empty(), "no output of the joined or the own terminal");
+        assert!(!clients.phone_may_write("phone-1", "t-1"), "left");
+        assert!(clients.live_windows().contains("phone-1"), "the connection stays");
+        // After the PIN the page opens its terminal again and gets the kept output.
+        assert_eq!(clients.open_labeled("phone-1", "project-terminal:d:\\b").map(|(id, _, own)| (id, own)), Some(("p-1".into(), true)));
+        assert!(texts(&mut rx2).iter().any(|text| text.contains("own")), "the kept output comes with the attach");
     }
 
     #[test]

@@ -3,7 +3,9 @@
 //! on to the service of `server.rs`. The page connects with the phone key, and that key may use only
 //! the calls of `PHONE_CALLS`, and its calls for a project only for an open project (`limit_to_open`).
 //! It shows and types into the Terminal of an open project (`phone_terminal`); it starts no other
-//! terminal and reads no file.
+//! terminal and reads no file. Before any of that the connection must enter the PIN of the phone
+//! (`phone_unlock`, the gate of `unlock.rs`): the texts below are the errors of that gate, which the
+//! page compares word for word.
 
 use serde_json::{Map, Value};
 
@@ -19,6 +21,16 @@ pub const NOT_ALLOWED: &str = "the phone may not use this call";
 pub const NO_BINARY: &str = "the phone sends no binary frames";
 /// The answer to a call for a folder that is not an open project of this computer.
 pub const NOT_OPEN: &str = "this project is not open in a Dispatch window";
+/// The answer to a call of a phone that did not enter the PIN, or whose unlock ended.
+pub const PIN_NEEDED: &str = "the phone must enter the PIN";
+/// The answer to `pty_write` of a phone that did not enter the PIN for the terminal.
+pub const PIN_TERMINAL: &str = "the phone must enter the PIN before it types into a terminal";
+/// The answer while no PIN is set on the computer.
+pub const NO_PIN: &str = "no PIN is set: set one on the computer in Options, tab Phone";
+/// The answer to a wrong PIN; the host appends `; N tries left`.
+pub const WRONG_PIN: &str = "the PIN is wrong";
+/// The answer after 5 wrong PINs, until Unlock the phone in Options or a new PIN.
+pub const LOCKED: &str = "the phone is locked after 5 wrong PINs: unlock it on the computer in Options, tab Phone";
 
 /// All that a phone may do: read the open projects, their tasks and the workers, add a ticket,
 /// reply to a worker whose report waits (ticket phone-version-i-need-an-option-to-see, user decision 4:
@@ -29,8 +41,10 @@ pub const NOT_OPEN: &str = "this project is not open in a Dispatch window";
 /// `phone_terminal` joins that terminal or starts it with fixed arguments, `pty_write` reaches only
 /// a project terminal that the phone shows (`Clients::phone_may_write`), and `pty_leave` ends the view.
 /// It never resizes or ends a terminal and never starts one with its own arguments.
+/// `phone_unlock` (ticket a-pin-unlocks-the-phone-page) enters the PIN; every other call waits for it.
 /// The calls of `FOLDER_CALLS` work only for an open project.
-const PHONE_CALLS: [&str; 11] = [
+const PHONE_CALLS: [&str; 12] = [
+    "phone_unlock",
     "workspaces_get",
     "task_list",
     "worker_list",
@@ -178,7 +192,7 @@ mod tests {
                 assert_eq!(refused, args(bad), "a refused call stays as it was");
             }
         }
-        for command in ["workspaces_get", "worker_list", "pty_write", "pty_leave"] {
+        for command in ["phone_unlock", "workspaces_get", "worker_list", "pty_write", "pty_leave"] {
             let mut other = args(serde_json::json!({ "cwd": "D:\\Work\\Other" }));
             let before = other.clone();
             assert_eq!(limit_to_open(command, &mut other, |_| None), Ok(()), "{command}");
@@ -189,7 +203,7 @@ mod tests {
     #[test]
     fn the_phone_calls_are_only_the_listed_ones() {
         let allowed = ["workspaces_get", "task_list", "worker_list", "ticket_add", "task_reply", "task_reject", "task_approve_queue", "task_approve_cancel"];
-        for call in allowed.into_iter().chain(["phone_terminal", "pty_write", "pty_leave"]) {
+        for call in allowed.into_iter().chain(["phone_terminal", "pty_write", "pty_leave", "phone_unlock"]) {
             assert!(phone_call(call), "{call}");
         }
         // The phone never starts or stops a work run, and never writes the plan by the desktop calls.

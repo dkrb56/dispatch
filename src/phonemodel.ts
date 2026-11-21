@@ -297,6 +297,32 @@ export function oldKeyText(standalone: boolean | undefined): string {
     : "This key does not work any more. On the computer open Options, tab Phone, and scan the new code.";
 }
 
+/** The errors of the PIN gate of the host (`src-tauri/src/host/phone.rs`), word for word. */
+export const PIN_ERRORS = {
+  needed: "the phone must enter the PIN",
+  terminal: "the phone must enter the PIN before it types into a terminal",
+  noPin: "no PIN is set: set one on the computer in Options, tab Phone",
+  wrong: "the PIN is wrong",
+  locked: "the phone is locked after 5 wrong PINs: unlock it on the computer in Options, tab Phone",
+} as const;
+/** The unlock token of the host in `sessionStorage`: it lives while the app lives. The page never stores the PIN. */
+export const UNLOCK_STORE = "dispatch-phone-unlock";
+
+/**
+ * The PIN screen (ticket a-pin-unlocks-the-phone-page): the text for an error of the host, and
+ * whether the PIN box shows. Without a PIN on the computer there is nothing to type.
+ */
+export function pinMessage(error: string, forTerminal: boolean): { text: string; form: boolean } {
+  if (error === PIN_ERRORS.noPin) return { text: "Set a PIN on the computer first: Options, tab Phone, Set PIN.", form: false };
+  if (error === PIN_ERRORS.locked) return { text: "The phone is locked after 5 wrong PINs. Unlock it on the computer in Options, tab Phone.", form: true };
+  if (error.startsWith(PIN_ERRORS.wrong)) {
+    const left = /(\d+) tries left/.exec(error)?.[1];
+    return { text: left ? `Wrong PIN. ${left} ${left === "1" ? "try" : "tries"} left.` : "Wrong PIN.", form: true };
+  }
+  if (error === PIN_ERRORS.terminal || forTerminal) return { text: "Enter the PIN to type into the terminal.", form: true };
+  return { text: "Enter the PIN of this phone.", form: true };
+}
+
 /** The phone key in a pasted text: the key alone or the whole link. */
 export function keyFromText(text: string): string | null {
   return KEY.exec(text)?.[0].toLowerCase() ?? null;

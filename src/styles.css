@@ -5558,6 +5558,16 @@ button.ticket-level {
   color: var(--text-2);
 }
 
+/* Options, Phone: the PIN box next to Set PIN (ticket a-pin-unlocks-the-phone-page). */
+#options #phone-pin {
+  height: 32px;
+  max-width: 200px;
+  padding: 0 10px;
+  border-radius: 7px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: calc(12px * var(--text-scale));
+}
+
 #host-run .card-box .switch-row {
   align-items: center;
   padding: 12px 0 0;

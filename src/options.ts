@@ -7,7 +7,7 @@ import { COMPACT_KEY, parseCompact } from "./compact";
 import { cleanAddress, DEFAULT_PORT, type HostEntry, hostSettings, setHostSettings, windowCall } from "./backend";
 import { initDialogTabs } from "./dialogtabs";
 import { isOwnHostRow, modeAfterHostStop } from "./hosts";
-import { phoneSetup } from "./phonelink";
+import { phonePinOk, phoneSetup } from "./phonelink";
 import qrcode from "qrcode-generator";
 
 const dialog = document.querySelector<HTMLDialogElement>("#options")!;
@@ -97,6 +97,9 @@ interface HostRun {
   key: string | null;
   /** The key of the phone page; it opens only the phone calls of the host. */
   phoneKey?: string | null;
+  /** Whether a PIN of the phone is set, and whether 5 wrong PINs locked the phone. */
+  phonePinSet?: boolean;
+  phonePinLocked?: boolean;
   version: string | null;
   /** `null` on a system without the sign-in start. */
   autostart: boolean | null;
@@ -118,6 +121,10 @@ const phoneReadyEl = document.querySelector<HTMLElement>("#phone-ready")!;
 const phoneCodeEl = document.querySelector<HTMLCanvasElement>("#phone-code")!;
 const phoneLinkEl = document.querySelector<HTMLInputElement>("#phone-link")!;
 const phoneNewKeyEl = document.querySelector<HTMLButtonElement>("#phone-newkey")!;
+const phonePinStateEl = document.querySelector<HTMLElement>("#phone-pin-state")!;
+const phonePinEl = document.querySelector<HTMLInputElement>("#phone-pin")!;
+const phonePinSetEl = document.querySelector<HTMLButtonElement>("#phone-pin-set")!;
+const phonePinUnlockEl = document.querySelector<HTMLButtonElement>("#phone-pin-unlock")!;
 let lastRun: HostRun | null = null;
 let runBusy = false;
 /** The button of the Phone tab worked: the restart that follows opens Options on that tab again. */
@@ -160,6 +167,7 @@ const PHONE_NOTES = {
   start: "First install Tailscale on the phone and sign in to the same account as this computer. Then click the button: Dispatch starts the host and restarts, the terminals of this window end, and the code shows here.",
   tailscale: "The phone needs the Tailscale address of this computer. Start Tailscale, then start the host again.",
   connect: "Scan this code with the phone camera. Tailscale must run on the phone. The phone lists only the projects of a connected window, so click the button: Dispatch restarts and the terminals of this window end.",
+  pin: "Set a PIN of at least 6 digits below. The phone asks for it before it shows anything.",
   scan: "Tailscale must be installed on the phone and signed in to the same account. Scan this code with the phone camera. The page then shows the last step. On an iPhone: in Safari tap Share, then Add to Home Screen. On Android: in Chrome tap the menu ⋮, then Add to Home screen.",
 };
 
@@ -169,9 +177,9 @@ function windowUsesOwnHost(run: HostRun): boolean {
   return saved.mode === "hosts" && saved.hosts.some((entry) => isOwnHostRow(entry, run.key));
 }
 
-/** The Phone tab: the next step of the setup, the code when it can show, and the one button. */
+/** The Phone tab: the next step of the setup, the code when it can show, the PIN and the one button. */
 function drawPhoneBlock(run: HostRun | null): void {
-  const setup = run ? phoneSetup(run.running, run.addresses, run.phoneKey, windowUsesOwnHost(run)) : null;
+  const setup = run ? phoneSetup(run.running, run.addresses, run.phoneKey, windowUsesOwnHost(run), run.phonePinSet === true) : null;
   const link = setup?.link ?? null;
   const busy = runBusy || phoneTabMark;
   phoneReadyEl.hidden = link === null;
@@ -180,6 +188,14 @@ function drawPhoneBlock(run: HostRun | null): void {
   phoneStartEl.textContent = setup?.step === "connect" ? "Connect this window" : "Start and show the code";
   phoneStartEl.disabled = busy;
   phoneNewKeyEl.disabled = busy;
+  const pinSet = run?.phonePinSet === true;
+  const locked = run?.phonePinLocked === true;
+  phonePinStateEl.textContent = !pinSet ? "No PIN set." : locked ? "Locked after 5 wrong PINs. Unlock it here." : "A PIN is set.";
+  phonePinSetEl.textContent = pinSet ? "Change PIN" : "Set PIN";
+  phonePinUnlockEl.hidden = !locked;
+  phonePinEl.disabled = busy;
+  phonePinSetEl.disabled = busy;
+  phonePinUnlockEl.disabled = busy;
   if (link && phoneLinkEl.value !== link) {
     phoneLinkEl.value = link;
     drawPhoneCode(link);
@@ -325,6 +341,18 @@ function initHostRun(onHostChange: () => unknown): void {
   });
   // The host keeps running: only the phone needs the new code.
   phoneNewKeyEl.addEventListener("click", () => void hostRunAction("host_run_new_phone_key", {}, async () => {}));
+  // The PIN of the phone (ticket a-pin-unlocks-the-phone-page): the host checks the same rule and keeps only a hash.
+  phonePinSetEl.addEventListener("click", () => {
+    const pin = phonePinEl.value;
+    phonePinEl.value = "";
+    if (!phonePinOk(pin)) {
+      phoneErrorEl.textContent = "The PIN must have at least 6 digits and nothing else.";
+      phoneErrorEl.hidden = false;
+      return;
+    }
+    void hostRunAction("host_run_set_phone_pin", { pin }, async () => {});
+  });
+  phonePinUnlockEl.addEventListener("click", () => void hostRunAction("host_run_unlock_phone", {}, async () => {}));
   // The same switch as Start the host, because the phone lists only the projects of connected windows.
   phoneStartEl.addEventListener("click", () => {
     const running = lastRun?.running === true;

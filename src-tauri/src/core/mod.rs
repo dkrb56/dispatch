@@ -11,6 +11,7 @@ pub mod chats;
 pub mod context;
 pub mod flow;
 pub mod hostrun;
+pub mod phonepin;
 pub mod info;
 pub mod pipeline;
 pub mod plangroups;

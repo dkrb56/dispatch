@@ -9,6 +9,7 @@ mod clients;
 mod phone;
 mod protocol;
 mod server;
+mod unlock;
 
 use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -158,7 +159,7 @@ fn main() {
         .enable_all()
         .build()
         .unwrap_or_else(|e| fail(&format!("no runtime: {e}")));
-    let host = Arc::new(Host { core, clients, version: version.clone(), data_dir: data_dir.clone() });
+    let host = Arc::new(Host { core, clients, version: version.clone(), data_dir: data_dir.clone(), unlocks: unlock::Unlocks::new() });
     runtime.block_on(async move {
         let mut listeners = Vec::new();
         for address in &addresses {

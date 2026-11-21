@@ -5,11 +5,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { doneTasks, listedTasks, runStarting } from "../src/overview.ts";
-import { phoneLink, phoneSetup } from "../src/phonelink.ts";
+import { phoneLink, phonePinOk, phoneSetup } from "../src/phonelink.ts";
 import { replyText } from "../src/answers.ts";
 import { confirmChoice, confirmQuestion } from "../src/confirm.ts";
 import { defaultChoice } from "../src/checks.ts";
-import { approvalQueued, homeScreenHint, inProgressPlace, keyAddress, keyBytes, pasteBytes, PHONE_KEYS, terminalLabel, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, phoneApproval, phoneBoards, phoneCards, phonePhase, phonePlan, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, planMark, reportMark, showAllKey, shownRoots, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
+import { approvalQueued, homeScreenHint, inProgressPlace, keyAddress, keyBytes, pasteBytes, PHONE_KEYS, terminalLabel, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, PIN_ERRORS, pinMessage, phoneApproval, phoneBoards, phoneCards, phonePhase, phonePlan, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, planMark, reportMark, showAllKey, shownRoots, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
 import { boardTickets, type BoardColumn, columnCards, type InProgressView, COLUMNS, countText, type Ticket } from "../src/tickets.ts";
 import { taskTldr } from "../src/tldr.ts";
 import { groupCount } from "../src/topbar.ts";
@@ -104,12 +104,38 @@ test("a refused key tells an icon to replace itself", () => {
 test("each step of the phone setup", () => {
   const addresses = ["127.0.0.1:7470", "100.64.0.1:7470"];
   const link = `http://100.64.0.1:7470/#key=${KEY}`;
-  assert.deepEqual(phoneSetup(false, addresses, KEY, false), { step: "start", link: null }, "host off");
-  assert.deepEqual(phoneSetup(false, addresses, KEY, true), { step: "start", link: null }, "host off, the window still lists it");
-  assert.deepEqual(phoneSetup(true, ["127.0.0.1:7470"], KEY, true), { step: "tailscale", link: null }, "no tailnet address");
-  assert.deepEqual(phoneSetup(true, addresses, null, true), { step: "tailscale", link: null }, "no phone key");
-  assert.deepEqual(phoneSetup(true, addresses, KEY, false), { step: "connect", link }, "this window does not use the host");
-  assert.deepEqual(phoneSetup(true, addresses, KEY, true), { step: "scan", link });
+  assert.deepEqual(phoneSetup(false, addresses, KEY, false, true), { step: "start", link: null }, "host off");
+  assert.deepEqual(phoneSetup(false, addresses, KEY, true, true), { step: "start", link: null }, "host off, the window still lists it");
+  assert.deepEqual(phoneSetup(true, ["127.0.0.1:7470"], KEY, true, true), { step: "tailscale", link: null }, "no tailnet address");
+  assert.deepEqual(phoneSetup(true, addresses, null, true, true), { step: "tailscale", link: null }, "no phone key");
+  assert.deepEqual(phoneSetup(true, addresses, KEY, false, true), { step: "connect", link }, "this window does not use the host");
+  assert.deepEqual(phoneSetup(true, addresses, KEY, false, false), { step: "connect", link }, "the window comes before the PIN");
+  assert.deepEqual(phoneSetup(true, addresses, KEY, true, false), { step: "pin", link }, "no PIN yet: the code shows already");
+  assert.deepEqual(phoneSetup(true, addresses, KEY, true, true), { step: "scan", link });
+});
+
+// Ticket a-pin-unlocks-the-phone-page: the PIN rule of Options and the texts of the PIN screen.
+test("the PIN rule of Options: at least 6 digits, nothing else", () => {
+  for (const good of ["123456", "000000", "123456789012"]) assert.ok(phonePinOk(good), good);
+  for (const bad of ["12345", "", "12345a", "a23456", "12 3456", "123456\n", "１２３４５６", "-123456", "1.23456"]) assert.ok(!phonePinOk(bad), JSON.stringify(bad));
+});
+
+test("the texts of the PIN screen per host error", () => {
+  assert.deepEqual(pinMessage("", false), { text: "Enter the PIN of this phone.", form: true });
+  assert.deepEqual(pinMessage(PIN_ERRORS.needed, false), { text: "Enter the PIN of this phone.", form: true }, "the unlock ended");
+  assert.deepEqual(pinMessage("", true), { text: "Enter the PIN to type into the terminal.", form: true });
+  assert.deepEqual(pinMessage(PIN_ERRORS.terminal, false), { text: "Enter the PIN to type into the terminal.", form: true });
+  assert.deepEqual(pinMessage(PIN_ERRORS.noPin, false), { text: "Set a PIN on the computer first: Options, tab Phone, Set PIN.", form: false }, "nothing to type without a PIN");
+  assert.deepEqual(pinMessage(PIN_ERRORS.locked, true), { text: "The phone is locked after 5 wrong PINs. Unlock it on the computer in Options, tab Phone.", form: true });
+  assert.deepEqual(pinMessage(`${PIN_ERRORS.wrong}; 3 tries left`, false), { text: "Wrong PIN. 3 tries left.", form: true });
+  assert.deepEqual(pinMessage(`${PIN_ERRORS.wrong}; 1 tries left`, true), { text: "Wrong PIN. 1 try left.", form: true });
+  assert.deepEqual(pinMessage(PIN_ERRORS.wrong, false), { text: "Wrong PIN.", form: true }, "an older host without the count");
+  assert.deepEqual(pinMessage("the connection ended", false), { text: "Enter the PIN of this phone.", form: true }, "any other error asks for the PIN");
+  const host = read("../src-tauri/src/host/phone.rs");
+  for (const text of Object.values(PIN_ERRORS)) assert.ok(host.includes(`"${text}"`), `the host has the text: ${text}`);
+  const page = read("../src/phone/main.ts");
+  assert.ok(!page.includes("localStorage.setItem(UNLOCK_STORE") && page.includes("sessionStorage.setItem(UNLOCK_STORE"), "the token lives only while the app lives");
+  assert.ok(!/(localStorage|sessionStorage)\.setItem\([^)]*pin/i.test(page), "the page never stores the PIN");
 });
 
 test("each status of a task", () => {

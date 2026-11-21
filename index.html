@@ -1211,6 +1211,14 @@
               <button id="phone-start" title="Start the host of this PC if needed, use it in this window and restart Dispatch" hidden>Start and show the code</button>
             </div>
             <p id="phone-error" hidden></p>
+            <div class="card-box">
+              <p id="phone-pin-state"></p>
+              <div class="field-row">
+                <input type="password" id="phone-pin" inputmode="numeric" autocomplete="off" placeholder="At least 6 digits" aria-label="PIN of the phone" title="The PIN that the phone asks for; Dispatch keeps only a scrambled form of it" />
+                <button id="phone-pin-set" title="Set the PIN of the phone; the phone needs it at once">Set PIN</button>
+                <button id="phone-pin-unlock" title="End the lock after 5 wrong PINs; the PIN stays" hidden>Unlock the phone</button>
+              </div>
+            </div>
             <div id="phone-ready" class="card-box" hidden>
               <canvas id="phone-code" role="img" aria-label="Code with the link of the phone page"></canvas>
               <div class="phone-side">
@@ -1227,6 +1235,7 @@
             </div>
             <ul class="what-list">
               <li>Tailscale must run on the phone.</li>
+              <li>The phone asks for the PIN before it shows anything, again before it types into a terminal, and after 15 minutes without use. Five wrong PINs lock it until you unlock it here.</li>
               <li>The phone opens the Terminal of an open project and types into it, so the phone code can run commands on this computer. It reaches no other terminal and no file. It answers questions of tasks, and it approves or rejects a ready plan. It starts and stops no work run itself: an approval from the phone waits until the computer starts the work run.</li>
             </ul>
           </fieldset>

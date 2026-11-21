@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::core::info::{self, NoWindow};
-use crate::core::{err, Core};
+use crate::core::{err, phonepin, Core};
 
 /// The default port of the host (the same as in `host/main.rs`).
 pub const DEFAULT_PORT: u16 = 7470;
@@ -46,6 +46,10 @@ pub struct HostRun {
     key: Option<String>,
     /// The key of the phone page; `None` until a host made one.
     phone_key: Option<String>,
+    /// Whether a PIN of the phone page is set (`core/phonepin.rs`).
+    phone_pin_set: bool,
+    /// Whether the phone is locked after 5 wrong PINs, until Unlock the phone or a new PIN.
+    phone_pin_locked: bool,
     version: Option<String>,
     /// Whether the sign-in entry exists; `None` on a system without that feature.
     autostart: Option<bool>,
@@ -251,6 +255,7 @@ fn autostart_on(_dir: &Path) -> Option<bool> {
 /// The state of the host of the data folder `dir`.
 fn status_in(dir: &Path) -> HostRun {
     let file = read_host_file(dir).filter(|file| alive_host(file.pid));
+    let (phone_pin_set, phone_pin_locked) = phonepin::status(dir);
     HostRun {
         running: file.is_some(),
         pid: file.as_ref().map(|file| file.pid),
@@ -259,6 +264,8 @@ fn status_in(dir: &Path) -> HostRun {
         version: file.as_ref().map(|file| file.version.clone()),
         key: read_key(dir),
         phone_key: read_key_file(dir, PHONE_KEY_FILE),
+        phone_pin_set,
+        phone_pin_locked,
         autostart: autostart_on(dir),
         log_tail: log_tail(dir),
     }
@@ -373,6 +380,21 @@ pub fn host_run_new_key(core: &Core, port: Option<u16>) -> Result<HostRun, Strin
 pub fn host_run_new_phone_key(core: &Core) -> Result<HostRun, String> {
     let dir = core.app_data_dir()?;
     new_phone_key_in(&dir)?;
+    Ok(status_in(&dir))
+}
+
+/// Sets the PIN of the phone page (ticket a-pin-unlocks-the-phone-page). The host reads the file at
+/// each phone call, so the phone needs the new PIN at once, and the lock ends.
+pub fn host_run_set_phone_pin(core: &Core, pin: &str) -> Result<HostRun, String> {
+    let dir = core.app_data_dir()?;
+    phonepin::set(&dir, pin)?;
+    Ok(status_in(&dir))
+}
+
+/// Unlocks the phone after 5 wrong PINs; the PIN stays.
+pub fn host_run_unlock_phone(core: &Core) -> Result<HostRun, String> {
+    let dir = core.app_data_dir()?;
+    phonepin::unlock(&dir)?;
     Ok(status_in(&dir))
 }
 

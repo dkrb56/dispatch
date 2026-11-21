@@ -2,12 +2,13 @@
 //! start with a hello that has this protocol and the key; then each call runs on the blocking pool
 //! of tokio (the keys and the size of a terminal in their order, see `in_order`) and its reply goes back through the writer of the connection, which also carries the
 //! events of the window's terminals in their order. A plain HTTP request on the same port gets the
-//! phone page (`phone.rs`); the phone key opens a connection that may use only the phone calls.
+//! phone page (`phone.rs`); the phone key opens a connection that may use only the phone calls, and
+//! only after the PIN (`unlock.rs`).
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures_util::stream::SplitStream;
@@ -27,6 +28,7 @@ use crate::calls::{self, Reply};
 use crate::clients::{Clients, Out, Sender};
 use crate::phone;
 use crate::protocol::{self, Incoming};
+use crate::unlock;
 
 /// The first frame must come within this time.
 const HELLO_WAIT: Duration = Duration::from_secs(10);
@@ -41,8 +43,10 @@ pub struct Host {
     pub core: Arc<Core>,
     pub clients: Arc<Clients>,
     pub version: String,
-    /// The data folder: it holds the phone key, which can change while the host runs.
+    /// The data folder: it holds the phone key and the PIN file, which can change while the host runs.
     pub data_dir: PathBuf,
+    /// The unlock tokens of the phones that entered the PIN.
+    pub unlocks: unlock::Unlocks,
 }
 
 /// What the key of a connection allows.
@@ -50,8 +54,10 @@ pub struct Host {
 enum Role {
     /// The full key: every call.
     Window,
-    /// The phone key: the calls of `phone::phone_call`, while this key is still the phone key.
-    Phone { key: String },
+    /// The phone key: the calls of `phone::phone_call`, while this key is still the phone key, and
+    /// after the PIN. `token` is the unlock token of this connection; the calls share it, because
+    /// `start_call` clones the role per call.
+    Phone { key: String, token: Arc<Mutex<Option<String>>> },
 }
 
 pub async fn serve(listener: TcpListener, host: Arc<Host>) {
@@ -151,7 +157,7 @@ async fn connection(mut stream: TcpStream, peer: SocketAddr, host: Arc<Host>) {
     let role = if host.clients.key_matches(&key) {
         Role::Window
     } else if hostrun::phone_key_ok(&host.data_dir, &key) {
-        Role::Phone { key }
+        Role::Phone { key, token: Arc::new(Mutex::new(None)) }
     } else {
         tokio::time::sleep(WRONG_KEY_WAIT).await;
         return refuse(socket, peer, CloseCode::Policy, protocol::WRONG_KEY, protocol::WRONG_KEY).await;
@@ -259,9 +265,22 @@ fn start_call(
     let lane = command.clone();
     lanes.run(&lane, id, tx, Box::new(move || {
         // A new phone key ends the old one at its next call, without a restart of the host.
-        if let Role::Phone { key } = &role {
+        if let Role::Phone { key, token } = &role {
             if !hostrun::phone_key_ok(&host.data_dir, key) {
                 return Out::Text(protocol::reply_error(id, protocol::WRONG_KEY));
+            }
+            // The PIN gate (ticket a-pin-unlocks-the-phone-page): the host decides, never the page.
+            if command == "phone_unlock" {
+                return match unlock::unlock_call(&args, token, &host.unlocks, &host.data_dir) {
+                    Ok(value) => Out::Text(protocol::reply_value(id, value)),
+                    Err(text) => Out::Text(protocol::reply_error(id, &text)),
+                };
+            }
+            let current = token.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+            if let Err(text) = unlock::gate(&command, current.as_deref(), &host.unlocks, &host.data_dir) {
+                // The unlock ended: the phone gets no more terminal output either.
+                host.clients.leave_all(&window);
+                return Out::Text(protocol::reply_error(id, text));
             }
             // The host itself keeps the phone key to the open projects of this computer.
             let open_root = |folder: &str| store::open_root(&host.core, &host.clients.live_windows(), folder).ok().flatten();

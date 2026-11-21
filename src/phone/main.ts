@@ -17,6 +17,11 @@
 // computer. The phone types through a text box and key buttons, never through xterm itself. Only the
 // answers of xterm to the queries of the program go from xterm to the terminal, and only while the
 // phone owns it (it started the terminal), as the owner window on the computer does.
+//
+// The PIN (ticket a-pin-unlocks-the-phone-page): the host shows and does nothing before the phone sent
+// the PIN with `phone_unlock`, and asks again after 15 minutes without use. The page keeps the unlock
+// token of the host in `sessionStorage` for a reload, never the PIN. Before the phone types into a
+// terminal or starts one, it asks for the PIN once more; Back ends that.
 import "@xterm/xterm/css/xterm.css";
 import { Terminal } from "@xterm/xterm";
 import "./phone.css";
@@ -53,10 +58,13 @@ import {
   pasteBytes,
   pathKey,
   PHONE_KEYS,
+  PIN_ERRORS,
+  pinMessage,
   showAllKey,
   shownRoots,
   toggleColumn,
   toggleRoot,
+  UNLOCK_STORE,
   viewFromText,
   viewToText,
 } from "../phonemodel";
@@ -145,13 +153,25 @@ keyInput.autocapitalize = "off";
 keyInput.spellcheck = false;
 keyInput.setAttribute("aria-label", "Phone key or link");
 keyForm.append(keyInput, element("button", "", "Connect"));
+/** The PIN screen: the host shows and does nothing before the PIN. */
+const pinForm = element("form", "key-form pin-form");
+pinForm.hidden = true;
+const pinNote = element("p", "pin-note");
+const pinInput = element("input");
+pinInput.type = "password";
+pinInput.inputMode = "numeric";
+pinInput.autocomplete = "off";
+pinInput.placeholder = "PIN";
+pinInput.setAttribute("aria-label", "PIN of this phone");
+const pinButton = element("button", "", "Unlock");
+pinForm.append(pinNote, pinInput, pinButton);
 const hintEl = element("div", "message hint");
 hintEl.hidden = true;
 const hintDoneEl = element("button", "", "Got it");
 hintDoneEl.type = "button";
 hintEl.append(element("p", "", "Connected. To keep Dispatch on this phone, tap Share, then Add to Home Screen."), hintDoneEl);
 const cardsEl = element("main", "cards");
-app.append(top, panelEl, messageEl, keyForm, hintEl, cardsEl);
+app.append(top, panelEl, messageEl, keyForm, pinForm, hintEl, cardsEl);
 
 function showMessage(text: string): void {
   messageEl.textContent = text;
@@ -241,10 +261,120 @@ let lastRound = 0;
 let roots: string[] = [];
 let workers: PhoneWorker[] = [];
 const lists = new Map<string, { list: PhoneTaskList | null; error: string }>();
+/** The unlock token of the host: a reload within 15 minutes asks no PIN again (user decision 2). */
+let unlockToken = readUnlockToken();
+/** The host took the PIN or the token of this connection: the calls work. */
+let unlocked = false;
+/** The host took the PIN for the terminal: the phone may type (user decision 3). */
+let typingOk = false;
+/** The PIN screen shows for the terminal; the cards stay. */
+let pinForTerminal = false;
+/** The tap that waits for the terminal PIN; it runs after the PIN. */
+let afterPin: (() => void) | null = null;
+/** Without a PIN on the computer the page asks the host again now and then. */
+let pinTimer: ReturnType<typeof setTimeout> | undefined;
+
+interface UnlockReply {
+  token: string;
+  typing?: boolean;
+}
+
+function readUnlockToken(): string | null {
+  try {
+    return sessionStorage.getItem(UNLOCK_STORE);
+  } catch {
+    return null;
+  }
+}
+
+function storeUnlockToken(value: string | null): void {
+  try {
+    if (value) sessionStorage.setItem(UNLOCK_STORE, value);
+    else sessionStorage.removeItem(UNLOCK_STORE);
+  } catch {
+    // The unlock then holds until the page closes.
+  }
+}
+
+/** The unlock of this connection is over, or the page leaves: no PIN screen, no waiting tap. */
+function dropUnlock(): void {
+  unlocked = false;
+  typingOk = false;
+  afterPin = null;
+  clearTimeout(pinTimer);
+  pinForm.hidden = true;
+}
+
+/**
+ * The PIN screen: why it shows (an error of the host, or nothing), and whether the PIN is for the
+ * terminal. Without `forTerminal` the cards go away first: the host gives nothing before the PIN.
+ */
+function askForPin(error: string, forTerminal: boolean): void {
+  const shown = pinMessage(error, forTerminal);
+  pinForTerminal = forTerminal;
+  clearTimeout(pinTimer);
+  if (!forTerminal) {
+    unlocked = false;
+    typingOk = false;
+    afterPin = null;
+    clearTimeout(roundTimer);
+    updatedEl.textContent = "";
+    cardsEl.replaceChildren();
+    cards.clear();
+    projectsBtn.hidden = true;
+    layoutEl.hidden = true;
+    panelEl.hidden = true;
+    hintEl.hidden = true;
+    showMessage("");
+  }
+  // In the Terminal view the screen stands above the text box; else it stands in place of the cards.
+  if (termRoot) termEl.insertBefore(pinForm, termForm);
+  else app.insertBefore(pinForm, hintEl);
+  pinNote.textContent = shown.text;
+  pinNote.classList.toggle("pin-error", error.startsWith(PIN_ERRORS.wrong) || error === PIN_ERRORS.locked);
+  pinInput.hidden = !shown.form;
+  pinButton.hidden = !shown.form;
+  pinInput.value = "";
+  pinForm.hidden = false;
+  if (shown.form) pinInput.focus();
+  // No PIN on the computer yet: the page asks again, so it goes on once the user set one.
+  else if (!forTerminal) pinTimer = setTimeout(() => void tryUnlock({}), ROUND_MS);
+}
+
+/** `phone_unlock` with the token of this session, a PIN or nothing; the answer draws the page. */
+function tryUnlock(args: Record<string, unknown>): Promise<void> {
+  return call<UnlockReply>("phone_unlock", args)
+    .then(afterUnlock)
+    .catch((error) => {
+      if (connected) askForPin(String(error), pinForTerminal);
+    });
+}
+
+/** The host took the PIN or the token: the page shows the cards, or goes on with the tap that waited. */
+function afterUnlock(reply: UnlockReply): void {
+  const fresh = !unlocked;
+  unlockToken = reply.token;
+  storeUnlockToken(reply.token);
+  unlocked = true;
+  typingOk = reply.typing === true;
+  clearTimeout(pinTimer);
+  pinForm.hidden = true;
+  if (fresh) {
+    projectsBtn.hidden = false;
+    layoutEl.hidden = false;
+    hintEl.hidden = !homeScreenHint(standalone, hintDismissed());
+    void round();
+    terminalReconnected();
+  }
+  const next = afterPin;
+  afterPin = null;
+  if (next && typingOk) next();
+}
 
 /** The screen without a working key: the box for the key and why it shows. */
 function askForKey(text: string): void {
   connected = false;
+  dropUnlock();
   clearTimeout(retryTimer);
   clearTimeout(roundTimer);
   updatedEl.textContent = "";
@@ -286,13 +416,13 @@ function connect(): void {
       connected = true;
       retryWait = RETRY_FIRST_MS;
       keyForm.hidden = true;
-      projectsBtn.hidden = false;
-      layoutEl.hidden = false;
       if (key) storeKey(key);
       showMessage("");
-      hintEl.hidden = !homeScreenHint(standalone, hintDismissed());
-      void round();
-      terminalReconnected();
+      // The PIN gate: the cards come after the unlock (`afterUnlock`), with the token of this session or the PIN.
+      unlocked = false;
+      typingOk = false;
+      pinForTerminal = false;
+      void tryUnlock(unlockToken ? { token: unlockToken } : {});
     } else if (frame.type === "event") {
       terminalEvent(String(frame.event), frame.payload);
     } else if (frame.type === "reply") {
@@ -308,6 +438,12 @@ function connect(): void {
       if (frame.error === WRONG_KEY) {
         refusal = WRONG_KEY;
         ws.close();
+      } else if (frame.error === PIN_ERRORS.needed) {
+        // The unlock ended (15 minutes without use, a new PIN, a lock): the PIN screen, nothing else.
+        askForPin(PIN_ERRORS.needed, false);
+      } else if (frame.error === PIN_ERRORS.terminal) {
+        typingOk = false;
+        askForPin(PIN_ERRORS.terminal, true);
       }
     } else if (frame.type === "refused") {
       refusal = String(frame.text ?? "");
@@ -317,6 +453,7 @@ function connect(): void {
     clearTimeout(wait);
     if (socket === ws) socket = null;
     connected = false;
+    dropUnlock();
     terminalLost();
     for (const [id, waiting] of pending) {
       pending.delete(id);
@@ -357,12 +494,12 @@ function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
 
 function scheduleRound(): void {
   clearTimeout(roundTimer);
-  if (connected && !document.hidden) roundTimer = setTimeout(() => void round(), Math.max(0, lastRound + ROUND_MS - Date.now()));
+  if (connected && unlocked && !document.hidden) roundTimer = setTimeout(() => void round(), Math.max(0, lastRound + ROUND_MS - Date.now()));
 }
 
 /** One read of everything: one project at a time, and only while the page shows. */
 async function round(): Promise<void> {
-  if (roundBusy || !connected || document.hidden) return;
+  if (roundBusy || !connected || !unlocked || document.hidden) return;
   roundBusy = true;
   lastRound = Date.now();
   try {
@@ -382,7 +519,7 @@ async function round(): Promise<void> {
     for (const root of [...lists.keys()]) if (!shown.includes(root)) lists.delete(root);
     updatedEl.textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
   } catch (error) {
-    if (connected) showMessage(`The computer did not answer: ${error}`);
+    if (connected && unlocked) showMessage(`The computer did not answer: ${error}`);
   } finally {
     roundBusy = false;
     scheduleRound();
@@ -964,6 +1101,8 @@ function drawPanel(): void {
 }
 
 function draw(): void {
+  // Nothing shows before the PIN.
+  if (!unlocked) return;
   // A new read must not take the focus and the place from the box the user types in.
   if (document.activeElement instanceof HTMLTextAreaElement && document.activeElement.classList.contains("answer-box")) {
     drawLater = true;
@@ -1006,6 +1145,18 @@ keyForm.addEventListener("submit", (event) => {
   keyForm.hidden = true;
   retryWait = RETRY_FIRST_MS;
   connect();
+});
+
+// The PIN goes to the host and nowhere else. In the Terminal view it also unlocks typing (user decision 3).
+pinForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const pin = pinInput.value;
+  pinInput.value = "";
+  if (pin === "" || pinButton.disabled) return;
+  pinButton.disabled = true;
+  void tryUnlock({ pin, terminal: pinForTerminal || termRoot !== null }).finally(() => {
+    pinButton.disabled = false;
+  });
 });
 
 // The iPhone ends the connection of a page in the background: the page comes back when it shows.
@@ -1088,7 +1239,7 @@ function terminal(): Terminal {
 
 /** Data of xterm: only a report of the owner goes to the terminal, never a key and never during a replay. */
 function termData(data: string): void {
-  if (termOwner && !termReplay && termId && isTerminalReport(data)) void call("pty_write", { id: termId, data }).catch(() => {});
+  if (termOwner && typingOk && !termReplay && termId && isTerminalReport(data)) void call("pty_write", { id: termId, data }).catch(() => {});
 }
 
 function termNote(text: string): void {
@@ -1193,6 +1344,11 @@ function closeTerminal(): void {
   termRoot = null;
   termId = null;
   termOwner = false;
+  // Back ends the terminal PIN (user decision 3); the host ends it at `pty_leave`.
+  typingOk = false;
+  afterPin = null;
+  if (pinForTerminal) pinForm.hidden = true;
+  else if (!pinForm.hidden) app.insertBefore(pinForm, hintEl);
   termEl.hidden = true;
   document.body.classList.remove("term-open");
   if (id && connected) void call("pty_leave", { id }).catch(() => {});
@@ -1205,20 +1361,39 @@ async function termWrite(data: string): Promise<boolean> {
     termNote("No terminal runs for this project.");
     return false;
   }
+  // The first key of a visit asks for the PIN; the key goes after it.
+  if (!typingOk) {
+    afterPin = () => void termWrite(data);
+    askForPin("", true);
+    return false;
+  }
   try {
     await call("pty_write", { id: termId, data });
     return true;
   } catch (error) {
-    termNote(`Not sent: ${error}`);
+    if (error !== PIN_ERRORS.terminal && error !== PIN_ERRORS.needed) termNote(`Not sent: ${error}`);
     return false;
   }
 }
 
 termBack.addEventListener("click", closeTerminal);
-termStart.addEventListener("click", () => void termOpen(true));
+// Start runs Claude Code on the computer: it needs the terminal PIN as a key does.
+termStart.addEventListener("click", () => {
+  if (!typingOk) {
+    afterPin = () => void termOpen(true);
+    askForPin("", true);
+    return;
+  }
+  void termOpen(true);
+});
 termForm.addEventListener("submit", (event) => {
   event.preventDefault();
   if (termSend.disabled || !termId || !term) return;
+  // Send asks for the PIN first and keeps the text in the box; the user taps Send again after it.
+  if (!typingOk) {
+    askForPin("", true);
+    return;
+  }
   const text = termText.value;
   termSend.disabled = true;
   void (async () => {
