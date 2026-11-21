@@ -46,7 +46,7 @@ The user's decisions of 2026-11-21: the five rules; one work folder at the start
 
 ### The work folder
 
-- A project with the switch on has one work folder. Proposed place: `.dispatch/work/1`, ignored by git. The proof decides the place (see "Open points").
+- A project with the switch on has one work folder. Place: `.dispatch/work/1`, ignored by git (the line `work/` in `.dispatch/.gitignore` when the project tracks `.dispatch`). The proof of 2026-11-21 chose it, because Claude Code trusts it through the project folder and the page already counts a worker there as a worker of the project.
 - The folder is a worktree of the project's repository: the branches and commits are shared, the files are separate.
 - A set-up command of the project (one line, for example `npm ci`) runs after Dispatch makes the folder. Files that git does not track are absent until then.
 - Only Dispatch and its workers write in the folder. Thus Dispatch can clean it without a question: `git merge --abort`, `git reset --hard`, `git clean -fd`. Build output that git ignores stays.
@@ -107,16 +107,45 @@ When every project uses work folders (the last task below):
 
 ## Open points to prove first
 
-Nobody tried these. The first task answers each with evidence and writes the answer here.
+Proved on 2026-11-21 by ticket `work-folders-prove-a-work-run-and-a` (Claude Code 2.1.319, git 2.53.0, Windows 11). The script `.dispatch/proof/work-folders-prove-a-work-run-and-a/proof.ps1` builds a scratch project at `src-tauri/target/compact-prompt-proof/proj`, starts real haiku background sessions with the options of `work-flags.txt` in the work folders `.dispatch/work/1` and `/2`, and makes the merges. Its result lines are in `result.txt` next to the script; the names in "Evidence" are the names of these lines. The script and its results stay on this computer, because this repository ignores `.dispatch/`.
 
 1. A real Claude Code background session that starts in a worktree: the trust question, the worker list (`claude agents --json --all`, `--cwd`), the folder of its transcript, a resume in the same folder.
+- Answer: It works. The session starts with no trust question, because the work folder is inside a trusted project folder; Claude Code writes no trust record of its own for it. `claude agents --json --all` lists it with `cwd` = the work folder, and `--cwd <project>` lists it too. The transcript folder is named after the work folder; Dispatch finds the file by its session id, as today. A finished session keeps its process (state `done`, status `idle`), so a resume starts a copy with a new job id and a new session id in the same folder; the worker script must take the id after `backgrounded ·`, because the note before it names the original. The living process holds the folder: `git worktree remove` fails while it lives, but checkouts, merges and commits in the folder work.
+- Evidence: `case A trust`, `case A worker list`, `agents --cwd` (17 of 813 sessions, the work folder session in them), `case A transcript` (folder `D--dev-projects-dispatch-src-tauri-target-compact-prompt-proof-proj--dispatch-work-1`), `resume` (claude printed "session … is already running in the background, so this started a copy as …"), `resume in the same folder` (commit `t-1-second` on `task/t-1`), `work folder removal while a finished session lives` (exit 255, "Permission denied"); the merges ran in `.dispatch/work/1` while these processes lived.
 2. The settings of the session: `.claude/settings.json` and `.claude/settings.local.json` of the project folder (allow rules, `worktree.bgIsolation`), also in a project where git ignores `.claude/`.
+- Answer: A session reads `.claude/` of its start folder, the work folder, not of the project folder. Where git tracks `.claude/`, the work folder has a copy and the rules of the project hold. Where git ignores `.claude/`, the work folder has no rules; the normal case on this computer, because the global git ignore file ignores `**/.claude/settings.local.json`. A second `--settings <project>/.claude/settings.local.json` gives the rules back. The session stayed in the work folder in both cases, also with no `worktree.bgIsolation` in the work folder or in the user settings.
+- Evidence: `case A rules of the project` (the deny rule refused `echo deny-probe`), `case B without help` (`echo deny-probe` ran), `case B rules by a second --settings` (refused again), `global ignore` (`C:\Users\dani/.config/git/ignore` line 3), the `cwd` of `case B worker entry`.
 3. The write of the report into `.dispatch` of the project folder from a session in the work folder (the permission rule and the path form).
+- Answer: It works with the full path, for example `D:\…\proj\.dispatch\t-1.md`. The rule form is `Edit(//d/<project path>/.dispatch/**)`. With `--permission-mode auto` of the work run, the write passed also without that rule; the rule is needed only in a mode that asks or refuses, such as `dontAsk`.
+- Evidence: `case A report into the project .dispatch` (ALLOWED with the rule), `case B calls` (report write ALLOWED with no rule of the project), the four header lines in the report file of each case.
 4. The place of the folder: inside `.dispatch` or next to the project folder. Path length on Windows, tools that scan the project folder, the trust rule of Claude Code.
+- Answer: `.dispatch/work/1` works and is the place. It adds 17 characters to each path; the longest tracked path of this repository becomes 86 characters, far below 260. A project that tracks `.dispatch` needs the line `work/` in `.dispatch/.gitignore`, else `git status` of the project lists the folder. Trust comes from the project folder. The page joins the worker to the project by its folder prefix, but the backend (`Project::find`, `git rev-parse --show-toplevel`) gives the work folder as the root, so Dispatch must map a work folder to its project. The place next to the project folder was not tried (user decision 2 of the plan).
+- Evidence: `path length in the work folder`, `this repository` (longest tracked path), `work folder ignore line` (`?? .dispatch/work/` without the line), `case A trust`, `case A joins the project by folder prefix`, `work folder roots`.
 5. Sparse checkout in a worktree with `.dispatch` tracked.
+- Answer: It works with `git sparse-checkout set --no-cone '/*' '!/.dispatch/'` in the work folder. The work folder has no `.dispatch` on the disk, `git status` there is clean, and a card commit on the base merges into the task branch without a conflict. The project folder keeps its full `.dispatch`.
+- Evidence: `sparse checkout`, `sparse checkout and a card commit`, `case A report into the project .dispatch` (the project `.dispatch` is still there).
 6. Files that git does not track: what a work folder needs (set-up command, local settings, Git LFS files).
+- Answer: A new work folder has no ignored file: no dependencies, no local settings, no `.claude/settings.local.json` (see point 2). The set-up command makes the first ones; the local settings of Claude Code go in by `--settings`. Git LFS files arrive with their real content, because the LFS store is shared through the common `.git`.
+- Evidence: `ignored files in a new work folder`, `Git LFS file in the work folder` (200 bytes, not the pointer), `this repository` (`node_modules` 86 MB in 820 files, made by `npm ci`).
 7. Disk space and the first build of a large project (Unreal). The gate scripts of Starminer and Rockhoppers in another folder.
+- Answer: Not run here, because no large project is in this checkout. This repository shows the size: a work folder builds `src-tauri/target/debug` (22.7 GB) and `release` (3.3 GB) once again, so it needs about as much free space as the project folder has build output. The scratch gate ran in the work folder with `DISPATCH_TICKET` and `DISPATCH_CHECKS`, its line was committed on top of the merge commit and reached the base. Trap: a shell of Claude Code has `NoDefaultCurrentDirectoryInExePath=1`, so `cmd /c gate.cmd` does not find a gate in the current folder; call it as `.\gate.cmd` or by its full path.
+- Evidence: `this repository` (debug and release lines), `merge and gate in the work folder`, `base moved` (GATE.txt holds "gate t-1 passed checks [none]"), the first run of the script ("'gate.cmd' is not recognized").
 8. The mode Use hosts and a second computer.
+- Answer: A work folder belongs to one computer. A clone has no work folder, and the `.git` file of a work folder holds an absolute path, so the folder cannot move to another computer. By reasoning, not by a run: each computer that runs work runs makes its own work folder, and the record of the folder names that computer. The mode Use hosts was not run.
+- Evidence: `second computer` (the clone lists 1 worktree), `work folder .git file` (`gitdir: D:/…/proj/.git/worktrees/1`).
+
+The merge steps 1 to 5 ran again with real work runs: `project folder` (MERGE_HEAD seen 0 times during the merge), `base moved`, `failed gate` (nothing outside the work folder changed), `blocked fast-forward` (exit 1, HEAD and file unchanged), `change outside the merge` (passed, change kept) and `base on another branch` (`update-ref` with a wrong old tip refused, with the right one passed).
+
+Still untried:
+
+- Unreal or another large build in a work folder, and the time of its first build.
+- The gate scripts of Starminer and Rockhoppers in a work folder.
+- The mode Use hosts, and a second computer at run time.
+- The place next to the project folder.
+- Tools that scan the project folder (file watchers, search tools, editors) with a work folder inside it.
+- Whether a second `--settings` replaces or adds to the first; the proof showed only that the rules of the second hold.
+- The merge steps 6 and 7 (a base that moved during the gate, and the branch file); the merge by the app itself, with its Merge button.
+- A project folder or a work folder that Claude Code does not trust.
 
 ## Tasks that follow
 
