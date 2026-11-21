@@ -160,6 +160,11 @@ pub struct Worker {
     /// True means the run ended for good without its plan or report.
     #[serde(skip_deserializing)]
     finished: Option<bool>,
+    /// True for a run that `settle_turn_end` made done only through the result of a later job of
+    /// the same task (ticket a-finished-work-run-that-claude-code). The window keeps quiet about
+    /// that end: the report exists.
+    #[serde(skip_deserializing)]
+    superseded: bool,
 }
 
 impl Worker {
@@ -193,8 +198,10 @@ impl Worker {
     /// its last line). The session is then `idle`. A run of the pipeline that is idle and wrote its
     /// result (the plan or the report) in this run is done. `busy` and `shell` still run: a
     /// background command can go on by itself. `held` stays: Claude Code still holds the session.
-    fn settle_turn_end(&mut self, result_written: bool) {
-        if self.state.as_deref() == Some("working") && self.status.as_deref() == Some("idle") && result_written {
+    /// A result of a later job of the same task (`later_result`) ends an older idle run too
+    /// (ticket a-finished-work-run-that-claude-code).
+    fn settle_turn_end(&mut self, result_written: bool, later_result: bool) {
+        if self.state.as_deref() == Some("working") && self.status.as_deref() == Some("idle") && (result_written || later_result) {
             self.state = Some("done".to_string());
         }
     }
@@ -286,6 +293,12 @@ fn from_run(modified: Option<u64>, start: u64, next_start: Option<u64>) -> bool 
     modified.is_some_and(|modified| modified >= start && next_start.is_none_or(|next| modified < next))
 }
 
+/// A result file is from a later job of the same name when it changed at or after the start of
+/// that job: an older idle run is then superseded (ticket a-finished-work-run-that-claude-code).
+fn from_later_run(modified: Option<u64>, next_start: Option<u64>) -> bool {
+    modified.zip(next_start).is_some_and(|(modified, next)| modified >= next)
+}
+
 /// The `result` of a worker: `modified` gives the time of the result file of a ticket's run
 /// (true for the plan run), or None without that file.
 fn run_result(
@@ -373,7 +386,9 @@ pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
         if worker.state.as_deref() == Some("working") && worker.status.as_deref() == Some("idle") {
             let run = worker.name.as_deref().and_then(run_of).zip(worker.started_at);
             let written = run.is_some_and(|((ticket, plan), start)| from_run(modified(ticket, plan), start, next_start));
-            worker.settle_turn_end(written);
+            let later = run.is_some_and(|((ticket, plan), _)| from_later_run(modified(ticket, plan), next_start));
+            worker.settle_turn_end(written, later);
+            worker.superseded = !written && later && worker.state.as_deref() == Some("done");
             // The first loop reads the end only for a worker that does not run.
             if worker.state.as_deref() == Some("done") {
                 worker.ended_at = claude.as_deref().and_then(|claude| worker_end(claude, &worker.id)).map(|(at, _)| at);
@@ -425,7 +440,7 @@ pub fn end_session(id: String) -> Result<String, String> {
 
 #[cfg(test)]
 mod worker_tests {
-    use super::{check_session_id, end_session, job_finished, run_result, timeline_end, worker_finished, Worker};
+    use super::{check_session_id, end_session, from_later_run, job_finished, run_result, timeline_end, worker_finished, Worker};
 
     /// The form of `~/.claude/jobs/<id>/state.json` (Claude Code 2.1.319, job 6a54e3cc: a plan run
     /// that ended without its plan; job 68b71856: a done run with queued work).
@@ -554,7 +569,7 @@ mod worker_tests {
     fn an_idle_working_run_with_its_result_is_done() {
         let ended = |state: &str, status: Option<&str>, written: bool| {
             let mut worker = worker(state, status, None);
-            worker.settle_turn_end(written);
+            worker.settle_turn_end(written, false);
             (worker.state, worker.held)
         };
         // Job 73d83b4a: the turn ended, the list kept working, the report of this run exists. Done,
@@ -568,6 +583,25 @@ mod worker_tests {
         }
         // A permission prompt stays blocked.
         assert_eq!(ended("blocked", Some("waiting"), true).0.as_deref(), Some("blocked"));
+    }
+
+    #[test]
+    fn an_idle_working_run_with_a_later_result_is_done() {
+        let ended = |state: &str, status: Option<&str>, later: bool| {
+            let mut worker = worker(state, status, None);
+            worker.settle_turn_end(false, later);
+            (worker.state, worker.held)
+        };
+        assert_eq!(ended("working", Some("idle"), true), (Some("done".to_string()), true));
+        assert_eq!(ended("working", Some("idle"), false).0.as_deref(), Some("working"));
+        for status in [Some("busy"), Some("shell"), None] {
+            assert_eq!(ended("working", status, true).0.as_deref(), Some("working"), "{status:?}");
+        }
+        assert_eq!(ended("blocked", Some("waiting"), true).0.as_deref(), Some("blocked"));
+        assert!(from_later_run(Some(5002), Some(5000)));
+        assert!(!from_later_run(Some(4999), Some(5000)));
+        assert!(!from_later_run(Some(5002), None));
+        assert!(!from_later_run(None, Some(5000)));
     }
 
     /// A worker as the list gives it, with a process when `pid` is set, after `settle`.

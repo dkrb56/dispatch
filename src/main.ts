@@ -382,6 +382,11 @@ interface Worker {
    * when unknown (ticket a-plan-run-that-ends-without-a-plan). Absent from an older host.
    */
   finished?: boolean | null;
+  /**
+   * True for an old run that counts as done only through the result of a later run of the same
+   * task (ticket a-finished-work-run-that-claude-code). Absent from an older host.
+   */
+  superseded?: boolean;
 }
 
 /** The Claude Code command with which the shell of a new terminal starts. */
@@ -4630,7 +4635,7 @@ function announceWorkerChanges(workers: Worker[]): void {
   const polled = workers.map((worker) => ({
     key: workerKey(worker),
     state: worker.state,
-    quiet: !driverOf(worker.host) || endingSessions.has(workerKey(worker)),
+    quiet: !driverOf(worker.host) || endingSessions.has(workerKey(worker)) || worker.superseded === true,
     result: worker.result,
     // Only a plan run ends as done-empty; a work run without its report stays done-early.
     finished: RUN_NAME.exec(worker.name ?? worker.id)?.[2] === "plan" ? worker.finished : null,
