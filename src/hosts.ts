@@ -97,6 +97,17 @@ export function isLoopback(address: string): boolean {
   return ["127.0.0.1", "localhost", "::1"].includes(address.toLowerCase());
 }
 
+/** How long the window waits at its start for the host of this PC to listen (ticket after-each-update-thers-this-error). */
+export const START_WAIT_MS = 15_000;
+
+/**
+ * Whether a failed first try at the start tries again: only for an address of this PC, and only
+ * while the start wait lasts. After an update the host of this PC starts a moment after the window.
+ */
+export function retriesAtStart(address: string, startedAt: number, now: number): boolean {
+  return isLoopback(address) && now - startedAt < START_WAIT_MS;
+}
+
 /**
  * Whether a row is the host of this PC (ticket this-pc-runs-twice): a loopback address and the key
  * of this PC. A test host on 127.0.0.1 has another key and stays a normal host.

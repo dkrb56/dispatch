@@ -9,7 +9,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { cleanAddress, completeHosts, type HostEntry, type HostId, type HostSettings, isLoopback, LOCAL, parseHostSettings, workBackends } from "./hosts";
+import { cleanAddress, completeHosts, type HostEntry, type HostId, type HostSettings, isLoopback, LOCAL, parseHostSettings, retriesAtStart, workBackends } from "./hosts";
 
 export { cleanAddress, LOCAL, type HostEntry, type HostId, type HostSettings };
 
@@ -60,6 +60,8 @@ const CONNECT_WAIT_MS = 10_000;
 /** The waits between two tries after a lost connection: 1 s, doubled up to 10 s. */
 const RETRY_FIRST_MS = 1000;
 const RETRY_MAX_MS = 10_000;
+/** The gap between two tries of the start wait of the host of this PC. */
+const START_RETRY_MS = 500;
 
 /** One host of this run: its connection and the calls that wait for a reply. */
 interface Link {
@@ -75,6 +77,10 @@ interface Link {
   /** Resolves when the first try at the start ends, connected or not. */
   firstAttempt: Promise<void>;
   endFirstAttempt: () => void;
+  /** True from the start until the first attempt ends; a try in this time is still the first connection. */
+  starting: boolean;
+  /** The time of the start of the link, for the start wait of the host of this PC. */
+  startedAt: number;
   nextId: number;
   pending: Map<number, { resolve: (value: unknown) => void; reject: (error: unknown) => void }>;
 }
@@ -137,10 +143,17 @@ export async function initBackend(): Promise<void> {
       retryWait: RETRY_FIRST_MS,
       firstAttempt: Promise.resolve(),
       endFirstAttempt: () => {},
+      starting: true,
+      startedAt: Date.now(),
       nextId: 1,
       pending: new Map(),
     };
-    link.firstAttempt = new Promise((resolve) => (link.endFirstAttempt = resolve));
+    link.firstAttempt = new Promise((resolve) => {
+      link.endFirstAttempt = () => {
+        link.starting = false;
+        resolve();
+      };
+    });
     links.set(entry.id, link);
   }
   for (const link of links.values()) connect(link);
@@ -221,7 +234,7 @@ export function retryHost(host: HostId): void {
 
 function connect(link: Link): void {
   link.attempts++;
-  const first = link.attempts === 1;
+  const first = link.starting;
   setConnection(link, { state: "connecting" });
   const address = link.entry.address.includes(":") ? `[${link.entry.address}]` : link.entry.address;
   let ws: WebSocket;
@@ -295,6 +308,12 @@ function ended(link: Link, first: boolean, text: string, refusal: string | null)
   for (const [id, waiting] of link.pending) {
     link.pending.delete(id);
     waiting.reject(link.everConnected ? `the connection to the host ${link.entry.name} ended` : text);
+  }
+  // The host of this PC may start a moment after the window (after an update): the first try goes on, quietly.
+  if (first && !refusal && link.starting && !link.everConnected && retriesAtStart(link.entry.address, link.startedAt, Date.now())) {
+    setConnection(link, { state: "connecting" });
+    link.retryTimer = setTimeout(() => connect(link), START_RETRY_MS);
+    return;
   }
   if (refusal) {
     setConnection(link, { state: "refused", text: refusal });

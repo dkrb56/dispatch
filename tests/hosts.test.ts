@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { completeHosts, IDLE_READ_MS, keyHost, keyPath, LOCAL, mergeLists, nightSwitch, parseHostSettings, pathKey, projectKey, projectLabel, windowTitle, workBackends, readDue, UNUSED_AFTER_MS } from "../src/hosts.ts";
+import { completeHosts, IDLE_READ_MS, keyHost, keyPath, LOCAL, mergeLists, nightSwitch, parseHostSettings, pathKey, projectKey, projectLabel, windowTitle, workBackends, readDue, UNUSED_AFTER_MS, retriesAtStart, START_WAIT_MS } from "../src/hosts.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -211,4 +211,12 @@ test("the polls can wait, and a window with skipped reads reads before it drives
   assert.ok(setDriver.indexOf("skippedReads.has(host)") < setDriver.indexOf("readThenDrive(host, turn)"));
   const catchUp = main.slice(main.indexOf("async function readThenDrive("), main.indexOf("/** Takes the reply of a host."));
   assert.ok(catchUp.indexOf("await refreshWorkers();") < catchUp.indexOf("readProjectTasks(") && catchUp.indexOf("readProjectTasks(") < catchUp.indexOf("gainDriver(host);"));
+});
+
+test("a failed first try at the start tries again only for the host of this PC and only within the start wait", () => {
+  assert.equal(retriesAtStart("127.0.0.1", 1000, 1000 + 500), true);
+  assert.equal(retriesAtStart("localhost", 1000, 1000 + 500), true);
+  assert.equal(retriesAtStart("::1", 1000, 1000 + 500), true);
+  assert.equal(retriesAtStart("127.0.0.1", 1000, 1000 + START_WAIT_MS), false, "after the wait the error shows as before");
+  assert.equal(retriesAtStart("100.64.0.7", 1000, 1000 + 500), false, "a host on another computer does not wait");
 });
