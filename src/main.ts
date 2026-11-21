@@ -3232,9 +3232,9 @@ async function syncNight(host: HostId, root: string): Promise<void> {
 }
 
 /** The tasks of a project, joined with the workers of that project only. */
-function projectTaskList(project: ProjectTasks): Task[] {
+function projectTaskList(project: ProjectTasks, sort = true): Task[] {
   const key = projectKey(project.host, project.cwd);
-  return taskList(workerList.filter((worker) => inProject(worker, key)), project.infos, project);
+  return taskList(workerList.filter((worker) => inProject(worker, key)), project.infos, project, sort);
 }
 
 // The old worker sessions (ticket stale-workers-list): sessions that Claude Code still holds after
@@ -4872,7 +4872,7 @@ function permissionWaits(task: Task): boolean {
 }
 
 /** Groups the workers and the tasks of the reports folder by name. The workers keep their order. */
-function taskList(workers: Worker[], infos: TaskInfo[], project?: ProjectTasks): Task[] {
+function taskList(workers: Worker[], infos: TaskInfo[], project?: ProjectTasks, sort = true): Task[] {
   const tasks = new Map<string, Task>();
   const task = (name: string): Task => {
     let found = tasks.get(name);
@@ -4884,6 +4884,7 @@ function taskList(workers: Worker[], infos: TaskInfo[], project?: ProjectTasks):
   };
   for (const worker of workers) task(workerTask(worker)).workers.push(worker);
   for (const info of infos) task(info.name).info ??= info;
+  if (!sort) return [...tasks.values()];
   // A task that runs now is first, then one that waits for the user, then an approved one (ticket
   // order-is-messed-up-in-the-tasks-list-and). Rank and time are computed once per task: the sort runs often.
   const place = new Map([...tasks.values()].map((task) => [task, { rank: taskRank(task), time: taskTime(task) }]));
@@ -5462,16 +5463,22 @@ function nightPlanOf(task: Task) {
   const project = task.project;
   const plan = task.info?.plan;
   if (!project || !plan || !planReady(task) || approvalQueued(task)) return null;
+  const night = nightOf(project.host, project.cwd);
+  if (!night) return null;
+  // The tasks without the order of `taskList`: the order calls `taskAttentionWait`, which calls this
+  // function, so `waitFacts` (sorted list) here was an endless loop that broke the board.
+  const tasks = projectTaskList(project, false);
+  const editing = workRun(tasks)?.name ?? startHolder(taskHost(task), taskCwd(task));
   return nightPlan({
-    night: nightOf(project.host, project.cwd),
+    night,
     paused: !!project.paused,
     hold: !!task.info?.hold,
     nightHold: !!task.info?.nightHold,
     blocked: taskLeftovers(project, task.info).length > 0,
     tried: autoApproved.get(task.name) === plan.modified,
     merging: project.merging ?? null,
-    running: waitFacts(task).editing,
-    checkout: otherCheckout(projectTaskList(project), task.name)?.task ?? null,
+    running: editing && editing !== task.name ? editing : null,
+    checkout: otherCheckout(tasks, task.name)?.task ?? null,
   });
 }
 
