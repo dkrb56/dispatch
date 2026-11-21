@@ -2,6 +2,15 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.83 (2026-11-21)
+- The Map shows the same token total as the task card, with the written tokens under it. Tooltips say what each number counts.
+- A finished worker that still looks busy no longer stops night mode in its project.
+- A change that you commit while Dispatch updates a task branch is no longer lost when the task merges.
+- The rules that Dispatch writes into a project now say that night mode can approve a plan.
+- Workers load only the tools they use, so each run uses fewer tokens.
+- Workers start without your claude.ai connectors, such as Gmail or Slack, so a run uses fewer tokens. Your own chats keep them.
+- The Terminal panel has a small left margin and less space under its title.
+
 ## 0.1.82 (2026-11-21)
 - In progress card frame shows its state: flashing bold green when a run works, blue when approved.
 - Setup pipeline and Options windows grow to 1120 by 820 px at most.
