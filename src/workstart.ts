@@ -146,6 +146,47 @@ export function chooseStart(facts: StartFacts): { task: string; kind: StartKind 
   return { task: task.name, kind: plain(task) ? "plain" : night(task) ? "night" : "auto" };
 }
 
+/** The facts of one ready plan for the words of its status at night (ticket task-card-show-that-night-mode-will). */
+export interface NightPlanFacts {
+  /** Night mode of the host of the project. */
+  night: boolean;
+  /** The user paused the project. */
+  paused: boolean;
+  /** The plan has a HOLD decision. */
+  hold: boolean;
+  /** The part has no night box (`StartCandidate.nightHold`). */
+  nightHold: boolean;
+  /** An uncommitted change touches a file of the task (`StartCandidate.blocked`). */
+  blocked: boolean;
+  /** An automatic try was made for the same plan file (`StartCandidate.tried`). */
+  tried: boolean;
+  /** The task whose branch Dispatch merges now, or null. */
+  merging: string | null;
+  /** The other task whose work run runs, or the holder of the start lease, or null. */
+  running: string | null;
+  /** The other task whose branch the main checkout is on, or null. */
+  checkout: string | null;
+}
+
+/**
+ * What night mode does with one ready plan: null with night mode off; `approves` with the words that
+ * say what it waits for; or not `approves` with the reason that the plan waits for the user. It
+ * mirrors `chooseStart`: a plan that `chooseStart` never starts at night does not get `approves`
+ * (ticket task-card-show-that-night-mode-will). The reasons that never clear by themselves come first.
+ */
+export function nightPlan(facts: NightPlanFacts): { approves: true; text: string } | { approves: false; why: string } | null {
+  if (!facts.night) return null;
+  if (facts.paused) return { approves: false, why: "the project is paused" };
+  if (facts.hold) return { approves: false, why: "a HOLD decision" };
+  if (facts.nightHold) return { approves: false, why: "night mode may not start this part" };
+  if (facts.blocked) return { approves: false, why: "changed files of this task" };
+  if (facts.tried) return { approves: false, why: "night mode does not try this plan again" };
+  if (facts.merging) return { approves: true, text: `night mode approves it after the merge of ${facts.merging}` };
+  if (facts.running) return { approves: true, text: `night mode approves it after ${facts.running}'s work run` };
+  if (facts.checkout) return { approves: true, text: `night mode approves it after the checkout leaves ${facts.checkout}'s branch` };
+  return { approves: true, text: "night mode approves it now" };
+}
+
 /** A task of the project as the night merge sees it (ticket task-branches-blocked-work). */
 export interface MergeCandidate {
   name: string;

@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { chooseNightMerge, chooseStart, projectBusy, StartLeases, type MergeCandidate, type MergeFacts, type StartCandidate, type StartFacts } from "../src/workstart.ts";
+import { chooseNightMerge, chooseStart, nightPlan, projectBusy, StartLeases, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts } from "../src/workstart.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -356,4 +356,18 @@ test("subtickets: night mode does not start a part without the night box; by day
   const body = MAIN.slice(MAIN.indexOf("function approvePlans("), MAIN.indexOf("function nextQueued("));
   assert.match(body, /nightHold: !!task\.info\?\.nightHold,/);
   assert.match(MAIN, /const holds = info\.hold \|\| \(!!info\.nightHold && nightOf\(project\.host, project\.cwd\)\);/);
+});
+
+test("nightPlan: night mode approves a plan without HOLD after the running work run, and names why it does not", () => {
+  const base: NightPlanFacts = { night: true, paused: false, hold: false, nightHold: false, blocked: false, tried: false, merging: null, running: null, checkout: null };
+  assert.equal(nightPlan({ ...base, night: false, running: "t-a" }), null, "night mode off: no words");
+  assert.deepEqual(nightPlan({ ...base, running: "t-a" }), { approves: true, text: "night mode approves it after t-a's work run" });
+  assert.deepEqual(nightPlan({ ...base, merging: "t-m", running: "t-a" }), { approves: true, text: "night mode approves it after the merge of t-m" });
+  assert.deepEqual(nightPlan({ ...base, checkout: "t-c" }), { approves: true, text: "night mode approves it after the checkout leaves t-c's branch" });
+  assert.deepEqual(nightPlan(base), { approves: true, text: "night mode approves it now" });
+  assert.deepEqual(nightPlan({ ...base, hold: true, running: "t-a" }), { approves: false, why: "a HOLD decision" });
+  assert.deepEqual(nightPlan({ ...base, paused: true }), { approves: false, why: "the project is paused" });
+  assert.deepEqual(nightPlan({ ...base, nightHold: true }), { approves: false, why: "night mode may not start this part" });
+  assert.deepEqual(nightPlan({ ...base, blocked: true }), { approves: false, why: "changed files of this task" });
+  assert.deepEqual(nightPlan({ ...base, tried: true }), { approves: false, why: "night mode does not try this plan again" });
 });

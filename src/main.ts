@@ -126,7 +126,7 @@ import { HOLD_NOTE, holdWait } from "./holdstep";
 import { showTriage, triageCard, triagePanesToClose, withoutTriage, type ProjectLoad } from "./notriage";
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
-import { chooseNightMerge, chooseStart, projectBusy, type ReadTimes, StartLeases } from "./workstart";
+import { chooseNightMerge, chooseStart, nightPlan, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { autoMergeNote, type AutoMergeFacts, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
@@ -5228,7 +5228,8 @@ function planCard(task: Task): HTMLElement {
     const reason = document.createElement("div");
     reason.className = "card-reason";
     const full = holdWaitOf(task)?.full ?? wait;
-    reason.textContent = queued ? full : `${full.replace(/^Its work run starts/, "Approve now: its work run starts")}`;
+    // At night a plan that night mode approves does not need the click (ticket task-card-show-that-night-mode-will).
+    reason.textContent = queued ? full : nightPlanOf(task)?.approves ? `Night mode approves this plan. ${full}` : `${full.replace(/^Its work run starts/, "Approve now: its work run starts")}`;
     // Commit files (ticket i-need-a-button-here-which-would-commit): only while no other work run and
     // no merge holds the task, because the checkout can then be on another branch.
     const facts = waitFacts(task);
@@ -5450,6 +5451,28 @@ let askTask: string | null = null;
  */
 function approveWait(task: Task): string {
   return waitReason(waitFacts(task))?.full ?? "";
+}
+
+/**
+ * What night mode does with the ready plan of a task (ticket task-card-show-that-night-mode-will), or
+ * null: night mode is off, the plan is not ready, or its approval is queued. The facts are those of
+ * `approvePlans`, so the words match what `chooseStart` does.
+ */
+function nightPlanOf(task: Task) {
+  const project = task.project;
+  const plan = task.info?.plan;
+  if (!project || !plan || !planReady(task) || approvalQueued(task)) return null;
+  return nightPlan({
+    night: nightOf(project.host, project.cwd),
+    paused: !!project.paused,
+    hold: !!task.info?.hold,
+    nightHold: !!task.info?.nightHold,
+    blocked: taskLeftovers(project, task.info).length > 0,
+    tried: autoApproved.get(task.name) === plan.modified,
+    merging: project.merging ?? null,
+    running: waitFacts(task).editing,
+    checkout: otherCheckout(projectTaskList(project), task.name)?.task ?? null,
+  });
 }
 
 /**
@@ -7548,6 +7571,9 @@ const taskOpenChoice = new Map<string, boolean>();
 /** The state of a task in one word group, for its header: what waits, what runs, or how it ended. */
 function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"; text: string } {
   if (approvalQueued(task)) return { kind: "done", text: "approved · starts when the project is free" };
+  const night = nightPlanOf(task);
+  if (night?.approves) return { kind: "done", text: `plan ready · ${night.text}` };
+  if (night) return { kind: "waits", text: `plan ready · waits for you · ${night.why}` };
   if (planReady(task)) return { kind: "waits", text: "plan ready · waits for you" };
   if (repeatedQuestionsOf(task)) return { kind: "waits", text: "left your answered question in its report" };
   if (reportWaits(task)) return { kind: "waits", text: permissionWaits(task) ? "needs a permission" : "has a question for you" };
@@ -7582,6 +7608,8 @@ function taskAttentionWait(task: Task): AttentionWait | null {
   const info = task.info;
   const key = `${projectKey(task.project?.host ?? LOCAL, task.project?.cwd ?? "")}|${task.name}`;
   if (approvalQueued(task)) return null;
+  // A plan that night mode approves waits for nobody (ticket task-card-show-that-night-mode-will).
+  if (nightPlanOf(task)?.approves) return null;
   // A part without the night box waits for the click of the user at night, as a HOLD plan (ticket subtickets).
   const holds = !!info?.hold || (!!info?.nightHold && nightOf(task.project?.host ?? LOCAL, task.project?.cwd));
   if (planReady(task) && info?.plan) return { key, kind: holds ? "hold" : "plan", stamp: String(info.plan.modified) };
@@ -7607,6 +7635,8 @@ function taskAttentionWait(task: Task): AttentionWait | null {
 function taskBoardColumn(task: Task | undefined): InProgressView {
   if (!task) return "in-progress";
   if (approvalQueued(task)) return "in-progress";
+  // A plan that night mode approves stands in Working, as a queued approval (ticket task-card-show-that-night-mode-will).
+  if (nightPlanOf(task)?.approves) return "in-progress";
   const kind = taskAttentionWait(task)?.kind;
   if (kind === "question" || kind === "permission" || kind === "repeat" || kind === "prompt" || kind === "plan" || kind === "hold") return "waiting";
   return task.info?.state === "planning" ? "planning" : "in-progress";
@@ -10675,7 +10705,7 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
     for (const task of projectTaskList(project)) {
       const info = task.info;
       const base = { key: `${key}|${task.name}`, scope, name: task.name, project: projectName({ host: project.host, root: project.cwd }), text: taskStatus(task).text };
-      if (planReady(task) && !approvalQueued(task) && info?.plan) {
+      if (planReady(task) && !approvalQueued(task) && info?.plan && !nightPlanOf(task)?.approves) {
         // A part without the night box waits for the click of the user at night (ticket subtickets).
         const holds = info.hold || (!!info.nightHold && nightOf(project.host, project.cwd));
         waits.push({ ...base, kind: holds ? "hold" : "plan", stamp: String(info.plan.modified) });
