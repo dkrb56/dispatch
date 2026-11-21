@@ -202,7 +202,7 @@ test("a card lists the tasks in work, 5 finished tasks and the ticket count", ()
     ...finished,
   ];
   const workers = [worker("run [work]", "working")];
-  const list = { tasks, tickets: [{ status: "new" }, { status: "new" }, { status: "done" }], merging: null };
+  const list = { tasks, tickets: [{ status: "new" }, { status: "new" }, { status: "backlog" }, { status: "done" }], merging: null };
   const [card] = phoneCards([{ root: ROOT, list, error: "" }], workers, tools);
   assert.equal(card.name, "alpha");
   assert.equal(card.loaded, true);
@@ -214,12 +214,14 @@ test("a card lists the tasks in work, 5 finished tasks and the ticket count", ()
   assert.equal(card.inWork.find((row) => row.name === "ask")?.now, "Asks: Which one?");
   assert.deepEqual(card.done.map((row) => row.name), ["done-6", "done-5", "done-4", "done-3", "done-2"]);
   assert.equal(card.done[0].now, "Done: It works");
-  assert.equal(card.tickets, "2 waiting");
+  assert.equal(card.tickets, "Tickets · 2 scheduled · 1 in backlog");
 });
 
 test("a project without a reply says so, and a paused project shows it", () => {
   const [empty] = phoneCards([{ root: ROOT, list: null, error: "no answer" }], [], tools);
-  assert.deepEqual([empty.loaded, empty.error, empty.tickets, empty.count.text], [false, "no answer", "No tickets", "idle"]);
+  assert.deepEqual([empty.loaded, empty.error, empty.tickets, empty.count.text], [false, "no answer", "Tickets", "idle"]);
+  const [none] = phoneCards([{ root: ROOT, list: { tasks: [], tickets: [] }, error: "" }], [], tools);
+  assert.equal(none.tickets, "Tickets · 0 scheduled · 0 in backlog");
   const [paused] = phoneCards([{ root: ROOT, list: { tasks: [], tickets: [], paused: true }, error: "" }], [], tools);
   assert.deepEqual(paused.count, { text: "paused", kind: "paused" });
 });

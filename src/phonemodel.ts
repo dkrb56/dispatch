@@ -251,6 +251,7 @@ export interface PhoneCard {
   error: string;
   inWork: PhoneRow[];
   done: PhoneRow[];
+  /** `Tickets · N scheduled · M in backlog`; `Tickets` alone until the list is read. */
   tickets: string;
 }
 
@@ -663,9 +664,16 @@ export function phoneCards(projects: readonly PhoneProject[], workers: readonly 
       error,
       inWork: tools.listedTasks(tasks, view).map(row),
       done: tools.doneTasks(tasks, view, taskTime).map(row),
-      tickets: tools.countText(list?.tickets ?? []),
+      tickets: list ? ticketsLine(list.tickets) : "Tickets",
     };
   });
+}
+
+/** The tickets line of a card: `Tickets · N scheduled · M in backlog`. */
+export function ticketsLine(tickets: readonly Pick<PhoneTicket, "status">[]): string {
+  const scheduled = tickets.filter((ticket) => ticket.status === "new").length;
+  const backlog = tickets.filter((ticket) => ticket.status === "backlog").length;
+  return `Tickets · ${scheduled} scheduled · ${backlog} in backlog`;
 }
 
 /** A ticket of the board with the task of an In progress ticket. */

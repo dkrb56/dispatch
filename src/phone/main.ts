@@ -53,6 +53,7 @@ import {
   phoneApproval,
   phoneBoards,
   phoneCards,
+  ticketsLine,
   type PhoneProject,
   phoneReply,
   type PhoneRow,
@@ -604,6 +605,8 @@ interface CardView {
   rest: HTMLElement;
   bodyEl: HTMLElement;
   ticketsEl: HTMLElement;
+  /** The Board link of the tickets line; shown on the Cards view only. */
+  boardBtn: HTMLButtonElement;
   errorEl: HTMLElement;
   /** The note of the last ticket added for this project. */
   noteEl: HTMLElement;
@@ -1109,18 +1112,26 @@ function cardView(root: string): CardView {
   errorEl.hidden = true;
   const line = element("div", "tickets-line");
   const ticketsEl = element("span");
-  line.append(ticketsEl);
+  const boardBtn = element("button", "board-link", "Board");
+  boardBtn.type = "button";
+  boardBtn.setAttribute("aria-label", `Board of ${folderName(root)}`);
+  boardBtn.addEventListener("click", () => {
+    choices = { ...choices, layout: "board" };
+    saveChoices();
+    draw();
+  });
+  line.append(ticketsEl, boardBtn);
   // The note of the last ticket added from the New ticket screen (user decision 4).
   const noteEl = element("p", "note");
   noteEl.hidden = true;
-  rest.append(bodyEl, errorEl, element("h3", "", "Tickets"), line, noteEl);
+  rest.append(bodyEl, errorEl, line, noteEl);
   el.append(topRow, rest);
   head.addEventListener("click", () => {
     choices = toggleRoot(choices, "folded", root);
     saveChoices();
     showFold(view, root);
   });
-  const view = { el, nameEl, countEl, head, rest, bodyEl, ticketsEl, errorEl, noteEl };
+  const view = { el, nameEl, countEl, head, rest, bodyEl, ticketsEl, boardBtn, errorEl, noteEl };
   cards.set(root, view);
   return view;
 }
@@ -1264,6 +1275,7 @@ function drawCard(card: PhoneCard): HTMLElement {
   const view = cardView(card.root);
   cardHead(view, card.root, card.name, card.count, card.error);
   view.ticketsEl.textContent = card.tickets;
+  view.boardBtn.hidden = false;
   view.bodyEl.replaceChildren(
     ...(card.loaded
       ? [...part("In work", card.inWork, "Nothing in work", card.root, true), ...part("Done", card.done, "Nothing done yet", card.root)]
@@ -1275,7 +1287,8 @@ function drawCard(card: PhoneCard): HTMLElement {
 function drawBoard(board: PhoneBoard): HTMLElement {
   const view = cardView(board.root);
   cardHead(view, board.root, board.name, board.count, board.error);
-  view.ticketsEl.textContent = tools.countText(board.all);
+  view.ticketsEl.textContent = board.loaded ? ticketsLine(board.all) : "Tickets";
+  view.boardBtn.hidden = true;
   view.bodyEl.replaceChildren(...(board.loaded ? boardColumns(board) : [element("p", "none", "Reading the tickets…")]));
   return view.el;
 }

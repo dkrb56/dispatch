@@ -255,6 +255,16 @@ body {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  margin-top: 14px;
+}
+
+.board-link {
+  flex: none;
+  min-height: 44px;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--accent);
 }
 
 button {
