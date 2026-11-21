@@ -2,6 +2,35 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.82 (2026-11-21)
+- In progress card frame shows its state: flashing bold green when a run works, blue when approved.
+- Setup pipeline and Options windows grow to 1120 by 820 px at most.
+- Overview cards get a Setup button; the bar loses Rules and Setup pipeline there.
+- No Triage parts while a project loads; a spinner until it is read.
+- Controls without a look of their own get the dark look of the New ticket window.
+- Terminal switch beside the tabs; each panel has its own Details switch above it.
+- Running tasks first in the Tasks list and In progress; a parent that waits for its parts gets a dashed frame.
+- Details band takes the height of its rows, at most a third.
+- Only numbered items with options count as questions.
+- Card and Questions window wait only for questions with options; a held send shows its reason.
+- In progress cards hold the task card; the left panel keeps Chats behind a Chats switch, off at first.
+- Phone Board view with folding ticket columns; the phone answers questions and confirms check results.
+- Run queue and Night switches stand in the tab row after Chats and Terminal, explained by tooltips.
+- Board columns Backlog, Scheduled, Planning, In progress, Done, Canceled; a ticket stays in Planning until Approve.
+- A parent and its parts stand together inside one frame in a colour of their own on the board.
+- Board column Waiting for answer between Planning and Working; In progress is now Working.
+- A ticket whose plan waits for Approve stands in Waiting for answer, desktop and phone; a queued approval stands in Working.
+- Each board column has Minimize, Regular and Custom width buttons and a drag edge; the width stays after a restart.
+- Questions, Decisions, Commit and Check result windows show the project first in the title.
+- The Decisions footer buttons line up on one top line; the hints start under them.
+- A ready plan shows on the phone with its decisions, checks and work run pickers; Approve queues the start through a marker the desktop queue adopts, Reject sends the reason.
+- The Plan view centres the tree, shows tickets without arrows as cards under it, moves the board by drag and wheel, and opens a right-click menu.
+- Board column widths are saved per project; the old shared width is the start value.
+- The test command waits for go.txt, so it still runs during the checks.
+- With night mode on, a ready plan that night mode approves says so and names what it waits for; a plan it will not approve says why.
+- The night-mode check of a ready plan reads the tasks unsorted, so the board no longer loops without end.
+- The board trusts the running worker before the task file, so an approved ticket goes straight to Working (desktop and phone).
+
 ## 0.1.81 (2026-11-20)
 - A click on a commit in the Git state window shows its full message, its changed files in the Changes list and the diff of the picked file; a merge shows its changes against the first parent; the Uncommitted changes line and a Back button show the open changes again; new read-only host commands git_commit and git_commit_diff.
 - The strip above the tickets board explains both switches and refreshes on a Night click; Auto-start is now Run queue.
