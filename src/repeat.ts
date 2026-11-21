@@ -146,3 +146,49 @@ export function serializeAnswered(records: ReadonlyMap<string, AnsweredReport>):
   const newest = [...records].sort((a, b) => b[1].modified - a[1].modified).slice(0, KEEP);
   return JSON.stringify(Object.fromEntries(newest));
 }
+
+/**
+ * A reply of the user that waits in the queue of its project (ticket an-answer-waits-in-the-queue-while):
+ * answers, a Confirm or a Continue that came while the checkout was on the branch of another task.
+ * Dispatch sends `text` word for word when the checkout is back on the base, then keeps `record`.
+ */
+export interface QueuedReply {
+  /** The project key and the task name, as `queueKey` of main.ts. */
+  key: string;
+  /** The record of the answered report that the send keeps (`markAnswered`). */
+  record: AnsweredReport;
+  /** The text that goes to the worker, word for word. */
+  text: string;
+  /** The line for triage of the click. */
+  line: string;
+  /** The time of the click: its place among the queued approvals. */
+  at: number;
+}
+
+/** The key of the waiting replies in localStorage. */
+export const QUEUED_REPLIES_KEY = "queued-replies";
+
+/** The stored waiting replies in the order of the clicks. A missing or broken value gives none; a broken entry is left out. */
+export function parseQueuedReplies(stored: string | null | undefined): QueuedReply[] {
+  let saved: unknown;
+  try {
+    saved = stored ? JSON.parse(stored) : [];
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(saved)) return [];
+  const replies: QueuedReply[] = [];
+  for (const entry of saved as Partial<QueuedReply>[]) {
+    if (!entry || typeof entry.key !== "string" || typeof entry.text !== "string" || typeof entry.line !== "string" || typeof entry.at !== "number") continue;
+    // The record goes through the reader of the answered reports, which drops a broken one.
+    const record = parseAnswered(JSON.stringify({ reply: entry.record })).get("reply");
+    if (!record) continue;
+    replies.push({ key: entry.key, record, text: entry.text, line: entry.line, at: entry.at });
+  }
+  return replies;
+}
+
+/** The text that `parseQueuedReplies` reads back. */
+export function serializeQueuedReplies(replies: Iterable<QueuedReply>): string {
+  return JSON.stringify([...replies]);
+}

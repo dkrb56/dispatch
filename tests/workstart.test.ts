@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { chooseNightMerge, chooseStart, nightPlan, projectBusy, StartLeases, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts } from "../src/workstart.ts";
+import { chooseNightMerge, chooseQueued, chooseStart, nightPlan, projectBusy, type QueuedFacts, StartLeases, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts } from "../src/workstart.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -388,4 +388,76 @@ test("nightPlan: night mode approves a plan without HOLD after the running work 
   assert.deepEqual(nightPlan({ ...base, nightHold: true }), { approves: false, why: "night mode may not start this part" });
   assert.deepEqual(nightPlan({ ...base, blocked: true }), { approves: false, why: "changed files of this task" });
   assert.deepEqual(nightPlan({ ...base, tried: true }), { approves: false, why: "night mode does not try this plan again" });
+});
+
+// Ticket an-answer-waits-in-the-queue-while: answers, a Confirm or a Continue that came while the
+// checkout was on the branch of another task wait in the queue and go out by themselves later.
+test("the queue: a waiting reply waits for the checkout and takes its place among the approvals", () => {
+  const A = "t-nightly-routes-20261120";
+  const B = "station-controls-and-bottom-bars";
+  const C = "queued-plan";
+  const free: QueuedFacts = { merging: null, running: null, leased: null, checkout: null, approval: null, replies: [{ task: B, at: 2_000 }] };
+  // The work run of A runs on its branch: the reply of B waits.
+  assert.equal(chooseQueued({ ...free, running: A, checkout: A }), null, "A's work run runs");
+  // A's work run ended, but the checkout is still on A's branch: B still waits.
+  assert.equal(chooseQueued({ ...free, checkout: A }), null, "the checkout is on the branch of A");
+  // The checkout is back on the base: B's answers go out once.
+  assert.equal(chooseQueued(free), B);
+  assert.equal(chooseQueued({ ...free, checkout: B }), B, "the own branch of B does not hold it");
+  // Nothing goes while the project is busy.
+  assert.equal(chooseQueued({ ...free, merging: A }), null, "a merge");
+  assert.equal(chooseQueued({ ...free, leased: C }), null, "a start in flight");
+  assert.equal(chooseQueued({ ...free, paused: true }), null, "a pause");
+  // Its place in the Approve queue: an approval clicked before it starts first, one clicked after it waits.
+  assert.equal(chooseQueued({ ...free, approval: { task: C, at: 1_000 } }), null, "the earlier approval goes first");
+  assert.equal(chooseQueued({ ...free, approval: { task: C, at: 3_000 } }), B, "the reply goes before a later approval");
+  // The earlier approval held by the checkout does not hold a reply of the task of the checkout.
+  assert.equal(chooseQueued({ ...free, checkout: B, approval: { task: C, at: 1_000 } }), B);
+  // Two waiting replies: the first click first.
+  assert.equal(chooseQueued({ ...free, replies: [{ task: "late", at: 5_000 }, { task: B, at: 2_000 }] }), B);
+  assert.equal(chooseQueued({ ...free, replies: [] }), null);
+  // The poll in small: one reply per poll; after the send, the resumed work run of B holds the project.
+  const queue = [{ task: B, at: 2_000 }];
+  const world = { running: A as string | null, checkout: A as string | null };
+  const sent: string[] = [];
+  const tick = () => {
+    const task = chooseQueued({ ...free, running: world.running, checkout: world.checkout, replies: queue, approval: { task: C, at: 3_000 } });
+    if (!task) return;
+    queue.splice(queue.findIndex((reply) => reply.task === task), 1);
+    sent.push(task);
+    world.running = task;
+  };
+  tick();
+  world.running = null;
+  tick();
+  world.checkout = null;
+  tick();
+  tick();
+  assert.deepEqual(sent, [B], "sent once, after the checkout was back on the base");
+  // The approval of C waits for the work run of B, as chooseStart says.
+  assert.equal(chooseStart({ merging: null, running: world.running, leased: null, checkout: null, queued: C, auto: false, night: false, tasks: [] }), null);
+});
+
+test("main.ts: every reply of the user goes through replyOrQueue, and approvePlans sends a waiting reply only through chooseQueued", () => {
+  const fn = (name: string) => {
+    const start = MAIN.indexOf(`function ${name}(`);
+    assert.ok(start >= 0, `main.ts has the function ${name}`);
+    return MAIN.slice(start, MAIN.indexOf("\n}\n", start));
+  };
+  for (const name of ["sendAnswers", "permissionCard", "repeatCard", "nightDefaults"]) {
+    const body = fn(name);
+    assert.match(body, /replyOrQueue\(/, `${name} sends through replyOrQueue`);
+    assert.doesNotMatch(body, /taskAction\([^)]*"task_reply"/, `${name} does not call task_reply itself`);
+  }
+  const queue = fn("replyOrQueue");
+  assert.match(queue, /otherCheckout\(/);
+  assert.match(queue, /\.includes\(OTHER_BRANCH\)/);
+  assert.match(MAIN, /const OTHER_BRANCH = "the branch of another task";/, "the refusal text of the worker script");
+  const approve = fn("approvePlans");
+  assert.match(approve, /chooseQueued\(/);
+  assert.ok(approve.indexOf("chooseQueued(") < approve.indexOf("chooseStart("), "a waiting reply is chosen before a start");
+  assert.match(approve, /sendQueuedReply\(/);
+  assert.equal(MAIN.split("sendQueuedReply(").length - 1, 2, "one definition and one call: only approvePlans sends a waiting reply");
+  assert.match(fn("reportWaits"), /queuedReplies/);
+  assert.match(fn("taskStatus"), /queuedReplyOf\(/);
 });

@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { waitReason } from "../src/waitreason.ts";
+import { answerWait, waitReason } from "../src/waitreason.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = read("../src/main.ts");
@@ -146,4 +146,29 @@ test("the wait reason of a plan card has a Commit files button and its window", 
   assert.match(HTML, /The <b>Commit files…<\/b> button under that reason opens a window with these files and a suggested commit message/);
   assert.match(HTML, /With an older worker script in the project, every changed file holds the task and the window lists them all; Setup pipeline &gt; Apply updates the script\./);
   assert.match(CSS, /#commit-files \{[^}]*"Cascadia Mono"/);
+});
+
+// Ticket an-answer-waits-in-the-queue-while: answers, a Confirm or a Continue that wait in the queue
+// while the checkout is on the branch of another task say so on the card, and name that task.
+test("answerWait: the text names the other task, its branch and the base; the short line has 12 words at most", () => {
+  const checkout = { task: "t-nightly-routes-20261120", branch: "task/t-nightly-routes-20261120", base: "main", note: "" };
+  const reason = answerWait({ editing: null, dirty: [], checkout });
+  assert.ok(reason);
+  assert.match(reason.full, /^Your answers go to the worker when/);
+  for (const part of ["t-nightly-routes-20261120", "task/t-nightly-routes-20261120", "main"]) assert.ok(reason.full.includes(part), part);
+  assert.ok(reason.short.includes("t-nightly-routes-20261120"));
+  const running = answerWait({ editing: "t-nightly-routes-20261120", dirty: [], checkout });
+  assert.equal(running?.short, "Your answers wait for the work run of t-nightly-routes-20261120.", "the running work run comes first");
+  assert.match(running?.full ?? "", /checkout is back on the base/);
+  assert.match(answerWait({ editing: null, dirty: [], merging: "t-1", checkout })?.short ?? "", /merge of t-1/);
+  assert.match(answerWait({ editing: "x", dirty: [], paused: true })?.short ?? "", /^Paused/);
+  assert.equal(answerWait({ editing: null, dirty: [" M a.ts"] }), null, "uncommitted changes hold no reply");
+  assert.equal(answerWait({ editing: null, dirty: [], checkout: null }), null);
+  const cases = [reason, running, answerWait({ editing: null, dirty: [], paused: true }), answerWait({ editing: null, dirty: [], merging: "a-long-ticket-name" })];
+  for (const one of cases) {
+    assert.ok(one);
+    assert.ok(words(one.short) <= 12, one.short);
+    assert.doesNotMatch(one.short, /\n/);
+    assert.doesNotMatch(one.full, /Its work run starts/);
+  }
 });

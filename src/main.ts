@@ -121,12 +121,12 @@ import { badgeText, moveUp, railDrop, type RailGroup, railItems, railLetters, ra
 import { pasteSkipsPane } from "./chattabs";
 import { autoSwitch, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
-import { type WaitFacts, waitReason } from "./waitreason";
+import { answerWait, type WaitFacts, waitReason } from "./waitreason";
 import { HOLD_NOTE, holdWait } from "./holdstep";
 import { showTriage, triageCard, triagePanesToClose, withoutTriage, type ProjectLoad } from "./notriage";
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
-import { chooseNightMerge, chooseStart, nightPlan, projectBusy, type ReadTimes, StartLeases } from "./workstart";
+import { chooseNightMerge, chooseQueued, chooseStart, nightPlan, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, freshOnly, type GateRefusal, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { autoMergeNote, type AutoMergeFacts, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
@@ -172,7 +172,7 @@ import { KEY_DOWN, KEY_ENTER, KEY_ESC, rcCommand, rcMenuFocus, rcSettled, rcView
 import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
 import { answerable, answeredLine, chosenCount, holdReason, questionWaitToOpen, replyText, windowChoices, windowTitle } from "./answers";
 import { CONFIRM_PLACEHOLDER, CONFIRM_TIP, CONFIRM_TITLE, confirmChoice, confirmLine, confirmQuestion, RESULT_LABEL, RESULT_TIP } from "./confirm";
-import { ANSWERED_KEY, type AnsweredQuestion, type AnsweredReport, answeredRecord, parseAnswered, type RepeatAction, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered } from "./repeat";
+import { ANSWERED_KEY, type AnsweredQuestion, type AnsweredReport, answeredRecord, parseAnswered, parseQueuedReplies, QUEUED_REPLIES_KEY, type QueuedReply, type RepeatAction, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered, serializeQueuedReplies } from "./repeat";
 
 type Shell = "powershell" | "cmd";
 
@@ -2580,6 +2580,36 @@ const queuedApprovals = new Map<string, number>();
  */
 const holdPicks = new Map<string, { written: number; picks: Map<number, string> }>();
 const QUEUED_KEY = "queued-approvals";
+/**
+ * The time of the click of each queued approval by `queueKey` (ticket an-answer-waits-in-the-queue-while):
+ * a waiting reply takes its place among the approvals by it. An approval saved by an older version has 0.
+ */
+const queuedApprovalTimes = new Map<string, number>();
+/**
+ * The replies of the user that wait for the checkout (ticket an-answer-waits-in-the-queue-while):
+ * answers, a Confirm or a Continue that came while the checkout was on the branch of another task, by
+ * `queueKey`. `approvePlans` sends each word for word when the checkout is back on the base. In
+ * localStorage `queued-replies`, so a restart keeps them.
+ */
+const queuedReplies = loadQueuedReplies();
+/** The replies that went out of the queue, by `queueKey`: the report time and the time of the send. Memory only. */
+const sentReplies = new Map<string, { modified: number; at: number }>();
+
+function loadQueuedReplies(): Map<string, QueuedReply> {
+  try {
+    return new Map(parseQueuedReplies(localStorage.getItem(QUEUED_REPLIES_KEY)).map((reply) => [reply.key, reply]));
+  } catch {
+    return new Map();
+  }
+}
+
+function saveQueuedReplies(): void {
+  try {
+    localStorage.setItem(QUEUED_REPLIES_KEY, serializeQueuedReplies(queuedReplies.values()));
+  } catch {
+    // The replies stay for this run of the app.
+  }
+}
 
 function queueKey(task: Task): string {
   return `${projectKey(taskHost(task), taskCwd(task))}\n${task.name}`;
@@ -2603,7 +2633,9 @@ function loadQueued(): void {
       if (!Array.isArray(entry) || typeof entry[0] !== "string" || typeof entry[1] !== "number") continue;
       // The key is `<project key>\n<task>`; a project key without a host belongs to the first backend.
       const at = entry[0].indexOf("\n");
-      queuedApprovals.set(at < 0 ? entry[0] : `${hostedKey(entry[0].slice(0, at))}${entry[0].slice(at)}`, entry[1]);
+      const key = at < 0 ? entry[0] : `${hostedKey(entry[0].slice(0, at))}${entry[0].slice(at)}`;
+      queuedApprovals.set(key, entry[1]);
+      queuedApprovalTimes.set(key, typeof entry[2] === "number" ? entry[2] : 0);
     }
   } catch {
     // A broken entry holds no approval.
@@ -2612,7 +2644,7 @@ function loadQueued(): void {
 
 function saveQueued(): void {
   try {
-    localStorage.setItem(QUEUED_KEY, JSON.stringify([...queuedApprovals]));
+    localStorage.setItem(QUEUED_KEY, JSON.stringify([...queuedApprovals].map(([key, time]) => [key, time, queuedApprovalTimes.get(key) ?? 0])));
   } catch {
     // The approvals stay for this run of the app.
   }
@@ -2891,9 +2923,25 @@ function approvePlans(): void {
     }
     // A plan that the user approved while the project was not free starts first.
     const queued = projectBusy(busy) ? undefined : nextQueued(project, tasks);
+    const checkout = otherCheckout(tasks)?.task ?? null;
+    // A reply of the user that waited for the checkout goes out in its place in the queue (ticket
+    // an-answer-waits-in-the-queue-while). Its resumed work run then holds the project.
+    const replies = waitingReplies(project, tasks);
+    const replyTask = chooseQueued({
+      ...busy,
+      checkout,
+      approval: queued ? { task: queued.name, at: queuedApprovalTimes.get(queueKey(queued)) ?? 0 } : null,
+      replies: replies.map((reply) => ({ task: reply.key.slice(reply.key.lastIndexOf("\n") + 1), at: reply.at })),
+    });
+    const replied = replyTask ? tasks.find((task) => task.name === replyTask) : undefined;
+    const reply = replied ? replies.find((reply) => reply.key === queueKey(replied)) : undefined;
+    if (replied && reply) {
+      void sendQueuedReply(replied, reply);
+      continue;
+    }
     const choice = chooseStart({
       ...busy,
-      checkout: otherCheckout(tasks)?.task ?? null,
+      checkout,
       queued: queued?.name ?? null,
       auto: project.autoApprove,
       night,
@@ -2967,6 +3015,7 @@ function adoptPhoneApprovals(): void {
         phoneApprovals.add(key);
         if (!queuedApprovals.has(key)) {
           queuedApprovals.set(key, time);
+          queuedApprovalTimes.set(key, Date.now());
           changed = true;
         }
       } else if (phoneApprovals.has(key) && planReady(task)) {
@@ -3045,6 +3094,53 @@ function nextQueued(project: ProjectTasks, tasks: Task[]): Task | undefined {
 }
 
 /**
+ * The replies of a project that wait for the checkout and can go out (ticket
+ * an-answer-waits-in-the-queue-while). A reply whose task is gone or stopped, whose report changed,
+ * or whose worker runs again is dropped: the worker went on without it. A busy task keeps its reply.
+ */
+function waitingReplies(project: ProjectTasks, tasks: Task[]): QueuedReply[] {
+  const folder = projectKey(project.host, project.cwd);
+  const due: QueuedReply[] = [];
+  let changed = false;
+  for (const [key, reply] of [...queuedReplies]) {
+    const at = key.lastIndexOf("\n");
+    if (key.slice(0, at) !== folder) continue;
+    const task = tasks.find((task) => task.name === key.slice(at + 1));
+    const live = !!task?.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
+    if (!task?.info?.report || task.info.state === "stopped" || task.info.report.modified !== reply.record.modified || live) {
+      queuedReplies.delete(key);
+      changed = true;
+      continue;
+    }
+    if (!busyTasks.has(task.name)) due.push(reply);
+  }
+  if (changed) saveQueuedReplies();
+  return due;
+}
+
+/**
+ * Sends a waiting reply word for word, once: it leaves the queue before the call. When it went, the
+ * report counts as answered and the card shows when it went out. A refusal for the checkout puts it
+ * back in its place; another failure shows on the card, and the questions show again.
+ */
+async function sendQueuedReply(task: Task, reply: QueuedReply): Promise<void> {
+  queuedReplies.delete(reply.key);
+  saveQueuedReplies();
+  const line = `${reply.line} (Dispatch sent this reply now: the user gave it earlier, while the checkout was on the branch of another task.)`;
+  if (await taskAction(task, "task_reply", { id: task.name, text: reply.text }, line)) {
+    markAnswered(task.name, reply.record);
+    questionChoices.delete(task.name);
+    confirmDrafts.delete(task.name);
+    sentReplies.set(reply.key, { modified: reply.record.modified, at: Date.now() });
+  } else if ((actionErrors.get(task.name) ?? "").includes(OTHER_BRANCH)) {
+    actionErrors.delete(task.name);
+    queuedReplies.set(reply.key, reply);
+    saveQueuedReplies();
+  }
+  renderChats();
+}
+
+/**
  * The uncommitted lines that hold a task (ticket leftover-files-block-tasks): those that touch its
  * files, or every line of the project from an older host.
  */
@@ -3120,9 +3216,8 @@ function nightDefaults(project: ProjectTasks, tasks: Task[]): void {
       const answers = replyText(questions, choices) ?? "";
       const options = questions.map((question) => `question ${question.number} (${question.text}): ${question.options.join(" | ")}`);
       const line = `DEFAULT DECISION (night mode): Dispatch answered ${task.name} with the recommended option. ${answers} The options were: ${options.join("; ")}.`;
-      void taskAction(task, "task_reply", { id: task.name, text: answers }, line).then((sent) => {
-        if (sent) markAnswered(task.name, answeredRecord(report.modified, questions, choices, answers));
-      });
+      // While the checkout is on the branch of another task the answers wait in the queue (ticket an-answer-waits-in-the-queue-while).
+      void replyOrQueue(task, answeredRecord(report.modified, questions, choices, answers), answers, line);
       continue;
     }
     // A worker that left an answered question in its report: night mode does not answer again (ticket answered-question-repeat).
@@ -4857,6 +4952,8 @@ function reportWaits(task: Task): boolean {
   if (info.state === "stopped") return false;
   // One answer resumes the worker. While it runs, and until it writes the report again, nothing is open.
   const live = task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
+  // A reply that waits in the queue for this report asks nothing more of the user (ticket an-answer-waits-in-the-queue-while).
+  if (queuedReplies.get(queueKey(task))?.record.modified === info.report.modified) return false;
   return !live && answeredReports.get(task.name)?.modified !== info.report.modified;
 }
 
@@ -5410,6 +5507,7 @@ async function approveOrQueue(task: Task, choices: DecisionAnswer[], how: string
   if (written === null) return false;
   queuedApprovals.delete(queueKey(task));
   queuedApprovals.set(queueKey(task), written);
+  queuedApprovalTimes.set(queueKey(task), Date.now());
   holdPicks.set(queueKey(task), { written, picks: new Map(choices.filter(({ decision }) => decision.hold).map(({ decision, answer }) => [decision.number, answer])) });
   saveQueued();
   autoApproved.set(task.name, written);
@@ -6410,8 +6508,9 @@ function confirmCard(task: Task, question: Question): HTMLElement {
   confirm.disabled = busy;
   confirm.addEventListener("click", () => {
     const choice = confirmChoice(question, changes.value);
-    void sendAnswers(task, [question], new Map([[question.number, choice]]), modified, confirmLine(task.name, choice, false)).then((sent) => {
-      if (sent) confirmDrafts.delete(task.name);
+    void sendAnswers(task, [question], new Map([[question.number, choice]]), modified, confirmLine(task.name, choice, false)).then((result) => {
+      // A Confirm that waits in the queue keeps the box for Take back.
+      if (result === "sent") confirmDrafts.delete(task.name);
     });
   });
   actions.append(confirm);
@@ -6421,22 +6520,121 @@ function confirmCard(task: Task, question: Question): HTMLElement {
   return card;
 }
 
+/** What became of a reply of the user: it went to the worker, it waits in the queue, or it failed. */
+type ReplyResult = "sent" | "queued" | false;
+
+/** The script refuses a reply with this text while the checkout is on the branch of another task. */
+const OTHER_BRANCH = "the branch of another task";
+
+/**
+ * Sends a reply of the user to the worker of a task (answers, a Confirm or a Continue), or keeps it in
+ * the queue of its project while the checkout is on the branch of another task (ticket
+ * an-answer-waits-in-the-queue-while): `approvePlans` sends it word for word when the checkout is back
+ * on the base. A refusal of the script for that reason (an older list) queues it too. `record` is kept
+ * as answered only when the reply went.
+ */
+async function replyOrQueue(task: Task, record: AnsweredReport, text: string, line: string): Promise<ReplyResult> {
+  const tasks = task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos);
+  if (otherCheckout(tasks, task.name)) {
+    queueReply(task, record, text, line);
+    return "queued";
+  }
+  if (await taskAction(task, "task_reply", { id: task.name, text }, line)) {
+    markAnswered(task.name, record);
+    return "sent";
+  }
+  if (!(actionErrors.get(task.name) ?? "").includes(OTHER_BRANCH)) return false;
+  actionErrors.delete(task.name);
+  queueReply(task, record, text, line);
+  return "queued";
+}
+
+/** Puts a reply into the queue of the project of its task, and tells triage that Dispatch sends it later. */
+function queueReply(task: Task, record: AnsweredReport, text: string, line: string): void {
+  const key = queueKey(task);
+  queuedReplies.delete(key);
+  queuedReplies.set(key, { key, record, text, line, at: Date.now() });
+  saveQueuedReplies();
+  sentReplies.delete(key);
+  const wait = replyWait(task).replace(/:\n[\s\S]*$/, ".");
+  tellTriage(projectFor(taskHost(task), taskCwd(task)), `The user replied to ${task.name} in Dispatch while the checkout is on the branch of another task. ${wait} Dispatch sends the reply then; do not send it yourself.`);
+  renderChats();
+}
+
+/** The reply of a task that waits in the queue for its report now, or undefined. */
+function queuedReplyOf(task: Task): QueuedReply | undefined {
+  const reply = queuedReplies.get(queueKey(task));
+  return reply && reply.record.modified === task.info?.report?.modified ? reply : undefined;
+}
+
+/** Why the waiting reply of a task does not go out yet, in full. Uncommitted changes hold no reply. */
+function replyWait(task: Task): string {
+  return answerWait({ ...waitFacts(task), dirty: [] })?.full ?? "Your answers go to the worker at the next check of the project.";
+}
+
+/** Take back: the reply leaves the queue, and the questions show again with the choices of the user. */
+function takeBackReply(task: Task): void {
+  if (!queuedReplies.delete(queueKey(task))) return;
+  saveQueuedReplies();
+  tellTriage(projectFor(taskHost(task), taskCwd(task)), `${task.name}: the user took back the waiting reply in Dispatch. The report waits for an answer again.`);
+  renderChats();
+}
+
+/**
+ * The card of a reply that waits in the queue (ticket an-answer-waits-in-the-queue-while): the reply
+ * word for word, why it waits with the name of the other task, and Take back.
+ */
+function waitingReplyCard(task: Task, reply: QueuedReply): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "task-card";
+  const title = document.createElement("div");
+  title.className = "card-title";
+  title.textContent = reply.record.questions.length > 0 ? "Your answers wait to go to the worker" : "Your reply waits to go to the worker";
+  const text = document.createElement("div");
+  text.className = "card-result";
+  text.textContent = reply.text;
+  const why = document.createElement("div");
+  why.className = "card-question";
+  why.textContent = replyWait(task);
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const back = document.createElement("button");
+  back.textContent = "Take back";
+  back.title = "Keep the reply here: the questions show again with your choices";
+  back.disabled = busyTasks.has(task.name);
+  back.addEventListener("click", () => takeBackReply(task));
+  actions.append(back);
+  card.append(title, text, why, actions);
+  const error = actionError(task);
+  if (error) card.append(error);
+  return card;
+}
+
+/** The line after a waiting reply went out, until the report changes. */
+function sentReplyLine(at: number): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "task-card";
+  const line = document.createElement("div");
+  line.className = "card-question";
+  line.textContent = `Your waiting answers went to the worker at ${new Date(at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}.`;
+  card.append(line);
+  return card;
+}
+
 /**
  * Sends the answers of a report to the worker in one reply, from the card or from the window: one
  * `Answer to question N: <option>` per question and one line for triage. It marks the report as
- * answered and drops the kept choices. A failed send keeps them; the card shows the error. True
- * when the reply went.
+ * answered and drops the kept choices. A reply that waits in the queue keeps them, for Take back. A
+ * failed send keeps them; the card shows the error.
  */
-async function sendAnswers(task: Task, questions: Question[], choices: ReadonlyMap<number, string>, modified: number, line?: string): Promise<boolean> {
+async function sendAnswers(task: Task, questions: Question[], choices: ReadonlyMap<number, string>, modified: number, line?: string): Promise<ReplyResult> {
   const reply = replyText(questions, choices);
   if (reply === null) return false;
   line ??= answeredLine(task.name, questions, choices);
-  const sent = await taskAction(task, "task_reply", { id: task.name, text: reply }, line);
-  if (!sent) return false;
-  markAnswered(task.name, answeredRecord(modified, questions, choices, reply));
-  questionChoices.delete(task.name);
-  renderChats();
-  return true;
+  const result = await replyOrQueue(task, answeredRecord(modified, questions, choices, reply), reply, line);
+  if (result === "sent") questionChoices.delete(task.name);
+  if (result) renderChats();
+  return result;
 }
 
 const questionsDialog = document.querySelector<HTMLDialogElement>("#questions")!;
@@ -6636,7 +6834,7 @@ function initQuestions(): void {
       if (sent) questionsDialog.close();
       else updateQuestionsWindow();
     };
-    sendAnswers(task, questions, answers, questionsModified).then(end, () => end(false));
+    sendAnswers(task, questions, answers, questionsModified).then((result) => end(!!result), () => end(false));
   });
 }
 
@@ -6704,10 +6902,8 @@ function permissionCard(task: Task): HTMLElement {
     permissionStopArmed.delete(task.name);
     const modified = task.info?.report?.modified ?? 0;
     const line = `Permission for ${task.name} changed in Dispatch. The worker continues.`;
-    void taskAction(task, "task_reply", { id: task.name, text: "Continue" }, line).then((sent) => {
-      if (!sent) return;
-      markAnswered(task.name, answeredRecord(modified, [], new Map(), "Continue"));
-      renderChats();
+    void replyOrQueue(task, answeredRecord(modified, [], new Map(), "Continue"), "Continue", line).then((result) => {
+      if (result) renderChats();
     });
   });
   actions.append(button);
@@ -6900,11 +7096,9 @@ function repeatCard(task: Task, repeats: AnsweredQuestion[]): HTMLElement {
   const record = answeredReports.get(task.name);
   const send = (action: RepeatAction, text: string) => {
     if (!record) return;
-    void taskAction(task, "task_reply", { id: task.name, text }, repeatLine(task.name, action)).then((sent) => {
-      if (!sent) return;
-      // The same answers for this report: a third report with the same questions is a repeat again.
-      markAnswered(task.name, { ...record, modified });
-      renderChats();
+    // The same answers for this report: a third report with the same questions is a repeat again.
+    void replyOrQueue(task, { ...record, modified }, text, repeatLine(task.name, action)).then((result) => {
+      if (result) renderChats();
     });
   };
   const button = (label: string, tip: string, click: () => void) => {
@@ -7674,6 +7868,7 @@ const taskOpenChoice = new Map<string, boolean>();
 /** The state of a task in one word group, for its header: what waits, what runs, or how it ended. */
 function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"; text: string } {
   if (approvalQueued(task)) return { kind: "done", text: "approved · starts when the project is free" };
+  if (queuedReplyOf(task)) return { kind: "done", text: "answered · goes out when the checkout is free" };
   const night = nightPlanOf(task);
   if (night?.approves) return { kind: "done", text: `plan ready · ${night.text}` };
   if (night) return { kind: "waits", text: `plan ready · waits for you · ${night.why}` };
@@ -10672,6 +10867,11 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   const repeats = repeatedQuestionsOf(task);
   // A check step whose result waits for the user gets the confirm card (ticket confirm-a-check-step-s-result-on-the).
   const confirmAsk = confirmQuestion(task.info?.checkResult ?? [], questions);
+  // A reply that waits for the checkout, or the line that it went out (ticket an-answer-waits-in-the-queue-while).
+  const waiting = queuedReplyOf(task);
+  const went = sentReplies.get(queueKey(task));
+  if (waiting) made.append(waitingReplyCard(task, waiting));
+  else if (went && went.modified === task.info?.report?.modified) made.append(sentReplyLine(went.at));
   if (repeats) made.append(repeatCard(task, repeats));
   else if (confirmAsk) made.append(confirmCard(task, confirmAsk));
   else if (questions.length > 0) made.append(questionCard(task, questions));

@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { answeredLine, replyText } from "../src/answers.ts";
-import { type AnsweredReport, answeredRecord, parseAnswered, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered } from "../src/repeat.ts";
+import { type AnsweredReport, answeredRecord, parseAnswered, parseQueuedReplies, type QueuedReply, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered, serializeQueuedReplies } from "../src/repeat.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -136,7 +136,8 @@ test("an armed Stop of the permission card holds for its report only, and Contin
   assert.match(controls, /permissionStopArmed\.get\(task\.name\) === modified/);
   assert.match(controls, /permissionStopArmed\.set\(task\.name, modified\)/);
   const card = mainFunction("permissionCard");
-  assert.ok(card.indexOf("permissionStopArmed.delete(task.name)") < card.indexOf('"task_reply"'), "Continue clears the armed click first");
+  // The Continue goes through replyOrQueue (ticket an-answer-waits-in-the-queue-while).
+  assert.ok(card.indexOf("permissionStopArmed.delete(task.name)") < card.indexOf("replyOrQueue("), "Continue clears the armed click first");
 });
 
 test("the line of the Stop of the permission card has the form of a stopped task", () => {
@@ -162,4 +163,22 @@ test("the plan card has a Cancel with a confirm that stops the task", () => {
 test("the Help describes the Cancel of the plan card", () => {
   const line = HTML.split("\n").find((text) => text.includes("<b>Cancel</b> ends a task")) ?? "";
   assert.match(line, /<b>Cancel now<\/b>/);
+});
+
+// Ticket an-answer-waits-in-the-queue-while: a reply that waits in the queue survives a restart of
+// Dispatch word for word, and a broken entry holds no reply.
+test("waiting replies survive serialize and parse word for word; a broken entry is dropped", () => {
+  const record = answered();
+  const waiting: QueuedReply[] = [
+    { key: "local\nD:/dev/starminer\nstation-controls-and-bottom-bars", record, text: record.reply, line: "Answered in Dispatch.", at: 1_700_000_000_000 },
+    { key: "local\nD:/dev/starminer\nother", record: { modified: 3_000, questions: [], reply: "Continue" }, text: "Continue", line: "Permission changed.", at: 1_700_000_000_500 },
+  ];
+  const text = serializeQueuedReplies(waiting);
+  assert.deepEqual(parseQueuedReplies(text), waiting);
+  assert.equal(parseQueuedReplies(text)[0].text, "Answer to question 1: Stop here; I run the gate myself later");
+  const broken = JSON.stringify([waiting[0], { key: "x", text: "Continue", line: "", at: 1 }, { key: 5 }, null, waiting[1]]);
+  assert.deepEqual(parseQueuedReplies(broken), waiting, "an entry without a record or with a wrong field is left out");
+  assert.deepEqual(parseQueuedReplies("{not json"), []);
+  assert.deepEqual(parseQueuedReplies(null), []);
+  assert.deepEqual(parseQueuedReplies("{}"), []);
 });

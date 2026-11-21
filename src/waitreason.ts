@@ -70,3 +70,38 @@ export function waitReason(facts: WaitFacts): WaitReason | null {
   }
   return null;
 }
+
+/**
+ * Why a reply of the user to a worker waits in the queue (ticket an-answer-waits-in-the-queue-while):
+ * answers, a Confirm of a check result or a Continue that came while the checkout was on the branch of
+ * another task. The same order as `waitReason` (pause, merge, work run, checkout), with texts about the
+ * reply. Uncommitted changes hold no reply. Null when nothing holds it: it goes out at the next poll.
+ */
+export function answerWait(facts: WaitFacts): WaitReason | null {
+  if (facts.paused) {
+    return {
+      short: "Paused: your answers go out at Resume.",
+      full: "The project is paused. Your answers go to the worker when you resume the project.",
+    };
+  }
+  if (facts.merging) {
+    return {
+      short: `Your answers wait for the merge of ${facts.merging}.`,
+      full: `Your answers go to the worker when the merge of ${facts.merging} ends.`,
+    };
+  }
+  if (facts.editing) {
+    return {
+      short: `Your answers wait for the work run of ${facts.editing}.`,
+      full: `Your answers go to the worker when the work run of ${facts.editing} ends and the checkout is back on the base.`,
+    };
+  }
+  if (facts.checkout) {
+    const { task, branch, base, note } = facts.checkout;
+    return {
+      short: `Your answers wait for the checkout on the branch of ${task}.`,
+      full: `Your answers go to the worker when Dispatch switches the checkout back from ${branch} (the branch of ${task}) to ${base}.${note ? ` Dispatch waits for this:\n${note}` : ""}`,
+    };
+  }
+  return null;
+}

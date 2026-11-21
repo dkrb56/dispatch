@@ -146,6 +146,37 @@ export function chooseStart(facts: StartFacts): { task: string; kind: StartKind 
   return { task: task.name, kind: plain(task) ? "plain" : night(task) ? "night" : "auto" };
 }
 
+/** A click of the user that waits in the queue of a project: the task and the time of the click. */
+export interface QueuedClick {
+  task: string;
+  at: number;
+}
+
+/** The facts of one project for a reply that waits in the queue (ticket an-answer-waits-in-the-queue-while). */
+export interface QueuedFacts extends BusyFacts {
+  /** The other task whose branch the main checkout is on, or null. */
+  checkout: string | null;
+  /** The first queued approval that can start now (`nextQueued` of main.ts), with its click time, or null. */
+  approval: QueuedClick | null;
+  /** The waiting replies of the project: answers, a Confirm or a Continue, in the order of the clicks. */
+  replies: readonly QueuedClick[];
+}
+
+/**
+ * The task whose waiting reply goes to its worker at this poll, or null. Nothing goes while the project
+ * is busy (as `chooseStart`) or while the checkout is on the branch of another task. A reply takes its
+ * place among the approvals by its click time: a startable approval clicked before it starts first.
+ * After the reply the work run of its task holds the project, so the next approval waits for it.
+ */
+export function chooseQueued(facts: QueuedFacts): string | null {
+  if (projectBusy(facts)) return null;
+  const held = (name: string) => !!facts.checkout && facts.checkout !== name;
+  const reply = [...facts.replies].sort((a, b) => a.at - b.at).find((reply) => !held(reply.task));
+  if (!reply) return null;
+  if (facts.approval && !held(facts.approval.task) && facts.approval.at <= reply.at) return null;
+  return reply.task;
+}
+
 /** The facts of one ready plan for the words of its status at night (ticket task-card-show-that-night-mode-will). */
 export interface NightPlanFacts {
   /** Night mode of the host of the project. */
