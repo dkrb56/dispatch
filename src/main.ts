@@ -927,42 +927,82 @@ async function openProjectChat(ref: ProjectRef, terminal?: { label: string } | {
   // The new tab hides behind Focus; the tab that was active stays active.
   if (back && tabs.has(back)) activate(back);
   const opened = panes.get(pane.id);
-  if (!terminal && opened) {
-    // The pane that the panel showed before goes back to its tab and keeps running.
-    const leaving = projectTerminalPane(ref);
-    if (leaving && leaving !== opened) moveBack(leaving);
-    showInTerminalPanel(opened, refKey(ref));
-  }
+  // The chat joins the terminals of the panel (ticket i-need-an-option-to-toggle-terminal, user decision 3).
+  if (!terminal && opened) showInTerminalPanel(opened, refKey(ref));
   await saveState();
   // The pane id: the Ask of a project with "No triage" sends its question there.
   return pane.id;
 }
 
-const projectTerminals = new Map<string, string>();
+/**
+ * The terminals of the terminal panel of each project, in their order (ticket
+ * i-need-an-option-to-toggle-terminal): in localStorage `project-terminals:<key>` as a JSON list.
+ */
+const projectTerminals = new Map<string, string[]>();
 const projectTerminalPending = new Set<string>();
+/** The most terminals that the panel of a project shows at once (user decision 4); the oldest goes back to its tab. */
+const TERMINAL_PANEL_MAX = 4;
 
-/** The open terminal pane of Open terminal of a project, if any. */
-function projectTerminalPane(ref: ProjectRef): Pane | undefined {
-  const key = refKey(ref);
-  let id = projectTerminals.get(key);
-  if (!id) {
-    try { id = localStorage.getItem(`project-terminal:${key}`) ?? undefined; } catch { /* no storage */ }
+/** The stored terminal ids of a project; the key of the builds with one terminal is read once as the first item. */
+function terminalIds(key: string): string[] {
+  let ids = projectTerminals.get(key);
+  if (ids) return ids;
+  ids = [];
+  try {
+    const saved: unknown = JSON.parse(localStorage.getItem(`project-terminals:${key}`) ?? "null");
+    if (Array.isArray(saved)) ids = saved.filter((id): id is string => typeof id === "string");
+    else {
+      const old = localStorage.getItem(`project-terminal:${key}`);
+      if (old) ids = [old];
+    }
+  } catch { /* no storage */ }
+  projectTerminals.set(key, ids);
+  return ids;
+}
+
+/** Keeps the terminal ids of a project that are still open, and stores them. */
+function saveTerminalIds(key: string, ids: string[]): void {
+  const open = ids.filter((id) => panes.has(id));
+  projectTerminals.set(key, open);
+  try {
+    localStorage.setItem(`project-terminals:${key}`, JSON.stringify(open));
+    localStorage.removeItem(`project-terminal:${key}`);
+  } catch { /* no storage */ }
+}
+
+/**
+ * Adds a pane to the terminal panel of a project and shows the panel. At the limit the oldest
+ * terminal goes back to its tab behind Focus and keeps running (user decision 4).
+ */
+function addTerminal(key: string, id: string): void {
+  const ids = terminalIds(key).filter((known) => panes.has(known));
+  if (!ids.includes(id)) ids.push(id);
+  while (ids.length > TERMINAL_PANEL_MAX) {
+    const oldest = panes.get(ids.shift() ?? "");
+    if (oldest) moveBack(oldest);
   }
-  return id ? panes.get(id) : undefined;
+  saveTerminalIds(key, ids);
+  saveFocusSize(key, { termHidden: undefined });
+}
+
+/** The open panes of the terminal panel of a project, in their order. */
+function projectTerminalPanes(ref: ProjectRef): Pane[] {
+  return terminalIds(refKey(ref)).flatMap((id) => panes.get(id) ?? []);
+}
+
+/** The first open terminal pane of the panel of a project, if any: the terminal of an Ask and of the phone. */
+function projectTerminalPane(ref: ProjectRef): Pane | undefined {
+  return projectTerminalPanes(ref)[0];
 }
 
 /**
  * The Terminal switch at the right of the tabs of a Focus column turned on (tickets
- * move-this-chat-button-to-the-left-side, issues-with-details-button): one terminal per project.
- * While its pane is open, a call does nothing (user decision 1).
+ * move-this-chat-button-to-the-left-side, issues-with-details-button): the first terminal of the panel.
+ * While a terminal of the panel is open, a call does nothing (user decision 1); + opens more.
  */
 async function openProjectTerminal(ref: ProjectRef): Promise<void> {
   const key = refKey(ref);
-  const storeKey = `project-terminal:${key}`;
-  let kept = projectTerminals.get(key);
-  if (!kept) {
-    try { kept = localStorage.getItem(storeKey) ?? undefined; } catch { /* no storage */ }
-  }
+  const kept = terminalIds(key).find((id) => panes.has(id));
   if (kept && panes.has(kept)) return;
   if (projectTerminalPending.has(key)) return;
   projectTerminalPending.add(key);
@@ -976,8 +1016,7 @@ async function openProjectTerminal(ref: ProjectRef): Promise<void> {
       found = await call<string | null>(ref.host, "pty_find", { label }).catch(() => null);
     }
     const id = await openProjectChat(ref, found && !panes.has(found) ? { join: found } : { label });
-    projectTerminals.set(key, id);
-    try { localStorage.setItem(storeKey, id); } catch { /* no storage */ }
+    addTerminal(key, id);
     // In focus mode the terminal shows between the tasks and the board (ticket when-terminal-is-open-in-focus-mode-it).
     if (focusOn) renderFocus();
   } catch (error) {
@@ -1001,6 +1040,8 @@ async function askTerminal(ref: ProjectRef): Promise<string | undefined> {
   await openProjectTerminal(ref);
   const pane = projectTerminalPane(ref);
   if (!pane) return undefined;
+  // A hidden panel shows again (ticket i-need-an-option-to-toggle-terminal).
+  saveFocusSize(key, { termHidden: undefined });
   renderFocus();
   setFocusCurrent(key);
   column.el.scrollIntoView({ behavior: "smooth", inline: "nearest" });
@@ -11405,8 +11446,8 @@ function chatRowWith(chat: Chat, open: (chat: Chat) => Promise<void>): HTMLEleme
 /**
  * A click on a chat of the Chats list of a column in Focus mode (ticket i-dont-want-to-see-duplicate-tabs-in-the):
  * the chat shows in the terminal panel of the column, the panel of Open terminal, and the window stays
- * in Focus. A chat that runs in this window moves there; another chat starts a new pane there. The pane
- * that the panel showed before goes back to its tab and keeps running (user decision 1).
+ * in Focus. A chat that runs in this window moves there; another chat starts a new pane there. It joins
+ * the terminals of the panel (ticket i-need-an-option-to-toggle-terminal, user decision 3).
  */
 async function openFocusChat(chat: Chat, ref: ProjectRef): Promise<void> {
   const key = refKey(ref);
@@ -11414,7 +11455,9 @@ async function openFocusChat(chat: Chat, ref: ProjectRef): Promise<void> {
   const started = startedChats.get(startKey);
   const recent = started && Date.now() - started.time < CHAT_START_MS ? started.pane : null;
   const open = panes.get(chat.pane ?? recent ?? "");
-  const step = chatSlotStep(open?.id ?? null, !!open?.role, projectTerminalPane(ref)?.id ?? null);
+  // The chat joins the terminals of the panel and no pane leaves it (ticket i-need-an-option-to-toggle-terminal,
+  // user decision 3); at the limit `addTerminal` sends the oldest back to its tab.
+  const step = chatSlotStep(open?.id ?? null, !!open?.role, null);
   if (step.kind === "focus") {
     // A workspace pane (triage) shows in its column already.
     open?.term.focus();
@@ -11444,8 +11487,8 @@ async function openFocusChat(chat: Chat, ref: ProjectRef): Promise<void> {
  * Chats section, or a Chat of a project (ticket no-details-mode).
  */
 function showInTerminalPanel(pane: Pane, key: string): void {
-  projectTerminals.set(key, pane.id);
-  try { localStorage.setItem(`project-terminal:${key}`, pane.id); } catch { /* no storage */ }
+  // The pane joins the list of the panel, and a hidden panel shows again (ticket i-need-an-option-to-toggle-terminal).
+  addTerminal(key, pane.id);
   // A strip hides its terminal: a minimized column comes back first.
   if (columnStates(focusProjects.map(refKey), focusChoices())[key] === "min") setColumnSize(key, "restore");
   renderFocus();
@@ -12504,10 +12547,15 @@ interface FocusColumn {
   termSlotEl: HTMLElement;
   termHandle: HTMLElement;
   /**
-   * The Terminal switch at the right of the tab buttons (ticket issues-with-details-button): on opens the
-   * terminal of the project, off closes it as the × above it does.
+   * The Terminal switch at the right of the tab buttons (tickets issues-with-details-button,
+   * i-need-an-option-to-toggle-terminal): without a terminal it opens one; with terminals it hides and
+   * shows the panel.
    */
   termButton: HTMLButtonElement;
+  /** The chips of the terminals of the panel in its head, each with its own ×. */
+  termListEl: HTMLElement;
+  /** The + button in the head of the panel: one more terminal; disabled at the limit. */
+  termAddEl: HTMLButtonElement;
   /**
    * The wrapper of the terminal, its handle and the board: a row, or with the class `stacked` the
    * terminal below the board (ticket i-need-an-option-to-split-terinal-and).
@@ -12701,6 +12749,8 @@ interface FocusSize {
   termSplit?: TermSplit;
   /** The height of the terminal below the board in pixels. */
   termHeight?: number;
+  /** The Terminal switch hid the terminal panel; its terminals keep running (ticket i-need-an-option-to-toggle-terminal). */
+  termHidden?: boolean;
   /** The column is minimized to a strip or maximized (focus-column-size); none for a normal column. */
   state?: ColumnChoice;
   /** The tab of the work area that the user chose last (ticket title-project-rail-focus-as-the-only). */
@@ -13133,15 +13183,20 @@ function focusColumn(ref: ProjectRef): FocusColumn {
     tickets: tabButton("tickets", "Tickets", "The tickets board of this project; the number counts the tickets in Backlog, Scheduled, Planning, Waiting for answer and Working", ticketsCountEl),
     workers: tabButton("workers", "Workers", "The agent view of Claude Code with the workers of this project; the number counts the workers that work or wait for you", workersCountEl),
   };
-  // The Terminal switch right after the tabs (ticket issues-with-details-button): on opens the terminal
-  // of the project, off closes it as the × does; `renderFocus` sets its state.
+  // The Terminal switch right after the tabs (tickets issues-with-details-button,
+  // i-need-an-option-to-toggle-terminal): without a terminal it opens one; with terminals it hides and
+  // shows the panel, and the terminals keep running. `renderFocus` sets its state.
   const terminal = stripSwitch("focus-terminal-details focus-terminal-switch");
   terminal.querySelector(".auto-switch-label")!.textContent = "Terminal";
   terminal.title = TERMINAL_OFF_TITLE;
   terminal.addEventListener("click", () => {
-    const pane = projectTerminalPane(ref);
-    if (pane) void closePane(pane.id).then(() => renderFocus());
-    else void openProjectTerminal(ref);
+    if (projectTerminalPanes(ref).length === 0) {
+      saveFocusSize(key, { termHidden: undefined });
+      void openProjectTerminal(ref);
+      return;
+    }
+    saveFocusSize(key, { termHidden: focusSizes()[key]?.termHidden === true ? undefined : true });
+    renderFocus();
   });
   // The Chats switch before the Terminal switch (ticket tasks-column-on-the-left-is-redundant): on shows
   // the left panel with the triage chat and the chats; off at first; kept per project.
@@ -13210,16 +13265,16 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   const termHead = mapElement("div", "focus-terminal-head");
   const termSpacer = mapElement("span", "");
   termSpacer.style.flex = "1";
-  const termClose = mapElement("button", "focus-terminal-close", "×");
-  termClose.title = "Close this terminal and end its Claude session";
-  termClose.setAttribute("aria-label", `Close the terminal of ${projectName(ref)}`);
-  termClose.addEventListener("click", () => {
-    const pane = projectTerminalPane(ref);
-    if (pane) void closePane(pane.id).then(() => renderFocus());
-  });
+  // One chip per terminal of the panel with its own ×, and + for one more terminal (ticket
+  // i-need-an-option-to-toggle-terminal); `renderFocus` draws the chips.
+  const termListEl = mapElement("span", "focus-terminal-list");
+  const termAddEl = mapElement("button", "focus-terminal-add", "+");
+  termAddEl.title = "Open one more Claude Code terminal in this panel";
+  termAddEl.setAttribute("aria-label", `Open one more terminal of ${projectName(ref)}`);
+  termAddEl.addEventListener("click", () => void openProjectChat(ref));
   // The place of the terminal: beside the board or below it (ticket i-need-an-option-to-split-terinal-and).
   const termSplitEl = mapElement("button", "focus-terminal-split");
-  termHead.append(mapElement("span", "", "Terminal"), termSpacer, detailsEls.terminal, termSplitEl, termClose);
+  termHead.append(mapElement("span", "", "Terminal"), termListEl, termAddEl, termSpacer, detailsEls.terminal, termSplitEl);
   // The search of the Chats section (ticket no-details-mode): it stays one element, so a redraw keeps its text.
   const chatSearchEl = mapElement("input", "focus-chat-search");
   chatSearchEl.type = "search";
@@ -13245,7 +13300,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   dragTerm(termHandle, key, termEl, workEl);
   dragColumns(colHandle, key, el);
   const tab = focusSizes()[key]?.tab;
-  const column: FocusColumn = { host, root, el, dotEl, pathEl, sideEl, sideHandle, chatsButton: chats, tabButtons, ticketsCountEl, workersCountEl, tab, triageEl, boardEl, boardNoteEl, boardCountEl, boardSearchEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, workEl, termSplitEl, detailsEls, detailsOn: { triage: false, agents: false, terminal: false }, triageHeadEl, agentsHeadEl, chatSearchEl, agentsEl, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, restoreEl, colHandle };
+  const column: FocusColumn = { host, root, el, dotEl, pathEl, sideEl, sideHandle, chatsButton: chats, tabButtons, ticketsCountEl, workersCountEl, tab, triageEl, boardEl, boardNoteEl, boardCountEl, boardSearchEl, boardColumnsEl, commandsEl, termEl, termSlotEl, termHandle, termButton: terminal, termListEl, termAddEl, workEl, termSplitEl, detailsEls, detailsOn: { triage: false, agents: false, terminal: false }, triageHeadEl, agentsHeadEl, chatSearchEl, agentsEl, morningEl, morning: null, morningChecked: 0, oldEl: tools.oldEl, stateEl, minEl, maxEl, restoreEl, colHandle };
   // A click anywhere on a strip brings the column back; a button or a drag edge keeps its own action.
   el.addEventListener("click", (event) => {
     if (!el.classList.contains("min")) return;
@@ -13374,19 +13429,88 @@ const DETAILS_OFF_TITLE: Record<DetailPanel, string> = {
   terminal: "Show the side panels of the terminal: Environment, Context and Outputs",
 };
 
-const TERMINAL_OFF_TITLE = "Opens a Claude Code terminal in the project folder for a question; it starts no task; one at a time";
+const TERMINAL_OFF_TITLE = "Opens a Claude Code terminal in the project folder for a question; it starts no task";
+
+/** The title of the × of a terminal: a terminal of another window closes only here (ticket if-terminal-in-non-triage-mode-is-opened, decision 1). */
+function terminalCloseTitle(pane: Pane): string {
+  return pane.joined ? "Close this terminal here; it keeps running in the other window" : "Close this terminal and end its Claude session";
+}
+
+/**
+ * Draws the terminal panel of a column (ticket i-need-an-option-to-toggle-terminal): its panes side by
+ * side, a pane that left the list back in its tab, the hidden state, the Terminal switch, the chips
+ * and the + button.
+ */
+function showTerminalPanel(column: FocusColumn, key: string): void {
+  const terminals = projectTerminalPanes(column);
+  const slot = column.termSlotEl;
+  let changed = false;
+  for (const child of [...slot.children]) {
+    if (terminals.some((pane) => pane.el === child)) continue;
+    // A pane that left the list goes back to its tab and keeps running; any other element goes.
+    const pane = panes.get((child as HTMLElement).dataset.pane ?? "");
+    if (pane && focusMoved.has(pane.id)) moveBack(pane);
+    else child.remove();
+    changed = true;
+  }
+  for (const pane of terminals) {
+    if (pane.el.parentElement !== slot) changed = true;
+    moveInto(pane, slot, true);
+  }
+  // A new neighbour changes the width of each terminal, but not the size of the slot.
+  if (changed) requestAnimationFrame(() => terminals.forEach(fitPane));
+  const hidden = focusSizes()[key]?.termHidden === true;
+  const shown = terminals.length > 0 && !hidden;
+  column.termEl.hidden = !shown;
+  column.termHandle.hidden = !shown;
+  column.termButton.setAttribute("aria-checked", String(shown));
+  column.termButton.title =
+    terminals.length === 0
+      ? TERMINAL_OFF_TITLE
+      : shown
+        ? "Hide the terminal panel; its terminals keep running"
+        : `Show the terminal panel; ${terminals.length === 1 ? "1 terminal runs" : `${terminals.length} terminals run`} hidden`;
+  column.termAddEl.disabled = terminals.length >= TERMINAL_PANEL_MAX;
+  column.termAddEl.title = column.termAddEl.disabled
+    ? `The panel shows ${TERMINAL_PANEL_MAX} terminals at most; close one first`
+    : "Open one more Claude Code terminal in this panel";
+  // The chips change only with the list, so a poll does not replace a button under the pointer.
+  const names = terminals.map((pane, at) => pane.info?.session?.name || `Terminal ${at + 1}`);
+  const mark = JSON.stringify(terminals.map((pane, at) => [pane.id, names[at], !!pane.joined]));
+  if (column.termListEl.dataset.mark === mark) return;
+  column.termListEl.dataset.mark = mark;
+  column.termListEl.replaceChildren(
+    ...terminals.map((pane, at) => {
+      const chip = mapElement("span", "focus-terminal-chip");
+      const name = mapElement("button", "focus-terminal-name", names[at]);
+      name.title = "Put the keyboard into this terminal";
+      name.addEventListener("click", () => pane.term.focus());
+      const close = mapElement("button", "focus-terminal-close", "×");
+      close.title = terminalCloseTitle(pane);
+      close.setAttribute("aria-label", `Close ${names[at]}`);
+      close.addEventListener("click", () => {
+        void closePane(pane.id).then(() => {
+          saveTerminalIds(key, terminalIds(key));
+          renderFocus();
+        });
+      });
+      chip.append(name, close);
+      return chip;
+    }),
+  );
+}
 
 /** The slot of a panel that carries the class `details`. */
 function detailSlot(column: FocusColumn, panel: DetailPanel): HTMLElement {
   return panel === "triage" ? column.triageEl : panel === "agents" ? column.agentsEl : column.termEl;
 }
 
-/** The pane of a panel of a column while it stands in its slot of the column, else none. */
-function columnDetailPane(column: FocusColumn, panel: DetailPanel): Pane | undefined {
+/** The panes of a panel of a column that stand in its slot of the column; the terminal panel can hold several. */
+function columnDetailPanes(column: FocusColumn, panel: DetailPanel): Pane[] {
   const { triage, agents } = workspacePanes(column);
-  const pane = panel === "triage" ? triage : panel === "agents" ? agents : projectTerminalPane(column);
+  const shown = panel === "triage" ? [triage] : panel === "agents" ? [agents] : projectTerminalPanes(column);
   const slot = panel === "triage" ? column.triageEl : panel === "agents" ? column.agentsEl : column.termSlotEl;
-  return pane && pane.el.parentElement === slot ? pane : undefined;
+  return shown.filter((pane): pane is Pane => pane !== undefined && pane.el.parentElement === slot);
 }
 
 /**
@@ -13399,8 +13523,7 @@ function setColumnDetails(column: FocusColumn, panel: DetailPanel, on: boolean):
   detailSlot(column, panel).classList.toggle("details", on);
   column.detailsEls[panel].setAttribute("aria-checked", String(on));
   column.detailsEls[panel].title = on ? "Hide the side panels of this pane" : DETAILS_OFF_TITLE[panel];
-  const pane = columnDetailPane(column, panel);
-  if (pane) {
+  for (const pane of columnDetailPanes(column, panel)) {
     pane.sideDue = 0;
     requestAnimationFrame(() => fitPane(pane));
   }
@@ -13411,7 +13534,7 @@ function focusDetailPanes(): Pane[] {
   if (!focusOn) return [];
   const panels: DetailPanel[] = ["triage", "agents", "terminal"];
   return [...focusColumns.values()].flatMap((column) =>
-    column.el.isConnected ? panels.flatMap((panel) => (column.detailsOn[panel] ? (columnDetailPane(column, panel) ?? []) : [])) : [],
+    column.el.isConnected ? panels.flatMap((panel) => (column.detailsOn[panel] ? columnDetailPanes(column, panel) : [])) : [],
   );
 }
 
@@ -13514,26 +13637,9 @@ function renderFocus(): void {
     }
     for (const pane of commands) moveInto(pane, column.commandsEl, true);
     column.commandsEl.hidden = commands.length === 0;
-    // The terminal of Open terminal moves in like a Commands terminal (ticket when-terminal-is-open-in-focus-mode-it).
-    const terminal = projectTerminalPane(column);
-    if (terminal) moveInto(terminal, column.termSlotEl);
-    else column.termSlotEl.replaceChildren();
-    column.termEl.hidden = !terminal;
-    column.termHandle.hidden = !terminal;
-    // The Terminal switch shows whether the terminal is open (ticket issues-with-details-button).
-    column.termButton.setAttribute("aria-checked", String(!!terminal));
-    column.termButton.title = !terminal
-      ? TERMINAL_OFF_TITLE
-      : terminal.joined
-        ? "Close this terminal here; it keeps running in the other window"
-        : "Close this terminal and end its Claude session";
-    // A terminal of another window closes only here (ticket if-terminal-in-non-triage-mode-is-opened, decision 1).
-    const termClose = column.termEl.querySelector<HTMLButtonElement>(".focus-terminal-close");
-    if (termClose) {
-      termClose.title = terminal?.joined
-        ? "Close this terminal here; it keeps running in the other window"
-        : "Close this terminal and end its Claude session";
-    }
+    // The terminals of the panel move in like the Commands terminals (tickets when-terminal-is-open-in-focus-mode-it,
+    // i-need-an-option-to-toggle-terminal): all at once, side by side (user decision 2).
+    showTerminalPanel(column, key);
     if (agents) moveInto(agents, column.agentsEl);
     showOld(column);
     if (shownTab === "workers" && agents) requestAnimationFrame(() => fitPane(agents));
@@ -14186,7 +14292,7 @@ function removeFocusProject(ref: ProjectRef): void {
   // The project stays below the line of the rail (ticket project-rail-at-the-left-edge-of-the).
   rememberProject(ref);
   const { triage, agents } = workspacePanes(ref);
-  for (const pane of [triage, agents, projectTerminalPane(ref), ...commandPanes(ref.host, ref.root)]) if (pane) moveBack(pane);
+  for (const pane of [triage, agents, ...projectTerminalPanes(ref), ...commandPanes(ref.host, ref.root)]) if (pane) moveBack(pane);
   focusColumns.get(key)?.el.remove();
   focusColumns.delete(key);
   saveFocus();

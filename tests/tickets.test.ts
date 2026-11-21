@@ -701,17 +701,36 @@ test("no triage: the workspace opens with the agent view only and starts no tria
   assert.match(MAIN, /const id = await openProjectChat\(ref, found /);
   assert.match(MAIN, /resizeHandle\("side-resize term-resize"/);
   assert.match(MAIN, /workEl\.append\(termEl, termHandle, main\);\n  body\.append\(sideEl, sideHandle, workEl\);/);
-  assert.match(MAIN, /if \(terminal\) moveInto\(terminal, column\.termSlotEl\);/);
+  assert.match(MAIN, /for \(const pane of terminals\) \{\s*if \(pane\.el\.parentElement !== slot\) changed = true;\s*moveInto\(pane, slot, true\);/);
   assert.match(MAIN, /interface FocusSize \{[\s\S]*?term\?: number;/);
   assert.match(CSS, /\.focus-terminal \{/);
   assert.match(CSS, /\.focus-terminal\[hidden\] \{\s*display: none;/);
   assert.match(HTML, /In Focus the terminal opens between the left panel and the board/);
 
-  // Tickets when-terminal-is-open-say-that-it-s-open, issues-with-details-button: the Terminal switch is on
-  // while the terminal is open, and off closes it as × does.
-  assert.match(MAIN, /column\.termButton\.setAttribute\("aria-checked", String\(!!terminal\)\);/);
-  assert.match(MAIN, /if \(pane\) void closePane\(pane\.id\)\.then\(\(\) => renderFocus\(\)\);\n    else void openProjectTerminal\(ref\);/);
-  assert.match(HTML, /While its terminal is open, the switch is on; turn it off to close the terminal\./);
+  // Tickets when-terminal-is-open-say-that-it-s-open, issues-with-details-button, i-need-an-option-to-toggle-terminal:
+  // the Terminal switch is on while the panel shows; with terminals it hides and shows the panel and closes none.
+  assert.match(MAIN, /column\.termButton\.setAttribute\("aria-checked", String\(shown\)\);/);
+  assert.match(MAIN, /if \(projectTerminalPanes\(ref\)\.length === 0\) \{\s*saveFocusSize\(key, \{ termHidden: undefined \}\);\s*void openProjectTerminal\(ref\);\s*return;\s*\}\s*saveFocusSize\(key, \{ termHidden: focusSizes\(\)\[key\]\?\.termHidden === true \? undefined : true \}\);/);
+  assert.match(MAIN, /interface FocusSize \{[\s\S]*?termHidden\?: boolean;/);
+  assert.match(MAIN, /const shown = terminals\.length > 0 && !hidden;\n  column\.termEl\.hidden = !shown;/);
+  const click = MAIN.slice(MAIN.indexOf('const terminal = stripSwitch("focus-terminal-details focus-terminal-switch");'), MAIN.indexOf("// The Chats switch before the Terminal switch"));
+  assert.doesNotMatch(click, /closePane/);
+  assert.match(HTML, /The switch opens a terminal; then it hides and shows the terminal panel, and the terminals keep running while the panel is hidden\./);
+  // Several terminals in the panel: a list per project, the old key read once, + up to the limit, a × per terminal.
+  assert.match(MAIN, /localStorage\.getItem\(`project-terminals:\$\{key\}`\)/);
+  assert.match(MAIN, /const old = localStorage\.getItem\(`project-terminal:\$\{key\}`\);\s*if \(old\) ids = \[old\];/);
+  assert.match(MAIN, /localStorage\.setItem\(`project-terminals:\$\{key\}`, JSON\.stringify\(open\)\);/);
+  assert.match(MAIN, /const TERMINAL_PANEL_MAX = 4;/);
+  assert.match(MAIN, /while \(ids\.length > TERMINAL_PANEL_MAX\) \{\s*const oldest = panes\.get\(ids\.shift\(\) \?\? ""\);\s*if \(oldest\) moveBack\(oldest\);/);
+  assert.match(MAIN, /const termAddEl = mapElement\("button", "focus-terminal-add", "\+"\);/);
+  assert.match(MAIN, /termAddEl\.addEventListener\("click", \(\) => void openProjectChat\(ref\)\);/);
+  assert.match(MAIN, /column\.termAddEl\.disabled = terminals\.length >= TERMINAL_PANEL_MAX;/);
+  assert.match(MAIN, /const close = mapElement\("button", "focus-terminal-close", "×"\);\s*close\.title = terminalCloseTitle\(pane\);/);
+  // A chat of the Chats list joins the panel; no pane leaves it (user decision 3).
+  assert.match(MAIN, /const step = chatSlotStep\(open\?\.id \?\? null, !!open\?\.role, null\);/);
+  assert.doesNotMatch(MAIN, /const leaving = projectTerminalPane\(ref\);/);
+  assert.match(CSS, /\.focus-work\.stacked > \.focus-terminal \.focus-terminal-slot \{\s*flex-direction: row;/);
+  assert.match(HTML, /Click \+ in the head of the panel to open one more terminal, up to 4 at once, and click × on a terminal to close it\./);
 });
 
 test("no triage: Focus shows the tickets board where triage would stand", () => {

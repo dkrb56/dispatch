@@ -8288,6 +8288,71 @@ body.chats-sized .focus-side {
   border-radius: 12px;
 }
 
+/* Several terminals in the panel (ticket i-need-an-option-to-toggle-terminal, user decision 2): all at
+   once, one above the other beside the board (the panel stays narrow there), side by side below it. */
+.focus-terminal-slot {
+  flex-direction: column;
+  gap: 6px;
+}
+
+.focus-work.stacked > .focus-terminal .focus-terminal-slot {
+  flex-direction: row;
+}
+
+.focus-terminal .pane {
+  min-height: 0;
+}
+
+/* The chips of the terminals in the head of the panel, each with its own ×, and the + button: the
+   look of the Below button. */
+.focus-terminal-list {
+  display: flex;
+  flex: 0 1 auto;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.focus-terminal-chip {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.focus-terminal-name,
+.focus-terminal-add {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 6px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-size: calc(12px * var(--text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.focus-terminal-add {
+  flex: none;
+  font-size: calc(14px * var(--text-scale));
+}
+
+.focus-terminal-name:hover,
+.focus-terminal-add:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.focus-terminal-add:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 /* too-horizontal-space-between-terminal: the head line above already gives room. */
 .focus-terminal .term {
   padding-top: 0;

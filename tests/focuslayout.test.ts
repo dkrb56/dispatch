@@ -193,7 +193,7 @@ test("the page: the terminal below the board has its wrapper, its button, its dr
   assert.doesNotMatch(css, /body\.resizing \.focus-body > :not\(\.side-resize\)/);
   assert.match(css, /#focus\.rows > \.focus-col:not\(\.min\):has\(\.focus-work\.stacked > \.focus-terminal:not\(\[hidden\]\)\)\s*\{[^}]*min-height/);
   const main = read("../src/main.ts");
-  assert.match(main, /termHead\.append\(mapElement\("span", "", "Terminal"\), termSpacer, detailsEls\.terminal, termSplitEl, termClose\);/);
+  assert.match(main, /termHead\.append\(mapElement\("span", "", "Terminal"\), termListEl, termAddEl, termSpacer, detailsEls\.terminal, termSplitEl\);/);
   assert.match(main, /workEl\.classList\.toggle\("stacked", below\);/);
   assert.match(main, /termSplit: toggleTermSplit\(parseTermSplit\(/);
   assert.match(main, /saveFocusSize\(key, \{ termHeight: Math\.round\(term\.height\) \}\)/);
@@ -230,7 +230,7 @@ test("the page: the column tabs and the Details switch of the column have their 
   // Ticket issues-with-details-button: one switch per pane, in a head line above it, shown only with its
   // pane; each turns on the band of its own pane only.
   assert.match(main, /main\.append\(tabRowEl, triageHeadEl, triageEl, boardEl, agentsHeadEl, agentsEl, commandsEl\);/);
-  assert.match(main, /termHead\.append\(mapElement\("span", "", "Terminal"\), termSpacer, detailsEls\.terminal, termSplitEl, termClose\);/);
+  assert.match(main, /termHead\.append\(mapElement\("span", "", "Terminal"\), termListEl, termAddEl, termSpacer, detailsEls\.terminal, termSplitEl\);/);
   assert.match(main, /column\.triageHeadEl\.hidden = shown !== "triage" \|\| !triage;/);
   assert.match(main, /column\.agentsHeadEl\.hidden = shown !== "workers" \|\| !agents;/);
   assert.match(main, /detailSlot\(column, panel\)\.classList\.toggle\("details", on\);/);
