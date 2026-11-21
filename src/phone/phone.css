@@ -626,3 +626,94 @@ input {
 [hidden] {
   display: none !important;
 }
+
+/* The Terminal of a project (ticket i-need-a-terminal-access-on-mobile): a button in the head of each
+   card, and a full-screen view at the size of the computer, which scrolls sideways. */
+.card-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card-top .card-head {
+  flex: 1;
+  min-width: 0;
+}
+
+.term-btn {
+  flex: none;
+}
+
+body.term-open #app > :not(.term-view) {
+  display: none;
+}
+
+.term-view {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.term-view[hidden],
+.term-view [hidden] {
+  display: none;
+}
+
+.term-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.term-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.term-status {
+  margin: 0;
+}
+
+.term-start {
+  align-self: flex-start;
+}
+
+.term-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.term-host {
+  width: max-content;
+  padding: 4px;
+}
+
+.term-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.term-text {
+  flex: 1;
+  min-width: 0;
+  resize: vertical;
+}
+
+.term-keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.term-keys button {
+  min-width: 44px;
+  padding: 0 10px;
+}

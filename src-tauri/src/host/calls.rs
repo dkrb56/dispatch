@@ -1,6 +1,7 @@
 //! The calls of a window: the command name and the arguments exactly as the page gives them to
 //! `invoke` (`commands.rs` of the app has the same list, without `pty_join`, `pty_leave` and
-//! `pty_find`: only a host has terminals of other windows). The app gives the page the argument
+//! `pty_find`: only a host has terminals of other windows, and without `phone_terminal`: only a
+//! host serves the phone page). The app gives the page the argument
 //! names in camelCase: `new_text` is `newText`; the other names are one word.
 
 use std::collections::HashMap;
@@ -11,7 +12,12 @@ use serde_json::{Map, Value};
 
 use dispatch_lib::core::{actions, builds, chats, context, flow, info, pipeline, plangroups, pty, rules, rules_check, status, store, tickets, tokens, Core};
 
-use crate::clients::{Clients, Spawn};
+use crate::clients::{Clients, Spawn, PROJECT_TERMINAL};
+
+/// The size of a terminal that the phone starts: the phone shows it in a box that scrolls sideways.
+const PHONE_TERMINAL_SIZE: (u16, u16) = (120, 40);
+/// One `phone_terminal` at a time starts a session.
+static PHONE_START: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// The reply of a call.
 pub enum Reply {
@@ -98,6 +104,42 @@ pub fn run(
             json(serde_json::json!({ "cols": cols, "rows": rows }))
         }
         "pty_find" => json(clients.find(window, &a.req::<String>("label")?)),
+        // The Terminal of a project on the phone (ticket i-need-a-terminal-access-on-mobile): the
+        // running one, or with `start` a new Claude Code session with fixed arguments, the same
+        // session that the Terminal switch of a window starts. The reply is `{ id, cols, rows, owner,
+        // started }` or null: the owner answers the queries of the program, as the owner window does,
+        // and `started` says that the output so far is new, not a replay.
+        "phone_terminal" => {
+            let cwd: String = a.req("cwd")?;
+            let label = format!("{}{}", PROJECT_TERMINAL, cwd.trim_end_matches(['\\', '/']).to_lowercase());
+            let shown = |(id, (cols, rows), owner): (String, (u16, u16), bool), started: bool| {
+                json(serde_json::json!({ "id": id, "cols": cols, "rows": rows, "owner": owner, "started": started }))
+            };
+            if let Some(found) = clients.open_labeled(window, &label) {
+                return shown(found, false);
+            }
+            if a.opt::<bool>("start")? != Some(true) {
+                return json(());
+            }
+            // Two taps on Start, or two phones, start one session.
+            let _one = PHONE_START.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(found) = clients.open_labeled(window, &label) {
+                return shown(found, false);
+            }
+            let mut bytes = [0u8; 8];
+            getrandom::fill(&mut bytes).map_err(|e| format!("no random bytes for the id: {e}"))?;
+            let id = format!("phone-term-{}", bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>());
+            let (cols, rows) = PHONE_TERMINAL_SIZE;
+            clients.spawn(window, &id)?;
+            let started = pty::pty_spawn(core, id.clone(), "powershell".into(), Some(cwd), cols, rows, None, None, Some("claude".into()), None, None, None, None);
+            if let Err(error) = started {
+                clients.spawn_failed(&id);
+                return Err(error);
+            }
+            clients.sized(&id, cols, rows);
+            clients.label(&id, &label);
+            shown((id, (cols, rows), true), true)
+        }
         "pty_leave" => {
             clients.leave(window, &a.req::<String>("id")?);
             json(())

@@ -268,6 +268,13 @@ fn start_call(
             if let Err(text) = phone::limit_to_open(&command, &mut args, open_root) {
                 return Out::Text(protocol::reply_error(id, text));
             }
+            // The phone types only into a project terminal that it shows.
+            if command == "pty_write" {
+                let terminal = args.get("id").and_then(Value::as_str).unwrap_or_default();
+                if !host.clients.phone_may_write(&window, terminal) {
+                    return Out::Text(protocol::reply_error(id, phone::NOT_ALLOWED));
+                }
+            }
         }
         match calls::run(&host.core, &host.clients, &window, &command, &args, body.as_deref()) {
             Ok(Reply::Json(value)) => Out::Text(protocol::reply_value(id, value)),

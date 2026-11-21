@@ -743,3 +743,33 @@ export function phoneBoards(
 export function showAllKey(root: string, status: string): string {
   return `${pathKey(root)}\n${status}`;
 }
+
+/**
+ * The key buttons of the Terminal view (ticket i-need-a-terminal-access-on-mobile, user decision 5):
+ * a phone keyboard has no Esc, Tab or arrows. Each name gives the bytes that the key sends.
+ */
+export const PHONE_KEYS = ["Enter", "Esc", "Tab", "Up", "Down", "Left", "Right", "Ctrl+C"] as const;
+export type PhoneKey = (typeof PHONE_KEYS)[number];
+
+const ARROWS: Record<string, string> = { Up: "A", Down: "B", Right: "C", Left: "D" };
+
+/** The bytes of a key button. In application cursor mode an arrow is `ESC O x`, else `ESC [ x`. */
+export function keyBytes(name: PhoneKey, appCursor: boolean): string {
+  const arrow = ARROWS[name];
+  if (arrow) return `\x1b${appCursor ? "O" : "["}${arrow}`;
+  return { Enter: "\r", Esc: "\x1b", Tab: "\t", "Ctrl+C": "\x03" }[name as string] ?? "";
+}
+
+/**
+ * The bytes of the text of the text box, as the computer pastes it: each line end as `\r`, and
+ * wrapped in `ESC[200~` … `ESC[201~` when the program turned bracketed paste on.
+ */
+export function pasteBytes(text: string, bracketed: boolean): string {
+  const lines = text.replace(/\r\n?/g, "\n").replace(/\n/g, "\r");
+  return bracketed ? `\x1b[200~${lines}\x1b[201~` : lines;
+}
+
+/** The name of the Terminal of a project on the host: the same text as the window gives it. */
+export function terminalLabel(root: string): string {
+  return `project-terminal:${pathKey(root)}`;
+}

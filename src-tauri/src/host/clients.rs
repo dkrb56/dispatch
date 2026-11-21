@@ -270,6 +270,47 @@ impl Clients {
             .min()
     }
 
+    /// `phone_terminal` of `window`: the running terminal with the name `label`, its own first,
+    /// else the smallest id. Sends `window` the size and the last output as `pty-size` and one
+    /// `pty-output`, so a new view draws the whole screen. Its own terminal attaches again; the
+    /// terminal of another window gets `window` as a viewer, as `join` does. Gives the id, the size,
+    /// and whether `window` owns the terminal: the owner answers the queries of the program.
+    pub fn open_labeled(&self, window: &str, label: &str) -> Option<(String, (u16, u16), bool)> {
+        let mut inner = self.lock();
+        let Inner { windows, terminals, .. } = &mut *inner;
+        let tx = windows.get(window).map(|known| known.tx.clone())?;
+        let running = |terminal: &Terminal| !terminal.killed && !terminal.ended && terminal.label.as_deref() == Some(label);
+        let own = terminals.iter().filter(|(_, terminal)| terminal.owner == window && running(terminal)).map(|(id, _)| id.clone()).min();
+        let id = own.clone().or_else(|| terminals.iter().filter(|(_, terminal)| running(terminal)).map(|(id, _)| id.clone()).min())?;
+        let terminal = terminals.get_mut(&id)?;
+        if own.is_some() {
+            // The tail holds the kept output too: the view starts empty and gets the whole screen.
+            terminal.attached = true;
+            terminal.replay.clear();
+        } else {
+            terminal.viewers.insert(window.to_string());
+        }
+        let (cols, rows) = terminal.size;
+        if cols > 0 && rows > 0 {
+            let _ = tx.send(Out::Text(protocol::event(PTY_SIZE, &json!({ "id": id, "cols": cols, "rows": rows }))));
+        }
+        if !terminal.tail.is_empty() {
+            let _ = tx.send(Out::Text(protocol::event(PTY_OUTPUT, &json!({ "id": id, "data": terminal.tail }))));
+        }
+        Some((id, (cols, rows), own.is_some()))
+    }
+
+    /// `pty_write` of a phone: only into a running project terminal that `window` owns or joined.
+    /// An unknown id is refused, other than `check_writer` does.
+    pub fn phone_may_write(&self, window: &str, id: &str) -> bool {
+        self.lock().terminals.get(id).is_some_and(|terminal| {
+            !terminal.killed
+                && !terminal.ended
+                && terminal.label.as_deref().is_some_and(|label| label.starts_with(PROJECT_TERMINAL))
+                && (terminal.owner == window || terminal.viewers.contains(window))
+        })
+    }
+
     /// A call of `window` for the terminal `id`: an error when another window owns it.
     pub fn check_owner(&self, window: &str, id: &str) -> Result<(), String> {
         match self.lock().terminals.get(id) {
@@ -356,6 +397,8 @@ impl Clients {
 const OTHER_WINDOW: &str = "the terminal belongs to another window";
 const NO_TERMINAL: &str = "the terminal does not run";
 const OWN_TERMINAL: &str = "the terminal belongs to this window";
+/// The label of the Terminal of a project starts with this; the path key of its folder follows.
+pub const PROJECT_TERMINAL: &str = "project-terminal:";
 /// The event of a new size of a terminal, for the windows that joined it.
 pub const PTY_SIZE: &str = "pty-size";
 
@@ -630,6 +673,73 @@ mod tests {
         clients.join("w-2", "t-1").unwrap();
         clients.unregister("w-2", serial2);
         assert_eq!(clients.check_writer("w-2", "t-1"), Err(OTHER_WINDOW.into()), "a reconnect joins again");
+    }
+
+    #[test]
+    fn a_phone_opens_the_project_terminal_of_a_label() {
+        let clients = Clients::new("k".into());
+        let (tx1, mut rx1) = unbounded_channel();
+        let (tx2, mut rx2) = unbounded_channel();
+        clients.register("w-1", tx1, "0.0.0");
+        let serial = clients.register("phone-1", tx2, "0.0.0");
+        texts(&mut rx1);
+        texts(&mut rx2);
+        assert_eq!(clients.open_labeled("phone-1", "project-terminal:d:\\a"), None, "no terminal yet");
+        clients.spawn("w-1", "t-1").unwrap();
+        clients.sized("t-1", 120, 40);
+        clients.emit(PTY_OUTPUT, output("t-1", "desk"));
+        assert_eq!(clients.open_labeled("phone-1", "project-terminal:d:\\a"), None, "no label yet");
+        clients.label("t-1", "project-terminal:d:\\a");
+        assert_eq!(clients.open_labeled("phone-1", "project-terminal:d:\\a"), Some(("t-1".into(), (120, 40), false)));
+        let joined = texts(&mut rx2);
+        assert!(joined[0].contains(PTY_SIZE) && joined[1].contains("desk"), "{joined:?}");
+        clients.emit(PTY_OUTPUT, output("t-1", "more"));
+        assert!(texts(&mut rx2).iter().any(|text| text.contains("more")), "the phone is a viewer");
+        assert!(clients.phone_may_write("phone-1", "t-1"));
+        assert_eq!(clients.check_owner("phone-1", "t-1"), Err(OTHER_WINDOW.into()), "size and end stay with the owner");
+
+        // The terminal of the phone itself: after a reconnect it attaches again with the whole tail.
+        clients.spawn("phone-1", "p-1").unwrap();
+        clients.sized("p-1", 120, 40);
+        clients.label("p-1", "project-terminal:d:\\b");
+        clients.emit(PTY_OUTPUT, output("p-1", "first "));
+        clients.unregister("phone-1", serial);
+        clients.emit(PTY_OUTPUT, output("p-1", "away"));
+        let (tx2, mut rx2) = unbounded_channel();
+        clients.register("phone-1", tx2, "0.0.0");
+        texts(&mut rx2);
+        assert_eq!(clients.open_labeled("phone-1", "project-terminal:d:\\b"), Some(("p-1".into(), (120, 40), true)));
+        let attached = texts(&mut rx2);
+        assert!(attached.iter().any(|text| text.contains("first away")), "{attached:?}");
+        clients.emit(PTY_OUTPUT, output("p-1", "live"));
+        assert_eq!(texts(&mut rx2).iter().filter(|text| text.contains("live")).count(), 1, "once, as the owner");
+        assert!(clients.phone_may_write("phone-1", "p-1"));
+        assert!(!clients.phone_may_write("phone-1", "t-1"), "the reconnect left t-1");
+        assert_eq!(clients.open_labeled("phone-2", "project-terminal:d:\\b"), None, "a window that is not connected");
+    }
+
+    #[test]
+    fn a_phone_writes_only_into_a_project_terminal_that_it_shows() {
+        let clients = Clients::new("k".into());
+        let (tx1, _rx1) = unbounded_channel();
+        let (tx2, _rx2) = unbounded_channel();
+        clients.register("w-1", tx1, "0.0.0");
+        clients.register("phone-1", tx2, "0.0.0");
+        assert!(!clients.phone_may_write("phone-1", "nothing"), "an unknown id");
+        clients.spawn("w-1", "chat").unwrap();
+        clients.label("chat", "triage:d:\\a");
+        clients.join("phone-1", "chat").unwrap();
+        assert!(!clients.phone_may_write("phone-1", "chat"), "not a project terminal");
+        clients.spawn("w-1", "t-1").unwrap();
+        clients.label("t-1", "project-terminal:d:\\a");
+        assert!(!clients.phone_may_write("phone-1", "t-1"), "not joined");
+        clients.join("phone-1", "t-1").unwrap();
+        assert!(clients.phone_may_write("phone-1", "t-1"));
+        clients.leave("phone-1", "t-1");
+        assert!(!clients.phone_may_write("phone-1", "t-1"), "left");
+        clients.join("phone-1", "t-1").unwrap();
+        clients.killed("t-1");
+        assert!(!clients.phone_may_write("phone-1", "t-1"), "killed");
     }
 
     #[test]

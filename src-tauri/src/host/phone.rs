@@ -2,6 +2,8 @@
 //! host gets the files of the page, which `build.rs` embeds. A request that asks for a WebSocket goes
 //! on to the service of `server.rs`. The page connects with the phone key, and that key may use only
 //! the calls of `PHONE_CALLS`, and its calls for a project only for an open project (`limit_to_open`).
+//! It shows and types into the Terminal of an open project (`phone_terminal`); it starts no other
+//! terminal and reads no file.
 
 use serde_json::{Map, Value};
 
@@ -23,12 +25,29 @@ pub const NOT_OPEN: &str = "this project is not open in a Dispatch window";
 /// any text, as the computer sends), and approve or reject a ready plan (ticket
 /// approve-or-reject-a-plan-from-the-phone). Its approval only writes the choices and a marker; the
 /// driver window starts the work run. It starts and stops no work run itself.
+/// It shows the Terminal of a project and types into it (ticket i-need-a-terminal-access-on-mobile):
+/// `phone_terminal` joins that terminal or starts it with fixed arguments, `pty_write` reaches only
+/// a project terminal that the phone shows (`Clients::phone_may_write`), and `pty_leave` ends the view.
+/// It never resizes or ends a terminal and never starts one with its own arguments.
 /// The calls of `FOLDER_CALLS` work only for an open project.
-const PHONE_CALLS: [&str; 8] = ["workspaces_get", "task_list", "worker_list", "ticket_add", "task_reply", "task_reject", "task_approve_queue", "task_approve_cancel"];
+const PHONE_CALLS: [&str; 11] = [
+    "workspaces_get",
+    "task_list",
+    "worker_list",
+    "ticket_add",
+    "task_reply",
+    "task_reject",
+    "task_approve_queue",
+    "task_approve_cancel",
+    "phone_terminal",
+    "pty_write",
+    "pty_leave",
+];
 /// The phone calls that name a project folder in `cwd`.
-const FOLDER_CALLS: [&str; 6] = ["task_list", "ticket_add", "task_reply", "task_reject", "task_approve_queue", "task_approve_cancel"];
+const FOLDER_CALLS: [&str; 7] = ["task_list", "ticket_add", "task_reply", "task_reject", "task_approve_queue", "task_approve_cancel", "phone_terminal"];
 
-const SECURITY: &str = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src ws:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+/// xterm.js of the Terminal view adds `<style>` elements: `style-src` permits inline styles.
+const SECURITY: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src ws:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 
 /// Whether the phone key may make the call `command`.
 pub fn phone_call(command: &str) -> bool {
@@ -114,7 +133,7 @@ mod tests {
         assert!(page.contains("Content-Type: text/html; charset=utf-8\r\n"));
         assert!(page.contains("Cache-Control: no-cache\r\n") && page.contains("X-Content-Type-Options: nosniff\r\n"));
         assert!(page.contains("Referrer-Policy: no-referrer\r\n") && page.contains("Connection: close\r\n"));
-        assert!(page.contains("Content-Security-Policy: default-src 'none'; script-src 'self'"));
+        assert!(page.contains("Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline';"));
         assert!(page.contains("<title>Dispatch</title>"), "{page}");
         assert_eq!(text(&reply(b"GET /phone.html?x=1 HTTP/1.1\r\n\r\n")), page, "the second name of the page, with a query");
         assert!(text(&reply(b"GET /phone.js HTTP/1.1\r\n\r\n")).contains("Content-Type: text/javascript"));
@@ -149,7 +168,7 @@ mod tests {
     fn a_folder_call_reaches_only_an_open_project() {
         let args = |value: Value| value.as_object().cloned().unwrap();
         let open = |folder: &str| (folder.to_lowercase() == "d:\\work\\alpha").then(|| "D:\\Work\\Alpha".to_string());
-        for command in ["task_list", "ticket_add", "task_reply", "task_reject", "task_approve_queue", "task_approve_cancel"] {
+        for command in ["task_list", "ticket_add", "task_reply", "task_reject", "task_approve_queue", "task_approve_cancel", "phone_terminal"] {
             let mut known = args(serde_json::json!({ "cwd": "d:\\WORK\\alpha", "text": "x" }));
             assert_eq!(limit_to_open(command, &mut known, open), Ok(()), "{command}");
             assert_eq!(known, args(serde_json::json!({ "cwd": "D:\\Work\\Alpha", "text": "x" })), "the saved folder replaces the text of the phone");
@@ -159,7 +178,7 @@ mod tests {
                 assert_eq!(refused, args(bad), "a refused call stays as it was");
             }
         }
-        for command in ["workspaces_get", "worker_list"] {
+        for command in ["workspaces_get", "worker_list", "pty_write", "pty_leave"] {
             let mut other = args(serde_json::json!({ "cwd": "D:\\Work\\Other" }));
             let before = other.clone();
             assert_eq!(limit_to_open(command, &mut other, |_| None), Ok(()), "{command}");
@@ -169,11 +188,13 @@ mod tests {
 
     #[test]
     fn the_phone_calls_are_only_the_listed_ones() {
-        for call in ["workspaces_get", "task_list", "worker_list", "ticket_add", "task_reply", "task_reject", "task_approve_queue", "task_approve_cancel"] {
+        let allowed = ["workspaces_get", "task_list", "worker_list", "ticket_add", "task_reply", "task_reject", "task_approve_queue", "task_approve_cancel"];
+        for call in allowed.into_iter().chain(["phone_terminal", "pty_write", "pty_leave"]) {
             assert!(phone_call(call), "{call}");
         }
         // The phone never starts or stops a work run, and never writes the plan by the desktop calls.
-        let refused = ["pty_spawn", "pty_write", "file_read", "task_approve", "task_decide", "task_checks", "task_work", "task_stop", "task_merge"];
+        // It starts no terminal with its own arguments, never resizes or ends one, and reads no file.
+        let refused = ["pty_spawn", "pty_join", "pty_resize", "pty_kill", "pty_find", "file_read", "task_approve", "task_decide", "task_checks", "task_work", "task_stop", "task_merge"];
         for call in refused.into_iter().chain(["workspaces_set", "driver_state", "image_save", "dir_list", ""]) {
             assert!(!phone_call(call), "{call}");
         }

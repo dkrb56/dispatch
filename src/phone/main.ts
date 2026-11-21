@@ -11,6 +11,14 @@
 // A plan that waits for Approve shows its block (ticket approve-or-reject-a-plan-from-the-phone):
 // Approve writes the choices with `task_approve_queue` and leaves a marker; the Dispatch window on
 // the computer starts the work run when the project is free. Reject sends the reason with `task_reject`.
+//
+// The Terminal button of a card (ticket i-need-a-terminal-access-on-mobile) shows the Terminal of the
+// project, the Claude Code session of the Terminal switch on the computer, at the size of the
+// computer. The phone types through a text box and key buttons, never through xterm itself. Only the
+// answers of xterm to the queries of the program go from xterm to the terminal, and only while the
+// phone owns it (it started the terminal), as the owner window on the computer does.
+import "@xterm/xterm/css/xterm.css";
+import { Terminal } from "@xterm/xterm";
 import "./phone.css";
 import { replyText } from "../answers";
 import { defaultChoice } from "../checks";
@@ -41,7 +49,10 @@ import {
   type PhoneTaskList,
   type PhoneTools,
   type PhoneWorker,
+  keyBytes,
+  pasteBytes,
   pathKey,
+  PHONE_KEYS,
   showAllKey,
   shownRoots,
   toggleColumn,
@@ -51,6 +62,7 @@ import {
 } from "../phonemodel";
 import { boardTickets, COLUMNS, columnCards, countText, endFailed, endWord, LEVELS, levelOf, partPlace, type BoardColumn, type InProgressView, type Ticket, typeName } from "../tickets";
 import { taskTldr } from "../tldr";
+import { isTerminalReport } from "../triageowner";
 import { groupCount } from "../topbar";
 
 const PROTOCOL = 1;
@@ -280,6 +292,9 @@ function connect(): void {
       showMessage("");
       hintEl.hidden = !homeScreenHint(standalone, hintDismissed());
       void round();
+      terminalReconnected();
+    } else if (frame.type === "event") {
+      terminalEvent(String(frame.event), frame.payload);
     } else if (frame.type === "reply") {
       const waiting = pending.get(Number(frame.id));
       if (!waiting) return;
@@ -302,6 +317,7 @@ function connect(): void {
     clearTimeout(wait);
     if (socket === ws) socket = null;
     connected = false;
+    terminalLost();
     for (const [id, waiting] of pending) {
       pending.delete(id);
       waiting.reject("the connection ended");
@@ -808,6 +824,12 @@ function cardView(root: string): CardView {
   const arrowEl = element("span", "arrow", "▾");
   arrowEl.setAttribute("aria-hidden", "true");
   head.append(nameEl, countEl, arrowEl);
+  const topRow = element("div", "card-top");
+  const termBtn = element("button", "term-btn", "Terminal");
+  termBtn.type = "button";
+  termBtn.setAttribute("aria-label", `Terminal of ${folderName(root)}`);
+  termBtn.addEventListener("click", () => openTerminal(root));
+  topRow.append(head, termBtn);
   const rest = element("div", "card-rest");
   const bodyEl = element("div");
   const errorEl = element("p", "card-error");
@@ -862,7 +884,7 @@ function cardView(root: string): CardView {
       .finally(() => (send.disabled = false));
   });
   rest.append(bodyEl, errorEl, element("h3", "", "Tickets"), line, box, noteEl);
-  el.append(head, rest);
+  el.append(topRow, rest);
   head.addEventListener("click", () => {
     choices = toggleRoot(choices, "folded", root);
     saveChoices();
@@ -998,6 +1020,219 @@ document.addEventListener("visibilitychange", () => {
     retryWait = RETRY_FIRST_MS;
     connect();
   }
+});
+
+/** The font size of the Terminal view: the terminal keeps the width of the computer and scrolls sideways. */
+const TERM_FONT = 11;
+/** Send types the text, then Enter after this wait, as a program can take a fast Enter for a new line. */
+const SEND_ENTER_MS = 400;
+const termEl = element("section", "term-view");
+termEl.hidden = true;
+const termTop = element("div", "term-top");
+const termBack = element("button", "", "Back");
+termBack.type = "button";
+const termName = element("span", "term-name");
+termTop.append(termBack, termName);
+const termStatus = element("p", "note term-status");
+termStatus.hidden = true;
+const termStart = element("button", "term-start", "Start terminal");
+termStart.type = "button";
+termStart.hidden = true;
+const termScroll = element("div", "term-scroll");
+const termHost = element("div", "term-host");
+termScroll.append(termHost);
+const termForm = element("form", "term-form");
+const termText = element("textarea", "term-text");
+termText.rows = 2;
+termText.placeholder = "Text for the terminal";
+termText.setAttribute("aria-label", "Text for the terminal");
+const termSend = element("button", "", "Send");
+termForm.append(termText, termSend);
+const termKeys = element("div", "term-keys");
+termKeys.setAttribute("role", "group");
+termKeys.setAttribute("aria-label", "Keys");
+for (const name of PHONE_KEYS) {
+  const button = element("button", "", name);
+  button.type = "button";
+  button.addEventListener("click", () => void termWrite(keyBytes(name, term?.modes.applicationCursorKeysMode ?? false)));
+  termKeys.append(button);
+}
+termEl.append(termTop, termStatus, termStart, termScroll, termForm, termKeys);
+app.append(termEl);
+
+/** The xterm of the view; it stays for the next project. Of its input only the reports go out (`termData`). */
+let term: Terminal | null = null;
+/** The project whose Terminal shows, or null while the cards show. */
+let termRoot: string | null = null;
+/** The id of the terminal on the host, or null while none runs. */
+let termId: string | null = null;
+/** A `phone_terminal` call waits: the host sends the size and the last output before its reply. */
+let termBusy = false;
+let termEarly: { event: string; payload: unknown }[] = [];
+/** The phone owns the terminal that shows: its xterm answers the queries of the program. */
+let termOwner = false;
+/** The output so far is a replay: its old queries got their answers already. */
+let termReplay = false;
+
+function terminal(): Terminal {
+  if (!term) {
+    term = new Terminal({ cols: 120, rows: 40, fontSize: TERM_FONT, scrollback: 5000, theme: { background: "#13161a" } });
+    term.open(termHost);
+    // A tap on the terminal opens no keyboard: the text box and the key buttons type.
+    term.textarea?.setAttribute("inputmode", "none");
+    if (term.textarea) term.textarea.readOnly = true;
+    term.onData(termData);
+  }
+  return term;
+}
+
+/** Data of xterm: only a report of the owner goes to the terminal, never a key and never during a replay. */
+function termData(data: string): void {
+  if (termOwner && !termReplay && termId && isTerminalReport(data)) void call("pty_write", { id: termId, data }).catch(() => {});
+}
+
+function termNote(text: string): void {
+  termStatus.textContent = text;
+  termStatus.hidden = text === "";
+}
+
+function openTerminal(root: string): void {
+  termRoot = root;
+  termId = null;
+  termName.textContent = folderName(root);
+  termStart.hidden = true;
+  termEl.hidden = false;
+  document.body.classList.add("term-open");
+  window.scrollTo(0, 0);
+  terminal().reset();
+  void termOpen(false);
+}
+
+/** Asks the host for the Terminal of the project; with `start` the host starts it when none runs. */
+async function termOpen(start: boolean): Promise<void> {
+  const root = termRoot;
+  if (!root || termBusy) return;
+  if (!connected) {
+    termNote("Waiting for the connection to your computer…");
+    return;
+  }
+  termBusy = true;
+  termEarly = [];
+  termStart.disabled = true;
+  termNote(start ? "Starting Claude Code…" : "Opening the terminal…");
+  try {
+    const shown = await call<{ id: string; cols: number; rows: number; owner?: boolean; started?: boolean } | null>("phone_terminal", { cwd: root, start });
+    if (termRoot !== root) {
+      if (shown) void call("pty_leave", { id: shown.id }).catch(() => {});
+      return;
+    }
+    const view = terminal();
+    view.reset();
+    if (!shown) {
+      termId = null;
+      termStart.hidden = false;
+      termNote("No terminal runs for this project. Start opens Claude Code in its folder, and the computer shows the same session.");
+      return;
+    }
+    termId = shown.id;
+    termOwner = shown.owner === true;
+    termStart.hidden = true;
+    if (shown.cols > 0 && shown.rows > 0) view.resize(shown.cols, shown.rows);
+    termNote("");
+    termBusy = false;
+    const early = termEarly;
+    termEarly = [];
+    // The last output of a running terminal is a replay; the output of a new one is live.
+    termReplay = shown.started !== true;
+    for (const { event, payload } of early) terminalEvent(event, payload);
+    const id = termId;
+    view.write("", () => {
+      if (termId === id) termReplay = false;
+    });
+  } catch (error) {
+    termNote(`The terminal did not open: ${error}`);
+  } finally {
+    termBusy = false;
+    termEarly = [];
+    termStart.disabled = false;
+  }
+}
+
+/** An event of the host: the output, the size and the end of the terminal that shows. */
+function terminalEvent(event: string, payload: unknown): void {
+  if (!termRoot) return;
+  if (termBusy) {
+    termEarly.push({ event, payload });
+    return;
+  }
+  if (!termId || !term) return;
+  const data = payload as { id?: string; data?: string; cols?: number; rows?: number };
+  if (event === "pty-output" && data.id === termId) term.write(data.data ?? "");
+  else if (event === "pty-size" && data.id === termId && data.cols && data.rows) term.resize(data.cols, data.rows);
+  else if (event === "pty-exit" && payload === termId) {
+    termId = null;
+    termStart.hidden = false;
+    termNote("The terminal ended. Start opens a new Claude Code session.");
+  }
+}
+
+/** A new connection: the view asks for its terminal again and draws it from the last output. */
+function terminalReconnected(): void {
+  if (!termRoot) return;
+  termId = null;
+  termOwner = false;
+  void termOpen(false);
+}
+
+function terminalLost(): void {
+  if (termRoot) termNote("The connection to your computer is lost. Dispatch tries again…");
+}
+
+function closeTerminal(): void {
+  const id = termId;
+  termRoot = null;
+  termId = null;
+  termOwner = false;
+  termEl.hidden = true;
+  document.body.classList.remove("term-open");
+  if (id && connected) void call("pty_leave", { id }).catch(() => {});
+  draw();
+}
+
+/** Types `data` into the terminal that shows. Gives false when it did not go. */
+async function termWrite(data: string): Promise<boolean> {
+  if (!termId) {
+    termNote("No terminal runs for this project.");
+    return false;
+  }
+  try {
+    await call("pty_write", { id: termId, data });
+    return true;
+  } catch (error) {
+    termNote(`Not sent: ${error}`);
+    return false;
+  }
+}
+
+termBack.addEventListener("click", closeTerminal);
+termStart.addEventListener("click", () => void termOpen(true));
+termForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (termSend.disabled || !termId || !term) return;
+  const text = termText.value;
+  termSend.disabled = true;
+  void (async () => {
+    try {
+      if (text !== "") {
+        if (!(await termWrite(pasteBytes(text, term?.modes.bracketedPasteMode ?? false)))) return;
+        termText.value = "";
+        await new Promise((resolve) => setTimeout(resolve, SEND_ENTER_MS));
+      }
+      await termWrite("\r");
+    } finally {
+      termSend.disabled = false;
+    }
+  })();
 });
 
 if (key) connect();

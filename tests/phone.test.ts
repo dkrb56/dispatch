@@ -9,7 +9,7 @@ import { phoneLink, phoneSetup } from "../src/phonelink.ts";
 import { replyText } from "../src/answers.ts";
 import { confirmChoice, confirmQuestion } from "../src/confirm.ts";
 import { defaultChoice } from "../src/checks.ts";
-import { approvalQueued, homeScreenHint, inProgressPlace, keyAddress, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, phoneApproval, phoneBoards, phoneCards, phonePhase, phonePlan, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, planMark, reportMark, showAllKey, shownRoots, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
+import { approvalQueued, homeScreenHint, inProgressPlace, keyAddress, keyBytes, pasteBytes, PHONE_KEYS, terminalLabel, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, phoneApproval, phoneBoards, phoneCards, phonePhase, phonePlan, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, planMark, reportMark, showAllKey, shownRoots, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
 import { boardTickets, type BoardColumn, columnCards, type InProgressView, COLUMNS, countText, type Ticket } from "../src/tickets.ts";
 import { taskTldr } from "../src/tldr.ts";
 import { groupCount } from "../src/topbar.ts";
@@ -486,4 +486,22 @@ test("the approval: a tapped option or own words per decision, and the checked c
   assert.equal(phoneApproval(plan, new Map([[1, "Red"]]), new Map([[2, "  "]]), new Set()), null, "a decision without an answer");
   assert.equal(phoneApproval(plan, new Map([[1, "Red"], [2, "Huge"]]), new Map(), new Set()), null, "an option that the plan does not have");
   assert.deepEqual(phoneApproval({ ...plan, decisions: [] }, new Map(), new Map(), new Set()), { decisions: [], checks: [] }, "a plan without decisions");
+});
+
+test("the Terminal view: the bytes of each key button, of a paste and the name of the terminal", () => {
+  const keys = PHONE_KEYS.map((name) => [name, keyBytes(name, false), keyBytes(name, true)]);
+  assert.deepEqual(keys, [
+    ["Enter", "\r", "\r"],
+    ["Esc", "\x1b", "\x1b"],
+    ["Tab", "\t", "\t"],
+    ["Up", "\x1b[A", "\x1bOA"],
+    ["Down", "\x1b[B", "\x1bOB"],
+    ["Left", "\x1b[D", "\x1bOD"],
+    ["Right", "\x1b[C", "\x1bOC"],
+    ["Ctrl+C", "\x03", "\x03"],
+  ]);
+  assert.equal(pasteBytes("one\ntwo\r\nthree", false), "one\rtwo\rthree", "line ends as the Enter key");
+  assert.equal(pasteBytes("fix it", true), "\x1b[200~fix it\x1b[201~", "wrapped when the program asks for it");
+  assert.equal(pasteBytes("", false), "");
+  assert.equal(terminalLabel("D:\\Work\\Alpha\\"), "project-terminal:d:\\work\\alpha", "the label of the window: no slash at the end, lower case");
 });
