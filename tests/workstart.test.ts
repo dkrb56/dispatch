@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { chooseNightMerge, chooseQueued, chooseStart, nightPlan, projectBusy, type QueuedFacts, StartLeases, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts } from "../src/workstart.ts";
+import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type QueuedFacts, StartLeases, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts } from "../src/workstart.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -460,4 +460,30 @@ test("main.ts: every reply of the user goes through replyOrQueue, and approvePla
   assert.equal(MAIN.split("sendQueuedReply(").length - 1, 2, "one definition and one call: only approvePlans sends a waiting reply");
   assert.match(fn("reportWaits"), /queuedReplies/);
   assert.match(fn("taskStatus"), /queuedReplyOf\(/);
+});
+
+// Ticket approve-during-a-merge-is-refused-by-the: a start that a running merge refuses goes back into the queue.
+test("mergeRefusal: the task of the merge from the refusal of the worker script, else null", () => {
+  assert.equal(mergeRefusal("refused: a merge of this project runs (task steam-build-uses-the-game-s-own-steam); try again when it has ended\n"), "steam-build-uses-the-game-s-own-steam");
+  assert.equal(mergeRefusal("refused: these changes in files of this task are not committed; commit, stash or undo them first:\nM  Config/DefaultGame.ini"), null);
+  assert.equal(mergeRefusal(""), null);
+});
+
+test("main.ts: an Approve click and a queued approval that a merge refuses wait in the queue again", () => {
+  const fn = (name: string) => {
+    const start = MAIN.indexOf(`function ${name}(`);
+    assert.ok(start >= 0, `main.ts has the function ${name}`);
+    return MAIN.slice(start, MAIN.indexOf("\n}\n", start));
+  };
+  const click = fn("approveOrQueue");
+  const direct = click.slice(0, click.indexOf("busyTasks.add("));
+  assert.match(direct, /approveWithDecisions\(/);
+  assert.match(direct, /mergeRefusal\(actionErrors\.get\(task\.name\)/);
+  assert.match(direct, /queuedApprovals\.set\(queueKey\(task\), written\)/);
+  assert.match(direct, /saveQueued\(\)/);
+  const poll = fn("approvePlans");
+  const queued = poll.slice(poll.indexOf('choice.kind === "queued"'), poll.indexOf('choice.kind === "night"'));
+  assert.match(queued, /mergeRefusal\(actionErrors\.get\(task\.name\)/);
+  assert.match(queued, /queuedApprovals\.set\(key, planTime\)/);
+  assert.match(queued, /queuedApprovalTimes\.set\(key, clickTime\)/);
 });

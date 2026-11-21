@@ -126,7 +126,7 @@ import { HOLD_NOTE, holdWait } from "./holdstep";
 import { showTriage, triageCard, triagePanesToClose, withoutTriage, type ProjectLoad } from "./notriage";
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
-import { chooseNightMerge, chooseQueued, chooseStart, nightPlan, projectBusy, type ReadTimes, StartLeases } from "./workstart";
+import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, freshOnly, type GateRefusal, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { autoMergeNote, type AutoMergeFacts, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
@@ -2963,10 +2963,22 @@ function approvePlans(): void {
     if (!choice || !task?.info?.plan) continue;
     autoApproved.set(task.name, task.info.plan.modified);
     if (choice.kind === "queued") {
-      queuedApprovals.delete(queueKey(task));
+      const key = queueKey(task);
+      const planTime = queuedApprovals.get(key);
+      const clickTime = queuedApprovalTimes.get(key) ?? 0;
+      queuedApprovals.delete(key);
       saveQueued();
-      const where = phoneApprovals.delete(queueKey(task)) ? "on the phone" : "in Dispatch";
-      void leasedStart(task, () => taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name}, approved earlier by the user ${where}: the project is free now, and the work run started.`));
+      const where = phoneApprovals.delete(key) ? "on the phone" : "in Dispatch";
+      void leasedStart(task, () => taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name}, approved earlier by the user ${where}: the project is free now, and the work run started.`)).then((started) => {
+        // A merge that the list did not show refused the start (ticket
+        // approve-during-a-merge-is-refused-by-the): the approval waits in the queue again.
+        if (started || planTime === undefined || mergeRefusal(actionErrors.get(task.name) ?? "") === null) return;
+        actionErrors.delete(task.name);
+        queuedApprovals.set(key, planTime);
+        queuedApprovalTimes.set(key, clickTime);
+        saveQueued();
+        renderChats();
+      });
     } else if (choice.kind === "night") {
       // Night mode: every decision takes its recommended option, and the plan records it.
       const decisions = task.info.decisions ?? [];
@@ -5420,11 +5432,13 @@ function decisionLines(choices: DecisionAnswer[]): string[] {
  * Writes the decisions into the plan, then approves it. `how` goes into the line for triage.
  * Without decisions it only approves.
  */
-async function approveWithDecisions(task: Task, choices: DecisionAnswer[], how: string): Promise<boolean> {
+async function approveWithDecisions(task: Task, choices: DecisionAnswer[], how: string, wrote?: (time: number) => void): Promise<boolean> {
   // The start counts from here: the lease holds the project for this work run (ticket one-work-run-race).
   return leasedStart(task, async () => {
     const checks = checksLine(task);
-    if ((await writeDecisions(task, choices)) === null) return false;
+    const written = await writeDecisions(task, choices);
+    if (written === null) return false;
+    wrote?.(written);
     const line = `Plan ${task.name} approved in Dispatch${how ? ` ${how}` : ""}.${checks} The work run started.`;
     return taskAction(task, "task_approve", { id: task.name }, line);
   });
@@ -5497,7 +5511,24 @@ async function writeDecisionLines(task: Task, choices: DecisionAnswer[]): Promis
 async function approveOrQueue(task: Task, choices: DecisionAnswer[], how: string): Promise<boolean> {
   if (busyTasks.has(task.name)) return false;
   const wait = approveWait(task);
-  if (!wait) return approveWithDecisions(task, choices, how);
+  if (!wait) {
+    // A merge that the list did not show yet refuses the start (ticket
+    // approve-during-a-merge-is-refused-by-the): the click waits in the queue for it, as below.
+    let written = null as number | null;
+    if (await approveWithDecisions(task, choices, how, (time) => (written = time))) return true;
+    const merge = mergeRefusal(actionErrors.get(task.name) ?? "");
+    if (written === null || merge === null) return false;
+    actionErrors.delete(task.name);
+    queuedApprovals.delete(queueKey(task));
+    queuedApprovals.set(queueKey(task), written);
+    queuedApprovalTimes.set(queueKey(task), Date.now());
+    holdPicks.set(queueKey(task), { written, picks: new Map(choices.filter(({ decision }) => decision.hold).map(({ decision, answer }) => [decision.number, answer])) });
+    saveQueued();
+    autoApproved.set(task.name, written);
+    tellTriage(projectFor(taskHost(task), taskCwd(task)), `Plan ${task.name} approved in Dispatch${how ? ` ${how}` : ""}. Its work run starts when the merge of ${merge} ends. Dispatch starts its work run then; do not start it yourself.`);
+    renderChats();
+    return true;
+  }
   busyTasks.add(task.name);
   actionErrors.delete(task.name);
   renderChats();

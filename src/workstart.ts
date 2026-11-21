@@ -79,6 +79,14 @@ export function projectBusy(facts: BusyFacts): boolean {
   return !!facts.paused || facts.merging !== null || facts.running !== null || facts.leased !== null;
 }
 
+/**
+ * The task whose merge refused a start (ticket approve-during-a-merge-is-refused-by-the): the error
+ * text of the worker script holds `a merge of this project runs (task <name>)`. Else null.
+ */
+export function mergeRefusal(text: string): string | null {
+  return /a merge of this project runs \(task ([^)]+)\)/.exec(text)?.[1] ?? null;
+}
+
 /** A task of the project as the choice of a start sees it. */
 export interface StartCandidate {
   name: string;

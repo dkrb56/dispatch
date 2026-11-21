@@ -1827,6 +1827,18 @@ function Ensure-BranchFile {
   Read-BranchFile $Id
 }
 
+# Waits up to 60 s while another process holds the merge lock, then refuses with the task of the
+# holder. Without a lock it goes on at once.
+function Wait-MergeLock {
+  $holder = Lock-Holder (Merge-Lock)
+  $deadline = (Get-Date).AddSeconds(60)
+  while ($holder -and (Get-Date) -lt $deadline) {
+    Start-Sleep -Seconds 2
+    $holder = Lock-Holder (Merge-Lock)
+  }
+  if ($holder) { Refuse "a merge of this project runs (task $holder); try again when it has ended" }
+}
+
 # Puts the main checkout on the branch of the task, made from its base when it does not exist yet.
 # Gives the branch that was checked out before, or '' when the checkout was on the task branch.
 function Enter-TaskBranch {
@@ -1835,14 +1847,8 @@ function Enter-TaskBranch {
   if ($current -eq $info.branch) { return '' }
   if ($current.StartsWith('task/')) { Refuse "the checkout is on $current, the branch of another task; Dispatch switches back to the base when that work run has ended" }
   # Dispatch holds the merge lock while it switches back to the base and copies the task files
-  # (ticket merge-issue), for seconds: the switch waits up to 60 s for it, then reads the branch again.
-  $holder = Lock-Holder (Merge-Lock)
-  $deadline = (Get-Date).AddSeconds(60)
-  while ($holder -and (Get-Date) -lt $deadline) {
-    Start-Sleep -Seconds 2
-    $holder = Lock-Holder (Merge-Lock)
-  }
-  if ($holder) { Refuse "a merge of this project runs (task $holder); try again when it has ended" }
+  # (ticket merge-issue), for seconds: the switch waits for it, then reads the branch again.
+  Wait-MergeLock
   # The steps below change the index (ticket title-auto-merge-left-the-main-checkout): an open merge
   # would take them in.
   if ((Invoke-Git @('rev-parse', '-q', '--verify', 'MERGE_HEAD')).Code -eq 0) { Refuse 'the checkout has an unfinished merge; finish it or run git merge --abort first' }
@@ -2395,7 +2401,10 @@ switch ($Verb) {
     if (Test-Path -LiteralPath (Join-Path $Project '.git')) {
       # Only a change in a file of this task holds it (ticket leftover-files-block-tasks); the other
       # changes stay where they are. The task files in .dispatch do not count: Dispatch commits them
-      # itself, and triage can write a brief at any time.
+      # itself, and triage can write a brief at any time. The staged files of a running merge are no
+      # changes of the user (ticket approve-during-a-merge-is-refused-by-the): the check waits until
+      # the merge has committed or was undone.
+      Wait-MergeLock
       $held = @(Task-Leftovers -Plan)
       if ($held.Count -gt 0) { Refuse "these changes in files of this task are not committed; commit, stash or undo them first:`n$($held -join "`n")" }
     }
@@ -13091,6 +13100,75 @@ if (args[0] === 'agents') {
         // A lock of a process that ended goes at the next try.
         write_file(&project.merge_dir().join("lock"), "4294967295\tt-7\t2026-11-19T04:58:23Z\n").unwrap();
         assert!(switch_lock(&project, "t-2").is_some(), "the lock of an ended process held the switch");
+        clean(&project);
+    }
+
+    /// Ticket approve-during-a-merge-is-refused-by-the: a merge of the task `side` is open in the
+    /// checkout (MERGE_HEAD, `shared.txt` staged) under the merge lock, and the plan of t-2 names
+    /// `shared.txt`. Gives the lock, which the merge holds until its commit.
+    fn open_merge_on_a_task_file(project: &Project, fake: &Path, base: &str) -> SwitchLock {
+        write_file(&project.root.join("shared.txt"), "the base text\n").unwrap();
+        git_out(project, &["add", "shared.txt"]);
+        git_out(project, &["commit", "-q", "-m", "shared file", "--", "shared.txt"]);
+        git_out(project, &["checkout", "-q", "-b", "side"]);
+        write_file(&project.root.join("shared.txt"), "the text of the merged task\n").unwrap();
+        git_out(project, &["commit", "-q", "-m", "side change", "--", "shared.txt"]);
+        git_out(project, &["checkout", "-q", base]);
+        write_file(&project.briefs().join("t-2.md"), "# t-2: a task that shares a file with the merge\n").unwrap();
+        write_file(&project.reports.join("fake-name.txt"), "t-2").unwrap();
+        let (code, out) = run_script(project, fake, "done", &["plan", "t-2"]);
+        assert_eq!(code, 0, "{out}");
+        let plan = project.reports.join("plans").join("t-2.md");
+        write_file(&plan, &format!("{}\n## Files to change\n- `shared.txt` — the change\n", read(&plan))).unwrap();
+        let lock = switch_lock(project, "side").expect("the lock is free");
+        git_out(project, &["merge", "-q", "--no-ff", "--no-commit", "side"]);
+        assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_some(), "no merge is open");
+        assert_eq!(git_out(project, &["status", "--porcelain", "--", "shared.txt"]), "M  shared.txt");
+        lock
+    }
+
+    /// The staged files of a running merge are no changes of the user: the approve waits for the
+    /// merge commit, then starts the work run on the task branch.
+    #[test]
+    fn approve_during_an_open_merge_starts_after_the_merge_commit() {
+        let (project, fake, base) = branch_project("approve-merge");
+        let lock = open_merge_on_a_task_file(&project, &fake, &base);
+        let root = project.root.clone();
+        let start = std::time::Instant::now();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            run_git(&root, &["commit", "-q", "--no-edit"]).unwrap();
+            drop(lock);
+        });
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-2"]);
+        release.join().unwrap();
+        assert_eq!(code, 0, "{out}");
+        assert!(start.elapsed() >= std::time::Duration::from_secs(3), "the approve did not wait for the merge");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-2"));
+        assert_eq!(read(&project.root.join("shared.txt")), "the text of the merged task\n");
+        clean(&project);
+    }
+
+    /// A change of the user in a file of the task that is left after the merge commit still holds
+    /// the approve.
+    #[test]
+    fn approve_during_an_open_merge_still_refuses_a_change_of_the_user() {
+        let (project, fake, base) = branch_project("approve-merge-user");
+        let lock = open_merge_on_a_task_file(&project, &fake, &base);
+        let root = project.root.clone();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            run_git(&root, &["commit", "-q", "--no-edit"]).unwrap();
+            write_file(&root.join("shared.txt"), "a change of the user\n").unwrap();
+            drop(lock);
+        });
+        let (code, out) = run_script(&project, &fake, "done", &["approve", "t-2"]);
+        release.join().unwrap();
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("these changes in files of this task are not committed") && out.contains("shared.txt"), "{out}");
+        assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_none(), "the merge is still open");
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        assert_eq!(read(&project.root.join("shared.txt")), "a change of the user\n");
         clean(&project);
     }
 
