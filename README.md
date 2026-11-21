@@ -102,7 +102,7 @@ npm run tauri dev
 npm run tauri build
 ```
 
-The installer lands in `src-tauri/target/release/bundle/nsis/`; on a Mac, `npm run tauri build -- --bundles dmg` puts the disk image in `src-tauri/target/release/bundle/dmg/`. A tag `v<version>` makes GitHub Actions build both and attach them to the release (`.github/workflows/release.yml`). Run the Rust tests with `cargo test --lib` in `src-tauri`.
+The installer lands in `src-tauri/target/release/bundle/nsis/`; on a Mac, `npm run tauri build -- --bundles dmg` puts the disk image in `src-tauri/target/release/bundle/dmg/`. A release builds the Windows installer on the PC and uploads it with `gh` to the GitHub release `v<version>` (`scripts/release.ps1 publish`); the Release workflow (`.github/workflows/release.yml`) runs only by hand on the tag of a release and adds the Mac disk image (`scripts/release.ps1 mac`). Run the Rust tests with `cargo test --lib` in `src-tauri`.
 
 ## Privacy
 

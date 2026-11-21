@@ -1,49 +1,20 @@
-# Builds the Windows installer and the macOS disk image of Dispatch and attaches both to the
-# GitHub release of the tag. The version bump stays a local commit: the tag must be
-# v<version of src-tauri/tauri.conf.json>. A run by hand (Actions > Release > Run workflow) builds
-# the version of the chosen branch and uploads to the release v<version>, which it makes when it
-# does not exist. No secret but the token of the run; the files are not signed. A run by hand has
-# the switch macos (on by default); off builds only the Windows installer, and the notes say so.
+# Builds the macOS disk image of Dispatch and adds it to the existing GitHub release v<version>.
+# The Windows installer is built on the PC of the release and uploaded there by
+# scripts/release.ps1 publish, which also makes the release. This workflow runs only by hand
+# (Actions > Release > Run workflow, or scripts/release.ps1 mac) on the tag of a release; the tag
+# must be v<version of src-tauri/tauri.conf.json>. It never makes a release: it fails when the
+# release is missing. No secret but the token of the run; the files are not signed.
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
-    inputs:
-      macos:
-        description: "Build the macOS disk image too (off: only the Windows installer)"
-        type: boolean
-        default: true
 
 permissions:
   contents: write
 
 jobs:
-  windows:
-    name: Windows installer
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - name: Rust
-        run: rustup toolchain install stable --profile minimal && rustup default stable
-      - run: npm ci
-      - name: Build the NSIS installer
-        run: npm run tauri build -- --bundles nsis
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows
-          path: src-tauri/target/release/bundle/nsis/*-setup.exe
-          if-no-files-found: error
-
   macos:
     name: macOS disk image
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.macos }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -80,9 +51,8 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Attach the files to the release
-    needs: [windows, macos]
-    if: ${{ !cancelled() && needs.windows.result == 'success' && (needs.macos.result == 'success' || needs.macos.result == 'skipped') }}
+    name: Add the disk image to the release
+    needs: [macos]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
@@ -102,23 +72,22 @@ jobs:
           fi
           ls -l files
           if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            cat > notes.md <<'EOF'
-          Windows: download `Dispatch_<version>_x64-setup.exe` and run it. It installs for the current user. The installer is not signed: Windows SmartScreen shows "Windows protected your PC"; click **More info**, then **Run anyway**.
-          EOF
-            if ls files/*.dmg > /dev/null 2>&1; then
-              cat >> notes.md <<'EOF'
+            echo "The release $tag does not exist. Make the Windows release on the PC first (scripts/release.ps1 publish)." >&2
+            exit 1
+          fi
+          gh release upload "$tag" files/* --repo "$GITHUB_REPOSITORY" --clobber
+          # The notes of the PC say that the version has no disk image: drop that line and add the
+          # Mac paragraph, unless the notes have it already.
+          body=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json body --jq .body | tr -d '\r')
+          kept=$(printf '%s\n' "$body" | grep -v '^This version has no macOS disk image' || true)
+          printf '%s\n' "$kept" > notes.md
+          if ! grep -q 'xattr -cr' notes.md; then
+            cat >> notes.md <<'EOF'
 
           macOS (11 or newer, Apple silicon and Intel): download `Dispatch_<version>_universal.dmg`, open it and drag Dispatch to Applications. The app is not signed, so macOS says it is damaged. Before the first start, run this once in Terminal:
 
               xattr -cr /Applications/Dispatch.app
           EOF
-            else
-              cat >> notes.md <<'EOF'
-
-          This version has no macOS disk image. A Mac keeps its version and gets the next one that has one.
-          EOF
-            fi
             sed -i "s/<version>/$version/g" notes.md
-            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "Dispatch $version" --notes-file notes.md
           fi
-          gh release upload "$tag" files/* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
