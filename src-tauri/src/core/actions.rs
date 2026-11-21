@@ -832,11 +832,13 @@ mod tests {
         let project = git_scratch("actions-command");
         let cwd = cwd_of(&project);
         // stdout and stderr together, and the exit code; a failed step ends the run.
-        save(&cwd, "fail", vec![command("echo first&& echo second 1>&2&& exit /b 3"), command("echo never> never.txt")]);
+        // The command waits for go.txt (at most 60 s), so it still runs during the checks below.
+        save(&cwd, "fail", vec![command("echo first&& echo second 1>&2&& (for /l %i in (1,1,60) do @if not exist go.txt @ping -n 2 127.0.0.1 >nul)& exit /b 3"),command("echo never> never.txt")]);
         let run = action_run(cwd.clone(), "fail".to_string()).unwrap();
         assert_eq!((run.state.as_str(), run.steps[0].state.as_str(), run.steps[0].owner), ("running", "running", Some(std::process::id())));
         assert!(action_step(cwd.clone(), run.id.clone()).unwrap_err().contains("step 1 still runs"));
         assert!(action_run(cwd.clone(), "fail".to_string()).unwrap_err().contains("runs already"));
+        write_file(&project.root.join("go.txt"), "go").unwrap();
         let run = wait_step(&cwd, &run.id, 0);
         assert_eq!(run.steps[0].exit.as_deref(), Some("3"));
         assert_eq!(run.steps[0].output, "first\nsecond");
