@@ -22,6 +22,11 @@
 // the PIN with `phone_unlock`, and asks again after 15 minutes without use. The page keeps the unlock
 // token of the host in `sessionStorage` for a reload, never the PIN. Before the phone types into a
 // terminal or starts one, it asks for the PIN once more; Back ends that.
+//
+// The screens (ticket the-phone-page-follows-the-new-mobile): the home shows the cards or the board
+// with a fixed New ticket button at the bottom. A task row has a button that opens a full screen for
+// its plan or its question, with Back in the head and the action buttons in a bottom bar; New ticket
+// is a screen too, and the Terminal view uses the same frame. The data and the calls stay the same.
 import "@xterm/xterm/css/xterm.css";
 import { Terminal } from "@xterm/xterm";
 import "./phone.css";
@@ -60,8 +65,12 @@ import {
   PHONE_KEYS,
   PIN_ERRORS,
   pinMessage,
+  rowAction,
+  screenRow,
+  allRows,
   showAllKey,
   shownRoots,
+  ticketProjects,
   toggleColumn,
   toggleRoot,
   UNLOCK_STORE,
@@ -171,7 +180,59 @@ const hintDoneEl = element("button", "", "Got it");
 hintDoneEl.type = "button";
 hintEl.append(element("p", "", "Connected. To keep Dispatch on this phone, tap Share, then Add to Home Screen."), hintDoneEl);
 const cardsEl = element("main", "cards");
-app.append(top, panelEl, messageEl, keyForm, pinForm, hintEl, cardsEl);
+/** The fixed New ticket button at the bottom of the home, in Cards and in Board (user decision 1). */
+const homeBar = element("nav", "home-bar");
+homeBar.hidden = true;
+const newTicketBtn = element("button", "primary", "New ticket");
+newTicketBtn.type = "button";
+homeBar.append(newTicketBtn);
+/**
+ * The one full screen (ticket the-phone-page-follows-the-new-mobile): Plan, Question or New ticket. A
+ * head with Back, a scrolling body and a bottom bar with the action buttons; `draw` rebuilds the body
+ * and the bar, so every input lives in `answerStates`, `planStates` and `ticketState`.
+ */
+const screenEl = element("section", "screen");
+screenEl.hidden = true;
+const screenHead = element("div", "screen-head");
+const screenBack = element("button", "back", "Back");
+screenBack.type = "button";
+const screenTitles = element("div", "screen-titles");
+const screenTitle = element("span", "screen-title");
+const screenSub = element("span", "screen-sub");
+screenTitles.append(screenTitle, screenSub);
+screenHead.append(screenBack, screenTitles);
+const screenBody = element("div", "screen-body");
+const screenBar = element("div", "screen-bar");
+screenEl.append(screenHead, screenBody, screenBar);
+app.append(top, panelEl, messageEl, keyForm, pinForm, hintEl, cardsEl, homeBar, screenEl);
+
+/** The open screen: a plan or an answer by the mark of its row, or the New ticket screen; null at home. */
+type Screen = { kind: "plan" | "answer"; root: string; mark: string } | { kind: "ticket" };
+let screen: Screen | null = null;
+/** Where the home stood when a screen opened; Back puts it there again. */
+let homeScroll = 0;
+
+function openScreen(next: Screen): void {
+  if (!screen) homeScroll = window.scrollY;
+  screen = next;
+  screenEl.hidden = false;
+  document.body.classList.add("screen-open");
+  screenBody.scrollTop = 0;
+  draw();
+}
+
+function closeScreen(): void {
+  if (!screen) return;
+  // A box of the screen keeps the focus when the screen hides; the draw must not wait for its blur.
+  if (document.activeElement instanceof HTMLElement && screenEl.contains(document.activeElement)) document.activeElement.blur();
+  screen = null;
+  screenEl.hidden = true;
+  if (!termRoot) document.body.classList.remove("screen-open");
+  draw();
+  window.scrollTo(0, homeScroll);
+}
+
+screenBack.addEventListener("click", closeScreen);
 
 function showMessage(text: string): void {
   messageEl.textContent = text;
@@ -325,10 +386,12 @@ function askForPin(error: string, forTerminal: boolean): void {
     layoutEl.hidden = true;
     panelEl.hidden = true;
     hintEl.hidden = true;
+    homeBar.hidden = true;
+    closeScreen();
     showMessage("");
   }
   // In the Terminal view the screen stands above the text box; else it stands in place of the cards.
-  if (termRoot) termEl.insertBefore(pinForm, termForm);
+  if (termRoot) termBar.insertBefore(pinForm, termForm);
   else app.insertBefore(pinForm, hintEl);
   pinNote.textContent = shown.text;
   pinNote.classList.toggle("pin-error", error.startsWith(PIN_ERRORS.wrong) || error === PIN_ERRORS.locked);
@@ -384,6 +447,8 @@ function askForKey(text: string): void {
   layoutEl.hidden = true;
   panelEl.hidden = true;
   hintEl.hidden = true;
+  homeBar.hidden = true;
+  closeScreen();
   showMessage(text);
   keyForm.hidden = false;
 }
@@ -536,9 +601,11 @@ interface CardView {
   bodyEl: HTMLElement;
   ticketsEl: HTMLElement;
   errorEl: HTMLElement;
+  /** The note of the last ticket added for this project. */
+  noteEl: HTMLElement;
 }
 
-/** The cards by project. A card stays, so its ticket box keeps the text during a new read. */
+/** The cards by project. A card stays, so its note keeps during a new read. */
 const cards = new Map<string, CardView>();
 
 /** The columns whose Show all the user tapped, as `showAllKey`; they hold until the page closes. */
@@ -563,13 +630,12 @@ function answerState(answer: PhoneAnswer) {
   return state;
 }
 
-/** The answer block of a waiting task: the options of each question, a box for any reply, and Send; or the confirm of a check result. */
-function answerElement(answer: PhoneAnswer, root: string): HTMLElement {
+/**
+ * The body of the Question screen: the options of each question and a box for any reply, or the
+ * confirm of a check result. Send or Confirm goes into `bar`, the bottom bar of the screen.
+ */
+function answerElement(answer: PhoneAnswer, root: string, bar: HTMLElement): HTMLElement {
   const block = element("div", "answer");
-  if (answer.sent) {
-    block.append(element("p", "answer-sent", "Your answer went to the worker. It goes on when the computer starts it."));
-    return block;
-  }
   const state = answerState(answer);
   const confirm = answer.kind === "confirm";
   if (confirm) {
@@ -621,6 +687,7 @@ function answerElement(answer: PhoneAnswer, root: string): HTMLElement {
       state.error = "Choose an answer for each question, or write a reply.";
       errorEl.textContent = state.error;
       errorEl.hidden = false;
+      errorEl.scrollIntoView({ block: "end" });
       return;
     }
     state.busy = true;
@@ -633,6 +700,8 @@ function answerElement(answer: PhoneAnswer, root: string): HTMLElement {
         answerStates.delete(answer.mark);
         lastRound = 0;
         scheduleRound();
+        // The row at home says that the answer went.
+        closeScreen();
       })
       .catch((error) => {
         state.error = `Not sent: ${error}`;
@@ -642,7 +711,8 @@ function answerElement(answer: PhoneAnswer, root: string): HTMLElement {
         draw();
       });
   });
-  block.append(box, send, errorEl);
+  block.append(box, errorEl);
+  bar.append(send);
   return block;
 }
 
@@ -701,43 +771,51 @@ function picker(label: string, values: readonly string[], value: string, change:
   return made;
 }
 
-/** The plan block of a task whose plan waits for Approve: summary, decisions, checks, work run, Approve and Reject. */
-function planElement(plan: PhonePlan, root: string): HTMLElement {
+type PlanState = ReturnType<typeof planState>;
+
+/** One call of the plan: Approve, Reject or Cancel approval. The row and the screen draw while it runs. */
+function planSend(state: PlanState, sent: () => Promise<unknown>, done: () => void): void {
+  state.busy = true;
+  state.error = "";
+  draw();
+  sent()
+    .then(() => {
+      done();
+      lastRound = 0;
+      scheduleRound();
+    })
+    .catch((error) => {
+      state.error = `Not sent: ${error}`;
+    })
+    .finally(() => {
+      state.busy = false;
+      draw();
+    });
+}
+
+/** The Cancel approval button of a row whose approval waits for the computer. */
+function cancelButton(plan: PhonePlan, root: string): HTMLElement[] {
+  const state = planState(plan);
+  const cancel = element("button", "", "Cancel approval");
+  cancel.type = "button";
+  cancel.disabled = state.busy;
+  cancel.addEventListener("click", () => planSend(state, () => call("task_approve_cancel", { cwd: root, id: plan.task }), () => undefined));
+  const errorEl = element("p", "answer-error", state.error);
+  errorEl.hidden = state.error === "";
+  return [cancel, errorEl];
+}
+
+/**
+ * The body of the Plan screen for a plan that waits for Approve: summary, decisions, checks and the
+ * work run. Approve and Reject go into `bar`; while the user rejects, the bar has Send back and
+ * Cancel, and the body ends with the box for the reason.
+ */
+function planElement(plan: PhonePlan, root: string, bar: HTMLElement): HTMLElement {
   const block = element("div", "answer plan");
-  if (plan.state === "sent") {
-    block.append(element("p", "answer-sent", "Sent back to the planner. A new plan comes."));
-    return block;
-  }
   const state = planState(plan);
   const errorEl = element("p", "answer-error", state.error);
   errorEl.hidden = state.error === "";
-  const send = (sent: () => Promise<unknown>, done: () => void) => {
-    state.busy = true;
-    state.error = "";
-    draw();
-    sent()
-      .then(() => {
-        done();
-        lastRound = 0;
-        scheduleRound();
-      })
-      .catch((error) => {
-        state.error = `Not sent: ${error}`;
-      })
-      .finally(() => {
-        state.busy = false;
-        draw();
-      });
-  };
-  if (plan.state === "approved") {
-    block.append(element("p", "answer-sent", "Approved. The work run starts when the computer is free."));
-    const cancel = element("button", "", "Cancel approval");
-    cancel.type = "button";
-    cancel.disabled = state.busy;
-    cancel.addEventListener("click", () => send(() => call("task_approve_cancel", { cwd: root, id: plan.task }), () => undefined));
-    block.append(cancel, errorEl);
-    return block;
-  }
+  const send = (sent: () => Promise<unknown>, done: () => void) => planSend(state, sent, done);
   block.append(element("p", "answer-title", "Plan ready"));
   if (plan.summary.length > 0) {
     const summary = element("div", "plan-summary");
@@ -804,35 +882,11 @@ function planElement(plan: PhonePlan, root: string): HTMLElement {
     picker("Effort", PHONE_EFFORTS, state.effort, (value) => (state.effort = value)),
   );
   block.append(work);
-  const actions = element("div", "plan-actions");
-  const approve = element("button", "primary", "Approve");
-  approve.type = "button";
-  approve.disabled = state.busy;
-  approve.addEventListener("click", () => {
-    const approval = phoneApproval(plan, state.picks, state.own, state.checked);
-    if (!approval) {
-      state.error = "Choose an answer for each decision, or write your own.";
-      errorEl.textContent = state.error;
-      errorEl.hidden = false;
-      return;
-    }
-    send(
-      () => call("task_approve_queue", { cwd: root, id: plan.task, ...approval, model: state.model, effort: state.effort }),
-      () => planStates.delete(plan.mark),
-    );
-  });
-  const reject = element("button", "", "Reject");
-  reject.type = "button";
-  reject.disabled = state.busy;
-  reject.setAttribute("aria-expanded", String(state.rejecting));
-  reject.addEventListener("click", () => {
-    state.rejecting = !state.rejecting;
-    draw();
-  });
-  actions.append(approve, reject);
-  block.append(actions);
   if (state.rejecting) {
     const back = element("div", "plan-reject");
+    back.append(element("p", "answer-question", "Why you reject the plan"));
+    back.append(typingBox(state.reason, "Why, and what the plan must change", `Why you reject the plan of ${plan.task}`, (text) => (state.reason = text)));
+    block.append(back);
     const sendBack = element("button", "primary", "Send back");
     sendBack.type = "button";
     sendBack.disabled = state.busy;
@@ -842,27 +896,81 @@ function planElement(plan: PhonePlan, root: string): HTMLElement {
         state.error = "Write why, and what the plan must change.";
         errorEl.textContent = state.error;
         errorEl.hidden = false;
+        errorEl.scrollIntoView({ block: "end" });
         return;
       }
       send(() => call("task_reject", { cwd: root, id: plan.task, reason }), () => {
         sentMarks.add(plan.mark);
         planStates.delete(plan.mark);
+        // The row at home says that the plan went back.
+        closeScreen();
       });
     });
-    back.append(typingBox(state.reason, "Why, and what the plan must change", `Why you reject the plan of ${plan.task}`, (text) => (state.reason = text)), sendBack);
-    block.append(back);
+    const cancel = element("button", "", "Cancel");
+    cancel.type = "button";
+    cancel.disabled = state.busy;
+    cancel.addEventListener("click", () => {
+      state.rejecting = false;
+      draw();
+    });
+    bar.append(sendBack, cancel);
+  } else {
+    const approve = element("button", "primary", "Approve");
+    approve.type = "button";
+    approve.disabled = state.busy;
+    approve.addEventListener("click", () => {
+      const approval = phoneApproval(plan, state.picks, state.own, state.checked);
+      if (!approval) {
+        state.error = "Choose an answer for each decision, or write your own.";
+        errorEl.textContent = state.error;
+        errorEl.hidden = false;
+        errorEl.scrollIntoView({ block: "end" });
+        return;
+      }
+      send(
+        () => call("task_approve_queue", { cwd: root, id: plan.task, ...approval, model: state.model, effort: state.effort }),
+        () => {
+          planStates.delete(plan.mark);
+          // The row at home shows the approval and Cancel approval after the next read.
+          closeScreen();
+        },
+      );
+    });
+    const reject = element("button", "", "Reject");
+    reject.type = "button";
+    reject.disabled = state.busy;
+    reject.addEventListener("click", () => {
+      state.rejecting = true;
+      draw();
+    });
+    bar.append(approve, reject);
   }
   block.append(errorEl);
   return block;
 }
 
+/** A task row: the status, the two short lines, and what `rowAction` gives: a button that opens a screen, Cancel approval, or a note. */
 function rowElement(row: PhoneRow, root: string): HTMLElement {
   const made = element("article", "task");
   made.append(element("span", `status ${row.kind}`, row.status));
   made.append(element("p", "about", row.about || row.name));
   if (row.now) made.append(element("p", "", row.now));
-  if (row.answer) made.append(answerElement(row.answer, root));
-  if (row.plan) made.append(planElement(row.plan, root));
+  const action = rowAction(row);
+  if (!action) return made;
+  if (action.kind === "note") {
+    made.append(element("p", "answer-sent", action.text));
+  } else if (action.kind === "cancel") {
+    made.append(element("p", "answer-sent", action.note), ...cancelButton(row.plan!, root));
+  } else {
+    const open = element("button", "row-open");
+    open.type = "button";
+    const chevron = element("span", "chevron", "›");
+    chevron.setAttribute("aria-hidden", "true");
+    open.append(element("span", "", action.label), chevron);
+    const mark = action.kind === "plan" ? row.plan!.mark : row.answer!.mark;
+    open.addEventListener("click", () => openScreen({ kind: action.kind, root, mark }));
+    made.append(open);
+  }
   return made;
 }
 
@@ -973,63 +1081,137 @@ function cardView(root: string): CardView {
   errorEl.hidden = true;
   const line = element("div", "tickets-line");
   const ticketsEl = element("span");
-  const add = element("button", "", "+ Ticket");
-  add.type = "button";
-  line.append(ticketsEl, add);
+  line.append(ticketsEl);
+  // The note of the last ticket added from the New ticket screen (user decision 4).
   const noteEl = element("p", "note");
   noteEl.hidden = true;
-  const box = element("form", "ticket-box");
-  box.hidden = true;
-  const text = element("textarea");
-  text.rows = 3;
-  text.placeholder = "What should be done?";
-  text.setAttribute("aria-label", `New ticket for ${folderName(root)}`);
-  const buttons = element("div", "ticket-buttons");
-  const send = element("button", "", "Add ticket");
-  const cancel = element("button", "", "Cancel");
-  cancel.type = "button";
-  buttons.append(send, cancel);
-  box.append(text, buttons);
-  const note = (value: string) => {
-    noteEl.textContent = value;
-    noteEl.hidden = value === "";
-  };
-  add.addEventListener("click", () => {
-    box.hidden = !box.hidden;
-    note("");
-    if (!box.hidden) text.focus();
-  });
-  cancel.addEventListener("click", () => {
-    box.hidden = true;
-    note("");
-  });
-  box.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const words = text.value.trim();
-    if (!words || send.disabled) return;
-    send.disabled = true;
-    note("Adding…");
-    call("ticket_add", { cwd: root, text: words })
-      .then(() => {
-        text.value = "";
-        box.hidden = true;
-        note("Added to Scheduled. It starts when a Dispatch window runs on the computer.");
-        lastRound = 0;
-        scheduleRound();
-      })
-      .catch((error) => note(`Not added: ${error}`))
-      .finally(() => (send.disabled = false));
-  });
-  rest.append(bodyEl, errorEl, element("h3", "", "Tickets"), line, box, noteEl);
+  rest.append(bodyEl, errorEl, element("h3", "", "Tickets"), line, noteEl);
   el.append(topRow, rest);
   head.addEventListener("click", () => {
     choices = toggleRoot(choices, "folded", root);
     saveChoices();
     showFold(view, root);
   });
-  const view = { el, nameEl, countEl, head, rest, bodyEl, ticketsEl, errorEl };
+  const view = { el, nameEl, countEl, head, rest, bodyEl, ticketsEl, errorEl, noteEl };
   cards.set(root, view);
   return view;
+}
+
+/** The note under the ticket count of a card; empty clears it. */
+function cardNote(root: string, text: string): void {
+  const view = cards.get(root);
+  if (!view) return;
+  view.noteEl.textContent = text;
+  view.noteEl.hidden = text === "";
+}
+
+/** The New ticket screen: the picked project, the words and the note; the project holds for the next ticket (user decision 2). */
+const ticketState: { root: string | null; words: string; note: string; busy: boolean } = { root: null, words: "", note: "", busy: false };
+
+newTicketBtn.addEventListener("click", () => {
+  for (const root of cards.keys()) cardNote(root, "");
+  ticketState.note = "";
+  openScreen({ kind: "ticket" });
+});
+
+/** The body and the bar of the New ticket screen: the projects, the box and Add ticket. */
+function drawTicketScreen(shown: readonly string[]): void {
+  const { roots: list, picked } = ticketProjects(shown, ticketState.root);
+  ticketState.root = picked;
+  const name = (root: string | null) => (root ? folderName(root) : "");
+  screenTitle.textContent = "New ticket";
+  screenSub.textContent = name(picked);
+  const parts: HTMLElement[] = [];
+  const box = typingBox(ticketState.words, "What should be done?", `New ticket for ${name(picked)}`, (text) => {
+    ticketState.words = text;
+    add.disabled = ticketState.busy || text.trim() === "";
+  });
+  box.rows = 5;
+  if (list.length > 1) {
+    parts.push(element("p", "answer-question", "Project"));
+    const options = element("div", "options");
+    const buttons = list.map((root) => {
+      const button = element("button", "option");
+      button.type = "button";
+      button.append(element("span", "", folderName(root)));
+      button.setAttribute("aria-pressed", String(root === ticketState.root));
+      // No draw here: a draw would take the focus from the box.
+      button.addEventListener("click", () => {
+        ticketState.root = root;
+        for (const [other, one] of buttons.entries()) one.setAttribute("aria-pressed", String(list[other] === root));
+        screenSub.textContent = name(root);
+        box.setAttribute("aria-label", `New ticket for ${name(root)}`);
+      });
+      return button;
+    });
+    options.append(...buttons);
+    parts.push(options);
+  }
+  const noteEl = element("p", "note screen-note", ticketState.note);
+  noteEl.hidden = ticketState.note === "";
+  parts.push(box, noteEl);
+  const add = element("button", "primary", "Add ticket");
+  add.type = "button";
+  add.disabled = ticketState.busy || ticketState.words.trim() === "" || picked === null;
+  add.addEventListener("click", () => {
+    const root = ticketState.root;
+    const words = ticketState.words.trim();
+    if (!root || !words || ticketState.busy) return;
+    ticketState.busy = true;
+    ticketState.note = "Adding…";
+    add.disabled = true;
+    noteEl.textContent = ticketState.note;
+    noteEl.hidden = false;
+    call("ticket_add", { cwd: root, text: words })
+      .then(() => {
+        ticketState.words = "";
+        ticketState.note = "";
+        // The screen closes, and the card of the project says it (user decision 4).
+        cardNote(root, "Added to Scheduled. It starts when a Dispatch window runs on the computer.");
+        lastRound = 0;
+        scheduleRound();
+        closeScreen();
+      })
+      .catch((error) => {
+        ticketState.note = `Not added: ${error}`;
+      })
+      .finally(() => {
+        ticketState.busy = false;
+        draw();
+      });
+  });
+  screenBody.replaceChildren(...parts);
+  screenBar.replaceChildren(add);
+}
+
+/** The open screen after a draw: the plan or the answer of its row, the New ticket screen, or the word that the task moved on. */
+function drawScreen(shown: readonly (PhoneCard | PhoneBoard)[], roots: readonly string[]): void {
+  if (!screen) return;
+  if (screen.kind === "ticket") {
+    drawTicketScreen(roots);
+    return;
+  }
+  const { kind, root, mark } = screen;
+  const row = screenRow(allRows(shown), mark);
+  screenSub.textContent = folderName(root);
+  screenTitle.textContent = row ? row.about || row.name : "Task";
+  const bar = element("div", "screen-bar");
+  const block =
+    row && kind === "plan" && row.plan?.state === "ready"
+      ? planElement(row.plan, root, bar)
+      : row && kind === "answer" && row.answer && !row.answer.sent
+        ? answerElement(row.answer, root, bar)
+        : null;
+  if (!block) {
+    const done = element("button", "primary", "Done");
+    done.type = "button";
+    done.addEventListener("click", closeScreen);
+    screenBody.replaceChildren(element("p", "screen-note", "This task moved on. The computer has your answer."));
+    screenBar.replaceChildren(done);
+    return;
+  }
+  screenBody.replaceChildren(block);
+  screenBar.replaceChildren(...bar.children);
 }
 
 /** A card shows its head only while its project is folded. */
@@ -1112,9 +1294,21 @@ function draw(): void {
   for (const [layout, button] of layoutBtns) button.setAttribute("aria-pressed", String(choices.layout === layout));
   const shown = shownRoots(roots, choices);
   const projects: PhoneProject[] = shown.map((root) => ({ root, list: lists.get(root)?.list ?? null, error: lists.get(root)?.error ?? "" }));
-  const els = choices.layout === "board" ? phoneBoards(projects, workers, tools, choices.open, showAll, sentMarks).map(drawBoard) : phoneCards(projects, workers, tools, sentMarks).map(drawCard);
+  let data: (PhoneCard | PhoneBoard)[];
+  let els: HTMLElement[];
+  if (choices.layout === "board") {
+    const boards = phoneBoards(projects, workers, tools, choices.open, showAll, sentMarks);
+    data = boards;
+    els = boards.map(drawBoard);
+  } else {
+    const list = phoneCards(projects, workers, tools, sentMarks);
+    data = list;
+    els = list.map(drawCard);
+  }
   for (const root of [...cards.keys()]) if (!shown.includes(root)) cards.delete(root);
   if (els.length !== cardsEl.children.length || els.some((el, at) => cardsEl.children[at] !== el)) cardsEl.replaceChildren(...els);
+  homeBar.hidden = shown.length === 0;
+  drawScreen(data, shown);
   showMessage(
     roots.length === 0
       ? "No project of this computer is open in a connected Dispatch window. Open one, and it shows here."
@@ -1177,12 +1371,13 @@ document.addEventListener("visibilitychange", () => {
 const TERM_FONT = 11;
 /** Send types the text, then Enter after this wait, as a program can take a fast Enter for a new line. */
 const SEND_ENTER_MS = 400;
-const termEl = element("section", "term-view");
+/** The Terminal view in the frame of the screens: a head with Back, a scrolling body, a bar with the text box and the keys. */
+const termEl = element("section", "screen term-view");
 termEl.hidden = true;
-const termTop = element("div", "term-top");
-const termBack = element("button", "", "Back");
+const termTop = element("div", "screen-head");
+const termBack = element("button", "back", "Back");
 termBack.type = "button";
-const termName = element("span", "term-name");
+const termName = element("span", "screen-title");
 termTop.append(termBack, termName);
 const termStatus = element("p", "note term-status");
 termStatus.hidden = true;
@@ -1208,7 +1403,11 @@ for (const name of PHONE_KEYS) {
   button.addEventListener("click", () => void termWrite(keyBytes(name, term?.modes.applicationCursorKeysMode ?? false)));
   termKeys.append(button);
 }
-termEl.append(termTop, termStatus, termStart, termScroll, termForm, termKeys);
+const termBody = element("div", "screen-body");
+termBody.append(termStatus, termStart, termScroll);
+const termBar = element("div", "screen-bar");
+termBar.append(termForm, termKeys);
+termEl.append(termTop, termBody, termBar);
 app.append(termEl);
 
 /** The xterm of the view; it stays for the next project. Of its input only the reports go out (`termData`). */
@@ -1253,7 +1452,7 @@ function openTerminal(root: string): void {
   termName.textContent = folderName(root);
   termStart.hidden = true;
   termEl.hidden = false;
-  document.body.classList.add("term-open");
+  document.body.classList.add("screen-open");
   window.scrollTo(0, 0);
   terminal().reset();
   void termOpen(false);
@@ -1350,7 +1549,7 @@ function closeTerminal(): void {
   if (pinForTerminal) pinForm.hidden = true;
   else if (!pinForm.hidden) app.insertBefore(pinForm, hintEl);
   termEl.hidden = true;
-  document.body.classList.remove("term-open");
+  if (!screen) document.body.classList.remove("screen-open");
   if (id && connected) void call("pty_leave", { id }).catch(() => {});
   draw();
 }

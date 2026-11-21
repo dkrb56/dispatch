@@ -9,7 +9,7 @@ import { phoneLink, phonePinOk, phoneSetup } from "../src/phonelink.ts";
 import { replyText } from "../src/answers.ts";
 import { confirmChoice, confirmQuestion } from "../src/confirm.ts";
 import { defaultChoice } from "../src/checks.ts";
-import { approvalQueued, homeScreenHint, inProgressPlace, keyAddress, keyBytes, pasteBytes, PHONE_KEYS, terminalLabel, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, PIN_ERRORS, pinMessage, phoneApproval, phoneBoards, phoneCards, phonePhase, phonePlan, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, planMark, reportMark, showAllKey, shownRoots, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
+import { allRows, approvalQueued, homeScreenHint, inProgressPlace, keyAddress, keyBytes, pasteBytes, PHONE_KEYS, terminalLabel, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, PIN_ERRORS, pinMessage, phoneApproval, phoneBoards, phoneCards, phonePhase, phonePlan, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, planMark, reportMark, rowAction, screenRow, showAllKey, shownRoots, ticketProjects, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneRow, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
 import { boardTickets, type BoardColumn, columnCards, type InProgressView, COLUMNS, countText, type Ticket } from "../src/tickets.ts";
 import { taskTldr } from "../src/tldr.ts";
 import { groupCount } from "../src/topbar.ts";
@@ -512,6 +512,51 @@ test("the approval: a tapped option or own words per decision, and the checked c
   assert.equal(phoneApproval(plan, new Map([[1, "Red"]]), new Map([[2, "  "]]), new Set()), null, "a decision without an answer");
   assert.equal(phoneApproval(plan, new Map([[1, "Red"], [2, "Huge"]]), new Map(), new Set()), null, "an option that the plan does not have");
   assert.deepEqual(phoneApproval({ ...plan, decisions: [] }, new Map(), new Map(), new Set()), { decisions: [], checks: [] }, "a plan without decisions");
+});
+
+// Ticket the-phone-page-follows-the-new-mobile: what a row offers, the row of an open screen, the projects of the New ticket screen.
+function row(fields: Partial<PhoneRow>): PhoneRow {
+  return { name: "t", kind: "waits", status: "", about: "", now: "", answer: null, plan: null, ...fields };
+}
+
+test("a row offers Review plan, Cancel approval, Answer or Confirm, or a note after a send", () => {
+  const ready = phonePlan(task(READY), tools, new Set())!;
+  assert.deepEqual(rowAction(row({ plan: ready })), { kind: "plan", label: "Review plan" });
+  const approved = phonePlan(task({ ...READY, approved: 5 }), tools, new Set())!;
+  assert.deepEqual(rowAction(row({ plan: approved })), { kind: "cancel", label: "Cancel approval", note: "Approved. The work run starts when the computer is free." });
+  const rejected = phonePlan(task(READY), tools, new Set([planMark(task(READY))]))!;
+  assert.deepEqual(rowAction(row({ plan: rejected })), { kind: "note", text: "Sent back to the planner. A new plan comes." });
+  const ask = task({ ...REPORT("needs-decision", "decision"), questions: [QUESTION] });
+  assert.deepEqual(rowAction(row({ answer: phoneAnswer(ask, tools, new Set()) })), { kind: "answer", label: "Answer" });
+  assert.deepEqual(rowAction(row({ answer: phoneAnswer(ask, tools, new Set([reportMark(ask)])) })), { kind: "note", text: "Your answer went to the worker. It goes on when the computer starts it." });
+  const check = task({ ...REPORT("needs-decision", "decision"), questions: [{ number: 1, text: "Agree?", options: ["Keep", "Change"] }], checkResult: ["- a: yes"] });
+  assert.deepEqual(rowAction(row({ answer: phoneAnswer(check, tools, new Set()) })), { kind: "answer", label: "Confirm" });
+  assert.equal(rowAction(row({})), null, "a plain row offers nothing");
+});
+
+test("the row of an open screen is found by its plan mark or its report mark, over cards and boards", () => {
+  const tasks = [info("plan", { ...READY, about: "Plan" }), info("ask", { ...REPORT("needs-decision", "decision"), questions: [QUESTION], about: "Asks" }), info("old", { ...REPORT("done", "nothing"), about: "Old" })];
+  const cards = phoneCards([{ root: ROOT, list: { tasks, tickets: [] }, error: "" }], [], tools);
+  const fromCards = allRows(cards);
+  assert.deepEqual(fromCards.map((one) => one.name).sort(), ["ask", "old", "plan"], "the rows in work and done");
+  assert.equal(screenRow(fromCards, "plan:plan:5")?.about, "Plan", "by the plan mark");
+  assert.equal(screenRow(fromCards, "ask:5")?.about, "Asks", "by the report mark");
+  assert.equal(screenRow(fromCards, "gone:5"), null, "a mark that no row has");
+  const tickets = [ticket("plan", "in-progress"), ticket("ask", "in-progress"), ticket("n1", "new")];
+  const boards = phoneBoards([{ root: ROOT, list: { tasks, tickets }, error: "" }], [], tools, viewFromText(null).open);
+  const fromBoards = allRows(boards);
+  assert.deepEqual(fromBoards.map((one) => one.name).sort(), ["ask", "plan"], "the row of each In progress ticket, in the open and the closed columns");
+  assert.equal(screenRow(fromBoards, "plan:plan:5")?.plan?.state, "ready");
+  assert.equal(screenRow(fromBoards, "ask:5")?.answer?.kind, "questions");
+  assert.equal(screenRow(allRows([]), "ask:5"), null, "no project");
+});
+
+test("the New ticket screen picks the project of the last ticket when it shows, else the first one", () => {
+  const roots = [`D:${BS}work${BS}alpha`, "D:/work/beta"];
+  assert.deepEqual(ticketProjects(roots, "d:/work/beta/"), { roots, picked: "D:/work/beta" }, "the last root, matched by path key");
+  assert.deepEqual(ticketProjects(roots, "D:/work/gone"), { roots, picked: roots[0] }, "a hidden or closed last root: the first one");
+  assert.deepEqual(ticketProjects(roots, null), { roots, picked: roots[0] });
+  assert.deepEqual(ticketProjects([], "D:/work/beta"), { roots: [], picked: null }, "no project shows");
 });
 
 test("the Terminal view: the bytes of each key button, of a paste and the name of the terminal", () => {

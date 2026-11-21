@@ -89,8 +89,7 @@ body {
 }
 
 .cards,
-.key-form,
-.ticket-box {
+.key-form {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -280,20 +279,6 @@ input {
   font-size: 16px;
 }
 
-.ticket-box {
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.ticket-buttons {
-  display: flex;
-  gap: 8px;
-}
-
-.ticket-buttons button {
-  flex: 1;
-}
-
 .note {
   margin: 8px 0 0;
   color: var(--text-2);
@@ -462,8 +447,10 @@ input {
   margin-top: 8px;
 }
 
-.task .answer p {
+.answer p {
   margin: 0;
+  color: var(--text-2);
+  font-size: 14px;
 }
 
 .answer .answer-title,
@@ -518,19 +505,15 @@ input {
   font-weight: 600;
 }
 
-.answer .answer-error {
+.answer-error {
   color: var(--danger);
 }
 
-.answer .answer-sent {
+.task .answer-sent {
   color: var(--work);
 }
 
 /* The plan block of a plan that waits for Approve (ticket approve-or-reject-a-plan-from-the-phone). */
-.task .plan p {
-  margin: 0;
-}
-
 .plan-summary {
   display: flex;
   flex-direction: column;
@@ -612,19 +595,140 @@ input {
   font-size: 16px;
 }
 
-.plan-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.plan .primary,
-.plan-reject .primary {
-  align-self: flex-start;
-}
-
 [hidden] {
   display: none !important;
+}
+
+/* The screens (ticket the-phone-page-follows-the-new-mobile): the home with a fixed New ticket button,
+   and one full screen at a time for a plan, a question, a new ticket or the Terminal: a head with Back,
+   a scrolling body and a bottom bar with the action buttons. Every button and option is 44 px or more. */
+#app {
+  padding-bottom: calc(env(safe-area-inset-bottom) + 84px);
+}
+
+body.screen-open #app > :not(.screen) {
+  display: none;
+}
+
+.screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--bg);
+}
+
+.screen-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 12px;
+  padding: calc(env(safe-area-inset-top) + 8px) 12px 8px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.screen-head .back {
+  flex: none;
+  min-width: 64px;
+  min-height: 44px;
+}
+
+.screen-titles {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.screen-title {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 17px;
+  font-weight: 600;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.screen-sub {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.screen-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.screen-body .answer {
+  margin-top: 0;
+}
+
+.screen-note {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.screen-bar,
+.home-bar {
+  display: flex;
+  flex: none;
+  gap: 8px;
+  padding: 10px 12px calc(env(safe-area-inset-bottom) + 10px);
+  border-top: 1px solid var(--hairline);
+  background: var(--card);
+}
+
+.home-bar {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+}
+
+.screen-bar > button,
+.home-bar > button {
+  flex: 1;
+  min-height: 48px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.screen-bar > .primary,
+.home-bar > .primary {
+  border-color: var(--accent);
+}
+
+.row-open {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  margin-top: 8px;
+  text-align: left;
+}
+
+.row-open .chevron {
+  flex: none;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.option {
+  width: 100%;
+  min-height: 44px;
+}
+
+.term-view .screen-bar {
+  flex-direction: column;
 }
 
 /* The Terminal of a project (ticket i-need-a-terminal-access-on-mobile): a button in the head of each
@@ -660,41 +764,17 @@ input {
   letter-spacing: 6px;
 }
 
-/* In the Terminal view the screen stands above the text box. */
-.term-view > .pin-form {
+/* In the Terminal view the screen stands above the text box, in the bottom bar. */
+.term-view .pin-form {
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: var(--card);
-}
-
-body.term-open #app > :not(.term-view) {
-  display: none;
-}
-
-.term-view {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
+  background: var(--bg);
 }
 
 .term-view[hidden],
 .term-view [hidden] {
   display: none;
-}
-
-.term-top {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.term-name {
-  flex: 1;
-  min-width: 0;
-  font-size: 17px;
-  font-weight: 600;
 }
 
 .term-status {

@@ -771,6 +771,55 @@ export function showAllKey(root: string, status: string): string {
 }
 
 /**
+ * What a task row shows under its two lines (ticket the-phone-page-follows-the-new-mobile): a button
+ * that opens the Plan or the Question screen, the Cancel approval row of a queued approval, or a note
+ * after a send. Null for a row without a plan and without an answer.
+ */
+export type PhoneRowAction =
+  | { kind: "plan"; label: string }
+  | { kind: "answer"; label: string }
+  | { kind: "cancel"; label: string; note: string }
+  | { kind: "note"; text: string };
+
+export const APPROVED_NOTE = "Approved. The work run starts when the computer is free.";
+export const REJECTED_NOTE = "Sent back to the planner. A new plan comes.";
+export const ANSWERED_NOTE = "Your answer went to the worker. It goes on when the computer starts it.";
+
+export function rowAction(row: Pick<PhoneRow, "answer" | "plan">): PhoneRowAction | null {
+  if (row.plan) {
+    if (row.plan.state === "ready") return { kind: "plan", label: "Review plan" };
+    if (row.plan.state === "approved") return { kind: "cancel", label: "Cancel approval", note: APPROVED_NOTE };
+    return { kind: "note", text: REJECTED_NOTE };
+  }
+  if (row.answer) {
+    if (row.answer.sent) return { kind: "note", text: ANSWERED_NOTE };
+    return { kind: "answer", label: row.answer.kind === "confirm" ? "Confirm" : "Answer" };
+  }
+  return null;
+}
+
+/** Every task row of the cards or of the boards: the rows in work and done, or the row of each ticket. */
+export function allRows(shown: readonly (PhoneCard | PhoneBoard)[]): PhoneRow[] {
+  return shown.flatMap((one) =>
+    "columns" in one ? one.columns.flatMap((column) => column.tickets.flatMap((item) => (item.row ? [item.row] : []))) : [...one.inWork, ...one.done],
+  );
+}
+
+/** The row whose plan or answer has the mark of an open screen; null when it is gone. */
+export function screenRow(rows: readonly PhoneRow[], mark: string): PhoneRow | null {
+  return rows.find((row) => row.plan?.mark === mark || row.answer?.mark === mark) ?? null;
+}
+
+/**
+ * The projects of the New ticket screen (user decision 2): the shown roots, and the one that is picked
+ * at first: the project of the last ticket when it still shows, else the first one, else null.
+ */
+export function ticketProjects(shown: readonly string[], last: string | null): { roots: string[]; picked: string | null } {
+  const kept = last !== null ? shown.find((root) => pathKey(root) === pathKey(last)) : undefined;
+  return { roots: [...shown], picked: kept ?? shown[0] ?? null };
+}
+
+/**
  * The key buttons of the Terminal view (ticket i-need-a-terminal-access-on-mobile, user decision 5):
  * a phone keyboard has no Esc, Tab or arrows. Each name gives the bytes that the key sends.
  */
