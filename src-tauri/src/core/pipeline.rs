@@ -1556,6 +1556,7 @@ With Work folder on (workFolders and taskBranches in options.json), approve, rep
 work-setup.txt runs once in a new one, work\1.record names the task that uses it, and a second task is refused until the folder is free.
 merge <ticket-id> then builds the merge commit and runs the checks and the gate in the work folder (it waits up to 60 s for it),
 and moves the base in one step: git merge --ff-only in the project folder, or git update-ref when it is on another branch.
+A work run whose session started in the project folder before the switch goes on as a new session in the work folder.
 #>
 param(
   [Parameter(Mandatory = $true, Position = 0)]
@@ -1961,6 +1962,11 @@ function Enter-WorkFolder([string]$Use) {
   if ($holder) { Refuse "the work folder of this project is in use (task $holder); the run starts when it is free" }
   $folder = Work-Folder
   $info = if ($Use -eq 'merge') { Read-BranchFile $Id } else { Ensure-BranchFile }
+  # A task of the old path (ticket moving-a-project): git checks out a branch in one folder only, and
+  # Dispatch switches the project folder back to the base when the run of that task has ended.
+  if ($Use -ne 'merge' -and (Current-Branch) -eq $info.branch) {
+    Refuse "the project folder is on $($info.branch), the branch of this task, from before Work folder was on; Dispatch switches it back to $($info.base) when its run has ended and no file of the task has uncommitted changes (the task card names what holds it); then try again"
+  }
   Invoke-Git @('worktree', 'prune') | Out-Null
   if (-not (Test-Path -LiteralPath (Join-Path $folder '.git'))) {
     $parent = Split-Path -Parent $folder
@@ -2010,17 +2016,20 @@ function Enter-WorkFolder([string]$Use) {
     $out = Invoke-GitAt $folder @('checkout', '-q', '-f', '--detach', $baseTip)
     if ($out.Code -ne 0) { Refuse "git could not check out $($info.base) in the work folder: $($out.Text)" }
   } elseif ((Invoke-Git @('rev-parse', '--verify', '--quiet', "refs/heads/$($info.branch)")).Code -eq 0) {
-    $out = Invoke-GitAt $folder @('checkout', '-q', $info.branch)
-    if ($out.Code -ne 0) { Refuse "git could not check out $($info.branch) in the work folder: $($out.Text)" }
     if ($Use -eq 'work') {
-      $merge = Invoke-GitAt $folder @('merge', '-q', '--no-edit', $info.base)
-      if ($merge.Code -ne 0) {
-        Invoke-GitAt $folder @('merge', '--abort') | Out-Null
-        $why = (($merge.Text -replace '"', "'") -replace "`r?`n", ' ').Trim().TrimEnd('.')
-        if (-not $why) { $why = "git merge ended with exit code $($merge.Code)" }
+      # The branch takes the newer commits of the base before its checkout (ticket moving-a-project):
+      # Sync-Base takes .dispatch of the base (rule 4), so task files that a branch of the old path
+      # committed make no conflict. It moves the ref only, so the work folder lets go of the branch first.
+      $detach = Invoke-GitAt $folder @('checkout', '-q', '--detach')
+      if ($detach.Code -ne 0) { Refuse "git could not detach the work folder: $($detach.Text)" }
+      $why = "$(Sync-Base -Before)"
+      if ($why) {
+        $why = (($why -replace '"', "'") -replace "`r?`n", ' ').Trim().TrimEnd('.')
         $note = " Dispatch could not bring the newer commits of $($info.base) into this branch: $why."
       }
     }
+    $out = Invoke-GitAt $folder @('checkout', '-q', $info.branch)
+    if ($out.Code -ne 0) { Refuse "git could not check out $($info.branch) in the work folder: $($out.Text)" }
   } else {
     $out = Invoke-GitAt $folder @('checkout', '-q', '-b', $info.branch, $info.base)
     if ($out.Code -ne 0) { Refuse "git could not make $($info.branch) in the work folder: $($out.Text)" }
@@ -2772,6 +2781,58 @@ function Run-Checks([string]$Place, [scriptblock]$LogOf, [int]$Limit, [switch]$S
   return $null
 }
 
+# The prompt of a new work run up to the end of its checks (ticket moving-a-project): approve, and a
+# reply or resume that takes over a work run whose session started in the project folder. The text
+# only; the caller removes the pick files first (Clear-Picks) when Pick the checks after the work run is on.
+function Work-Prompt {
+  # The work run is a new session (ticket work-fresh-session): the prompt names the ticket, the
+  # brief, the plan and the report file, and the files are its whole input.
+  $plan = Join-Path $Reports "plans\$Id.md"
+  $brief = Join-Path $Reports "briefs\$Id.md"
+  $report = Join-Path $Reports "$Id.md"
+  $prompt = "Plan approved: $plan. This is the work run of ticket $Id. Read the brief $brief and the plan first: they are the whole context of this run, and the sections User decisions and Checks chosen of the plan hold the choices of the user. Execute the plan. A deviation goes into the report, not into the code. Commit only the files that this run changed, each by name in git add and git commit; never run git add -A, git add . or git commit -a, and leave every other change in the checkout as it is. Write the report to $report."
+  # Pick the checks after the work run: the run is told that the checks come after it. Else the
+  # checks that the user chose at Approve (ticket task-checks): one line per check, the name, a tab and the command. A quote of a name becomes an apostrophe, as in a reply.
+  $chosen = Join-Path $Reports "$Id.checks"
+  if (Option-On 'pickChecks') {
+    $prompt += " The checks of this project are picked by Dispatch after this run: run the Acceptance commands of the plan, but no check of the list checks.txt beyond them."
+  }
+  # Confirm check results automatically (ticket confirm-a-check-step-s-result-on-the): the run does
+  # not stop at a check step whose result the user would confirm.
+  if (Option-On 'confirmResults') {
+    $prompt += " Confirm check results automatically is on: a check step whose result the user would confirm does not stop this run; take the result as it is, write it into the report under the heading Check result, and go on."
+  }
+  if (Test-Path -LiteralPath $chosen) {
+    $names = @(Get-Content -LiteralPath $chosen | Where-Object { $_.Trim() -ne '' } | ForEach-Object { ($_ -split "`t", 2)[0].Trim() -replace '"', "'" })
+    # Checks at the gate (ticket simpler-process): with task branches and a gate command, the gate
+    # runs the chosen checks once, at the merge, so the work run does not run them.
+    $gateLine = "$(@(Command-Lines 'merge-gate.txt') | Select-Object -First 1)"
+    if ($names.Count -gt 0 -and (Option-On 'checksAtGate') -and (Branches-On) -and $gateLine) {
+      $prompt += " The user chose these checks: $($names -join ', '). Checks at the gate is on: the gate command runs them once, at the merge, so this run does not run them and needs no Verification claim for them."
+    } elseif ($names.Count -gt 0) {
+      $prompt += " The user chose these checks: $($names -join ', '). Run each with the command of the section Checks chosen of the plan, as written there: Dispatch looks for that command in the commands of this run."
+    }
+  }
+  $prompt
+}
+
+# The sentence of the work folder for the prompt of a new work run (ticket work-run-in-the-work-folder).
+function Folder-Sentence {
+  $info = Read-BranchFile $Id
+  " Work folder is on: this run works in the folder $(Work-Folder), a checkout of the branch $($info.branch) of this task; the project folder $Project stays on $($info.base). Commit in the work folder; switch no branch, merge nothing, push nothing. Write the report and every task file by their full paths in $Reports; the work folder has no copy of them. When this run stops with a question or fails, first commit its own changed files by name on this branch with the message $Id WIP."
+}
+
+# True when $Worker started in another folder than the work folder (ticket moving-a-project). A
+# worker without cwd (an older Claude Code) counts as a worker of the work folder.
+function Old-Session($Worker) {
+  $cwd = "$($Worker.cwd)"
+  if (-not $cwd) { return $false }
+  $cwd = $cwd -replace '/', '\'
+  if ($cwd.StartsWith('\\?\')) { $cwd = $cwd.Substring(4) }
+  $work = [IO.Path]::GetFullPath((Work-Folder)).TrimEnd('\')
+  -not [string]::Equals($cwd.TrimEnd('\'), $work, [StringComparison]::OrdinalIgnoreCase)
+}
+
 # Resumes the session of $Worker for $Run with $Text: the start of reply and of resume. $State, when
 # given, is written before the branch switch; without it a tracked branch rewrites the current state.
 # The own changes of a stopped run are found while the state still says stopped: the state file time
@@ -2780,10 +2841,20 @@ function Resume-Run([string]$Run, $Worker, [string]$Text, [string]$State, [strin
   $flags = Run-Flags $Run
   # Work folder (ticket work-run-in-the-work-folder): a work run goes on in the work folder on the
   # branch of its task; the project folder is not switched, and its changes hold nothing.
+  # A session that started in the project folder (a task of the old path, ticket moving-a-project)
+  # may not be found from the work folder and remembers the paths of the project folder: a new
+  # session in the work folder takes it over (user decision 1).
   if ($Run -eq 'work' -and (Folders-On)) {
-    $Text += Enter-WorkFolder 'work'
+    $note = Enter-WorkFolder 'work'
     if ($State) { Set-State $State }
-    $printed = Run-Claude (@($Text, '--resume', $Worker.sessionId, '--bg', '--name', (Run-Name $Run)) + $flags) $StateOnFailure '' (Work-Folder)
+    if (Old-Session $Worker) {
+      $info = Read-BranchFile $Id
+      $prompt = (Work-Prompt) + " This work run started in the project folder before Work folder was on, and its session cannot go on in the work folder, so this new session takes it over. Its work so far is committed on the branch $($info.branch). Read its report $(Join-Path $Reports "$Id.md") too: it holds its questions and what it did. The user's words to that session: $Text"
+      $prompt += (Folder-Sentence) + $note
+      $printed = Run-Claude (@($prompt, '--bg', '--name', (Run-Name $Run)) + $flags) $StateOnFailure '' (Work-Folder)
+    } else {
+      $printed = Run-Claude (@(($Text + $note), '--resume', $Worker.sessionId, '--bg', '--name', (Run-Name $Run)) + $flags) $StateOnFailure '' (Work-Folder)
+    }
     Save-Session $Run $printed
     Write-Record 'work' (Work-Job)
     return
@@ -2867,35 +2938,9 @@ switch ($Verb) {
     }
     Approve-Check
     $flags = Run-Flags 'work'
-    # The work run is a new session (ticket work-fresh-session): the prompt names the ticket, the
-    # brief, the plan and the report file, and the files are its whole input.
-    $brief = Join-Path $Reports "briefs\$Id.md"
-    $report = Join-Path $Reports "$Id.md"
-    $prompt = "Plan approved: $plan. This is the work run of ticket $Id. Read the brief $brief and the plan first: they are the whole context of this run, and the sections User decisions and Checks chosen of the plan hold the choices of the user. Execute the plan. A deviation goes into the report, not into the code. Commit only the files that this run changed, each by name in git add and git commit; never run git add -A, git add . or git commit -a, and leave every other change in the checkout as it is. Write the report to $report."
-    # Pick the checks after the work run: the files of an earlier pick go, and the run is told that the
-    # checks come after it. Else the checks that the user chose at Approve (ticket task-checks): one
-    # line per check, the name, a tab and the command. A quote of a name becomes an apostrophe, as in a reply.
-    $chosen = Join-Path $Reports "$Id.checks"
-    if (Option-On 'pickChecks') {
-      Clear-Picks
-      $prompt += " The checks of this project are picked by Dispatch after this run: run the Acceptance commands of the plan, but no check of the list checks.txt beyond them."
-    }
-    # Confirm check results automatically (ticket confirm-a-check-step-s-result-on-the): the run does
-    # not stop at a check step whose result the user would confirm.
-    if (Option-On 'confirmResults') {
-      $prompt += " Confirm check results automatically is on: a check step whose result the user would confirm does not stop this run; take the result as it is, write it into the report under the heading Check result, and go on."
-    }
-    if (Test-Path -LiteralPath $chosen) {
-      $names = @(Get-Content -LiteralPath $chosen | Where-Object { $_.Trim() -ne '' } | ForEach-Object { ($_ -split "`t", 2)[0].Trim() -replace '"', "'" })
-      # Checks at the gate (ticket simpler-process): with task branches and a gate command, the gate
-      # runs the chosen checks once, at the merge, so the work run does not run them.
-      $gateLine = "$(@(Command-Lines 'merge-gate.txt') | Select-Object -First 1)"
-      if ($names.Count -gt 0 -and (Option-On 'checksAtGate') -and (Branches-On) -and $gateLine) {
-        $prompt += " The user chose these checks: $($names -join ', '). Checks at the gate is on: the gate command runs them once, at the merge, so this run does not run them and needs no Verification claim for them."
-      } elseif ($names.Count -gt 0) {
-        $prompt += " The user chose these checks: $($names -join ', '). Run each with the command of the section Checks chosen of the plan, as written there: Dispatch looks for that command in the commands of this run."
-      }
-    }
+    # Pick the checks after the work run: the files of an earlier pick go before the prompt reads them.
+    if (Option-On 'pickChecks') { Clear-Picks }
+    $prompt = Work-Prompt
     # Task branches: the work run works on the branch of the task; a failed start checks out the branch before.
     # Work folder: it works in the work folder on that branch, and the project folder stays on the base.
     $back = ''
@@ -2903,8 +2948,7 @@ switch ($Verb) {
     if (Folders-On) {
       $note = Enter-WorkFolder 'work'
       $folder = Work-Folder
-      $info = Read-BranchFile $Id
-      $prompt += " Work folder is on: this run works in the folder $folder, a checkout of the branch $($info.branch) of this task; the project folder $Project stays on $($info.base). Commit in the work folder; switch no branch, merge nothing, push nothing. Write the report and every task file by their full paths in $Reports; the work folder has no copy of them. When this run stops with a question or fails, first commit its own changed files by name on this branch with the message $Id WIP."
+      $prompt += Folder-Sentence
       $prompt += $note
     } elseif (Branches-On) {
       $back = Enter-TaskBranch
@@ -2998,6 +3042,11 @@ switch ($Verb) {
     # Work folder (ticket merge-in-the-work-folder): the merge runs in the work folder, so the project
     # folder can be on any branch and its task files stay as they are.
     $folders = Folders-On
+    # A task of the old path (ticket moving-a-project): the merge would move the base and leave the
+    # project folder on a merged branch.
+    if ($folders -and $current -eq $info.branch) {
+      Refuse "the project folder is on $($info.branch), the branch of this task, from before Work folder was on; Dispatch switches it back to $($info.base) when its run has ended and no file of the task has uncommitted changes (the task card names what holds it); then click Merge again"
+    }
     if (-not $folders) {
       if ($current -ne $info.base) { Refuse "the checkout is on $current, not on the base $($info.base); Dispatch switches back when the work run has ended" }
       if ((Invoke-Git @('rev-parse', '-q', '--verify', 'MERGE_HEAD')).Code -eq 0) { Refuse 'the checkout has an unfinished merge; finish it or run git merge --abort first' }
@@ -3626,7 +3675,7 @@ fn work_folders_step(project: &Project, on: bool) -> Step {
         target,
         done: project.ignores(WORK_IGNORE),
         detail: format!(
-            "The work run of a task works in the work folder {reports}/work/1, a git worktree of the project that Dispatch makes at the first Approve and keeps. {setup} Approve, a reply, a resume and Run checks check out the task branch there; the project folder stays on the base. The record {reports}/work/1.record names the task that uses the folder; a second task waits. Apply adds the line {WORK_IGNORE} to {reports}/.gitignore. The section in CLAUDE.md says so. Merge builds the merge commit there, runs the checks and the gate there, and moves the base in one step."
+            "The work run of a task works in the work folder {reports}/work/1, a git worktree of the project that Dispatch makes at the first Approve and keeps. {setup} Approve, a reply, a resume and Run checks check out the task branch there; the project folder stays on the base. The record {reports}/work/1.record names the task that uses the folder; a second task waits. Apply adds the line {WORK_IGNORE} to {reports}/.gitignore. The section in CLAUDE.md says so. Merge builds the merge commit there, runs the checks and the gate there, and moves the base in one step. A task that started before the switch keeps its branch: Dispatch switches the project folder back to the base when its run has ended, an answer to its worker starts a new worker in the work folder that reads the brief, the plan and the report, and its Merge works as for a new task."
         ),
         rules: None,
     }
@@ -6236,9 +6285,9 @@ fn worker_runs_in(json: &str, root: &Path, ticket: &str) -> Option<bool> {
 /// branch file; the next task read commits it with the task files. While the checkout is on the base,
 /// a newer report of the branch comes onto the base in one commit (ticket stale-report-loop). The
 /// flag says that the checkout or a task file changed, so the task read reads the files again.
-/// With `work_folders` (ticket work-run-in-the-work-folder) a task branch carries no card file, so no
-/// report comes from it.
-fn task_branch(project: &Project, ticket: &str, current: &str, check_merged: bool, work_folders: bool) -> Option<(BranchInfo, bool)> {
+/// Also with "Work folder" on (ticket moving-a-project): a branch of the old path can hold the newest
+/// report, and the merge of the work folder takes the card files of the base.
+fn task_branch(project: &Project, ticket: &str, current: &str, check_merged: bool) -> Option<(BranchInfo, bool)> {
     let mut info = read_branch_file(&project.branch_file(ticket))?;
     let exists = |name: &str| git(&project.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_some();
     info.exists = info.merge.is_empty() && exists(&info.name);
@@ -6256,7 +6305,7 @@ fn task_branch(project: &Project, ticket: &str, current: &str, check_merged: boo
             }
             Err(note) => info.note = note,
         }
-    } else if info.exists && !info.checked_out && current == info.base && !work_folders {
+    } else if info.exists && !info.checked_out && current == info.base {
         match report_from_branch(project, ticket, &info) {
             Ok(true) => {
                 changed = true;
@@ -6802,8 +6851,6 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     }
     if project.in_git && (project.options().task_branches || tasks.iter().any(|task| project.branch_file(&task.name).is_file())) {
         let current = if merging.is_none() { current_branch(&project).unwrap_or_default() } else { String::new() };
-        // "Work folder" (ticket work-run-in-the-work-folder): a task branch carries no card file.
-        let work_folders = project.work_folders_on();
         for task in tasks.iter_mut() {
             // Only a branch whose card shows Merge is checked for an outside merge (ticket
             // merged-outside): a report that waits for nobody, or a stopped task. A worker that asked
@@ -6812,7 +6859,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             let header = task.header.as_ref();
             let waits = header.is_some_and(|header| matches!(header.needs.as_str(), "decision" | "permission") || header.state == "needs-decision");
             let check = merging.is_none() && ((task.report.is_some() && !waits) || task.state == "stopped");
-            if let Some((branch, changed)) = task_branch(project, &task.name, &current, check, work_folders) {
+            if let Some((branch, changed)) = task_branch(project, &task.name, &current, check) {
                 task.branch = Some(branch);
                 moved |= changed;
             }
@@ -9797,6 +9844,7 @@ if (args[0] === 'agents') {
   const copy = __dirname + '/copy.txt';
   const worker = { id: 'bg-1', name: process.env.FAKE_NAME || 't-1', sessionId: fs.existsSync(copy) ? fs.readFileSync(copy, 'utf8') : 'sess-1', startedAt: 1, state: process.env.FAKE_STATE };
   if (process.env.FAKE_STATUS) worker.status = process.env.FAKE_STATUS;
+  if (process.env.FAKE_CWD) worker.cwd = process.env.FAKE_CWD;
   process.stdout.write(JSON.stringify([worker]));
 } else if (fs.existsSync(__dirname + '/fail.txt')) {
   process.exit(Number(fs.readFileSync(__dirname + '/fail.txt', 'utf8')));
@@ -12306,6 +12354,131 @@ if (args[0] === 'agents') {
         for task in &list.tasks {
             assert!(task.leftovers.is_empty(), "{}: {:?}", task.name, task.leftovers);
         }
+        clean(&project);
+    }
+
+    /// The question report of an old path work run, committed on its task branch as the old path let it.
+    fn commit_question_on_branch(project: &Project, ticket: &str) -> String {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        let question = "state: needs-decision\nneeds: decision\nfiles: work.txt\nplan: p\n\n## Questions\n1. Which way?\n   - This way\n   - That way\n";
+        write_file(&project.reports.join(format!("{ticket}.md")), question).unwrap();
+        let path = format!("{TASKS_DIR}/{ticket}.md");
+        git_out(project, &["add", "--", &path]);
+        git_out(project, &["commit", "-q", "-m", &format!("{ticket} WIP"), "--", &path]);
+        question.to_string()
+    }
+
+    /// Ticket moving-a-project: a task of the old path waits with a question, its report committed on
+    /// its branch, when the user turns Work folder on. The answer starts a new session in the work
+    /// folder, the branch takes the newer commits of the base without a conflict, and the merge of the
+    /// work folder takes the work of both runs onto the base.
+    #[test]
+    fn an_old_path_task_answers_and_merges_after_the_switch() {
+        let (project, fake, base) = branch_project("old-path-move");
+        let root = project.root.to_string_lossy().into_owned();
+        let folder = project.work_folder();
+        set_work_run_runs(&project, false);
+        plan_and_approve(&project, &fake, "t-1");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        let question = commit_question_on_branch(&project, "t-1");
+        // The run has ended: the task read switches back to the base and takes the report along.
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        assert_eq!(git_out(&project, &["show", &format!("{base}:{TASKS_DIR}/t-1.md")]).replace("\r\n", "\n"), question.trim_end());
+        // The base moves on, then the user turns Work folder on.
+        write_file(&project.root.join("base.txt"), "a newer commit of the base\n").unwrap();
+        git_out(&project, &["add", "--", "base.txt"]);
+        git_out(&project, &["commit", "-q", "-m", "newer base"]);
+        set_work_folders(&project, true);
+        apply(&project, &[]).unwrap();
+        git_out(&project, &["add", "--all"]);
+        git_out(&project, &["commit", "-q", "-m", "work folder setup"]);
+
+        // The answer to the old session, which started in the project folder.
+        write_file(&fake.join("work.txt"), "the work of the second run\n").unwrap();
+        let _ = fs::remove_file(fake.join("cwd.txt"));
+        let (code, out) = run_script_env(&project, &fake, "done", &["reply", "t-1", "Answer to question 1: This way"], &[("FAKE_CWD", root.as_str()), ("FAKE_COPY", "sess-2")]);
+        assert_eq!(code, 0, "{out}");
+        let call = last_call(&fake);
+        let prompt = &call[0];
+        assert!(!call.contains(&"--resume".to_string()), "{call:?}");
+        assert!(prompt.contains("Answer to question 1: This way"), "{prompt}");
+        assert!(prompt.contains(&project.reports.join("t-1.md").display().to_string()), "{prompt}");
+        assert!(prompt.contains("task/t-1") && prompt.contains("Work folder is on"), "{prompt}");
+        assert!(!prompt.contains("could not bring the newer commits"), "{prompt}");
+        assert!(same_folder(&read(&fake.join("cwd.txt")), &folder), "{}", read(&fake.join("cwd.txt")));
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        assert!(read(&project.reports.join("t-1.session")).lines().any(|line| line.trim() == "work sess-2"), "{}", read(&project.reports.join("t-1.session")));
+        // The new session is a session of the work folder: the next answer resumes it.
+        let folder_text = folder.to_string_lossy().into_owned();
+        let (code, out) = run_script_env(&project, &fake, "done", &["reply", "t-1", "go on"], &[("FAKE_CWD", folder_text.as_str())]);
+        assert_eq!(code, 0, "{out}");
+        let call = last_call(&fake);
+        assert!(call[0].starts_with("go on") && call.contains(&"--resume".to_string()), "{call:?}");
+
+        // The run ends with its report, and Merge works as for a new task.
+        write_report(&project, "t-1");
+        let (code, out) = run_script(&project, &fake, "done", &["merge", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        let works = git_out(&project, &["log", "--format=%s", &base]).lines().filter(|line| *line == "t-1 work").count();
+        assert_eq!(works, 2, "{}", git_out(&project, &["log", "--format=%s", &base]));
+        assert_eq!(git_out(&project, &["show", &format!("{base}:work-t-1.txt")]), "the work of the second run");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:base.txt")]).is_some());
+        assert_eq!(git_out(&project, &["branch", "--list", "task/t-1"]), "");
+        assert!(read(&project.branch_file("t-1")).contains("merge: done"), "{}", read(&project.branch_file("t-1")));
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_none(), "a merge is open in the project folder");
+        assert!(read(&project.reports.join("t-1.md")).starts_with("state: done"), "{}", read(&project.reports.join("t-1.md")));
+        clean(&project);
+    }
+
+    /// Ticket moving-a-project: a newer report on a task branch of the old path comes onto the base
+    /// also with Work folder on.
+    #[test]
+    fn an_old_path_report_on_the_branch_reaches_the_base_with_the_switch() {
+        let (project, fake, base) = branch_project("old-path-report");
+        plan_and_approve(&project, &fake, "t-1");
+        let question = commit_question_on_branch(&project, "t-1");
+        git_out(&project, &["checkout", "-q", &base]);
+        set_work_folders(&project, true);
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.exists && !branch.checked_out, "{branch:?}");
+        let subjects = git_out(&project, &["log", "--format=%s", &base]);
+        assert!(subjects.lines().any(|line| line == "Dispatch: report of t-1 from task/t-1"), "{subjects}");
+        assert_eq!(git_out(&project, &["show", &format!("{base}:{TASKS_DIR}/t-1.md")]).replace("\r\n", "\n"), question.trim_end());
+        clean(&project);
+    }
+
+    /// Ticket moving-a-project: while the project folder still stands on the branch of an old path task,
+    /// an answer and Merge are refused with a plain text, and nothing moves.
+    #[test]
+    fn a_project_folder_on_an_old_path_branch_holds_the_answer_and_the_merge() {
+        let (project, fake, base) = branch_project("old-path-held");
+        let root = project.root.to_string_lossy().into_owned();
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        // A change of the user in a file of the task keeps the project folder on the task branch.
+        write_file(&project.root.join("work-t-1.txt"), "changed by the user\n").unwrap();
+        let branch = listed_branch(&project, "t-1");
+        assert!(branch.checked_out, "{branch:?}");
+        set_work_folders(&project, true);
+        let base_tip = git_out(&project, &["rev-parse", &base]);
+        let calls = read(&fake.join("args.txt")).lines().count();
+
+        let (code, out) = run_script_env(&project, &fake, "done", &["reply", "t-1", "Answer to question 1: This way"], &[("FAKE_CWD", root.as_str())]);
+        assert_eq!(code, 2, "{out}");
+        let held = format!("the project folder is on task/t-1, the branch of this task, from before Work folder was on; Dispatch switches it back to {base} when its run has ended and no file of the task has uncommitted changes (the task card names what holds it); then try again");
+        assert!(out.contains(&held), "{out}");
+        let (code, out) = run_script(&project, &fake, "done", &["merge", "t-1"]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains(&held.replace("then try again", "then click Merge again")), "{out}");
+
+        let later: Vec<Vec<String>> = read(&fake.join("args.txt")).lines().skip(calls).map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert!(later.iter().all(|call| call.first().map(String::as_str) == Some("agents")), "{later:?}");
+        assert_eq!(git_out(&project, &["rev-parse", &base]), base_tip);
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        assert_eq!(read(&project.root.join("work-t-1.txt")), "changed by the user\n");
+        assert!(!project.work_folder().exists(), "the refused answer made the work folder");
         clean(&project);
     }
 

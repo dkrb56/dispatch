@@ -94,11 +94,21 @@ Proved in a scratch repository on 2026-11-21 (git only, no Claude Code): the mer
 - A task branch does not change `.dispatch`, so a merge takes the base side of each card file without a conflict. A card file that a worker committed by mistake is dropped at the merge.
 - Dispatch commits card files on the base in the project folder, as today. The folder is always on the base, so such a commit cannot land on a task branch.
 
+## Moving a project
+
+Ticket moving-a-project, 2026-11-22. The user turns the switch on per project, also while tasks of the old path wait. Nothing of such a task is lost:
+
+- A task whose run still has the project folder on its branch keeps it there. The task read switches the folder back to the base when the run has ended, as on the old path; a changed file of the task holds the switch, and the card names it.
+- While the project folder is on the branch of a task, an answer, Resume, Run checks and Merge of that task are refused with a plain text, because git checks out a branch in one folder only, and a merge would leave the folder on a merged branch.
+- An answer to a worker whose session started in the project folder starts a new session in the work folder (user decision 1). Its prompt is the prompt of Approve, a sentence that it takes over the old run with the branch and the report, the user's words, and the sentence of the work folder. A worker of the work folder, or a worker without a folder in the list, is resumed as before.
+- An old branch takes the newer commits of the base with `Sync-Base -Before` in place of a plain `git merge` in the work folder: the work folder lets go of the branch, the merge commit takes `.dispatch` of the base (rule 4), and task files that the old branch committed make no conflict.
+- A newer report that an old branch holds comes onto the base also with the switch on, so a question or an answer of the old run stands on the card. The merge of the work folder then takes the card files of the base.
+
 ## What goes away
 
 When every project uses work folders (the last task below):
 
-- Worker script: the checkout in `Enter-TaskBranch`, `Set-CardFilesAside`, `Put-CardFiles`, `Align-Tasks`, the `.dispatch` tree steps of `Sync-Base`, `Task-Leftovers`, `Own-Changes`, the side choice for card files in `Merge-Branch`, the marker `merge\open`.
+- Worker script: the checkout in `Enter-TaskBranch`, `Set-CardFilesAside`, `Put-CardFiles`, `Align-Tasks`, the `.dispatch` tree steps of `Sync-Base`, `Task-Leftovers`, `Own-Changes`, `Merge-Branch` (the merge in the project folder, with its side choice for card files), the marker `merge\open`, and the refusals of moving-a-project for a project folder on a task branch.
 - Rust: `return_to_base`, `switch_lock`, `set_card_changes_aside`, `put_card_changes_back`, `report_from_branch`, `checkout_wrote_report`, `cancel_left_merge`, `repair_conflicts`, `untrack_tasks_at`.
 - Page: the queue for "the checkout is on the branch of another task". Its place takes one wait: the work folder is in use.
 
@@ -156,5 +166,5 @@ Still untried:
 1. **Proof.** A scratch project, one real work run and one gated merge in a work folder; the answers to the open points in this file. No change of the app.
 2. **Work run in the work folder** (ticket work-run-in-the-work-folder, 2026-11-21). A project switch (only with Task branches on, off by default): the folder with its set-up command and its record; Approve, reply, stop, resume and the checks there; the report by its full path; the card names the wait for the folder. With the switch off, every text and step is the one of today.
 3. **Merge in the work folder** (ticket merge-in-the-work-folder, 2026-11-22). The merge commit, the checks and the gate there; the one-step move of the base; "same code, no new gate"; the cleaning of a left merge; auto-merge and Push after the merge.
-4. **Moving a project.** A task that waits on a branch of the old path (with card files on the branch) merges and answers with the switch on; Setup pipeline, the Help and the README say what the switch does.
+4. **Moving a project** (ticket moving-a-project, 2026-11-22). A task that waits on a branch of the old path (with card files on the branch) merges and answers with the switch on; Setup pipeline, the Help and the README say what the switch does.
 5. **Removing the old path.** Only on the user's word, after this project, Starminer and Rockhoppers ran with the switch on. The user turns the switch on per project in Setup pipeline.

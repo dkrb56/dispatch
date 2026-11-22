@@ -200,3 +200,11 @@ test("the work folder: the reason comes after a merge and before the work run, a
   assert.match(HTML, /<label class="switch-row" data-under="taskBranches">\s*<input type="checkbox" data-option="workFolders" \/>/);
   assert.match(HTML, /<textarea id="setup-work-setup"/);
 });
+
+test("the Help and the README name Work folder (ticket moving-a-project)", () => {
+  const help = HTML.slice(HTML.indexOf("<h3>Project settings</h3>"), HTML.indexOf("<h3>The workspace</h3>"));
+  assert.ok(help.includes("<b>Work folder.</b>"));
+  assert.ok(help.includes("<b>Work folder</b> is off at the start"));
+  assert.match(HTML, /<tr><td>Work folder<\/td><td><code>\.dispatch\/work\/1<\/code><\/td>/);
+  assert.ok(read("../README.md").includes('"Work folder"'));
+});
