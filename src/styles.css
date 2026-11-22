@@ -2607,6 +2607,12 @@ button.task-head:hover {
   animation: ticket-add-spin 0.8s linear infinite;
 }
 
+.ticket-spinner.run {
+  border-color: var(--work);
+  border-right-color: transparent;
+  animation-delay: var(--spin-shift, 0ms);
+}
+
 .ticket-card.draggable .ticket-tools {
   cursor: default;
 }
@@ -7888,6 +7894,10 @@ button.ticket-level {
   .task.attention.pulse::after,
   .ticket-card.in-progress.working.flash::after {
     opacity: 1;
+    animation: none;
+  }
+
+  .ticket-spinner.run {
     animation: none;
   }
 

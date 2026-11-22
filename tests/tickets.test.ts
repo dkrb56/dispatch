@@ -1298,7 +1298,11 @@ test("an In progress ticket shows its state in its frame", () => {
   assert.doesNotMatch(rule, /animation:[^;]*(box-shadow|transform)/);
   assert.match(CSS, /prefers-reduced-motion: reduce\) \{[\s\S]*?\.ticket-card\.in-progress\.working\.flash::after/);
   const help = HTML.slice(HTML.indexOf("<h3>Tickets</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
-  assert.ok(help.includes("blue frame") && help.includes("flashing"), "the Help sentence");
+  assert.ok(help.includes("blue frame") && help.includes("flashing") && help.includes("spinner"), "the Help sentence");
+  assert.match(card, /mapElement\("span", "ticket-spinner run"\)/);
+  assert.match(card, /mergeRunning\(ticketTask\)/);
+  assert.match(card, /--spin-shift/);
+  assert.match(CSS, /\.ticket-spinner\.run \{[^}]*animation-delay: var\(--spin-shift/);
 });
 
 test("the In progress column puts running tasks first", () => {

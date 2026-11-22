@@ -119,7 +119,7 @@ import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, ty
 import { groupCount } from "./topbar";
 import { badgeText, moveUp, railDrop, type RailGroup, railItems, railLetters, railMenu, railTags, removeProjectTexts } from "./rail";
 import { pasteSkipsPane } from "./chattabs";
-import { autoSwitch, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
+import { autoSwitch, holdPause, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { answerWait, type WaitFacts, waitReason } from "./waitreason";
 import { autoContinueLine, autoContinueQueued, countsMerged, goOnLine, isAutoContinue, type MergeWait, mergeWait, mergeWaitLines, mergeWaitShort, mergeWaitText, mergeWaitTitle, stopLine, type WaitTask } from "./mergewait";
@@ -2573,11 +2573,14 @@ function projectLoad(key: string): ProjectLoad {
  * (ticket merged-outside): an old refusal of the Merge button goes by the rule of `refusalGoes`, and
  * a branch that the task read found merged outside Dispatch gets one line for triage. The first list
  * of a project after the start says nothing. A read that began (`readAt`) before the last ticket move
- * of the board, or while a drop saves, keeps the tickets of the board (`keepTickets`).
+ * of the board, or while a drop saves, keeps the tickets of the board (`keepTickets`); a read that
+ * began before the last click on Run queue, or while its save runs, keeps the switch (`holdPause`).
  */
 function storeProjectTasks(key: string, record: ProjectTasks, readAt: number): void {
   const before = projectTasks.get(key);
   if (before && keepTickets(readAt, ticketsChangedAt.get(key), ticketsSaving(key))) record = { ...record, tickets: before.tickets };
+  // A read that began before the last click on Run queue, or while its save is in flight, keeps the switch (ticket it-takes-couple-of-seconds-after-i-click).
+  if (before && holdPause(readAt, pauseChangedAt.get(key), pauseSaving(key))) record = { ...record, paused: before.paused };
   for (const info of record.infos) {
     // A refusal for a missing plan or branch file goes when the file is back (ticket merge-issue).
     const missing = actionErrors.get(info.name);
@@ -3980,13 +3983,43 @@ async function ticketAction(project: string, command: string, args: Record<strin
 async function setPaused(ref: ProjectRef, on: boolean): Promise<void> {
   const key = refKey(ref);
   ticketError = "";
+  // The switch changes at the click (ticket it-takes-couple-of-seconds-after-i-click): the record
+  // gets the new setting first, and the save and the task read follow behind it.
+  const record = projectTasks.get(key);
+  const was = record?.paused;
+  const clickedAt = Date.now();
+  if (record) {
+    setBoardPaused(key, on);
+    pauseChangedAt.set(key, clickedAt);
+    showPauseButtons();
+  }
+  pauseSaves.set(key, (pauseSaves.get(key) ?? 0) + 1);
+  // Each save waits for the save of the click before it (user decision 1: saves in click order).
+  const save = (pauseQueue.get(key) ?? Promise.resolve()).then(() => call<boolean>(ref.host, "set_paused", { cwd: ref.root, on }));
+  const done = save.then(
+    () => undefined,
+    () => undefined,
+  );
+  pauseQueue.set(key, done);
+  let saved = false;
   try {
-    await call<boolean>(ref.host, "set_paused", { cwd: ref.root, on });
+    try {
+      await save;
+      saved = true;
+    } finally {
+      pauseSaves.set(key, (pauseSaves.get(key) ?? 1) - 1);
+      if (pauseQueue.get(key) === done) pauseQueue.delete(key);
+    }
     await readProjectTasks(ref.host, ref.root);
     tellTriage(key, pauseLine(on));
   } catch (error) {
     ticketError = `The project could not be ${on ? "paused" : "resumed"}: ${error}`;
     console.error("set_paused failed", error);
+    // A failed save puts the setting of before the click back, unless a later click changed it.
+    if (!saved && was !== undefined && pauseChangedAt.get(key) === clickedAt) {
+      setBoardPaused(key, was);
+      showPauseButtons();
+    }
   }
   tasksShown = "";
   renderChats();
@@ -4038,10 +4071,30 @@ const savingTickets = new Set<string>();
 /** The time of the last ticket move of each project (by its key): a task read that began before it keeps the tickets of the board. */
 const ticketsChangedAt = new Map<string, number>();
 
+/** The time of the last click on the Run queue switch of each project (by its key): a task read that began before it keeps the switch. */
+const pauseChangedAt = new Map<string, number>();
+
+/** The number of saves of the Run queue switch still in flight for each project (by its key). */
+const pauseSaves = new Map<string, number>();
+
+/** The last save of the Run queue switch of each project (by its key): the next save waits for it, so the saves go in click order. */
+const pauseQueue = new Map<string, Promise<unknown>>();
+
+/** A save of the Run queue switch of the project (by its key) is still in flight. */
+function pauseSaving(key: string): boolean {
+  return (pauseSaves.get(key) ?? 0) > 0;
+}
+
 /** Puts tickets on the board of a project (by its key) between two task reads; the rest of its task list stays. */
 function setBoardTickets(key: string, tickets: Ticket[]): void {
   const record = projectTasks.get(key);
   if (record) record.tickets = tickets;
+}
+
+/** Sets the Run queue setting of a project (by its key) between two task reads; the rest of its task list stays. */
+function setBoardPaused(key: string, paused: boolean): void {
+  const record = projectTasks.get(key);
+  if (record) record.paused = paused;
 }
 
 /** A drop of the project (by its key) still saves. */
@@ -10967,6 +11020,15 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   const tickets = record?.tickets ?? [];
   const ticketTask = ticket.status === "in-progress" && record ? projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id)) : undefined;
   if (ticketTask && approvedMark(ticketTask)) state.classList.add("approved");
+  // A run that works now (also a running merge) shows a turning spinner at the start of the top line.
+  const running = !!ticketTask && (taskStatus(ticketTask).kind === "working" || mergeRunning(ticketTask));
+  if (running && !saving) {
+    const runSpinner = mapElement("span", "ticket-spinner run");
+    runSpinner.setAttribute("aria-label", "Runs now");
+    // The board builds new cards at each poll: the clock keeps the spinner in the same phase.
+    runSpinner.style.setProperty("--spin-shift", `${-(Date.now() % 800)}ms`);
+    top.prepend(runSpinner);
+  }
   // A task that waits for the user: an orange frame (ticket tickets-which-are-waiting-for-me-should).
   // One state class per card: waits, else working (a run works now), else approved (ticket border-should-reflect-whats-actually).
   if (ticketTask && taskAttentionWait(ticketTask)) card.classList.add("waits");
