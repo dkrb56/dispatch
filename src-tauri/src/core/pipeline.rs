@@ -1064,7 +1064,7 @@ impl Project {
 {checks}{gate_checks}- When the plan run is done, triage tells the user that the plan is ready. The user reads the plan in the task card of Dispatch and clicks Approve or Reject there; that click is the yes. Dispatch runs `{script} approve <ticket-id>`, which starts the work run as a new session on the options in `{reports}/work-flags.txt`, with the model and the effort of `{reports}/<ticket-id>.models` when it has them, with the brief, the plan and the user's decisions as its input, and writes one line into the triage chat. Triage never runs approve itself; the local settings deny it that verb. The one other yes is night mode, which the user turns on per project in Dispatch: Dispatch then approves a ready plan by itself, takes the recommended option of each decision and records it in the plan as DEFAULT DECISION; a `HOLD:` decision, a paused project, an uncommitted change in a file of the task, or a part whose parent ticket has no ticked night box keep the plan waiting for the click. The script refuses when an uncommitted change outside `{reports}/` touches a file of the task (a path of the section Files to change of its plan, or a file that its task branch changed), when the worker still runs, or when the task was stopped; other uncommitted changes stay where they are and hold no task ({tasks_git}).
 {plain}- The work run follows the plan. A deviation goes into the report, not into the code. The worker ends with one local commit on the current branch, with the ticket id in the message. It commits only the files that it changed, each by name, never with `git add -A`, `git add .` or `git commit -a`, and leaves every other change as it is. It never pushes or merges. The user decides the push.
 {branches}{work_folders}{push}{auto_merge}- A worker ends with a report in `{reports}/<ticket-id>.md`. The report starts with four lines, each `key: value`: `state` (`done`, `needs-decision` or `failed`), `needs` (`nothing`, `decision` or `permission`), `files` (the changed files, or `none`) and `plan` (the plan file). Then the sections `## What changed`, `## Why`, `## Files`, `## Verification`, `## Follow-ups`, and `## Questions` when needed. Verification says in the worker's own words what it ran and what that showed. Dispatch reads the commands of the work run from the transcripts and shows each under the report with its exit code and its last lines. A done report whose work run ran no command, or without a run of a chosen check, counts as working, and its ticket stays open.
-- A worker starts no session and sends no message to a chat. It has no question tool. A question for the user goes into the report under the heading `## Questions`: numbered items, each with its options as list items, the recommended option first. Each option is one short line, because Dispatch shows it as a button and sends it back word for word; the question and each option follow the rule of plain words of the Decisions of a plan; the details stand above the questions. The worker then writes `state: needs-decision` and `needs: decision` and ends its turn. `needs: permission` means: a refused tool call stopped the work; the report then has `state: needs-decision`, no `## Questions`, and names the refused call as sent, the refusal text and the permission rule that would allow it, and the work goes on with a follow-up `Continue` once the user changed the rule. An option of a question is never a change of a permission rule. The user answers in the task card of Dispatch, and the answer arrives as a follow-up `Answer to question N: <option>`. An answered question never comes back unchanged: after the answer the worker takes the question out of its report or writes what it decided and did, and ends with `state: done` or a new question. A follow-up `Continue` after an answer means: take the answers as given and go on.
+- A worker starts no session and sends no message to a chat. It has no question tool. A question for the user goes into the report under the heading `## Questions`: numbered items, each with its options as list items, the recommended option first. Each option is one short line, because Dispatch shows it as a button and sends it back word for word; the question and each option follow the rule of plain words of the Decisions of a plan; the details stand above the questions. The worker then writes `state: needs-decision` and `needs: decision` and ends its turn. `needs: permission` means: a refused tool call stopped the work; the report then has `state: needs-decision`, no `## Questions`, and names the refused call as sent, the refusal text and the permission rule that would allow it, and the work goes on with a follow-up `Continue` once the user changed the rule. An option of a question is never a change of a permission rule. A work run that cannot go on before one or more other tasks are merged asks no question: it writes `state: waiting` and `needs: merge`, no `## Questions`, and the section `## Waits for` with one list item per ticket id (a reason may follow after a colon), and ends its turn. Dispatch shows the wait on the task card and sends the follow-up `Continue` by itself when every named task is merged (in a project without task branches: when its report says done and its run ended); a wait for the task itself, a loop of waits, or a task that failed, was stopped or does not exist goes back to the user. The user answers in the task card of Dispatch, and the answer arrives as a follow-up `Answer to question N: <option>`. An answered question never comes back unchanged: after the answer the worker takes the question out of its report or writes what it decided and did, and ends with `state: done` or a new question. A follow-up `Continue` after an answer means: take the answers as given and go on.
 - A check step whose result the user confirms (a step of the project rules that picks or judges something for the user) writes the report with the section `## Check result`: the result as the step gave it, one item per line, a reason after each item where the step gives one. Under `## Questions` it puts one question only, which names the step and asks whether the user agrees, with two options: the first keeps the result as it is, the second changes it. Then it writes `state: needs-decision` and `needs: decision` and ends its turn. Dispatch shows the result on the task card with a box for changes and a Confirm button; the answer arrives as `Answer to question N: <first option>` or `Answer to question N: <second option>: <the user's words>`. The run applies the words and goes on; the final report keeps `## Check result` with the confirmed result, and the task card has a row that opens it.
 {confirm}- A follow-up goes through `{script} reply <ticket-id> \"<message>\"` and quotes the user's words exactly. The script takes the options of the run from `{reports}/<ticket-id>.state`.
 - Triage does no implementation. It classifies, writes briefs, starts the plan run, shows the plan, relays the yes, checks results and reports to the user.
@@ -4303,6 +4303,21 @@ fn parse_report(text: &str) -> (Option<ReportHeader>, Vec<Question>) {
     (has_state.then_some(header), questions)
 }
 
+/// The ticket ids of the section `## Waits for` of a report (ticket
+/// a-task-that-waits-for-the-merge-of): the first word of each line, without backticks and without
+/// a colon after it, in order and without doubles. Empty without the section.
+fn parse_waits_for(text: &str) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    for line in section_lines(text, "Waits for") {
+        let word = line.split_whitespace().next().unwrap_or("");
+        let id = word.trim_end_matches(':').trim_matches('`').trim_end_matches(':').trim();
+        if !id.is_empty() && !ids.iter().any(|known| known == id) {
+            ids.push(id.to_string());
+        }
+    }
+    ids
+}
+
 /// The lines of a section of a Markdown text: from the `## ` heading with the title (the case
 /// does not matter) to the next `## ` heading, without empty lines and without the list marks.
 pub(crate) fn section_lines(text: &str, title: &str) -> Vec<String> {
@@ -5650,6 +5665,11 @@ pub struct TaskInfo {
     /// Empty without a report or without the section.
     #[serde(rename = "checkResult")]
     check_result: Vec<String>,
+    /// The ticket ids of the section `## Waits for` of the report (ticket
+    /// a-task-that-waits-for-the-merge-of): the tasks whose merge the work run waits for. Empty
+    /// without a report or without the section.
+    #[serde(rename = "waitsFor")]
+    waits_for: Vec<String>,
     /// The brief that triage wrote for the task, when it exists.
     brief: Option<FileEntry>,
     /// What the task is about in a few words: the title of its brief, else the user's words in
@@ -6582,6 +6602,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             header: None,
             questions: Vec::new(),
             check_result: Vec::new(),
+            waits_for: Vec::new(),
             brief: None,
             about: String::new(),
             did: String::new(),
@@ -6657,6 +6678,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         tasks[at].questions = questions;
         tasks[at].did = report_gist(&text);
         tasks[at].check_result = section_block(&text, "Check result");
+        tasks[at].waits_for = parse_waits_for(&text);
         tasks[at].report = Some(entry);
     }
     // The checks picked after the work run (ticket test-picker-an-agent-picks-the-checks): with the
@@ -6882,7 +6904,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             // a question before its first commit has a branch that the base holds, and its reply
             // must still run on the branch.
             let header = task.header.as_ref();
-            let waits = header.is_some_and(|header| matches!(header.needs.as_str(), "decision" | "permission") || header.state == "needs-decision");
+            let waits = header.is_some_and(|header| matches!(header.needs.as_str(), "decision" | "permission" | "merge") || header.state == "needs-decision");
             let check = merging.is_none() && ((task.report.is_some() && !waits) || task.state == "stopped");
             if let Some((branch, changed)) = task_branch(project, &task.name, &current, check) {
                 task.branch = Some(branch);
@@ -7001,6 +7023,10 @@ fn handoff_state(task: &TaskInfo, live: bool, queued: bool) -> Option<String> {
     let open_run = (task.state == "planning" && task.plan.is_none()) || (matches!(task.state.as_str(), "approved" | "working") && task.report.is_none());
     if task.elsewhere && open_run {
         return Some("started on another computer; no worker of it runs here".to_string());
+    }
+    if needs == "merge" {
+        let ids = if task.waits_for.is_empty() { "other tasks".to_string() } else { task.waits_for.join(", ") };
+        return Some(format!("its work run waits for the merge of {ids}; Dispatch sends Continue when they are merged"));
     }
     if needs == "permission" && task.questions.is_empty() {
         return Some("its worker stopped at a refused step; it waits for the user to change the rule and click Continue in its task card".to_string());
@@ -8253,6 +8279,17 @@ pub(crate) mod tests {
         }
     }
 
+    /// Ticket a-task-that-waits-for-the-merge-of: the rules text tells the worker how to wait for
+    /// the merge of other tasks.
+    #[test]
+    fn the_rules_tell_the_worker_how_to_wait_for_a_merge() {
+        let project = scratch("merge-wait");
+        let body = project.section_body();
+        assert!(body.contains("A work run that cannot go on before one or more other tasks are merged asks no question: it writes `state: waiting` and `needs: merge`, no `## Questions`, and the section `## Waits for` with one list item per ticket id"), "{body}");
+        assert!(body.contains("sends the follow-up `Continue` by itself when every named task is merged"), "{body}");
+        assert!(body.contains("a wait for the task itself, a loop of waits, or a task that failed, was stopped or does not exist goes back to the user."), "{body}");
+    }
+
     /// Removes the scratch folders of a test that passed. A failed test keeps them for a look.
     pub(crate) fn clean(project: &Project) {
         let _ = fs::remove_dir_all(project.root.parent().unwrap());
@@ -8569,6 +8606,18 @@ pub(crate) mod tests {
         let (header, questions) = parse_report("needs: nothing\nstate: done\n\n## Notes\n1. not a question\n");
         assert_eq!(header.map(|h| (h.state, h.needs, h.files)), Some(("done".to_string(), "nothing".to_string(), String::new())));
         assert!(questions.is_empty());
+    }
+
+    /// Ticket a-task-that-waits-for-the-merge-of: a report that waits for the merge of other tasks.
+    #[test]
+    fn a_report_gives_its_wait_for_a_merge() {
+        let text = "state: waiting\nneeds: merge\nfiles: none\nplan: p.md\n\n## What changed\n- nothing yet\n\n## Waits for\n- `t-a`: its parser is needed\n- t-b\n* t-c: the API\n- t-a\n\n## Follow-ups\n- none\n";
+        let (header, questions) = parse_report(text);
+        assert_eq!(header.map(|h| (h.state, h.needs)), Some(("waiting".to_string(), "merge".to_string())));
+        assert!(questions.is_empty());
+        assert_eq!(parse_waits_for(text), vec!["t-a", "t-b", "t-c"]);
+        assert_eq!(parse_waits_for("t-x:\n## Waits for\n- t-a: why\n"), vec!["t-a"]);
+        assert!(parse_waits_for("state: done\nneeds: nothing\n\n## What changed\n- t-a\n").is_empty());
     }
 
     #[test]
@@ -9777,6 +9826,7 @@ Blockers: none
             header: None,
             questions: Vec::new(),
             check_result: Vec::new(),
+            waits_for: Vec::new(),
             brief: None,
             about: String::new(),
             did: String::new(),
@@ -9847,6 +9897,11 @@ Blockers: none
         let unverified = TaskInfo { report: entry(), header: header("working", "nothing"), ..task("t-check", "working") };
         let check = handoff_text(&[unverified], &[], &[], 0, "R", "S");
         assert!(check.contains("t-check: its report says done, but Dispatch found no command in the transcript"), "{check}");
+        // A work run that waits for the merge of other tasks (ticket a-task-that-waits-for-the-merge-of).
+        let waiting = TaskInfo { report: entry(), header: header("waiting", "merge"), waits_for: vec!["t-a".into(), "t-b".into()], ..task("t-wait", "working") };
+        let wait = handoff_text(&[waiting], &[], &[], 0, "R", "S");
+        assert!(wait.contains("t-wait: its work run waits for the merge of t-a, t-b; Dispatch sends Continue when they are merged"), "{wait}");
+        assert!(!wait.contains("asks a question"), "{wait}");
         clean(&project);
     }
 

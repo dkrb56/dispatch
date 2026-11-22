@@ -122,6 +122,7 @@ import { pasteSkipsPane } from "./chattabs";
 import { autoSwitch, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { answerWait, type WaitFacts, waitReason } from "./waitreason";
+import { autoContinueLine, autoContinueQueued, countsMerged, goOnLine, isAutoContinue, type MergeWait, mergeWait, mergeWaitLines, mergeWaitShort, mergeWaitText, mergeWaitTitle, stopLine, type WaitTask } from "./mergewait";
 import { HOLD_NOTE, holdWait } from "./holdstep";
 import { showTriage, triageCard, triagePanesToClose, withoutTriage, type ProjectLoad } from "./notriage";
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
@@ -2246,6 +2247,8 @@ interface TaskInfo {
   questions: Question[];
   /** The lines of the section `## Check result` of the report (ticket confirm-a-check-step-s-result-on-the). Absent from an older host. */
   checkResult?: string[];
+  /** The ticket ids of the section `## Waits for` of the report (ticket a-task-that-waits-for-the-merge-of). Absent from an older host. */
+  waitsFor?: string[];
   /** The brief that triage wrote, or null. */
   brief: FileEntry | null;
   /** What the task is about: the title of its brief, else the user's words, else the plan title. */
@@ -2953,6 +2956,9 @@ function approvePlans(): void {
     // "Confirm check results automatically" (ticket confirm-a-check-step-s-result-on-the): a check
     // result that still arrives gets its first option, once per report.
     if (project.confirmResults) confirmDefaults(project, tasks);
+    // A work run that waits for the merge of other tasks goes on by itself, day and night (ticket
+    // a-task-that-waits-for-the-merge-of, user decision 1): the user gave the yes at Approve.
+    continueMergeWaits(project, tasks);
     // The pick of the checks of a done report, once per report (ticket test-picker-an-agent-picks-the-checks);
     // at night the picked checks run without a click, unless they run at the merge.
     startPicks(project, tasks);
@@ -3201,7 +3207,7 @@ function waitingReplies(project: ProjectTasks, tasks: Task[]): QueuedReply[] {
 async function sendQueuedReply(task: Task, reply: QueuedReply): Promise<void> {
   queuedReplies.delete(reply.key);
   saveQueuedReplies();
-  const line = `${reply.line} (Dispatch sent this reply now: the user gave it earlier, while the checkout was on the branch of another task.)`;
+  const line = isAutoContinue(reply.line) ? reply.line : `${reply.line} (Dispatch sent this reply now: the user gave it earlier, while the checkout was on the branch of another task.)`;
   sendingReplies.set(reply.key, { modified: reply.record.modified, sentAt: null });
   if (await taskAction(task, "task_reply", { id: task.name, text: reply.text }, line)) {
     markAnswered(task.name, reply.record);
@@ -3342,6 +3348,25 @@ function confirmDefaults(project: ProjectTasks, tasks: Task[]): void {
     nightDone.add(key);
     const choice = question.options[0];
     void sendAnswers(task, [question], new Map([[question.number, choice]]), report.modified, confirmLine(task.name, choice, true));
+  }
+}
+
+/**
+ * Puts one `Continue` into the reply queue of the project for each task whose wait for the merge of
+ * other tasks is over (ticket a-task-that-waits-for-the-merge-of). The queue sends it when the project
+ * and the checkout are free. Once per report time; a busy task waits for the next poll.
+ */
+function continueMergeWaits(project: ProjectTasks, tasks: Task[]): void {
+  const folder = projectKey(project.host, project.cwd);
+  for (const task of tasks) {
+    if (busyTasks.has(task.name)) continue;
+    const report = task.info?.report;
+    const wait = mergeWaitOf(task);
+    if (!report || !wait || wait.kind !== "ready") continue;
+    const key = `mergewait:${folder}:${task.name}:${report.modified}`;
+    if (nightDone.has(key)) continue;
+    nightDone.add(key);
+    queueReply(task, answeredRecord(report.modified, [], new Map(), "Continue"), "Continue", autoContinueLine(task.name, wait.tasks.map((one) => one.name)));
   }
 }
 
@@ -5039,6 +5064,50 @@ function reportWaits(task: Task): boolean {
 }
 
 /**
+ * The wait of a task for the merge of other tasks (ticket a-task-that-waits-for-the-merge-of), or
+ * null: its report says `needs: merge`, the task is not stopped, no worker of it runs, and no reply
+ * to this report waits in the queue, goes out or went.
+ */
+function mergeWaitOf(task: Task): MergeWait | null {
+  const info = task.info;
+  if (!info?.report || info.header?.needs !== "merge" || info.state === "stopped") return null;
+  if (task.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) return null;
+  if (queuedReplies.get(queueKey(task))?.record.modified === info.report.modified) return null;
+  if (replySendingOf(task) || answeredReports.get(task.name)?.modified === info.report.modified) return null;
+  const project = task.project;
+  const tasks = project ? projectTaskList(project, false) : taskList(workerList, taskInfos);
+  const tickets = project?.tickets ?? [];
+  const others = new Map<string, WaitTask>();
+  for (const ticket of tickets) {
+    const name = ticket.task || ticket.id;
+    const closed = ticket.status === "canceled" ? "canceled" : null;
+    // A done ticket without its task files here counts as merged.
+    others.set(name, { name, title: ticket.title || name, exists: true, merged: ticket.status === "done", closed, live: false, done: false, planning: false, waitsFor: [] });
+  }
+  for (const other of tasks) {
+    const known = others.get(other.name);
+    const own = other.info;
+    const live = other.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
+    const reportState = own?.report ? (own.header?.state ?? null) : null;
+    const merged = countsMerged({ branchMerge: own?.branch ? own.branch.merge : null, reportState, live });
+    const failed = reportState === "failed" || (!own?.report && other.workers.some((worker) => worker.state === "failed"));
+    const closed = own?.state === "stopped" ? "stopped" : failed ? "failed" : (known?.closed ?? null);
+    others.set(other.name, {
+      name: other.name,
+      title: known?.title || own?.about || other.name,
+      exists: true,
+      merged,
+      closed: merged ? null : closed,
+      live,
+      done: reportState === "done",
+      planning: own?.state === "planning",
+      waitsFor: own?.header?.needs === "merge" ? (own.waitsFor ?? []) : [],
+    });
+  }
+  return mergeWait(task.name, info.waitsFor ?? [], [...others.values()]);
+}
+
+/**
  * The questions of a task that wait for an answer. A report that only asks again what the user
  * answered has none: its card is the repeat card (ticket answered-question-repeat).
  */
@@ -6665,7 +6734,8 @@ function queueReply(task: Task, record: AnsweredReport, text: string, line: stri
   saveQueuedReplies();
   sentReplies.delete(key);
   const wait = replyWait(task).replace(/:\n[\s\S]*$/, ".");
-  tellTriage(projectFor(taskHost(task), taskCwd(task)), `The user replied to ${task.name} in Dispatch while the checkout is on the branch of another task. ${wait} Dispatch sends the reply then; do not send it yourself.`);
+  const said = isAutoContinue(line) ? autoContinueQueued(task.name, wait) : `The user replied to ${task.name} in Dispatch while the checkout is on the branch of another task. ${wait} Dispatch sends the reply then; do not send it yourself.`;
+  tellTriage(projectFor(taskHost(task), taskCwd(task)), said);
   renderChats();
 }
 
@@ -6950,7 +7020,7 @@ function initQuestions(): void {
  * The Stop controls of a card that waits for the user. Not armed: adds the button Stop to the actions
  * row and gives null. Armed for the report on show: gives the row with the warning, Stop now and Keep waiting.
  */
-function permissionStopControls(task: Task, actions: HTMLElement): HTMLElement | null {
+function permissionStopControls(task: Task, actions: HTMLElement, stopped?: string): HTMLElement | null {
   const modified = task.info?.report?.modified ?? 0;
   const busy = busyTasks.has(task.name);
   const button = (text: string, title: string, click: () => void) => {
@@ -6969,7 +7039,7 @@ function permissionStopControls(task: Task, actions: HTMLElement): HTMLElement |
     text.textContent = "Stop this task? It no longer waits for you. Resume in its card starts it again.";
     const stop = button("Stop now", "End this task now", () => {
       permissionStopArmed.delete(task.name);
-      const line = `Task ${task.name} stopped in Dispatch: the worker waited for a permission and the user stopped the task. The task is ended until the user clicks Resume.`;
+      const line = stopped ?? `Task ${task.name} stopped in Dispatch: the worker waited for a permission and the user stopped the task. The task is ended until the user clicks Resume.`;
       void taskAction(task, "task_stop", { id: task.name }, line);
     });
     stop.className = "danger";
@@ -7017,6 +7087,46 @@ function permissionCard(task: Task): HTMLElement {
   actions.append(button);
   const armed = permissionStopControls(task, actions);
   card.append(title, text, actions);
+  if (armed) card.append(armed);
+  const error = actionError(task);
+  if (error) card.append(error);
+  return card;
+}
+
+/**
+ * The card of a work run that waits for the merge of other tasks (ticket a-task-that-waits-for-the-merge-of):
+ * one line per named task with its title and state, and the two ways to end the wait by hand, Go on
+ * now and Stop. A wait that cannot end by itself asks the user with the same two buttons.
+ */
+function mergeWaitCard(task: Task, wait: MergeWait): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "task-card";
+  const title = document.createElement("div");
+  title.className = "card-title";
+  title.textContent = mergeWaitTitle(wait);
+  const list = document.createElement("div");
+  list.className = "card-result";
+  list.textContent = mergeWaitLines(wait).join("\n");
+  const text = document.createElement("div");
+  text.className = "card-question";
+  text.textContent = mergeWaitText(wait);
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const button = document.createElement("button");
+  if (wait.kind === "problem") button.className = "primary";
+  button.textContent = "Go on now";
+  button.title = "Tell the worker to go on now, without the wait";
+  button.disabled = busyTasks.has(task.name);
+  button.addEventListener("click", () => {
+    permissionStopArmed.delete(task.name);
+    const modified = task.info?.report?.modified ?? 0;
+    void replyOrQueue(task, answeredRecord(modified, [], new Map(), "Continue"), "Continue", goOnLine(task.name)).then((result) => {
+      if (result) renderChats();
+    });
+  });
+  actions.append(button);
+  const armed = permissionStopControls(task, actions, stopLine(task.name));
+  card.append(title, list, text, actions);
   if (armed) card.append(armed);
   const error = actionError(task);
   if (error) card.append(error);
@@ -7258,6 +7368,8 @@ function mergeWaits(task: Task): boolean {
   if (!info || !branch?.exists || branch.merge) return false;
   if (!info.report && info.state !== "stopped") return false;
   if (planReady(task) || reportWaits(task)) return false;
+  // A work run that waits for the merge of other tasks has nothing to merge yet (ticket a-task-that-waits-for-the-merge-of).
+  if (info.header?.needs === "merge") return false;
   // The picked checks run at the merge: the merge waits for the pick (ticket test-picker-an-agent-picks-the-checks).
   if (taskPickState(task) === "picking") return false;
   return !task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
@@ -8026,6 +8138,9 @@ function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"
   if (planReady(task)) return { kind: "waits", text: "plan ready · waits for you" };
   if (repeatedQuestionsOf(task)) return { kind: "waits", text: "left your answered question in its report" };
   if (reportWaits(task)) return { kind: "waits", text: permissionWaits(task) ? "needs a permission" : "has a question for you" };
+  // A wait for other tasks waits for nobody here; a wait that cannot end waits for the user (ticket a-task-that-waits-for-the-merge-of).
+  const mergeWait = mergeWaitOf(task);
+  if (mergeWait) return { kind: mergeWait.kind === "problem" ? "waits" : "done", text: mergeWaitShort(mergeWait) };
   const live = task.workers.find((worker) => worker.state === "working" || worker.state === "blocked");
   if (live) {
     const run = workerRun(task, live);
@@ -8065,6 +8180,8 @@ function taskAttentionWait(task: Task): AttentionWait | null {
   const report = String(info?.report?.modified ?? "");
   if (repeatedQuestionsOf(task)) return { key, kind: "repeat", stamp: report };
   if (reportWaits(task)) return { key, kind: permissionWaits(task) ? "permission" : "question", stamp: report };
+  // Only a wait for the merge that cannot end waits for the user (ticket a-task-that-waits-for-the-merge-of).
+  if (mergeWaitOf(task)?.kind === "problem") return { key, kind: "question", stamp: report };
   const blocked = task.workers.find((worker) => worker.state === "blocked");
   if (blocked) return { key, kind: "prompt", stamp: `${blocked.id}#${promptCounts.get(workerKey(blocked)) ?? 1}` };
   if (task.workers.some((worker) => worker.state === "working")) return null;
@@ -11033,12 +11150,15 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   // A reply that waits for the checkout, or the line that it went out (ticket an-answer-waits-in-the-queue-while).
   const waiting = queuedReplyOf(task);
   const went = sentReplies.get(queueKey(task));
+  // A work run that waits for the merge of other tasks (ticket a-task-that-waits-for-the-merge-of).
+  const mergeWait = mergeWaitOf(task);
   if (waiting) made.append(waitingReplyCard(task, waiting));
   else if (went && went.modified === task.info?.report?.modified) made.append(sentReplyLine(went.at));
   if (repeats) made.append(repeatCard(task, repeats));
   else if (confirmAsk) made.append(confirmCard(task, confirmAsk));
   else if (questions.length > 0) made.append(questionCard(task, questions));
   else if (permissionWaits(task)) made.append(permissionCard(task));
+  else if (mergeWait) made.append(mergeWaitCard(task, mergeWait));
   // The checks picked after the work run (ticket test-picker-an-agent-picks-the-checks): the pick card
   // while no question waits; the Merge card holds the picks until they ran.
   const picks = taskPickState(task);
@@ -11222,6 +11342,9 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
         waits.push({ ...base, kind: "question", stamp: String(info.report.modified) });
       } else if (permissionWaits(task) && info?.report) {
         waits.push({ ...base, kind: "permission", stamp: String(info.report.modified) });
+      } else if (mergeWaitOf(task)?.kind === "problem" && info?.report) {
+        // A wait for the merge that cannot end comes back to the user (ticket a-task-that-waits-for-the-merge-of).
+        waits.push({ ...base, kind: "question", stamp: String(info.report.modified) });
       } else if (taskPickState(task) === "picked" && !pickAtMerge(task) && info?.report) {
         // Picked checks that wait for the click "Run checks" (ticket test-picker-an-agent-picks-the-checks).
         waits.push({ ...base, kind: "checks", stamp: String(info.report.modified) });
