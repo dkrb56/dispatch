@@ -59,6 +59,8 @@ interface Options {
   confirmResults: boolean;
   /** The work run works in the work folder `.dispatch/work/1`, a git worktree on the task branch; needs Task branches (ticket work-run-in-the-work-folder). Off at the start. */
   workFolders: boolean;
+  /** The number of work folders `.dispatch/work/1` to `.dispatch/work/<n>`, 1 to 4: up to that many tasks are in their work run at the same time (ticket up-to-4-work-folders-more-than-one-task). Absent from an older host: 1. */
+  workFolderCount?: number;
 }
 
 /** The reply of the `pipeline_plan`, `pipeline_apply` and `set_project_options` commands. */
@@ -114,6 +116,8 @@ const measureEl = document.querySelector<HTMLTextAreaElement>("#setup-measure-co
 const gateEl = document.querySelector<HTMLTextAreaElement>("#setup-merge-gate")!;
 /** The box with the set-up command of the work folder, under the switch "Work folder" (ticket work-run-in-the-work-folder). */
 const setupEl = document.querySelector<HTMLTextAreaElement>("#setup-work-setup")!;
+/** The number of work folders, under the switch "Work folder" (ticket up-to-4-work-folders-more-than-one-task). */
+const workCountEl = document.querySelector<HTMLInputElement>("#setup-work-count")!;
 /** The box with the checks of the project (ticket task-checks). It has no switch: an empty list is off. */
 const checksEl = document.querySelector<HTMLTextAreaElement>("#setup-checks")!;
 /** The button that adds the tests that Dispatch finds in the project to that box. */
@@ -349,6 +353,8 @@ function currentOptions(): Options {
   options.fullChecksAt = timeMinutes(fullAtEl.value) ?? shownOptions?.fullChecksAt ?? 0;
   const after = Math.floor(Number(fullAfterEl.value));
   options.fullChecksAfter = Number.isFinite(after) ? Math.min(999, Math.max(0, after)) : (shownOptions?.fullChecksAfter ?? 0);
+  const count = Math.floor(Number(workCountEl.value));
+  options.workFolderCount = Number.isFinite(count) && count > 0 ? Math.min(4, count) : (shownOptions?.workFolderCount ?? 1);
   return options;
 }
 
@@ -374,6 +380,8 @@ function show(plan: Plan): void {
   gateEl.disabled = !plan.options.taskBranches;
   if (document.activeElement !== setupEl) setupEl.value = plan.workSetup ?? "";
   setupEl.disabled = !(plan.options.taskBranches && plan.options.workFolders);
+  if (document.activeElement !== workCountEl) workCountEl.value = String(plan.options.workFolderCount ?? 1);
+  workCountEl.disabled = !(plan.options.taskBranches && plan.options.workFolders);
   if (document.activeElement !== checksEl) checksEl.value = plan.checks ?? "";
   checksEl.disabled = false;
   findChecksEl.disabled = false;
@@ -449,6 +457,10 @@ export function initPipeline(
   // The set-up command of the work folder is saved the same way (ticket work-run-in-the-work-folder).
   setupEl.addEventListener("change", () => {
     if (folder) void run("set_work_setup", undefined, setupEl.value);
+  });
+  // The number of work folders saves with the options when the field changes (ticket up-to-4-work-folders-more-than-one-task).
+  workCountEl.addEventListener("change", () => {
+    if (folder) void run("set_project_options", currentOptions());
   });
   // The list of checks is saved the same way (ticket task-checks).
   checksEl.addEventListener("change", () => {
@@ -540,6 +552,8 @@ function open(host: HostId, target: string | null): void {
   gateEl.disabled = true;
   setupEl.value = "";
   setupEl.disabled = true;
+  workCountEl.value = "";
+  workCountEl.disabled = true;
   checksEl.value = "";
   checksEl.disabled = true;
   findChecksEl.disabled = true;

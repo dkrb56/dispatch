@@ -38,6 +38,6 @@
 - The release task `release-<version>` also writes the entry of the version at the top of `CHANGELOG.md`: the heading `## <version> (<date>)`, then one `- ` line per change for the user since the last release, in plain words, with no ticket ids, no file names and no commit hashes. Dispatch shows these lines in its window "What's new" after the update.
 
 ## Test builds
-- A test copy builds into the one shared folder `D:\dev_projects\dispatch\src-tauri\target\test-copy` (`CARGO_TARGET_DIR`, absolute), never a folder of its own.
+- A test copy builds into the shared folder of its work folder (`CARGO_TARGET_DIR`, absolute), never a folder of its own: `D:\dev_projects\dispatch\src-tauri\target\test-copy` in work folder 1 or in the project folder, `D:\dev_projects\dispatch\src-tauri\target\test-copy-<n>` in work folder `<n>`. The run knows its number from its prompt and from `DISPATCH_WORK_FOLDER`.
 - Set `CARGO_INCREMENTAL=0` for that build.
 - Close the test copy at the end, and name the folder in the report.

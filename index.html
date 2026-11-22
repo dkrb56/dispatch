@@ -183,8 +183,14 @@
               </label>
               <label class="switch-row" data-under="taskBranches">
                 <input type="checkbox" data-option="workFolders" />
-                <span><b>Work folder</b> The work run of a task runs in a side folder of Dispatch (<code>.dispatch/work/1</code>, a git checkout of the task branch). Your project folder stays on your branch while it runs, and the worker still writes its report into the task folder of your project. A second task waits until the side folder is free. Merge also works there: the merge, the checks and the gate run in the side folder, and your project folder gets the result in one step. A task that started before you turned this on goes on: its answer starts a new worker in the side folder, and Merge works as usual. <small class="when-on">Changes the steps "Section in CLAUDE.md" and "Work folder".</small><small class="when-off">Turn on Task branches first.</small></span>
+                <span><b>Work folder</b> The work run of a task runs in a side folder of Dispatch (<code>.dispatch/work/1</code>, a git checkout of the task branch). Your project folder stays on your branch while it runs, and the worker still writes its report into the task folder of your project. More tasks than folders wait until a side folder is free. Merge also works there: the merge, the checks and the gate run in the side folder, and your project folder gets the result in one step. A task that started before you turned this on goes on: its answer starts a new worker in the side folder, and Merge works as usual. <small class="when-on">Changes the steps "Section in CLAUDE.md" and "Work folder".</small><small class="when-off">Turn on Task branches first.</small></span>
               </label>
+              <div class="switch-field setup-full">
+                <label>Work folders
+                  <input type="number" id="setup-work-count" min="1" max="4" step="1" title="How many side folders the project has, 1 to 4. Each runs one task at a time. The box saves when you leave it" disabled />
+                </label>
+                <small>Up to that many tasks work at the same time. Each folder takes its own build output and one first build.</small>
+              </div>
               <div class="switch-field">
                 <label for="setup-work-setup">Set-up command of the side folder</label>
                 <textarea id="setup-work-setup" rows="2" spellcheck="false" placeholder="One command, for example: npm ci&#10;# limit 3600 as the first line sets the time limit in seconds" title="The command that runs once in the new side folder, with cmd.exe, for example to install the dependencies. Empty: none. The box saves when you leave it"></textarea>
