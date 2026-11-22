@@ -9,11 +9,9 @@ What each update of Dispatch brought, in plain words. The newest version comes f
 - Auto-merge takes finished tasks in the order of their done reports, asks the work run for a new gate run once per base commit when only the fresh check failed, and the card shows the old refusal as old.
 - Each phone card ends with one line 'Tickets · N scheduled · M in backlog' and a Board link that opens the Board view.
 - Answers, a Confirm and a Continue wait in the queue while the checkout is on the branch of another task; the card names the wait, has Take back, and Dispatch sends the reply once when the checkout is back on the base.
-- The merge commits the files that the gate wrote, a blocked switch to a task branch names the file, and a refused tool call is needs: permission without questions.
+- The merge commits the files that the gate wrote, a blocked switch to a task branch names the file, and a task that a refused tool call stopped asks for the permission, not a question.
 - An Approve during a merge waits for the merge commit before the check of uncommitted task files, and a click or queued approval that a merge refuses waits in the queue again.
-- Commit the changes in 1 file before its work run.
-- Answers and evidence for the 8 open points of the work folders design, from a proof with real background sessions and gated merges in a git worktree of a scratch project.
-- The project switch Work folder (with Task branches) runs Approve, a reply, a resume and the checks of a task in the git worktree .dispatch/work/1 with its set-up command and its record; the project folder stays on the base, the report goes into the project, and the task card names the wait for the folder.
+- The project switch Work folder (with Task branches) runs Approve, a reply, a resume and the checks of a task in a separate work folder of the project; the project folder stays on the base, the report goes into the project, and the task card names the wait for the folder.
 - In Focus the Terminal switch hides and shows the terminal panel and the terminals keep running; the panel shows up to 4 terminals at once (+ opens one more, each has its own ×), a chat of the Chats list joins it, and the list and the hidden state hold after a restart.
 - In Focus a click on the project name in the head of a column makes it a strip, or gives the layout back, with the same rules as – and ⤢.
 - The amber part of Token usage is named Chats in the legend and chats in the tooltips and the biggest-user text.
@@ -28,7 +26,7 @@ What each update of Dispatch brought, in plain words. The newest version comes f
 - A work run that waits for the merge of other tasks says so in its report; the card names the tasks, and Dispatch sends Continue by itself when they are merged.
 - A project has 1 to 4 work folders; each work run takes a free folder, a reply and a check run go into the folder of their session, a merge takes any free folder, and two tasks whose plans name the same file do not work at the same time.
 - With N work folders the page starts up to N work runs; a task beyond the number waits and its card names the tasks that use the folders; a task whose plan names a file of a running task waits and its card names the file; an answer waits for the folder of its session; a merge runs beside work runs, one at a time; a start or an answer that the script refuses for a folder or the same files goes back into the queue.
-- Setup pipeline shows the size of work folder 1 under the number of work folders, measured in the background when the window opens; the Help, the README and docs/work-folders.md explain 1 to 4 work folders.
+- Setup pipeline shows the size of work folder 1 under the number of work folders, measured in the background when the window opens.
 - A failed action run gets Run from step N; the new run copies the earlier steps with their result and time, keeps the values of the failed run, and asks first when the project got a new commit or uncommitted changes since that step started.
 
 ## 0.1.84 (2026-11-21)

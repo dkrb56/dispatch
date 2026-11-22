@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { compareVersions, lastRunVersion, newEntries, parseChangelog, VERSION_BEFORE_FIELD } from "../src/changelog.ts";
+import { brokenRule, changelogLines, compareVersions, lastRunVersion, LINE_RULES, newEntries, parseChangelog, VERSION_BEFORE_FIELD } from "../src/changelog.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -88,6 +88,45 @@ test("the real CHANGELOG.md: versions 0.1.54 down to 0.1.46, dated, in plain wor
       assert.doesNotMatch(item, /\b[0-9a-f]{7}\b/, `no commit hash: ${item}`);
     }
   }
+});
+
+test("the release lines keep the rules of the real CHANGELOG.md: a bad part goes, a bad line stops", () => {
+  const result = changelogLines([
+    "ticket-one: the board shows a count; the Help and docs/board.md explain it",
+    "ticket-two: the merge waits for the gate; commit 1a2b3c4 moved the check; the card names the wait",
+    "ticket-three: `src/main.ts` reads the queue",
+    "ticket-four: other-ticket: the card shows the wait",
+    "ticket-five: the switch holds after a restart; Help and README; tests",
+    "release-0.1.86: version 0.1.86 and the changelog entry",
+    "ticket-six: commit the changes in 1 file before its work run",
+    "ticket-seven: commit the changes in 3 files before its work run",
+    "a subject without a ticket id",
+  ]);
+  assert.deepEqual(result.lines, [
+    "- The board shows a count.",
+    "- The merge waits for the gate; the card names the wait.",
+    "- The switch holds after a restart.",
+  ]);
+  assert.deepEqual(result.stops, [
+    { subject: "ticket-three: `src/main.ts` reads the queue", rule: "no file name" },
+    { subject: "ticket-four: other-ticket: the card shows the wait", rule: "no ticket id" },
+  ]);
+  assert.deepEqual(result.skipped, [
+    "ticket-six: commit the changes in 1 file before its work run",
+    "ticket-seven: commit the changes in 3 files before its work run",
+    "a subject without a ticket id",
+  ]);
+  for (const line of result.lines) assert.equal(brokenRule(line.slice(2)), null, line);
+  assert.equal(brokenRule("names docs/work-folders.md"), "no file name");
+  assert.equal(brokenRule("since abc1234"), "no commit hash");
+  assert.equal(brokenRule("a-b: x"), "no ticket id");
+  assert.equal(brokenRule("Plain words."), null);
+});
+
+test("the rules of the release lines are the three patterns of the test of the real CHANGELOG.md", () => {
+  const source = read("./changelog.test.ts");
+  const patterns = [...source.matchAll(/assert\.doesNotMatch\(item, \/(.+)\/, `/g)].map((m) => m[1]);
+  assert.deepEqual(patterns, LINE_RULES.map((rule) => rule.pattern.source));
 });
 
 test("the window meets the page: main.ts uses the module, index.html has the window and the button, the Help names it", () => {
