@@ -616,10 +616,39 @@ export function arrowRefusal(tickets: readonly PlanTicket[], from: string, to: s
   return null;
 }
 
+/** True when the arrow `from` → `to` points to a ticket in work and `from` still holds it (the rule of the badge "Started early"). */
+export function startsEarly(tickets: readonly PlanTicket[], from: string, to: string): boolean {
+  if (tickets.find((ticket) => ticket.id === to)?.status !== "in-progress") return false;
+  const source = tickets.find((ticket) => ticket.id === from);
+  return !planDone(source?.status ?? "") || (source?.status === "done" && source.note === "failed");
+}
+
+/** The ids after `id` that are in work. */
+export function runningAfter(tickets: readonly PlanTicket[], id: string): string[] {
+  return comesBefore(tickets, id).filter((one) => tickets.find((ticket) => ticket.id === one)?.status === "in-progress");
+}
+
+/** The warning for the running tickets `running` that start without the changes of `from`. */
+export function earlyText(from: string, running: readonly string[]): string {
+  if (running.length === 1) return `${running[0]} is already running. It will not get the changes of ${from}.`;
+  return `${running.join(", ")} are already running. They will not get the changes of ${from}.`;
+}
+
+/** The warning of a move of `id` to `status`, or null: a Done (not failed) or Canceled ticket goes back to Scheduled or Backlog while a ticket after it is in work. */
+export function moveWarning(tickets: readonly PlanTicket[], id: string, status: string): string | null {
+  const ticket = tickets.find((one) => one.id === id);
+  if (!ticket || (status !== "new" && status !== "backlog")) return null;
+  if (!(ticket.status === "canceled" || (ticket.status === "done" && ticket.note !== "failed"))) return null;
+  const running = runningAfter(tickets, id);
+  return running.length > 0 ? earlyText(id, running) : null;
+}
+
 /** The result of a change of the draft: the new draft, or the old one and the reason of the refusal. */
 export interface DraftChange {
   draft: PlanDraft;
   refusal: string | null;
+  /** The new arrow when it points to a ticket in work that `from` still holds. */
+  early?: PlanArrow | null;
 }
 
 /** The list of a ticket in the draft. */
@@ -629,9 +658,14 @@ function listOf(tickets: readonly PlanTicket[], draft: PlanDraft, id: string): s
 
 /** The draft with the arrow `from` → `to`, unless it is refused. */
 export function withArrow(tickets: readonly PlanTicket[], draft: PlanDraft, arrow: PlanArrow): DraftChange {
-  const refusal = arrowRefusal(draftTickets(tickets, draft), arrow.from, arrow.to);
+  const list = draftTickets(tickets, draft);
+  const refusal = arrowRefusal(list, arrow.from, arrow.to);
   if (refusal) return { draft, refusal };
-  return { draft: { ...draft, after: { ...draft.after, [arrow.to]: [...listOf(tickets, draft, arrow.to), arrow.from] } }, refusal: null };
+  return {
+    draft: { ...draft, after: { ...draft.after, [arrow.to]: [...listOf(tickets, draft, arrow.to), arrow.from] } },
+    refusal: null,
+    early: startsEarly(list, arrow.from, arrow.to) ? arrow : null,
+  };
 }
 
 /** The draft without the arrow. */

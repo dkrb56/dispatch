@@ -14,6 +14,7 @@ import {
   comesBefore,
   draftChanges,
   draftTickets,
+  earlyText,
   flowTickets,
   groupBadge,
   groupBox,
@@ -21,6 +22,7 @@ import {
   layoutTickets,
   makeDraft,
   movedArrow,
+  moveWarning,
   notInFlow,
   openBefore,
   parsePlanGroups,
@@ -43,7 +45,9 @@ import {
   planSort,
   planStateWord,
   queueMarks,
+  runningAfter,
   standLine,
+  startsEarly,
   takenOut,
   toggleSelection,
   turnedArrow,
@@ -353,6 +357,34 @@ test("an arrow is refused from a ticket to itself, twice, or into a loop, with t
   const refused = withArrow(TREE, draft, { from: "d", to: "a" });
   assert.equal(refused.draft, draft);
   assert.match(refused.refusal ?? "", /^That arrow would make a loop: d already comes after a\.$/);
+});
+
+test("an arrow or a move that makes a running ticket start early gives a warning", () => {
+  const list = [t("a", "done"), t("b", "in-progress", ["a"]), t("c", "new")];
+  const arrow = withArrow(list, makeDraft(list), { from: "c", to: "b" });
+  assert.equal(arrow.refusal, null);
+  assert.deepEqual(draftTickets(list, arrow.draft).find((one) => one.id === "b")?.after, ["a", "c"]);
+  assert.deepEqual(arrow.early, { from: "c", to: "b" });
+  assert.equal(earlyText("c", ["b"]), "b is already running. It will not get the changes of c.");
+  assert.equal(earlyText("c", ["b", "d"]), "b, d are already running. They will not get the changes of c.");
+  assert.equal(startsEarly(list, "a", "b"), false);
+  assert.equal(withArrow(list, makeDraft(list), { from: "a", to: "b" }).refusal, "That arrow exists already.");
+  const pair = [t("a", "done"), t("b", "in-progress")];
+  const done = withArrow(pair, makeDraft(pair), { from: "a", to: "b" });
+  assert.equal(done.early, null, "an earlier ticket that is done holds nothing");
+  assert.equal(withArrow(list, makeDraft(list), { from: "b", to: "b" }).early, undefined, "a refused arrow has no early");
+  const moved = movedArrow(list, arrow.draft, { from: "c", to: "b" }, "c", "b");
+  assert.equal(moved.early, undefined);
+  const turned = movedArrow(list, makeDraft(list), { from: "a", to: "b" }, "c", "b");
+  assert.deepEqual(turned.early, { from: "c", to: "b" });
+  // A move back.
+  assert.deepEqual(runningAfter(list, "a"), ["b"]);
+  assert.equal(moveWarning(list, "a", "new"), "b is already running. It will not get the changes of a.");
+  assert.equal(moveWarning(list, "a", "backlog"), "b is already running. It will not get the changes of a.");
+  assert.equal(moveWarning(list, "a", "done"), null);
+  assert.equal(moveWarning([t("a", "done"), t("b", "new", ["a"])], "a", "new"), null);
+  assert.equal(moveWarning([{ ...t("a", "done"), note: "failed" }, t("b", "in-progress", ["a"])], "a", "new"), null);
+  assert.equal(moveWarning([t("a", "canceled"), t("b", "in-progress", ["a"])], "a", "new"), "b is already running. It will not get the changes of a.");
 });
 
 test("the draft adds, removes, turns and moves an arrow, and the board stays", () => {

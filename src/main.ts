@@ -59,6 +59,9 @@ import {
   PLAN_COLUMN_STEP,
   PLAN_GRID,
   PLAN_PAD,
+  earlyText,
+  moveWarning,
+  runningAfter,
   planArrows,
   planBadges,
   planCentre,
@@ -4056,8 +4059,17 @@ function queueIdsWithout(project: string, id: string): string[] {
     .filter((one) => one !== id);
 }
 
+/** The tickets (`<project key>
+<id>`) that went back to Scheduled or Backlog while a ticket after them runs: their card shows the warning. */
+const movedBack = new Set<string>();
+
 /** Moves a ticket into Backlog, New, Done or Canceled; `ids` is the queue of New after the move. */
 async function moveTicket(project: string, id: string, status: TicketStatus, ids: string[], note?: string): Promise<boolean> {
+  // Read the warning before the first await: after it the board may show the new column.
+  const movedKey = `${project}
+${id}`;
+  if (moveWarning(projectTickets(project), id, status)) movedBack.add(movedKey);
+  else movedBack.delete(movedKey);
   // A ticket that comes back into New loses its send marks and its claim: else Dispatch never
   // starts it again (ticket i-cant-dragged-canceled-ticket-back-to).
   const current = projectTickets(project).find((ticket) => ticket.id === id);
@@ -4070,7 +4082,9 @@ ${id}`;
     const { host, cwd } = projectCwd(project);
     await call(host, "ticket_claim", { cwd, id, release: true }).catch(() => {});
   }
-  return ticketAction(project, "ticket_move", { id, status, ids, note: note ?? null });
+  const moved = await ticketAction(project, "ticket_move", { id, status, ids, note: note ?? null });
+  if (!moved) movedBack.delete(movedKey);
+  return moved;
 }
 
 /** The tickets whose drop still saves, as `<project key>\n<id>`: their card shows a spinner and does not drag. */
@@ -11211,6 +11225,11 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   // The task card with its runs, steps, plan, report, checks and buttons, below the ticket lines (user decision 1).
   if (ticketTask) card.append(taskElement(ticketTask));
   if (planError !== undefined) card.append(mapElement("div", "ticket-error", `The plan did not start: ${planError}`));
+  if (movedBack.has(`${project}
+${ticket.id}`) && (ticket.status === "new" || ticket.status === "backlog")) {
+    const running = runningAfter(projectTickets(project), ticket.id);
+    if (running.length > 0) card.append(mapElement("div", "ticket-warning", earlyText(ticket.id, running)));
+  }
   card.append(tools);
   return card;
 }
@@ -15792,6 +15811,8 @@ let planDrawFrom: string | null = null;
 let planPlacing: string | null = null;
 /** Why the last change was refused; the flow bar shows it until the next action. */
 let planRefusal = "";
+// The new arrow that points to a ticket in work, for the warning in the flow bar; it lasts until the next action.
+let planEarly: PlanArrow | null = null;
 /** The note of the last Confirm; the toolbar shows it until a selection or the next Plan the flow (user decision 5). */
 let planConfirmNote = "";
 /** The ticket whose side panel shows the box of "+ Ticket after this" (user decision 2). */
@@ -16004,6 +16025,7 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
     planDrawFrom = null;
     planPlacing = null;
     planRefusal = "";
+    planEarly = null;
     planAddingAfter = null;
     renderPlan();
     void refreshFocusTasks();
@@ -16249,6 +16271,7 @@ function planStartFlow(): void {
   if (!planDrafts.has(key)) planDrafts.set(key, makeDraft(planBoardTickets(key)));
   planConfirmNote = "";
   planRefusal = "";
+  planEarly = null;
   renderPlan();
 }
 
@@ -16257,6 +16280,7 @@ function planCancelDrawing(): void {
   planDrawFrom = null;
   planPlacing = null;
   planRefusal = "";
+  planEarly = null;
   renderPlan();
 }
 
@@ -16273,6 +16297,7 @@ function planEditDraft(change: (tickets: PlanTicket[], draft: PlanDraft) => Plan
   const result = change(planBoardTickets(key), draft);
   const next: DraftChange = "draft" in result ? result : { draft: result, refusal: null };
   planRefusal = next.refusal ?? "";
+  planEarly = next.refusal ? null : (next.early ?? null);
   if (!next.refusal) {
     planDrafts.set(key, next.draft);
     done?.();
@@ -16303,6 +16328,7 @@ function planPlace(id: string): void {
   planPlacing = id;
   planDrawFrom = null;
   planRefusal = "";
+  planEarly = null;
   renderPlan();
 }
 
@@ -16319,6 +16345,7 @@ function planDiscard(event: MouseEvent): void {
     planDrawFrom = null;
     planPlacing = null;
     planRefusal = "";
+    planEarly = null;
     planAddingAfter = null;
     renderPlan();
   };
@@ -16373,6 +16400,7 @@ async function planConfirm(): Promise<void> {
   const added = draft.added.map((one) => ({ key: one.key, text: one.text, after: comesAfter(list, one.key) }));
   planConfirming = true;
   planRefusal = "";
+  planEarly = null;
   renderPlan();
   try {
     const reply = await call<unknown>(ref.host, "plan_confirm", { cwd: ref.root, arrows, queue, added });
@@ -16589,7 +16617,8 @@ function renderPlan(): void {
   const changes = draft ? draftChanges(tickets, draft) : { lines: [], count: 0 };
   const drawing =
     planPlacing !== null ? `Placing ${planName(planPlacing)}: click the ticket that comes before it` : planDrawFrom !== null ? `Drawing an arrow from ${planName(planDrawFrom)}` : "";
-  const barState = draft ? JSON.stringify([changes.count, drawing, planRefusal, planConfirming]) : "";
+  const earlyLine = planEarly ? earlyText(planName(planEarly.from), [planName(planEarly.to)]) : "";
+  const barState = draft ? JSON.stringify([changes.count, drawing, planRefusal, earlyLine, planConfirming]) : "";
   planFlowBarEl.hidden = draft === null;
   if (planFlowBarEl.dataset.state !== barState) {
     planFlowBarEl.dataset.state = barState;
@@ -16604,6 +16633,7 @@ function renderPlan(): void {
     const items: HTMLElement[] = [mapElement("span", "plan-flow-count", plural(changes.count, "change"))];
     if (drawing) items.push(mapElement("span", "plan-flow-drawing", drawing), barButton("Cancel", "plan-flow-cancel", "Stop drawing (Esc)", planCancelDrawing));
     if (planRefusal) items.push(mapElement("span", "plan-flow-refusal", planRefusal));
+    if (earlyLine) items.push(mapElement("span", "plan-flow-warning", earlyLine));
     items.push(
       mapElement("span", "plan-flow-gap"),
       barButton("Discard", "plan-flow-discard", "Throw the draft away, also the tickets added while planning", planDiscard, planConfirming),
@@ -16709,6 +16739,7 @@ function renderPlan(): void {
       planDrawFrom = id;
       planPlacing = null;
       planRefusal = "";
+      planEarly = null;
       renderPlan();
     });
     return button;

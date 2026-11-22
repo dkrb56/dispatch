@@ -2777,6 +2777,13 @@ button.ticket-level {
   overflow-wrap: anywhere;
 }
 
+.ticket-warning {
+  color: var(--wait);
+  font-weight: 600;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .ticket-tools {
   display: flex;
   flex-wrap: wrap;
@@ -11170,6 +11177,10 @@ svg.links {
 
 .plan-flow-refusal {
   color: var(--danger);
+}
+
+.plan-flow-warning {
+  color: var(--wait);
 }
 
 .plan-flow-gap {
