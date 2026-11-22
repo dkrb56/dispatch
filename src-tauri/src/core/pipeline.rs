@@ -8554,13 +8554,9 @@ pub(crate) mod tests {
         assert!(commit_setup(&project).unwrap_err().contains("not a git repository"));
         let root = project.root.clone();
         let git = |args: &[&str]| run_git(&root, args).unwrap();
-        git(&["init", "-q"]);
-        git(&["config", "user.name", "Dispatch test"]);
-        git(&["config", "user.email", "test@example.invalid"]);
-        git(&["config", "commit.gpgsign", "false"]);
         // A global ignore file can hide `.claude/settings.local.json` (on the machine of the user
         // it does). The repository names a file that does not exist in its place.
-        git(&["config", "core.excludesFile", "no-such-ignore-file"]);
+        init_repo(&root);
         project.in_git = true;
         // A file of the user that the commit must leave alone.
         write_file(&root.join("notes.txt"), "mine\n").unwrap();
@@ -10161,9 +10157,43 @@ Blockers: none
     /// does. A plan prompt with "Measure before the plan is on" makes it run command 1 through the
     /// `measure` verb of the script first and write a plan with the section Measured.
     /// With a file `fail.txt` next to it, a run (not `agents`) ends with the exit code in that file.
+    /// `claude.cmd` answers `agents --json --all` and `stop <id>` itself, with the same output and
+    /// the same lines in `args.txt` and `cwd.txt` as the Node part, and sends every other call to
+    /// Node: about half of the calls then start no Node (ticket the-tests-take-19-minutes-when-workers).
+    /// One difference: a FAKE_STATE set to the empty text counts as not set (cmd cannot tell them
+    /// apart); no test sets it empty.
     fn fake_claude(base: &Path) -> PathBuf {
         let dir = base.join("fake-bin");
-        write_file(&dir.join("claude.cmd"), "@node \"%~dp0fake-claude.js\" %*\r\n").unwrap();
+        let batch = r#"@echo off
+if not "%~1"=="agents" goto stop
+if not "%~2"=="--json" goto node
+if not "%~3"=="--all" goto node
+if not "%~4"=="" goto node
+>>"%~dp0args.txt" echo ["agents","--json","--all"]
+setlocal EnableDelayedExpansion
+set "N=t-1"
+if not "!FAKE_NAME!"=="" set "N=!FAKE_NAME!"
+set "S=sess-1"
+if exist "%~dp0copy.txt" set /p S=<"%~dp0copy.txt"
+set "J=[{"id":"bg-1","name":"!N!","sessionId":"!S!","startedAt":1"
+if defined FAKE_STATE set "J=!J!,"state":"!FAKE_STATE!""
+if not "!FAKE_STATUS!"=="" set "J=!J!,"status":"!FAKE_STATUS!""
+if not "!FAKE_CWD!"=="" set "J=!J!,"cwd":"!FAKE_CWD:\=\\!""
+echo(!J!}]
+exit /b 0
+:stop
+if not "%~1"=="stop" goto node
+if "%~2"=="" goto node
+if not "%~3"=="" goto node
+if exist "%~dp0fail.txt" goto node
+>>"%~dp0args.txt" echo ["stop","%~2"]
+>"%~dp0cwd.txt" <nul set /p "=%CD%"
+echo stopped %~2
+exit /b 0
+:node
+node "%~dp0fake-claude.js" %*
+"#;
+        write_file(&dir.join("claude.cmd"), &batch.replace('\n', "\r\n")).unwrap();
         write_file(
             &dir.join("fake-claude.js"),
             "const fs = require('fs');
@@ -10284,15 +10314,7 @@ if (args[0] === 'agents') {
 
     /// Makes the root of a proof project a git repository with a local identity, as `git_scratch`.
     fn git_init(project: &Project) {
-        for args in [
-            &["init", "-q"][..],
-            &["config", "user.name", "Dispatch test"],
-            &["config", "user.email", "test@example.invalid"],
-            &["config", "commit.gpgsign", "false"],
-            &["config", "core.excludesFile", "no-such-ignore-file"],
-        ] {
-            run_git(&project.root, args).unwrap();
-        }
+        init_repo(&project.root);
     }
 
     #[test]
@@ -11135,18 +11157,22 @@ if (args[0] === 'agents') {
     /// Makes a git repository of a scratch project, with an identity and no global ignore file.
     pub(crate) fn git_scratch(name: &str) -> Project {
         let mut project = scratch(name);
-        let root = project.root.clone();
-        for args in [
-            &["init", "-q"][..],
-            &["config", "user.name", "Dispatch test"],
-            &["config", "user.email", "test@example.invalid"],
-            &["config", "commit.gpgsign", "false"],
-            &["config", "core.excludesFile", "no-such-ignore-file"],
-        ] {
-            run_git(&root, args).unwrap();
-        }
+        init_repo(&project.root);
         project.in_git = true;
         project
+    }
+
+    /// Makes `root` a git repository with a local identity, no signing and no global ignore file
+    /// (a global ignore file can hide `.claude/settings.local.json`; the repository names a file that
+    /// does not exist in its place). One `git init`, then the settings appended to `.git/config` as
+    /// text: the same keys and values as four `git config` calls, with one program start in place of
+    /// five (ticket the-tests-take-19-minutes-when-workers).
+    fn init_repo(root: &Path) {
+        run_git(root, &["init", "-q"]).unwrap();
+        let config = root.join(".git").join("config");
+        let mut text = fs::read_to_string(&config).unwrap();
+        text.push_str("[user]\n\tname = Dispatch test\n\temail = test@example.invalid\n[commit]\n\tgpgsign = false\n[core]\n\texcludesFile = no-such-ignore-file\n");
+        fs::write(&config, text).unwrap();
     }
 
     #[test]
