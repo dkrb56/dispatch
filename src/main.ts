@@ -170,7 +170,8 @@ import { terminalTheme, themeName, themeTokens } from "./theme";
 import { nightButton, nightChanges, nightLines, nightSyncLines } from "./night";
 import { KEY_DOWN, KEY_ENTER, KEY_ESC, rcCommand, rcMenuFocus, rcSettled, rcView, type RcView, type RcWish } from "./remotecontrol";
 import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
-import { answerable, answeredLine, chosenCount, holdReason, questionWaitToOpen, replyText, windowChoices, windowTitle } from "./answers";
+import { answerable, answeredLine, chosenCount, holdReason, questionWaitToOpen, replySending, replyText, SENDING_STATUS, windowChoices, windowTitle } from "./answers";
+import type { SendingReply } from "./answers";
 import { CONFIRM_PLACEHOLDER, CONFIRM_TIP, CONFIRM_TITLE, confirmChoice, confirmLine, confirmQuestion, RESULT_LABEL, RESULT_TIP } from "./confirm";
 import { ANSWERED_KEY, type AnsweredQuestion, type AnsweredReport, answeredRecord, parseAnswered, parseQueuedReplies, QUEUED_REPLIES_KEY, type QueuedReply, type RepeatAction, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered, serializeQueuedReplies } from "./repeat";
 
@@ -2715,6 +2716,15 @@ let tasksHost: HostId = LOCAL;
  */
 const answeredReports = loadAnswered();
 
+/** Replies that go out now or went a moment ago, by `queueKey(task)`; memory only (ticket this-task-was-waiting-for-my-answers-i). */
+const sendingReplies = new Map<string, SendingReply>();
+
+/** Whether the task shows "answered": its reply goes out or went, and no worker of the task shows yet. */
+function replySendingOf(task: Task): boolean {
+  const live = task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
+  return replySending(sendingReplies.get(queueKey(task)), task.info?.report?.modified, live, Date.now());
+}
+
 function loadAnswered(): Map<string, AnsweredReport> {
   try {
     return parseAnswered(localStorage.getItem(ANSWERED_KEY));
@@ -3190,15 +3200,20 @@ async function sendQueuedReply(task: Task, reply: QueuedReply): Promise<void> {
   queuedReplies.delete(reply.key);
   saveQueuedReplies();
   const line = `${reply.line} (Dispatch sent this reply now: the user gave it earlier, while the checkout was on the branch of another task.)`;
+  sendingReplies.set(reply.key, { modified: reply.record.modified, sentAt: null });
   if (await taskAction(task, "task_reply", { id: task.name, text: reply.text }, line)) {
     markAnswered(task.name, reply.record);
     questionChoices.delete(task.name);
     confirmDrafts.delete(task.name);
     sentReplies.set(reply.key, { modified: reply.record.modified, at: Date.now() });
+    sendingReplies.set(reply.key, { modified: reply.record.modified, sentAt: Date.now() });
   } else if ((actionErrors.get(task.name) ?? "").includes(OTHER_BRANCH)) {
     actionErrors.delete(task.name);
     queuedReplies.set(reply.key, reply);
     saveQueuedReplies();
+    sendingReplies.delete(reply.key);
+  } else {
+    sendingReplies.delete(reply.key);
   }
   renderChats();
 }
@@ -5017,6 +5032,7 @@ function reportWaits(task: Task): boolean {
   const live = task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
   // A reply that waits in the queue for this report asks nothing more of the user (ticket an-answer-waits-in-the-queue-while).
   if (queuedReplies.get(queueKey(task))?.record.modified === info.report.modified) return false;
+  if (replySendingOf(task)) return false;
   return !live && answeredReports.get(task.name)?.modified !== info.report.modified;
 }
 
@@ -6625,10 +6641,14 @@ async function replyOrQueue(task: Task, record: AnsweredReport, text: string, li
     queueReply(task, record, text, line);
     return "queued";
   }
+  const sendKey = queueKey(task);
+  sendingReplies.set(sendKey, { modified: record.modified, sentAt: null });
   if (await taskAction(task, "task_reply", { id: task.name, text }, line)) {
     markAnswered(task.name, record);
+    sendingReplies.set(sendKey, { modified: record.modified, sentAt: Date.now() });
     return "sent";
   }
+  sendingReplies.delete(sendKey);
   if (!(actionErrors.get(task.name) ?? "").includes(OTHER_BRANCH)) return false;
   actionErrors.delete(task.name);
   queueReply(task, record, text, line);
@@ -7988,6 +8008,7 @@ const taskOpenChoice = new Map<string, boolean>();
 function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"; text: string } {
   if (approvalQueued(task)) return { kind: "done", text: "approved · starts when the project is free" };
   if (queuedReplyOf(task)) return { kind: "done", text: "answered · goes out when the checkout is free" };
+  if (replySendingOf(task)) return { kind: "working", text: SENDING_STATUS };
   const night = nightPlanOf(task);
   if (night?.approves) return { kind: "done", text: `plan ready · ${night.text}` };
   if (night) return { kind: "waits", text: `plan ready · waits for you · ${night.why}` };
@@ -8112,6 +8133,7 @@ function taskPhase(task: Task): TaskPhase {
   const info = task.info;
   if (!info) return "none";
   if (approvalQueued(task)) return "queued";
+  if (replySendingOf(task)) return "starting";
   if (planReady(task)) return "plan-ready";
   if (repeatedQuestionsOf(task)) return "repeated";
   if (reportWaits(task)) return permissionWaits(task) ? "permission" : "question";

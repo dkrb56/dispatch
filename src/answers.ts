@@ -105,3 +105,27 @@ export function questionWaitToOpen(found: WaitRef[], dialogOpen: boolean): strin
   if (dialogOpen) return null;
   return found.find((wait) => wait.kind === "question")?.key ?? null;
 }
+
+// A reply in flight (ticket this-task-was-waiting-for-my-answers-i): from the click that sends the
+// answers until the worker shows as running, the task shows "answered", not "has a question".
+
+/** A reply that goes out: the time of the report it answers, and the time it went (null while the call runs). */
+export interface SendingReply {
+  modified: number;
+  sentAt: number | null;
+}
+
+/** The status text while a reply is sending or has just gone. */
+export const SENDING_STATUS = "answered · the worker starts again";
+
+/** How long "answered" stays after the reply went, when no worker shows. */
+export const SENDING_LIMIT_MS = 30_000;
+
+/**
+ * Whether the task shows "answered": the entry belongs to the report that stands now, no worker of
+ * the task is live, and (after the call) the time limit has not passed.
+ */
+export function replySending(entry: SendingReply | undefined, reportModified: number | undefined, live: boolean, now: number): boolean {
+  if (!entry || live || entry.modified !== reportModified) return false;
+  return entry.sentAt === null || now - entry.sentAt < SENDING_LIMIT_MS;
+}

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { answeredLine, chosenCount, holdReason, questionWaitToOpen, replyText, windowChoices, windowTitle } from "../src/answers.ts";
+import { answeredLine, chosenCount, holdReason, questionWaitToOpen, replySending, replyText, SENDING_LIMIT_MS, windowChoices, windowTitle } from "../src/answers.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -112,4 +112,14 @@ test("a new question wait opens the window, other waits and an open window do no
   assert.equal(questionWaitToOpen(found, true), null);
   assert.equal(questionWaitToOpen([{ kind: "permission", key: "p|d" }], false), null);
   assert.equal(questionWaitToOpen([], false), null);
+});
+
+test("a reply in flight keeps the task as answered until a worker shows, the report changes, or the limit passes", () => {
+  const now = 1_000_000;
+  assert.equal(replySending(undefined, 5, false, now), false, "no entry");
+  assert.equal(replySending({ modified: 4, sentAt: null }, 5, false, now), false, "other report time");
+  assert.equal(replySending({ modified: 5, sentAt: null }, 5, false, now), true, "call in flight");
+  assert.equal(replySending({ modified: 5, sentAt: now - 1000 }, 5, false, now), true, "settled, inside the limit");
+  assert.equal(replySending({ modified: 5, sentAt: now - SENDING_LIMIT_MS }, 5, false, now), false, "settled, past the limit");
+  assert.equal(replySending({ modified: 5, sentAt: null }, 5, true, now), false, "live worker");
 });
