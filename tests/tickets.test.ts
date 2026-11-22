@@ -585,19 +585,14 @@ test("tickets start their plan: the dispatcher starts plans only behind the swit
   assert.match(MAIN, /ticketsStartPlans: reply\.ticketsStartPlans \?\? false,/);
 });
 
-test("tickets start their plan: the Setup switch, the Help and the README", () => {
-  assert.match(HTML, /<input type="checkbox" data-option="ticketsStartPlans" \/>\s*<span><b>Tickets start their plan<\/b>/);
-  // The caption of the row: the steps while No triage is off, the reason while it is on (the row is dimmed then).
-  const row = HTML.slice(HTML.indexOf('data-option="ticketsStartPlans"'), HTML.indexOf("</label>", HTML.indexOf('data-option="ticketsStartPlans"')));
-  assert.match(row, /<small class="when-on">Changes the steps "Section in CLAUDE\.md" and "Triage role"\.<\/small>/);
-  assert.match(row, /<small class="when-off">No triage is on, so every ticket starts its plan\.<\/small>/);
-  assert.match(HTML, /<label class="switch-row" data-under="noTriage-off">\s*<input type="checkbox" data-option="ticketsStartPlans" \/>/);
+test("tickets start their plan: no Setup switch, the Help and the README", () => {
+  assert.ok(!HTML.includes('data-option="ticketsStartPlans"'), "no switch in the window");
   const section = (from: string) => {
     const start = HTML.indexOf(`<h3>${from}</h3>`);
     return HTML.slice(start, HTML.indexOf("<h3>", start + 4));
   };
   const tickets = section("Tickets");
-  assert.ok(tickets.includes("With <b>Tickets start their plan</b> on in Setup pipeline"), "a visible item");
+  assert.ok(tickets.includes("With <b>Tickets start their plan</b> on,"), "a visible item");
   for (const fact of ["question mark", "fewer than 3 workers", "goes to triage", "one line into the triage chat"]) assert.ok(tickets.includes(fact), fact);
   assert.ok(section("Project settings").includes("<li><b>Tickets start their plan.</b>"));
   assert.ok(section("Night mode").includes("With <b>Tickets start their plan</b> on, the Scheduled tickets start their plans at night too"));
@@ -812,16 +807,14 @@ test("no triage: the done and failed alerts come from the announcements of a pol
   assert.match(MAIN, /function fireAlerts\(found: Notice\[\]\): void \{/);
 });
 
-test("no triage: the Setup switch, the Help and the README", () => {
-  assert.match(HTML, /<input type="checkbox" data-option="noTriage" \/>\s*<span><b>No triage<\/b>/);
-  const noTriageRow = HTML.slice(HTML.indexOf('data-option="noTriage"'), HTML.indexOf("</label>", HTML.indexOf('data-option="noTriage"')));
-  assert.match(noTriageRow, /<small>Changes the step "Section in CLAUDE\.md"\.<\/small>/);
+test("no triage: no Setup switch, the Help and the README", () => {
+  assert.ok(!HTML.includes('data-option="noTriage"'), "no switch in the window");
   const section = (from: string) => {
     const start = HTML.indexOf(`<h3>${from}</h3>`);
     return HTML.slice(start, HTML.indexOf("<h3>", start + 4));
   };
   const tickets = section("Tickets");
-  assert.ok(tickets.includes("With <b>No triage</b> on in Setup pipeline"), "a visible item");
+  assert.ok(tickets.includes("With <b>No triage</b> on,"), "a visible item");
   for (const fact of ["a question too", "<b>Retry</b>", "<b>Open terminal</b>"]) assert.ok(tickets.includes(fact), fact);
   const settings = section("Project settings");
   assert.ok(settings.includes("<li><b>No triage.</b>"));
@@ -831,7 +824,7 @@ test("no triage: the Setup switch, the Help and the README", () => {
   assert.ok(HTML.includes("With No triage on, the button is <b>Ask about this plan in a Chat</b>"));
   const readme = read("../README.md");
   assert.ok(readme.includes('"No triage" runs the project without a triage chat'));
-  assert.ok(readme.includes('with the switch "No triage", starts the plan run of every Scheduled ticket itself'));
+  assert.ok(readme.includes('with the setting "No triage", starts the plan run of every Scheduled ticket itself'));
 });
 
 // Ticket ticket-form-optional-fields-on-a-new: the level of the plan run and the optional fields.

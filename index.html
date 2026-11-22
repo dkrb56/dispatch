@@ -26,7 +26,7 @@
         <button id="show-rules" title="Show the rules that Claude Code gets in the project of the focused terminal">Rules</button>
         <button id="setup-pipeline" title="Prepare the project of the focused terminal for triage and workers">Setup pipeline</button>
       </div>
-      <button id="show-options" title="Options: where the work runs, alerts when a task waits for you, triage compaction, colour theme, text size" aria-label="Options">
+      <button id="show-options" title="Options: where the work runs, alerts when a task waits for you, colour theme, text size" aria-label="Options">
         <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.8 4.2a.67.67 0 0 0 0 .93l1.07 1.07a.67.67 0 0 0 .93 0l2.51-2.51a4 4 0 0 1-5.29 5.29l-4.61 4.61a1.41 1.41 0 0 1-2-2l4.61-4.61a4 4 0 0 1 5.29-5.29l-2.51 2.51z" /></svg>
       </button>
       <button id="show-help" title="Help: how to set up a project" aria-label="Help">?</button>
@@ -71,7 +71,6 @@
         <nav class="dialog-tabs" aria-label="Sections">
           <div role="tablist">
             <button type="button" role="tab" data-tab="steps">Steps</button>
-            <button type="button" role="tab" data-tab="triage">Triage</button>
             <button type="button" role="tab" data-tab="plans">Plans and work runs</button>
             <button type="button" role="tab" data-tab="branches">Branches and checks</button>
             <button type="button" role="tab" data-tab="git">Files in git</button>
@@ -103,28 +102,6 @@
               <div id="setup-builds-list" class="row-card"></div>
             </section>
           </div>
-          <fieldset class="setup-group" data-tab-panel="triage">
-            <legend>Triage</legend>
-            <p>How the triage chat talks to you and which tickets it sees. After Apply, the next start of the workspace opens a new triage chat.</p>
-            <div class="switch-card">
-              <label class="switch-row">
-                <input type="checkbox" data-option="shortReports" />
-                <span><b>Short reports</b> Triage tells you the result and your decisions in a few lines. It gives details when you ask. <small>Changes the step "Triage role".</small></span>
-              </label>
-              <label class="switch-row">
-                <input type="checkbox" data-option="triageName" />
-                <span><b>Fixed title</b> A new triage chat has the name "Triage" in the chat list.</span>
-              </label>
-              <label class="switch-row">
-                <input type="checkbox" data-option="noTriage" />
-                <span><b>No triage</b> Every Scheduled ticket starts its own plan, a question too. Dispatch writes nothing to a triage chat: the task cards and the alerts tell you, and your questions go to a plain Chat. <small>Changes the step "Section in CLAUDE.md".</small></span>
-              </label>
-              <label class="switch-row" data-under="noTriage-off">
-                <input type="checkbox" data-option="ticketsStartPlans" />
-                <span><b>Tickets start their plan</b> Dispatch writes the brief from a Scheduled ticket and starts its plan itself, without triage. A ticket that ends with a question mark, or has only images, still goes to triage. <small class="when-on">Changes the steps "Section in CLAUDE.md" and "Triage role".</small><small class="when-off">No triage is on, so every ticket starts its plan.</small></span>
-              </label>
-            </div>
-          </fieldset>
           <fieldset class="setup-group" data-tab-panel="plans">
             <legend>Plans and work runs</legend>
             <p>When a plan may start its work without your click, and what the plan run may measure.</p>
@@ -568,7 +545,7 @@
           <ul>
             <li>In the modes Use hosts and This PC and hosts, the folder chooser of Dispatch opens. With several computers, it asks for the computer too (see Where the work runs).</li>
             <li>A project that is set up skips the window and opens its workspace: go to step 6.</li>
-            <li>The window shows its parts in a list at the left: Steps, Triage, Plans and work runs, Branches and checks, Files in git. A click on a name shows that part. The window opens on Steps. The number next to Steps counts the steps to do, and the head of the window says how many steps are to do. Each setting is a switch on its own row, with a short text under it. <b>Apply</b>, <b>Commit to git</b> and <b>Close</b> stay at the bottom on every part.</li>
+            <li>The window shows its parts in a list at the left: Steps, Plans and work runs, Branches and checks, Files in git. A click on a name shows that part. The window opens on Steps. The number next to Steps counts the steps to do, and the head of the window says how many steps are to do. Each setting is a switch on its own row, with a short text under it. <b>Apply</b>, <b>Commit to git</b> and <b>Close</b> stay at the bottom on every part.</li>
             <li>Click a step to see its file and the text that it adds.</li>
             <li>Under the steps, the window lists the rules of the project that conflict with the pipeline, each with its file as a link. A click opens the file in the viewer, also for a rule outside the project. <b>Open in editor</b> there lets you change the rule yourself.</li>
             <li>Apply makes no commit, so you can look at the changes in git first. When all steps are done, <b>Commit to git</b> becomes available.</li>
@@ -677,6 +654,7 @@
           <li><b>Auto-merge finished tasks.</b> A task with a done report merges without your click, after the gate command passed.</li>
           <li><b>Tickets start their plan.</b> A Scheduled ticket starts its plan without triage.</li>
           <li><b>No triage.</b> The project works without a triage chat.</li>
+          <li>The Setup pipeline window shows no switch for Short reports, Fixed title, Tickets start their plan and No triage. Each project keeps its saved value.</li>
           <li>After a change, click <b>Apply</b>.</li>
           <li><b>Build folders.</b> The Setup window shows the cargo build folders of the project; Clean build folders deletes the proof builds and the incremental cache, never the main build.</li>
         </ul>
@@ -684,7 +662,7 @@
           <summary>Details</summary>
           <ul>
             <li>Short reports and Fixed title are on for a new project. The other three are off. A project that was set up before stays off for Measure before the plan and Task branches.</li>
-            <li>A change of Short reports applies to a new triage chat only, because a chat keeps the role with which it started. The next start of the workspace (the folder button of the project, or the start of the app) opens a new triage chat.</li>
+            <li>A saved value of Short reports applies to a new triage chat only, because a chat keeps the role with which it started. The next start of the workspace (the folder button of the project, or the start of the app) opens a new triage chat.</li>
             <li><b>Pause tasks</b> applies at once and stays over a restart. The Run queue switch shows the state (in a Focus column it stands in the tab row after Chats and Terminal, with its explanation in the tooltip; the Tickets window keeps a coloured strip). It is on while tickets start by themselves and off while paused, and it pauses or resumes when you click the switch. The head of its column says "paused" while the project is paused. While paused, no ticket goes to triage, no plan starts its work run (also not with Approve plans automatically or night mode), and night mode answers no question. Your Approve click waits in line, and your answer to a question goes to the worker at once. A worker that runs finishes its run. Turning the <b>Run queue</b> switch on again sends the next ticket and starts the next plan. While paused, Dispatch writes no ticket line by itself: the board shows the state of the tasks, and the first task read after Resume writes the changes into the tickets file. Your own moves, renames and new tickets on the board still write. A ticket that was in flight at Pause and that triage answers without a task still goes to Canceled.</li>
             <li><b>Approve plans automatically</b> applies at once. It waits when a file of the task has uncommitted changes or another work run runs. A change in another file does not hold it. A work run counts from the moment Dispatch starts it, so only one starts at a time, also with several plans in line. A plan with a decision marked <code>HOLD:</code> waits for your click. The line in the triage chat says "approved automatically".</li>
             <li><b>Measure before the plan.</b> Write the commands into the box under the switch: the tests, a browser test, a measuring script. The plan then has a section "Measured" with each command, what it showed and what it means. A fault that the plan run did not reproduce says "not reproduced".</li>
@@ -700,7 +678,7 @@
             <li><b>Push after the merge</b> is off at the start, and works only with Task branches. On, Merge pushes your branch to its upstream branch after the merge commit, never with force and without a password prompt, for at most 5 minutes. The branch row of the task card then says "pushed to origin/main", "push failed" with the reason, or "no upstream branch, not pushed". A failed push leaves the merge on this computer; push it yourself. The merge of night mode pushes too.</li>
             <li><b>Auto-merge finished tasks</b> is off at the start, and works only with Task branches and a gate command. On, Dispatch merges a task with a done report into the branch it started from, one merge at a time, when no other work runs in the project. Each report gets one try. The tasks merge in the order in which they finished. When a gate fails only because the base branch moved after the gate run, Dispatch asks the work run for a new gate run, once per base commit, and the task card says so. A failed gate or a conflict merges nothing, the reason stays on the task card, and the <b>Merge</b> button stays. A task waits while the checkout is on its branch or its files have uncommitted changes. Pause tasks stops the automatic merge. With Push after the merge on, an automatic merge pushes too.</li>
             <li><b>Tickets start their plan</b> is off at the start. Off, each Scheduled ticket goes to triage, as before. On, Dispatch writes the brief of a Scheduled ticket and starts its plan run itself (see Tickets). Apply adds one line to the section in <code>CLAUDE.md</code> and one to the triage role, so the next triage chat knows the step.</li>
-            <li><b>No triage</b> is on at the start, also for a project that you set up before and where you never changed a setting. Off, the project works with a triage chat as before. On, Dispatch starts the plan of every Scheduled ticket itself, also a question or a ticket with only images (see Tickets), and writes no line into a triage chat. The task cards and the alerts tell you when a plan is ready, when a worker asks, and when a task is done or failed. The workspace of the project opens with the agent view only; where triage stood, the note "No triage in this project" shows. In Focus mode, the tickets board of the project stands there, with the note and <b>Open terminal</b> above it. A triage chat that runs when you turn the switch on keeps running, but gets no lines and no tickets. Apply adds one line to the section in <code>CLAUDE.md</code>; the triage role stays as it is.</li>
+            <li><b>No triage</b> is on at the start, also for a project that you set up before and where you never changed a setting. Saved as off, the project works with a triage chat as before. On, Dispatch starts the plan of every Scheduled ticket itself, also a question or a ticket with only images (see Tickets), and writes no line into a triage chat. The task cards and the alerts tell you when a plan is ready, when a worker asks, and when a task is done or failed. The workspace of the project opens with the agent view only; where triage stood, the note "No triage in this project" shows. In Focus mode, the tickets board of the project stands there, with the note and <b>Open terminal</b> above it. A triage chat that runs when No triage is on keeps running, but gets no lines and no tickets. Apply adds one line to the section in <code>CLAUDE.md</code>; the triage role stays as it is.</li>
             <li><b>Build folders.</b> The section shows each <code>target</code> folder of a cargo project with the size of its folders. <code>debug</code> and <code>release</code> are the main build and stay. Each other folder is a proof build of a worker; workers build their test copies in the one shared folder <code>target\test-copy</code>. The <code>incremental</code> folder of the main build is a cache that cargo builds again. Clean build folders deletes the proof builds and the caches, and keeps a folder in use: a target folder with a running build, or a folder with an open file, such as a test copy that still runs. A project without cargo does not show the section.</li>
           </ul>
         </details>
@@ -749,7 +727,7 @@
             <li><b>The hand-off.</b> The first message of the new chat comes from Dispatch: the open tasks and their state, how many are finished, and where the task files are. It holds nothing of the old chat. The lines of Dispatch that came during the switch follow it.</li>
             <li>The old chat stays in the chat list as "earlier triage"; nothing is deleted. If Claude Code does not end within 30 seconds after <code>/exit</code>, the old chat stays, and Dispatch tries again after the next turn. If Dispatch closes during the switch, the next start of triage starts the new chat with the hand-off.</li>
             <li><b>A compaction after each task.</b> When a task of a project ends (its report says done or failed, or its ticket goes to Done or Canceled), Dispatch sends <code>/compact</code> to the triage chat of the project. It waits until triage is idle, no ticket is on its way, no line of Dispatch waits, no question is open, and for 30 seconds there was no turn of triage and no key or click in Dispatch. In the Terminal view Dispatch reads the screen and sends only when the prompt line is empty and you did not type a moment ago. Grey text of Claude Code on the prompt line, such as a suggestion, counts as empty. The chat then shows the summary note of Claude Code, and the context gets smaller.</li>
-            <li>The switch <b>Compact triage after each task</b> in Options turns this off for all projects. A compaction that shows no summary within 3 minutes is forgotten, and the next task end tries again. The tooltip of the context line on the Triage card in Focus then says when that compaction was sent, until the next one.</li>
+            <li>The Options window has no switch for this; a compaction that shows no summary within 3 minutes is forgotten, and the next task end tries again. The tooltip of the context line on the Triage card in Focus then says when that compaction was sent, until the next one.</li>
             <li>The same tooltip also shows the last task end that Dispatch noted, the last check of the triage chat, and the last failed check with its time, its step and its error, until Dispatch restarts. A check that does not end names the step where it stopped. Without a context line, the tooltip of the Triage row shows these lines.</li>
             <li>At the start of the app, a project with a workspace opens it by itself: triage continues its chat and the agent view starts.</li>
           </ul>
@@ -893,8 +871,8 @@
           <li><b>+ Ticket</b> next to Tickets in the buttons of a project, and on each Overview card, opens the window New ticket without the board. <b>New ticket</b> on the board opens the same window. The window names the project of the ticket. The Goal box comes first; Enter adds the ticket. Under it stand the level, the type and the optional boxes Why, Done when, Do not change and Context. <b>Add</b> puts the ticket at the end of Scheduled and closes the window; the board stays closed. While Dispatch adds the ticket, the Add button shows a spinner and the window is locked. The window closes as soon as the ticket is saved, and the card stands on the board at once; the board reads the tasks again in the background. A saved edit and a new part also show at once. Ctrl+V pastes an image from the clipboard into the window; × takes it out. A ticket can have only images. A right-click on the board opens a menu: New ticket in Scheduled, or New ticket in Backlog; a Backlog ticket waits until you drag it to Scheduled.</li>
           <li><b>Level.</b> Each ticket has a level for its plan: Simple (Opus, effort medium), Medium (Opus, effort high) or Hard (Fable, effort high). Medium is the default. Click the level tag of a waiting ticket for the next level.</li>
           <li><b>A yellow !</b> after the name of a project says that its tickets wait and do not go: the project is paused, triage does not run, or triage has not taken a ticket for a minute. Its tooltip says which. A click opens the board.</li>
-          <li>With <b>Tickets start their plan</b> on in Setup pipeline, Dispatch starts the plan of a Scheduled ticket itself. A question still goes to triage.</li>
-          <li>With <b>No triage</b> on in Setup pipeline, Dispatch starts the plan of every Scheduled ticket itself, a question too. A ticket whose start fails stays in Scheduled with the error and a <b>Retry</b> button. Ask your questions in <b>Open terminal</b>, above the board in Focus.</li>
+          <li>With <b>Tickets start their plan</b> on, Dispatch starts the plan of a Scheduled ticket itself. A question still goes to triage.</li>
+          <li>With <b>No triage</b> on, Dispatch starts the plan of every Scheduled ticket itself, a question too. A ticket whose start fails stays in Scheduled with the error and a <b>Retry</b> button. Ask your questions in <b>Open terminal</b>, above the board in Focus.</li>
           <li>Ask a Claude chat in a terminal of the project to make tickets: it writes them into <code>.dispatch/new-tickets/</code>, and they appear at the end of Scheduled at the next refresh. A line <code>After: 2</code> under a ticket draws an arrow from item 2 of the same file (or from a ticket id) to it. The chat knows this step after <b>Apply</b> in Setup pipeline. A right-click on selected text in a terminal opens a menu with <b>New ticket from selection</b>: the Scheduled ticket window opens with that text in the Goal box.</li>
           <li><b>Git state</b> among the buttons of a project opens a window with the commits of all branches as a tree, the branch with its commits ahead and behind its remote, and the files that are not committed yet. Click a file to see its changes on the right. Click a commit in the history to see its message, its files and their changes; a merge shows what it brought into the branch, and the top line <b>Uncommitted changes</b> or <b>Back to uncommitted changes</b> shows your open changes again. <b>Refresh</b> reads git again. The window only shows; it does not commit, pull or push. Drag its bottom-right corner to resize it; Dispatch keeps the size, and a double-click on the corner gives the usual size back.</li>
           <li><b>Parts.</b> A plan for a large task can list parts that follow it. The plan card shows them before you approve. Approve puts one ticket per part in Backlog, and they run one after the other.</li>
@@ -1091,7 +1069,7 @@
           <li><b>A pulsing Setup button</b> means that the project misses setup steps. Its tooltip names them. A click calms the pulse to a still mark; Apply in the Setup pipeline window makes the mark go.</li>
           <li><b>Rules</b> shows all the rules that Claude Code gets in the project. <b>Analyse rules</b> finds old or bad rules.</li>
           <li><b>Update to …</b> shows when a new version is ready. Click it to install the update.</li>
-          <li><b>Options</b> (the wrench) holds the mode, the alerts, the triage compaction, the colour theme and the size of the text.</li>
+          <li><b>Options</b> (the wrench) holds the mode, the alerts, the colour theme and the size of the text.</li>
           <li><b>Alerts.</b> Dispatch tells you when a task waits: a <b>notification</b>, a <b>chime</b> or a spoken <b>voice</b> that names the project, and a taskbar button that <b>blinks</b>.</li>
           <li><b>The bar at the bottom</b> shows your Claude account, its weekly usage and the versions.</li>
           <li><b>What's new</b> next to Check for update lists what each version brought.</li>
@@ -1109,7 +1087,7 @@
             <li>The update saves your tabs, downloads the installer and installs: Dispatch closes, a progress bar runs, and the new version opens with your tabs. The check reads the public releases on GitHub and needs no login.</li>
             <li>On a Mac the click downloads the disk image and opens it, and Dispatch closes. Drag Dispatch to Applications. The app is not signed, so run <code>xattr -cr /Applications/Dispatch.app</code> in Terminal once before the next start.</li>
             <li>The line below the title of this window shows the version and the result of the check. Dispatch checks once an hour; <b>Check for update</b> checks now, and installs a new version that it found.</li>
-            <li>The Options window holds where the work runs (see Where the work runs), the alerts, the switch <b>Compact triage after each task</b>, the colour theme of the window and the terminals (Slate, or Graphite with a blue, indigo, teal or amber accent) and the size of the text (90 to 150 percent). A change applies at once, and Dispatch keeps the choices on this computer. The window shows its sections in a list at the left, one section at a time, and opens on the first one. The theme is a row of cards with a preview of each theme, and the text size a row of buttons.</li>
+            <li>The Options window holds where the work runs (see Where the work runs), the alerts, the colour theme of the window and the terminals (Slate, or Graphite with a blue, indigo, teal or amber accent) and the size of the text (90 to 150 percent). A change applies at once, and Dispatch keeps the choices on this computer. The window shows its sections in a list at the left, one section at a time, and opens on the first one. The theme is a row of cards with a preview of each theme, and the text size a row of buttons.</li>
             <li>An alert comes one time when a plan is ready, a report has a question or needs a permission, or a worker waits at a prompt. Each alert has its own switch in Options. The notification names the task and what it waits for. The button blinks until you open the window.</li>
             <li>The tasks that already wait when Dispatch starts give no alert. The chime and the voice start only after your first key or click in Dispatch, because the window may play sound only then. With the voice on, it replaces the chime; the chime plays when the computer has no voice. In night mode only a plan with a HOLD decision, a permission and a prompt alert. A test build that runs with <code>npm run tauri dev</code> shows the notification as from PowerShell.</li>
             <li>The bar at the bottom shows "Claude account:" with the email of the account that Claude Code uses on the computer that does the work. Then come the weekly usage for all models and for Fable, the version of Claude Code and the version of Dispatch. The email stays on this computer.</li>
@@ -1143,7 +1121,6 @@
             <button type="button" role="tab" data-tab="host">Host on this PC</button>
             <button type="button" role="tab" data-tab="phone">Phone</button>
             <button type="button" role="tab" data-tab="alerts">Alerts</button>
-            <button type="button" role="tab" data-tab="triage">Triage chat</button>
             <button type="button" role="tab" data-tab="look">Look</button>
           </div>
           <p class="dialog-tabs-note">Changes save at once.</p>
@@ -1296,16 +1273,6 @@
                 <li>With No triage on, a task that is done or failed alerts too, but not in night mode.</li>
               </ul>
             </section>
-          </fieldset>
-          <fieldset data-tab-panel="triage">
-            <legend>Triage chat</legend>
-            <p>Keep the triage chat of each project small.</p>
-            <div class="switch-card">
-              <label class="switch-row">
-                <input type="checkbox" data-compact="triage" />
-                <span><b>Compact triage after each task</b> When a task of a project ends, Dispatch sends /compact to its triage chat at a quiet moment, so the chat keeps a small context. Off: the chat grows until the limit of the list new chat at.</span>
-              </label>
-            </div>
           </fieldset>
           <fieldset data-tab-panel="look">
             <legend>Look</legend>

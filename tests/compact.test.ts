@@ -209,16 +209,15 @@ test("main.ts marks task ends, checks the hold and sends /compact", () => {
   assert.match(check, /A compaction of the chat runs\./);
 });
 
-test("options.ts wires the switch and index.html shows it in Options and the Help", () => {
+test("the Options window has no compaction switch; the Help says so", () => {
   assert.match(OPTIONS, /COMPACT_KEY/);
-  assert.match(OPTIONS, /data-compact="triage"/);
   const dialog = HTML.slice(HTML.indexOf('<dialog id="options"'), HTML.indexOf("</dialog>", HTML.indexOf('<dialog id="options"')));
-  assert.match(dialog, /data-compact="triage"/);
-  assert.match(dialog, /Compact triage after each task/);
+  assert.doesNotMatch(dialog, /data-compact="triage"/);
+  assert.doesNotMatch(dialog, /Compact triage after each task/);
   const start = HTML.indexOf("<h3>The workspace</h3>");
   const section = HTML.slice(start, HTML.indexOf("<h3>Focus mode</h3>", start));
   assert.match(section, /\/compact/);
-  assert.match(section, /Compact triage after each task/);
+  assert.match(section, /Options window has no switch for this/);
   assert.match(section, /says when that compaction was sent/);
   assert.match(section, /last task end that Dispatch noted, the last check of the triage chat/);
   assert.match(section, /Grey text of Claude Code on the prompt line, such as a suggestion, counts as empty/);

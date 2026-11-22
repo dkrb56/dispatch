@@ -98,7 +98,7 @@ const countEl = document.querySelector<HTMLElement>("#setup-steps-count")!;
 const barEl = document.querySelector<HTMLElement>("#setup-steps-bar > span")!;
 /** The dot before the footer message: the wait colour while a step is to do, the work colour when all are done. */
 const dotEl = document.querySelector<HTMLElement>("#setup-dot")!;
-/** The rows that need another switch: `data-under` names it, `taskBranches` or `noTriage-off` (No triage off). The row is dimmed while that does not hold. */
+/** The rows that need another switch: `data-under` names it, `taskBranches`. The row is dimmed while that does not hold. */
 const underEls = [...dialog.querySelectorAll<HTMLElement>("label[data-under]")];
 /** The section of the rules check; its `data-state` is checking, ok, found or failed. */
 const checkEl = document.querySelector<HTMLElement>("#setup-rules-check")!;
@@ -319,11 +319,11 @@ function stepElement(step: Step, root: string): HTMLElement {
   return item;
 }
 
-/** Dims the rows that need another switch: Tickets start their plan needs No triage off, the gate rows need Task branches. */
+/** Dims the rows that need another switch: the gate rows need Task branches. */
 function showUnder(options: Options): void {
   for (const row of underEls) {
     const under = row.dataset.under ?? "";
-    const holds = under === "noTriage-off" ? !options.noTriage : Boolean(options[under as keyof Options]);
+    const holds = Boolean(options[under as keyof Options]);
     row.classList.toggle("dim", !holds);
   }
 }

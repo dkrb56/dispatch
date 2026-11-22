@@ -60,14 +60,14 @@ test("the styles and main.ts use the mark", () => {
   assert.match(main, /from "\.\/setupmark(\.ts)?"/);
 });
 
-test("the Setup pipeline window has five tabs, one panel each, and every setting lies in a panel", () => {
+test("the Setup pipeline window has four tabs, one panel each, and every setting lies in a panel", () => {
   const html = read("../index.html");
   const start = html.indexOf('<dialog id="setup">');
   const dialog = html.slice(start, html.indexOf("</dialog>", start));
   const tabs = [...dialog.matchAll(/<button type="button" role="tab" data-tab="([^"]+)">([^<]+)<\/button>/g)];
   assert.deepEqual(
     tabs.map((tab) => tab[2]),
-    ["Steps", "Triage", "Plans and work runs", "Branches and checks", "Files in git"],
+    ["Steps", "Plans and work runs", "Branches and checks", "Files in git"],
   );
   // Each panel with the offsets of its open and close tag.
   const panels = [...dialog.matchAll(/<(\w+)\b[^>]*\bdata-tab-panel="([^"]+)"/g)].map((match) => {
@@ -85,10 +85,10 @@ test("the Setup pipeline window has five tabs, one panel each, and every setting
     return { name: match[2], start: match.index, end };
   });
   for (const [, name] of tabs) assert.equal(panels.filter((panel) => panel.name === name).length, 1, `one panel for ${name}`);
-  assert.equal(panels.length, 5, "no panel without a tab");
+  assert.equal(panels.length, 4, "no panel without a tab");
   const inside = (at: number) => at >= 0 && panels.some((panel) => at > panel.start && at < panel.end);
   const options = [...dialog.matchAll(/<input type="checkbox" data-option="[^"]+"/g)];
-  assert.equal(options.length, 18, "the 18 switches");
+  assert.equal(options.length, 14, "the 14 switches");
   for (const option of options) assert.ok(inside(option.index), option[0]);
   for (const id of ["setup-measure-commands", "setup-merge-gate", "setup-checks", "setup-checks-all", "setup-full-at", "setup-full-after", "setup-full-last", "setup-steps", "setup-rules-check", "setup-builds"]) {
     assert.ok(inside(dialog.indexOf(`id="${id}"`)), id);

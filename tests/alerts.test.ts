@@ -263,23 +263,23 @@ function tabPanels(html: string): { name: string; start: number; end: number }[]
   });
 }
 
-test("the Options dialog has six tabs, one panel each, and every switch and list lies in a panel", () => {
+test("the Options dialog has five tabs, one panel each, and every switch and list lies in a panel", () => {
   const start = HTML.indexOf('<dialog id="options">');
   const dialog = HTML.slice(start, HTML.indexOf("</dialog>", start));
   const tabs = [...dialog.matchAll(/<button type="button" role="tab" data-tab="([^"]+)">([^<]+)<\/button>/g)];
   assert.deepEqual(
     tabs.map((tab) => tab[2]),
-    ["Where the work runs", "Host on this PC", "Phone", "Alerts", "Triage chat", "Look"],
+    ["Where the work runs", "Host on this PC", "Phone", "Alerts", "Look"],
   );
   const panels = tabPanels(dialog);
   for (const [, name] of tabs) assert.equal(panels.filter((panel) => panel.name === name).length, 1, `one panel for ${name}`);
-  assert.equal(panels.length, 6, "no panel without a tab");
+  assert.equal(panels.length, 5, "no panel without a tab");
   const inside = (needle: string) => {
     const at = dialog.indexOf(needle);
     return at >= 0 && panels.some((panel) => at > panel.start && at < panel.end);
   };
   for (const name of ["notify", "chime", "blink", "voice"]) assert.ok(inside(`data-alert="${name}"`), name);
-  for (const needle of ['data-attention="pulse"', 'data-compact="triage"', 'id="theme"', 'id="text-size"', 'name="work-mode"', 'id="host-run-start"', 'id="phone-start"']) {
+  for (const needle of ['data-attention="pulse"', 'id="theme"', 'id="text-size"', 'name="work-mode"', 'id="host-run-start"', 'id="phone-start"']) {
     assert.ok(inside(needle), needle);
   }
   assert.ok(!inside('id="options-close"'), "the close button stays outside the panels");
