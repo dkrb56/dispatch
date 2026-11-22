@@ -12537,30 +12537,35 @@ if (args[0] === 'agents') {
         let old = git_out(&project, &["rev-parse", &base]);
         let tip = git_out(&project, &["rev-parse", "task/t-1"]);
 
-        // A thread asks git for an open merge in the project folder every 100 ms, from before the merge to after it.
+        // A thread reads the merge file of git in the project folder every 10 ms, from before the merge to after it.
+        let merge_head = std::path::PathBuf::from(git(&project.root, &["rev-parse", "--absolute-git-dir"]).unwrap().trim()).join("MERGE_HEAD");
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let watch = {
-            let (root, stop) = (project.root.clone(), stop.clone());
+            let stop = stop.clone();
             std::thread::spawn(move || {
-                let (mut samples, mut hits) = (0, 0);
+                let (mut looks, mut hits) = (Vec::new(), 0);
                 while !stop.load(std::sync::atomic::Ordering::SeqCst) {
-                    samples += 1;
-                    if git(&root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_some() {
+                    looks.push(std::time::Instant::now());
+                    if merge_head.exists() {
                         hits += 1;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
-                (samples, hits)
+                (looks, hits)
             })
         };
         std::thread::sleep(std::time::Duration::from_millis(300));
+        let merge_start = std::time::Instant::now();
         let (code, out) = run_script(&project, &fake, "done", &["merge", "t-1"]);
+        let merge_end = std::time::Instant::now();
         std::thread::sleep(std::time::Duration::from_millis(300));
         stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        let (samples, hits) = watch.join().unwrap();
+        let (looks, hits) = watch.join().unwrap();
+        let samples = looks.len();
+        let in_merge = looks.iter().filter(|at| **at >= merge_start && **at <= merge_end).count();
         assert_eq!(code, 0, "{out}");
         assert_eq!(hits, 0, "the project folder had an open merge in {hits} of {samples} samples");
-        assert!(samples >= 10, "{samples} samples");
+        assert!(in_merge >= 10, "{in_merge} looks during the merge, {samples} in all");
 
         // The gate ran in the work folder; its line is in a commit of its own on top of the merge commit.
         let log = read(&project.merge_dir().join("t-1.log"));
