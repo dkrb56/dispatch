@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { autoSwitch, PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, PAUSED_WORD, pausedCountText, pauseLine } from "../src/pause.ts";
+import { autoSwitch, holdPause, PAUSE_BANNER, pauseButton, PAUSED_NEW_EMPTY, PAUSED_WORD, pausedCountText, pauseLine } from "../src/pause.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = read("../src/main.ts");
@@ -70,4 +70,26 @@ test("the strip above the board shows the state and the action (ticket i-need-mo
   assert.match(nightFn.slice(0, nightFn.indexOf("\n}\n")), /start\.title = look\.tip/);
   const pauseFn = MAIN.slice(MAIN.indexOf("function showPauseButtons"));
   assert.doesNotMatch(pauseFn.slice(0, pauseFn.indexOf("\n}\n")), /auto-switch-detail/);
+});
+
+test("a task read keeps the switch as clicked while its save is in flight or when the read began before the click (ticket it-takes-couple-of-seconds-after-i-click)", () => {
+  assert.equal(holdPause(1000, undefined, false), false, "no click: the read sets the switch");
+  assert.equal(holdPause(1000, 2000, false), true, "the read began before the click");
+  assert.equal(holdPause(3000, 2000, false), false, "the read began after the click");
+  assert.equal(holdPause(2000, 2000, false), false, "the read began at the click");
+  assert.equal(holdPause(3000, 2000, true), true, "a save is in flight");
+  assert.equal(holdPause(1000, undefined, true), true, "a save is in flight, no click time");
+});
+
+test("main.ts: the Run queue switch changes at the click, before the save (ticket it-takes-couple-of-seconds-after-i-click)", () => {
+  const body = MAIN.slice(MAIN.indexOf("async function setPaused("));
+  const head = body.slice(0, body.indexOf("\n}\n"));
+  const firstAwait = head.indexOf("await ");
+  assert.ok(firstAwait > 0, "setPaused awaits the save");
+  const before = head.slice(0, firstAwait);
+  assert.match(before, /setBoardPaused\(key, on\);/, "the record changes before the save");
+  assert.match(before, /showPauseButtons\(\);/, "the switch redraws before the save");
+  assert.match(head, /pauseQueue/, "the saves go in click order");
+  const store = MAIN.slice(MAIN.indexOf("function storeProjectTasks("));
+  assert.match(store.slice(0, store.indexOf("\n}\n")), /holdPause\(readAt, pauseChangedAt\.get\(key\), pauseSaving\(key\)\)/);
 });

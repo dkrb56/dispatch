@@ -29,6 +29,15 @@ export function autoSwitch(paused: boolean, night: boolean): { label: string; on
   return { label: "Run queue", on: true, detail, tip: detail + " Click to pause.", title: pauseButton(false).title, kind: "on" };
 }
 
+/**
+ * A task read keeps the Run queue switch as the user clicked it (ticket
+ * it-takes-couple-of-seconds-after-i-click): a save of the switch is still in flight, or the read
+ * began (`readAt`) before the last click (`changedAt`) and so holds the setting of before it.
+ */
+export function holdPause(readAt: number, changedAt: number | undefined, saving: boolean): boolean {
+  return saving || (changedAt !== undefined && readAt < changedAt);
+}
+
 /** The banner at the top of the tickets board of a paused project. */
 export const PAUSE_BANNER = "This project is paused. Dispatch sends no ticket to triage and starts no work run until you resume. A worker that runs finishes.";
 
