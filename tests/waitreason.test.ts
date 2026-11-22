@@ -201,6 +201,74 @@ test("the work folder: the reason comes after a merge and before the work run, a
   assert.match(HTML, /<textarea id="setup-work-setup"/);
 });
 
+// Ticket the-page-lets-more-than-one-work-run: with several work folders a task waits for a free
+// folder or for a running task on the same files, and an answer waits for the folder of its session.
+test("several work folders: all in use names the tasks, after a merge and before one folder and the work run", () => {
+  assert.deepEqual(waitReason({ editing: null, dirty: [], folders: ["t-1", "t-2"] }), {
+    short: "Waits for a work folder: t-1 and t-2 use them.",
+    full: "Its work run starts when a work folder is free. All work folders of the project are in use: t-1 and t-2.",
+  });
+  assert.equal(waitReason({ editing: null, dirty: [], folders: ["a", "b", "c"] })?.short, "Waits for a work folder: a, b and c use them.");
+  assert.equal(waitReason({ editing: "x", dirty: [], folders: ["t-1", "t-2"], merging: "t-0" })?.short, "Waits for the merge of t-0.", "a merge comes first");
+  assert.equal(waitReason({ editing: "x", dirty: [" M a.ts"], folder: "t-3", folders: ["t-1", "t-2"] })?.short, "Waits for a work folder: t-1 and t-2 use them.", "before one folder and the work run");
+  assert.match(waitReason({ editing: null, dirty: [], folders: ["t-1", "t-2"], paused: true })?.short ?? "", /^Paused/);
+  for (const folders of [null, undefined, []]) {
+    assert.equal(waitReason({ editing: "t-1", dirty: [], folders })?.short, "Waits for the work run of t-1.", String(folders));
+    assert.equal(waitReason({ editing: null, dirty: [], folders }), null, String(folders));
+  }
+});
+
+test("several work folders: a running task on the same files names the task and the files", () => {
+  const sameFiles = { task: "t-1", files: ["src/main.ts", "src/workstart.ts"] };
+  assert.deepEqual(waitReason({ editing: null, dirty: [], sameFiles }), {
+    short: "Waits for t-1, which works on the same files.",
+    full: "Its work run starts when the work run of t-1 ends. Both plans change these files:\nsrc/main.ts\nsrc/workstart.ts",
+  });
+  assert.equal(waitReason({ editing: null, dirty: [], sameFiles, folder: "t-2" })?.short, "Waits for the work folder, which t-2 uses.", "the folder comes first");
+  assert.equal(waitReason({ editing: "t-3", dirty: [" M a.ts"], sameFiles })?.short, "Waits for t-1, which works on the same files.", "before the start in flight and the changed files");
+  const many = Array.from({ length: 7 }, (_, n) => `src/f${n}.ts`);
+  assert.match(waitReason({ editing: null, dirty: [], sameFiles: { task: "t-1", files: many } })?.full ?? "", /src\/f4\.ts\n…$/, "five files, then …");
+  assert.equal(waitReason({ editing: null, dirty: [], sameFiles: null }), null);
+  assert.deepEqual(answerWait({ editing: null, dirty: [], sameFiles }), {
+    short: "Your answers wait for t-1, which works on the same files.",
+    full: "Your answers go to the worker when the work run of t-1 ends. Both plans change these files:\nsrc/main.ts\nsrc/workstart.ts",
+  });
+});
+
+test("several work folders: an answer waits for the folder of its session and names its number and its task", () => {
+  const sessionFolder = { number: 2, task: "t-3" };
+  assert.deepEqual(answerWait({ editing: null, dirty: [], sessionFolder }), {
+    short: "Your answers wait for work folder 2, which t-3 uses.",
+    full: "Your answers go to the worker when the work run of t-3 ends and work folder 2, where the session of this task runs, is free.",
+  });
+  assert.equal(answerWait({ editing: null, dirty: [], sessionFolder, folders: ["t-1", "t-3"] })?.short, "Your answers wait for work folder 2, which t-3 uses.", "the folder of the session comes before all folders");
+  assert.match(answerWait({ editing: null, dirty: [], sessionFolder, merging: "t-0" })?.short ?? "", /merge of t-0/);
+  assert.deepEqual(answerWait({ editing: null, dirty: [], folders: ["t-1", "t-2"] }), {
+    short: "Your answers wait: t-1 and t-2 use all work folders.",
+    full: "Your answers go to the worker when a work folder is free. All work folders of the project are in use: t-1 and t-2.",
+  });
+  assert.equal(answerWait({ editing: null, dirty: [], sessionFolder: null }), null);
+  assert.equal(waitReason({ editing: null, dirty: [], sessionFolder }), null, "the folder of the session holds only an answer");
+});
+
+test("several work folders: every short line has 12 words at most, also with four names", () => {
+  const four = ["a-long-ticket-name-one", "a-long-ticket-name-two", "a-long-ticket-name-three", "a-long-ticket-name-four"];
+  const long = "a-long-ticket-name-with-many-parts";
+  const cases = [
+    waitReason({ editing: null, dirty: [], folders: four }),
+    answerWait({ editing: null, dirty: [], folders: four }),
+    waitReason({ editing: null, dirty: [], sameFiles: { task: long, files: ["a.ts"] } }),
+    answerWait({ editing: null, dirty: [], sameFiles: { task: long, files: ["a.ts"] } }),
+    answerWait({ editing: null, dirty: [], sessionFolder: { number: 4, task: long } }),
+  ];
+  for (const reason of cases) {
+    assert.ok(reason);
+    assert.ok(words(reason.short) <= 12, reason.short);
+    assert.doesNotMatch(reason.short, /\n/);
+  }
+  assert.equal(cases[0]?.short, "Waits for a work folder: a-long-ticket-name-one, a-long-ticket-name-two, a-long-ticket-name-three and a-long-ticket-name-four use them.");
+});
+
 test("the Help and the README name Work folder (ticket moving-a-project)", () => {
   const help = HTML.slice(HTML.indexOf("<h3>Project settings</h3>"), HTML.indexOf("<h3>The workspace</h3>"));
   assert.ok(help.includes("<b>Work folder.</b>"));

@@ -53,10 +53,29 @@ test("the refusals of the merge in the work folder stay while the branch is unme
 });
 
 test("folderRefusal gives the task that holds the work folder, and null for any other text", () => {
-  assert.equal(folderRefusal(FOLDER), "t-1");
-  assert.equal(folderRefusal("refused: the work folder of this project is in use (task fix-login); the run starts when it is free"), "fix-login");
+  assert.deepEqual(folderRefusal(FOLDER), ["t-1"]);
+  assert.deepEqual(folderRefusal("refused: the work folder of this project is in use (task fix-login); the run starts when it is free"), ["fix-login"]);
   assert.equal(folderRefusal(DIRTY), null);
   assert.equal(folderRefusal(MOVE), null);
+});
+
+// Ticket the-page-lets-more-than-one-work-run: the refusals of the worker script with several work folders.
+const ALL_FOLDERS = "refused: all 2 work folders of this project are in use (tasks t-8, t-9); the merge starts when one is free";
+const SESSION_FOLDER = "refused: the work folder 2 of this project, where the session of this task runs, is in use (task t-1); the run starts when it is free";
+
+test("folderRefusal reads the refusals of several work folders: (task X) and (tasks a, b)", () => {
+  assert.deepEqual(folderRefusal(SESSION_FOLDER), ["t-1"], "the folder of the session of the task");
+  assert.deepEqual(folderRefusal(ALL_FOLDERS), ["t-8", "t-9"]);
+  assert.deepEqual(folderRefusal("refused: all 4 work folders of this project are in use (tasks a, b, c, d); the run starts when one is free"), ["a", "b", "c", "d"]);
+  assert.deepEqual(folderRefusal("refused: all 3 work folders of this project are in use (tasks fix-login); the run starts when one is free"), ["fix-login"]);
+  assert.equal(folderRefusal("refused: the task t-1 works on the same files (src/a.ts); this work run starts when it has ended"), null, "the same files are no folder refusal");
+  assert.equal(folderRefusal(""), null);
+});
+
+test("the refusal of all work folders is a merge refusal: it stays while the branch is unmerged, and goes at the merge", () => {
+  assert.equal(refusalGoes(ALL_FOLDERS, { merged: false, dirty: [] }), false);
+  assert.equal(refusalGoes(ALL_FOLDERS, { merged: true, dirty: [] }), true);
+  assert.equal(refusalGoes(SESSION_FOLDER, { merged: true, dirty: [] }), false, "a run of the session is no merge refusal");
 });
 
 test("an error of another card is no merge refusal and stays", () => {
@@ -175,12 +194,24 @@ test("autoMergeNote: each state has its sentence", () => {
   assert.match(autoMergeNote({ ...AUTO, held: true, folder: "t-1" }, "main"), /waits for the work folder, which t-1 uses, and tries again when it is free/);
 });
 
+// Ticket the-page-lets-more-than-one-work-run: with several work folders the card names the tasks that use them.
+test("autoMergeNote: all work folders in use names the tasks, before the one-folder sentence", () => {
+  assert.equal(autoMergeNote({ ...AUTO, held: true, folders: ["t-1", "t-2"] }, "main"), "Auto-merge waits for a work folder: t-1 and t-2 use them. It tries again when one is free.");
+  assert.equal(autoMergeNote({ ...AUTO, held: true, folder: "t-0", folders: ["t-1", "t-2", "t-3"] }, "main"), "Auto-merge waits for a work folder: t-1, t-2 and t-3 use them. It tries again when one is free.");
+  assert.match(autoMergeNote({ ...AUTO, held: true, folder: "t-1", folders: [] }, "main"), /waits for the work folder, which t-1 uses/, "an empty list changes nothing");
+  assert.match(autoMergeNote({ ...AUTO, tried: true, folders: ["t-1", "t-2"] }, "main"), /did not go through/, "a try comes first");
+  assert.match(autoMergeNote({ ...AUTO, folders: [] }, "main"), /starts when no other work runs/);
+});
+
 test("main.ts: a refusal for the work folder is no try of auto-merge", () => {
   const body = MAIN.slice(MAIN.indexOf("async function mergeTask("), MAIN.indexOf("function mergeCard("));
-  assert.match(body, /const holder = folderRefusal\(String\(error\)\);/);
+  assert.match(body, /const holders = folderRefusal\(String\(error\)\);/);
+  assert.match(body, /folderWaits\.set\(task\.name, \{ holders, at: Date\.now\(\) \}\)/);
   assert.match(body, /nightDone\.delete\(mergeTryKey\(task\)\)/);
   const held = MAIN.slice(MAIN.indexOf("function mergeHeld("), MAIN.indexOf("function autoMergeFacts("));
-  assert.match(held, /folderHolder\(task\) !== null/);
+  assert.match(held, /folderHolders\(task\)\.length > 0/);
+  const facts = MAIN.slice(MAIN.indexOf("function autoMergeFacts("));
+  assert.match(facts.slice(0, facts.indexOf("\n}\n")), /folders: holders\.length > 1 \? holders : \[\]/, "the card names every task that uses a work folder");
 });
 
 test("main.ts: the line for triage says that auto-merge merged", () => {

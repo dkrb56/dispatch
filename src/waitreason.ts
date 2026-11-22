@@ -22,6 +22,26 @@ export interface WaitFacts {
   checkout?: { task: string; branch: string; base: string; note: string } | null;
   /** The other task that uses the work folder of the project now (ticket work-run-in-the-work-folder), or null. */
   folder?: string | null;
+  /**
+   * With several work folders, all of them in use: the tasks that use them (ticket
+   * the-page-lets-more-than-one-work-run), or null.
+   */
+  folders?: readonly string[] | null;
+  /** The running task whose plan names files of the plan of this task, with those files, or null. */
+  sameFiles?: { task: string; files: readonly string[] } | null;
+  /** For an answer: the work folder where the session of this task runs and the other task that uses it now, or null. */
+  sessionFolder?: { number: number; task: string } | null;
+}
+
+/** The names as `a`, `a and b` or `a, b and c`. */
+function joinNames(names: readonly string[]): string {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+/** The files one per line, the first five and then `…`. */
+function fileLines(files: readonly string[]): string {
+  return `${files.slice(0, 5).join("\n")}${files.length > 5 ? "\n…" : ""}`;
 }
 
 /** The reason in two lengths. */
@@ -35,7 +55,9 @@ export interface WaitReason {
 /**
  * The reason, or null when nothing holds the work run back. A pause comes first (Resume is the one
  * click that frees the queue), then a merge (it holds the main checkout and runs its gate there),
- * then the work folder that another task uses (ticket work-run-in-the-work-folder), then the running work run.
+ * then all work folders in use (ticket the-page-lets-more-than-one-work-run), then the work folder that
+ * another task uses (ticket work-run-in-the-work-folder), then a running task on the same files, then
+ * the running work run.
  */
 export function waitReason(facts: WaitFacts): WaitReason | null {
   if (facts.paused) {
@@ -50,10 +72,24 @@ export function waitReason(facts: WaitFacts): WaitReason | null {
       full: `Its work run starts when the merge of ${facts.merging} ends.`,
     };
   }
+  if (facts.folders && facts.folders.length > 0) {
+    const names = joinNames(facts.folders);
+    return {
+      short: `Waits for a work folder: ${names} use them.`,
+      full: `Its work run starts when a work folder is free. All work folders of the project are in use: ${names}.`,
+    };
+  }
   if (facts.folder) {
     return {
       short: `Waits for the work folder, which ${facts.folder} uses.`,
       full: `Its work run starts when the work run of ${facts.folder} ends and the work folder is free.`,
+    };
+  }
+  if (facts.sameFiles) {
+    const { task, files } = facts.sameFiles;
+    return {
+      short: `Waits for ${task}, which works on the same files.`,
+      full: `Its work run starts when the work run of ${task} ends. Both plans change these files:\n${fileLines(files)}`,
     };
   }
   if (facts.editing) {
@@ -82,8 +118,9 @@ export function waitReason(facts: WaitFacts): WaitReason | null {
 /**
  * Why a reply of the user to a worker waits in the queue (ticket an-answer-waits-in-the-queue-while):
  * answers, a Confirm of a check result or a Continue that came while the checkout was on the branch of
- * another task. The same order as `waitReason` (pause, merge, work run, checkout), with texts about the
- * reply. Uncommitted changes hold no reply. Null when nothing holds it: it goes out at the next poll.
+ * another task. The same order as `waitReason` (pause, merge, work folders, same files, work run,
+ * checkout), with texts about the reply; the folder of the session of the task comes first of the
+ * folders. Uncommitted changes hold no reply. Null when nothing holds it: it goes out at the next poll.
  */
 export function answerWait(facts: WaitFacts): WaitReason | null {
   if (facts.paused) {
@@ -98,10 +135,33 @@ export function answerWait(facts: WaitFacts): WaitReason | null {
       full: `Your answers go to the worker when the merge of ${facts.merging} ends.`,
     };
   }
+  // With several work folders (ticket the-page-lets-more-than-one-work-run) an answer goes to the
+  // folder where the session of its task runs; the list of all folders is the fallback without it.
+  if (facts.sessionFolder) {
+    const { number, task } = facts.sessionFolder;
+    return {
+      short: `Your answers wait for work folder ${number}, which ${task} uses.`,
+      full: `Your answers go to the worker when the work run of ${task} ends and work folder ${number}, where the session of this task runs, is free.`,
+    };
+  }
+  if (facts.folders && facts.folders.length > 0) {
+    const names = joinNames(facts.folders);
+    return {
+      short: `Your answers wait: ${names} use all work folders.`,
+      full: `Your answers go to the worker when a work folder is free. All work folders of the project are in use: ${names}.`,
+    };
+  }
   if (facts.folder) {
     return {
       short: `Your answers wait for the work folder, which ${facts.folder} uses.`,
       full: `Your answers go to the worker when the work run of ${facts.folder} ends and the work folder is free.`,
+    };
+  }
+  if (facts.sameFiles) {
+    const { task, files } = facts.sameFiles;
+    return {
+      short: `Your answers wait for ${task}, which works on the same files.`,
+      full: `Your answers go to the worker when the work run of ${task} ends. Both plans change these files:\n${fileLines(files)}`,
     };
   }
   if (facts.editing) {

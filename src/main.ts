@@ -127,7 +127,7 @@ import { HOLD_NOTE, holdWait } from "./holdstep";
 import { showTriage, triageCard, triagePanesToClose, withoutTriage, type ProjectLoad } from "./notriage";
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
-import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type ReadTimes, StartLeases } from "./workstart";
+import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type ReadTimes, sameFiles, sameFilesRefusal, StartLeases, type WorkRun } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, freshOnly, type GateRefusal, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { autoMergeNote, type AutoMergeFacts, folderRefusal, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
@@ -2268,6 +2268,11 @@ interface TaskInfo {
    * leftover-files-block-tasks): only they hold its approval and its start. Absent from an older host.
    */
   leftovers?: string[];
+  /**
+   * The paths of the section "Files to change" of the plan (ticket up-to-4-work-folders-more-than-one-task):
+   * two tasks whose plans name the same file do not work at the same time. Absent from an older host.
+   */
+  planFiles?: string[];
   /** The branch of the task with "Task branches" on (ticket task-branches); null or absent without one. */
   branch?: BranchInfo | null;
   /**
@@ -2451,6 +2456,10 @@ interface TaskListReply {
   workFolders?: boolean;
   /** The task that the record of the work folder names, or null; it can be stale. Absent from an older host. */
   workFolderUser?: string | null;
+  /** The number of work folders, 1 to 4 (ticket up-to-4-work-folders-more-than-one-task). Absent from an older host. */
+  workFolderCount?: number;
+  /** The task that the record of each work folder 1 to `workFolderCount` names, or null; a record can be stale. Absent from an older host. */
+  workFolderUsers?: (string | null)[];
   /** The gate command of the merge step; empty without one. Absent from an older host. */
   gate?: string;
   /** The actions of the Actions panel and their last runs (ticket project-actions). Absent from an older host. */
@@ -2501,6 +2510,10 @@ interface ProjectTasks {
   workFolders: boolean;
   /** The task that the record of the work folder names, or null; it can be stale. */
   workFolderUser: string | null;
+  /** The number of work folders: up to this many work runs run at the same time (ticket the-page-lets-more-than-one-work-run). */
+  workFolderCount: number;
+  /** The task that the record of each work folder names, from folder 1, or null; a record can be stale. */
+  workFolderUsers: (string | null)[];
   /** The gate command of the merge step; empty without one. */
   gate: string;
   /** The actions of the Actions panel and their last runs (ticket project-actions). */
@@ -2530,6 +2543,8 @@ function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTa
     merging: reply.merging ?? null,
     workFolders: reply.workFolders ?? false,
     workFolderUser: reply.workFolderUser ?? null,
+    workFolderCount: reply.workFolderCount ?? 1,
+    workFolderUsers: reply.workFolderUsers ?? [],
     gate: reply.gate ?? "",
     actions: reply.actions ?? EMPTY_ACTIONS,
   };
@@ -2966,10 +2981,12 @@ function approvePlans(): void {
     // A merge holds the main checkout and runs its gate there (ticket task-branches). A start in
     // flight holds the project like a running work run. A pause holds every start (ticket pause-tasks).
     // An uncommitted change holds only the task whose files it touches (ticket leftover-files-block-tasks).
-    const busy = { merging: project.merging, running: workRun(tasks)?.name ?? null, leased: startHolder(project.host, project.cwd), paused: project.paused };
+    // With several work folders up to that many work runs run at the same time (ticket the-page-lets-more-than-one-work-run).
+    const busy = { merging: project.merging, ...runFacts(project, tasks), leased: startHolder(project.host, project.cwd), paused: project.paused };
     // The scheduled full run of every check waits for a free project, and while it runs no merge and
-    // no work run starts there (ticket scheduled-full-run-of-all-checks, user decision 2).
-    startFullRun(project, projectBusy(busy));
+    // no work run starts there (ticket scheduled-full-run-of-all-checks, user decision 2). With several
+    // work folders it still waits until no work run runs (ticket the-page-lets-more-than-one-work-run, user decision 2).
+    startFullRun(project, projectBusy(busy) || busy.runs.length > 0);
     if (fullRuns.has(projectKey(project.host, project.cwd))) continue;
     // Night mode merges a finished task when the merge check passes (ticket task-branches-blocked-work,
     // user decision 3), so a task that needs its work goes on at night. One try per report. The merge
@@ -2994,13 +3011,18 @@ function approvePlans(): void {
     const queued = projectBusy(busy) ? undefined : nextQueued(project, tasks);
     const checkout = otherCheckout(tasks)?.task ?? null;
     // A reply of the user that waited for the checkout goes out in its place in the queue (ticket
-    // an-answer-waits-in-the-queue-while). Its resumed work run then holds the project.
+    // an-answer-waits-in-the-queue-while). Its resumed work run then holds the project. With several
+    // work folders it waits only for the folder of its session (ticket the-page-lets-more-than-one-work-run).
     const replies = waitingReplies(project, tasks);
     const replyTask = chooseQueued({
       ...busy,
       checkout,
-      approval: queued ? { task: queued.name, at: queuedApprovalTimes.get(queueKey(queued)) ?? 0 } : null,
-      replies: replies.map((reply) => ({ task: reply.key.slice(reply.key.lastIndexOf("\n") + 1), at: reply.at })),
+      approval: queued ? { task: queued.name, at: queuedApprovalTimes.get(queueKey(queued)) ?? 0, files: queued.info?.planFiles ?? [] } : null,
+      replies: replies.map((reply) => {
+        const name = reply.key.slice(reply.key.lastIndexOf("\n") + 1);
+        const task = tasks.find((task) => task.name === name);
+        return { task: name, at: reply.at, files: task?.info?.planFiles ?? [], folder: task ? replyHolder(task, busy.runs) : null };
+      }),
     });
     const replied = replyTask ? tasks.find((task) => task.name === replyTask) : undefined;
     const reply = replied ? replies.find((reply) => reply.key === queueKey(replied)) : undefined;
@@ -3019,13 +3041,15 @@ function approvePlans(): void {
         name: task.name,
         ready: planReady(task),
         hold: !!task.info?.hold,
-        busy: busyTasks.has(task.name),
+        // A start that the worker script refused for a work folder or for the same files waits 60 s.
+        busy: busyTasks.has(task.name) || startRefused(task),
         planTime: task.info?.plan?.modified ?? null,
         tried: autoApproved.get(task.name),
         auto: !!task.info?.auto,
         blocked: taskLeftovers(project, task.info).length > 0,
         plain: !!task.info?.plain,
         nightHold: !!task.info?.nightHold,
+        files: task.info?.planFiles ?? [],
       })),
     });
     const task = choice ? tasks.find((task) => task.name === choice.task) : undefined;
@@ -3040,8 +3064,10 @@ function approvePlans(): void {
       const where = phoneApprovals.delete(key) ? "on the phone" : "in Dispatch";
       void leasedStart(task, () => taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name}, approved earlier by the user ${where}: the project is free now, and the work run started.`)).then((started) => {
         // A merge that the list did not show refused the start (ticket
-        // approve-during-a-merge-is-refused-by-the): the approval waits in the queue again.
-        if (started || planTime === undefined || mergeRefusal(actionErrors.get(task.name) ?? "") === null) return;
+        // approve-during-a-merge-is-refused-by-the), or a work folder or the same files of a running
+        // task (ticket the-page-lets-more-than-one-work-run): the approval waits in the queue again.
+        if (started || planTime === undefined) return;
+        if (mergeRefusal(actionErrors.get(task.name) ?? "") === null && !folderOrFilesRefusal(task)) return;
         actionErrors.delete(task.name);
         queuedApprovals.set(key, planTime);
         queuedApprovalTimes.set(key, clickTime);
@@ -3052,24 +3078,27 @@ function approvePlans(): void {
       // Night mode: every decision takes its recommended option, and the plan records it.
       const decisions = task.info.decisions ?? [];
       const choices = decisions.map((decision) => ({ decision, answer: decision.options[0]?.choice ?? "" }));
-      void approveWithDecisions(task, choices, "by night mode (DEFAULT DECISION: all its decisions have a default; the recommended option of each is taken)");
+      let written = null as number | null;
+      void approveWithDecisions(task, choices, "by night mode (DEFAULT DECISION: all its decisions have a default; the recommended option of each is taken)", (time) => (written = time)).then((started) => queueRefused(task, started, written));
     } else if (choice.kind === "plain") {
       // A plan without decisions with "Start plans without decisions" on (ticket simpler-process):
       // the recommended checks go into the plan, as with "Approve plans automatically".
       const checks = checksLine(task);
+      let written = null as number | null;
       void leasedStart(task, async () => {
-        if ((await writeDecisions(task, [])) === null) return false;
+        if ((written = await writeDecisions(task, [])) === null) return false;
         return taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name} has no decisions: Dispatch started the work run by itself.${checks}`);
-      });
+      }).then((started) => queueRefused(task, started, written));
     } else {
       // The checks of the plan with their default choice go into the plan first (ticket task-checks).
       const checks = checksLine(task);
       // A Claude step of an action with "Approve the plan by itself" (ticket project-actions).
       const by = task.info.auto && !project.autoApprove ? "by the action in Dispatch" : "automatically in Dispatch";
+      let written = null as number | null;
       void leasedStart(task, async () => {
-        if ((await writeDecisions(task, [])) === null) return false;
+        if ((written = await writeDecisions(task, [])) === null) return false;
         return taskAction(task, "task_approve", { id: task.name }, `Plan ${task.name} approved ${by}.${checks} The work run started.`);
-      });
+      }).then((started) => queueRefused(task, started, written));
     }
   }
   advanceActions();
@@ -3149,6 +3178,43 @@ async function leasedStart(task: Task, start: () => Promise<boolean>): Promise<b
 }
 
 /**
+ * A refusal of the worker script for a work folder or for the same files of a running task (ticket
+ * the-page-lets-more-than-one-work-run): it goes from the card into `folderWaits`, and the start or the
+ * reply waits in the queue again. Gives false for any other error, which stays on the card.
+ */
+function folderOrFilesRefusal(task: Task): boolean {
+  const error = actionErrors.get(task.name) ?? "";
+  const same = sameFilesRefusal(error);
+  const holders = same ? [same.task] : folderRefusal(error);
+  if (!holders) return false;
+  folderWaits.set(task.name, same ? { holders, files: same.files, at: Date.now() } : { holders, at: Date.now() });
+  actionErrors.delete(task.name);
+  return true;
+}
+
+/** The worker script refused a start or a reply of the task for a work folder or for the same files in the last 60 s. */
+function startRefused(task: Task): boolean {
+  const wait = folderWaits.get(task.name);
+  return !!wait && Date.now() - wait.at < 60_000;
+}
+
+/**
+ * A start of night mode, of "Approve plans automatically" or of a plan without decisions that the
+ * worker script refused for a work folder or for the same files (ticket
+ * the-page-lets-more-than-one-work-run): the plan has its decisions already, so the approval waits in
+ * the queue with the time of the written plan and starts when the project is free for it.
+ */
+function queueRefused(task: Task, started: boolean, written: number | null): void {
+  if (started || written === null || !folderOrFilesRefusal(task)) return;
+  const key = queueKey(task);
+  queuedApprovals.delete(key);
+  queuedApprovals.set(key, written);
+  queuedApprovalTimes.set(key, Date.now());
+  saveQueued();
+  renderChats();
+}
+
+/**
  * The first plan of a project that the user approved while the project was not free and that can
  * start now. An approval whose plan changed (the planner revised it) or left the planning state is
  * dropped: the user approved another text.
@@ -3169,7 +3235,8 @@ function nextQueued(project: ProjectTasks, tasks: Task[]): Task | undefined {
     }
     // An older time: the list was read before the decisions were written.
     // A change in a file of the task keeps it queued; the next one can start (ticket leftover-files-block-tasks).
-    if (planTime === modified && (planReady(task) || awayPlan(task)) && !busyTasks.has(task.name) && taskLeftovers(project, task.info).length === 0) return task;
+    // A fresh refusal for a work folder or for the same files keeps it queued for 60 s too (ticket the-page-lets-more-than-one-work-run).
+    if (planTime === modified && (planReady(task) || awayPlan(task)) && !busyTasks.has(task.name) && !startRefused(task) && taskLeftovers(project, task.info).length === 0) return task;
   }
   return undefined;
 }
@@ -3193,7 +3260,8 @@ function waitingReplies(project: ProjectTasks, tasks: Task[]): QueuedReply[] {
       changed = true;
       continue;
     }
-    if (!busyTasks.has(task.name)) due.push(reply);
+    // A reply that the worker script refused for a work folder or for the same files waits 60 s (ticket the-page-lets-more-than-one-work-run).
+    if (!busyTasks.has(task.name) && !startRefused(task)) due.push(reply);
   }
   if (changed) saveQueuedReplies();
   return due;
@@ -3201,13 +3269,14 @@ function waitingReplies(project: ProjectTasks, tasks: Task[]): QueuedReply[] {
 
 /**
  * Sends a waiting reply word for word, once: it leaves the queue before the call. When it went, the
- * report counts as answered and the card shows when it went out. A refusal for the checkout puts it
- * back in its place; another failure shows on the card, and the questions show again.
+ * report counts as answered and the card shows when it went out. A refusal for the checkout, a work
+ * folder or the same files puts it back in its place; another failure shows on the card, and the
+ * questions show again.
  */
 async function sendQueuedReply(task: Task, reply: QueuedReply): Promise<void> {
   queuedReplies.delete(reply.key);
   saveQueuedReplies();
-  const line = isAutoContinue(reply.line) ? reply.line : `${reply.line} (Dispatch sent this reply now: the user gave it earlier, while the checkout was on the branch of another task.)`;
+  const line = isAutoContinue(reply.line) ? reply.line : `${reply.line} (Dispatch sent this reply now: the user gave it earlier, while the checkout was on the branch of another task or its work folder was in use.)`;
   sendingReplies.set(reply.key, { modified: reply.record.modified, sentAt: null });
   if (await taskAction(task, "task_reply", { id: task.name, text: reply.text }, line)) {
     markAnswered(task.name, reply.record);
@@ -3215,7 +3284,9 @@ async function sendQueuedReply(task: Task, reply: QueuedReply): Promise<void> {
     confirmDrafts.delete(task.name);
     sentReplies.set(reply.key, { modified: reply.record.modified, at: Date.now() });
     sendingReplies.set(reply.key, { modified: reply.record.modified, sentAt: Date.now() });
-  } else if ((actionErrors.get(task.name) ?? "").includes(OTHER_BRANCH)) {
+  } else if ((actionErrors.get(task.name) ?? "").includes(OTHER_BRANCH) || folderOrFilesRefusal(task)) {
+    // The checkout, a work folder or the same files of a running task (ticket
+    // the-page-lets-more-than-one-work-run): the reply waits in its place again.
     actionErrors.delete(task.name);
     queuedReplies.set(reply.key, reply);
     saveQueuedReplies();
@@ -5029,19 +5100,89 @@ function awayPlan(task: Task): boolean {
 }
 
 /**
- * The task whose work run edits the project now: its script state is `approved` or `working` and
- * a worker of it runs or waits. A task just approved has no worker in the list yet; until its
- * report exists it counts too. One work run at a time: Approve waits while it runs. Before the
+ * The tasks whose work runs edit the project now: the script state is `approved` or `working` and
+ * a worker of the task runs or waits. A task just approved has no worker in the list yet; until its
+ * report exists it counts too. With one work folder one work run at a time: Approve waits while it
+ * runs; with several, up to that many (ticket the-page-lets-more-than-one-work-run). Before the
  * lists show it, the start lease of the project holds it (`startHolder`, ticket one-work-run-race).
  */
-function workRun(tasks: Task[]): Task | undefined {
-  return tasks.find((task) => {
+function workRuns(tasks: Task[]): Task[] {
+  return tasks.filter((task) => {
     const info = task.info;
     if (info?.state !== "approved" && info?.state !== "working") return false;
     // A run of another computer edits nothing here (ticket second-computer).
     if (task.workers.length === 0) return info.report === null && !info.elsewhere;
     return task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
   });
+}
+
+/**
+ * The number of work runs that run in a project at the same time (ticket
+ * the-page-lets-more-than-one-work-run): its work folders with Work folder on, else 1.
+ */
+function slotsOf(project: ProjectTasks | undefined): number {
+  return project?.workFolders ? Math.max(1, project.workFolderCount) : 1;
+}
+
+/** The running work runs of a project with the files of their plans, and the number of its work folders: the facts of `projectBusy`. */
+function runFacts(project: ProjectTasks, tasks: Task[]): { runs: WorkRun[]; slots: number } {
+  return { runs: workRuns(tasks).map((task) => ({ task: task.name, files: task.info?.planFiles ?? [] })), slots: slotsOf(project) };
+}
+
+/**
+ * The work folder where the session of the work run of a task runs (ticket
+ * the-page-lets-more-than-one-work-run), as the worker script finds it: the number in the folder of
+ * its newest worker `<ticket> [work]`, else the folder whose record names the task, else null.
+ */
+function sessionFolder(task: Task): number | null {
+  const work = task.workers.filter((worker) => worker.name?.endsWith(" [work]")).sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0))[0];
+  const number = /[\\/]\.dispatch[\\/]work[\\/](\d+)[\\/]?$/i.exec(work?.cwd ?? "")?.[1];
+  if (number) return Number(number);
+  const at = task.project?.workFolderUsers.indexOf(task.name) ?? -1;
+  return at >= 0 ? at + 1 : null;
+}
+
+/**
+ * The other task that uses the work folder of the session of a task while its work run runs, with
+ * the number of the folder, or null (ticket the-page-lets-more-than-one-work-run): an answer to the
+ * worker goes into that folder, so it waits for it.
+ */
+function replyFolderHolder(task: Task): { number: number; task: string } | null {
+  const project = task.project;
+  const number = project?.workFolders ? sessionFolder(task) : null;
+  if (!project || number === null) return null;
+  const user = project.workFolderUsers[number - 1] ?? (number === 1 ? project.workFolderUser : null);
+  if (!user || user === task.name) return null;
+  return workRuns(projectTaskList(project, false)).some((run) => run.name === user) ? { number, task: user } : null;
+}
+
+/**
+ * The other task that holds a waiting reply of a task with several work folders, or null: the task
+ * that uses the folder of its session, or, when the page does not know that folder, the first running
+ * task while every folder is in use (the worker script then needs a free folder).
+ */
+function replyHolder(task: Task, runs: readonly WorkRun[]): string | null {
+  const holder = replyFolderHolder(task);
+  if (holder) return holder.task;
+  const others = runs.filter((run) => run.task !== task.name);
+  return sessionFolder(task) === null && others.length > 0 && runs.length >= slotsOf(task.project) ? others[0].task : null;
+}
+
+/**
+ * The running task whose plan names files of the plan of this task, with those files, or null (ticket
+ * the-page-lets-more-than-one-work-run): with several work folders the two do not work at the same
+ * time. A refusal of the worker script for the same files in the last 60 s counts too.
+ */
+function sameFilesHolder(task: Task, runs: readonly WorkRun[]): { task: string; files: string[] } | null {
+  if (slotsOf(task.project) < 2) return null;
+  const mine = task.info?.planFiles ?? [];
+  for (const run of runs) {
+    if (run.task === task.name) continue;
+    const files = sameFiles(mine, run.files);
+    if (files.length > 0) return { task: run.task, files };
+  }
+  const wait = folderWaits.get(task.name);
+  return wait?.files && wait.holders.length > 0 && Date.now() - wait.at < 60_000 ? { task: wait.holders[0], files: wait.files } : null;
 }
 
 /**
@@ -5655,7 +5796,8 @@ async function approveOrQueue(task: Task, choices: DecisionAnswer[], how: string
     let written = null as number | null;
     if (await approveWithDecisions(task, choices, how, (time) => (written = time))) return true;
     const merge = mergeRefusal(actionErrors.get(task.name) ?? "");
-    if (written === null || merge === null) return false;
+    // A work folder or the same files of a running task refused it (ticket the-page-lets-more-than-one-work-run): it waits in the queue too.
+    if (written === null || (merge === null && !folderOrFilesRefusal(task))) return false;
     actionErrors.delete(task.name);
     queuedApprovals.delete(queueKey(task));
     queuedApprovals.set(queueKey(task), written);
@@ -5663,7 +5805,8 @@ async function approveOrQueue(task: Task, choices: DecisionAnswer[], how: string
     holdPicks.set(queueKey(task), { written, picks: new Map(choices.filter(({ decision }) => decision.hold).map(({ decision, answer }) => [decision.number, answer])) });
     saveQueued();
     autoApproved.set(task.name, written);
-    tellTriage(projectFor(taskHost(task), taskCwd(task)), `Plan ${task.name} approved in Dispatch${how ? ` ${how}` : ""}. Its work run starts when the merge of ${merge} ends. Dispatch starts its work run then; do not start it yourself.`);
+    const why = merge !== null ? `Its work run starts when the merge of ${merge} ends.` : approveWait(task).replace(/:\n[\s\S]*$/, ".") || "Its work run starts when a work folder is free.";
+    tellTriage(projectFor(taskHost(task), taskCwd(task)), `Plan ${task.name} approved in Dispatch${how ? ` ${how}` : ""}. ${why} Dispatch starts its work run then; do not start it yourself.`);
     renderChats();
     return true;
   }
@@ -5747,7 +5890,11 @@ function nightPlanOf(task: Task) {
   // The tasks without the order of `taskList`: the order calls `taskAttentionWait`, which calls this
   // function, so `waitFacts` (sorted list) here was an endless loop that broke the board.
   const tasks = projectTaskList(project, false);
-  const editing = workRun(tasks)?.name ?? startHolder(taskHost(task), taskCwd(task));
+  // With several work folders (ticket the-page-lets-more-than-one-work-run) a running work run holds
+  // this plan when it uses the last free folder or works on the same files, as in `chooseStart`.
+  const runs = runFacts(project, tasks).runs;
+  const several = slotsOf(project) >= 2;
+  const editing = several ? (sameFilesHolder(task, runs)?.task ?? null) : (runs[0]?.task ?? startHolder(taskHost(task), taskCwd(task)));
   return nightPlan({
     night,
     paused: !!project.paused,
@@ -5756,6 +5903,7 @@ function nightPlanOf(task: Task) {
     blocked: taskLeftovers(project, task.info).length > 0,
     tried: autoApproved.get(task.name) === plan.modified,
     merging: project.merging ?? null,
+    folders: several ? folderHolders(task, runs) : [],
     running: editing && editing !== task.name ? editing : null,
     checkout: otherCheckout(tasks, task.name)?.task ?? null,
   });
@@ -5786,16 +5934,38 @@ function otherCheckout(tasks: Task[], except?: string): WaitFacts["checkout"] {
 }
 
 function waitFacts(task: Task): WaitFacts {
-  const editing = workRun(task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos))?.name ?? startHolder(taskHost(task), taskCwd(task));
+  const tasks = task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos);
+  const leased = startHolder(taskHost(task), taskCwd(task));
   const merging = task.project ? task.project.merging : mergingTask;
   // A paused project queues an Approve click (ticket pause-tasks, user decision 3).
   const paused = task.project?.paused ?? projectTasks.get(tasksFolder)?.paused ?? false;
-  // The work folder of the project (ticket work-run-in-the-work-folder): its user holds it while that
-  // user's work run runs; a stale record gives no wait.
-  const user = task.project?.workFolders ? task.project.workFolderUser : null;
-  const folder = user && user !== task.name && editing === user ? user : null;
   // Only the changes in files of the task hold it (ticket leftover-files-block-tasks); an older host gives the whole project.
-  return { editing: editing && editing !== task.name ? editing : null, folder, dirty: task.info?.leftovers ?? task.project?.dirty ?? dirtyLines, merging, paused, checkout: otherCheckout(task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos), task.name) };
+  const dirty = task.info?.leftovers ?? task.project?.dirty ?? dirtyLines;
+  const checkout = otherCheckout(tasks, task.name);
+  if (!task.project || slotsOf(task.project) < 2) {
+    const editing = workRuns(tasks)[0]?.name ?? leased;
+    // The work folder of the project (ticket work-run-in-the-work-folder): its user holds it while that
+    // user's work run runs; a stale record gives no wait.
+    const user = task.project?.workFolders ? task.project.workFolderUser : null;
+    const folder = user && user !== task.name && editing === user ? user : null;
+    return { editing: editing && editing !== task.name ? editing : null, folder, dirty, merging, paused, checkout };
+  }
+  // Several work folders (ticket the-page-lets-more-than-one-work-run): a running work run holds the
+  // task only when every folder is in use, when it uses the folder of the session of the task, or when
+  // its plan names the same files. The start in flight holds every start, one per poll.
+  const { runs } = runFacts(task.project, tasks);
+  const holders = folderHolders(task, runs);
+  return {
+    editing: leased && leased !== task.name ? leased : null,
+    folder: holders.length === 1 ? holders[0] : null,
+    folders: holders.length > 1 ? holders : null,
+    sameFiles: sameFilesHolder(task, runs),
+    sessionFolder: replyFolderHolder(task),
+    dirty,
+    merging,
+    paused,
+    checkout,
+  };
 }
 
 /** Fills a text box with one child per part of the lines (headings, labels, numbers, bullets, gaps). */
@@ -6703,12 +6873,15 @@ const OTHER_BRANCH = "the branch of another task";
  * Sends a reply of the user to the worker of a task (answers, a Confirm or a Continue), or keeps it in
  * the queue of its project while the checkout is on the branch of another task (ticket
  * an-answer-waits-in-the-queue-while): `approvePlans` sends it word for word when the checkout is back
- * on the base. A refusal of the script for that reason (an older list) queues it too. `record` is kept
- * as answered only when the reply went.
+ * on the base. A refusal of the script for that reason (an older list) queues it too. The work folder
+ * of its session or the same files of a running task hold it the same way, also after a refusal of
+ * the script (ticket the-page-lets-more-than-one-work-run). `record` is kept as answered only when the reply went.
  */
 async function replyOrQueue(task: Task, record: AnsweredReport, text: string, line: string): Promise<ReplyResult> {
   const tasks = task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos);
-  if (otherCheckout(tasks, task.name)) {
+  // The work folder of its session or the same files of a running task hold it too (ticket the-page-lets-more-than-one-work-run).
+  const runs = task.project ? runFacts(task.project, tasks).runs : [];
+  if (otherCheckout(tasks, task.name) || replyFolderHolder(task) || sameFilesHolder(task, runs)) {
     queueReply(task, record, text, line);
     return "queued";
   }
@@ -6720,7 +6893,7 @@ async function replyOrQueue(task: Task, record: AnsweredReport, text: string, li
     return "sent";
   }
   sendingReplies.delete(sendKey);
-  if (!(actionErrors.get(task.name) ?? "").includes(OTHER_BRANCH)) return false;
+  if (!(actionErrors.get(task.name) ?? "").includes(OTHER_BRANCH) && !folderOrFilesRefusal(task)) return false;
   actionErrors.delete(task.name);
   queueReply(task, record, text, line);
   return "queued";
@@ -6734,7 +6907,7 @@ function queueReply(task: Task, record: AnsweredReport, text: string, line: stri
   saveQueuedReplies();
   sentReplies.delete(key);
   const wait = replyWait(task).replace(/:\n[\s\S]*$/, ".");
-  const said = isAutoContinue(line) ? autoContinueQueued(task.name, wait) : `The user replied to ${task.name} in Dispatch while the checkout is on the branch of another task. ${wait} Dispatch sends the reply then; do not send it yourself.`;
+  const said = isAutoContinue(line) ? autoContinueQueued(task.name, wait) : `The user replied to ${task.name} in Dispatch while the project was not free for the reply. ${wait} Dispatch sends the reply then; do not send it yourself.`;
   tellTriage(projectFor(taskHost(task), taskCwd(task)), said);
   renderChats();
 }
@@ -7381,42 +7554,57 @@ function mergeTryKey(task: Task): string {
 }
 
 /**
- * The merges that the worker script refused because another task used the work folder (ticket
- * merge-in-the-work-folder, user decision 2), by task name: that task and when. For 60 s the merge
- * counts as held, so the poll does not run the script into one wait after another.
+ * The merges, starts and replies that the worker script refused because other tasks used the work
+ * folders (ticket merge-in-the-work-folder, user decision 2) or worked on the same files (ticket
+ * the-page-lets-more-than-one-work-run), by task name: those tasks, the same files, and when. For 60 s
+ * the merge counts as held and the start or the reply waits, so the poll does not run the script into
+ * one wait after another.
  */
-const folderWaits = new Map<string, { holder: string; at: number }>();
+const folderWaits = new Map<string, { holders: string[]; files?: string[]; at: number }>();
 
 /**
- * The other task that uses the work folder of the project, or null: the user of the record while its
- * work run runs (as `waitFacts` reads it), else the task of a folder refusal of the last 60 s.
+ * The other tasks that use the work folders of the project, or an empty list: with one work folder
+ * the user of the record while its work run runs (as `waitFacts` reads it); with several the running
+ * tasks while they use every folder (ticket the-page-lets-more-than-one-work-run); else the tasks of
+ * a folder refusal of the last 60 s.
  */
-function folderHolder(task: Task): string | null {
+function folderHolders(task: Task, runs?: readonly WorkRun[]): string[] {
   const project = task.project;
-  const user = project?.workFolders ? project.workFolderUser : null;
-  if (project && user && user !== task.name && workRun(projectTaskList(project))?.name === user) return user;
+  if (project?.workFolders) {
+    const running = runs ?? runFacts(project, projectTaskList(project, false)).runs;
+    const slots = slotsOf(project);
+    if (slots < 2) {
+      const user = project.workFolderUser;
+      if (user && user !== task.name && running[0]?.task === user) return [user];
+    } else if (running.length >= slots) {
+      const others = running.filter((run) => run.task !== task.name).map((run) => run.task);
+      if (others.length > 0) return others;
+    }
+  }
   const wait = folderWaits.get(task.name);
-  return wait && Date.now() - wait.at < 60_000 ? wait.holder : null;
+  return wait && !wait.files && Date.now() - wait.at < 60_000 ? wait.holders : [];
 }
 
 /**
  * The task cannot merge yet: the checkout is on its branch, its files have uncommitted changes, or
- * another task uses the work folder.
+ * other tasks use the work folders.
  */
 function mergeHeld(task: Task): boolean {
   const leftovers = task.project ? taskLeftovers(task.project, task.info) : (task.info?.leftovers ?? dirtyLines);
-  return !!task.info?.branch?.checkedOut || leftovers.length > 0 || folderHolder(task) !== null;
+  return !!task.info?.branch?.checkedOut || leftovers.length > 0 || folderHolders(task).length > 0;
 }
 
 /** What the card and the alert know about "Auto-merge finished tasks" for this task. */
 function autoMergeFacts(task: Task): AutoMergeFacts {
+  const holders = folderHolders(task);
   return {
     on: task.project ? task.project.autoMerge : autoMerge,
     gate: (task.project ? task.project.gate : gateCommand).trim() !== "",
     done: task.info?.header?.state === "done",
     tried: mergeTried(task),
     held: mergeHeld(task),
-    folder: folderHolder(task),
+    folder: holders.length === 1 ? holders[0] : null,
+    folders: holders.length > 1 ? holders : [],
   };
 }
 
@@ -7535,14 +7723,15 @@ async function mergeTask(task: Task, by: "click" | "night" | "auto" = "click"): 
   } catch (error) {
     // Another task used the work folder (ticket merge-in-the-work-folder, user decision 2): that is no
     // try of auto-merge; the card says that it waits, and the poll tries again when the folder is free.
-    const holder = folderRefusal(String(error));
-    if (holder) {
+    // With several work folders the refusal names every task that uses one (ticket the-page-lets-more-than-one-work-run).
+    const holders = folderRefusal(String(error));
+    if (holders) {
       nightDone.delete(mergeTryKey(task));
-      folderWaits.set(task.name, { holder, at: Date.now() });
+      folderWaits.set(task.name, { holders, at: Date.now() });
     } else {
       folderWaits.delete(task.name);
     }
-    if (!holder || by === "click") actionErrors.set(task.name, String(error));
+    if (!holders || by === "click") actionErrors.set(task.name, String(error));
     const refusal = gateRefusal(String(error));
     if (refusal && freshOnly(refusal.tail) && autoMergeFacts(task).on) regate = { refusal, error: String(error) };
   } finally {
@@ -8130,7 +8319,7 @@ const taskOpenChoice = new Map<string, boolean>();
 /** The state of a task in one word group, for its header: what waits, what runs, or how it ended. */
 function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"; text: string } {
   if (approvalQueued(task)) return { kind: "done", text: "approved · starts when the project is free" };
-  if (queuedReplyOf(task)) return { kind: "done", text: "answered · goes out when the checkout is free" };
+  if (queuedReplyOf(task)) return { kind: "done", text: "answered · goes out when the project is free for it" };
   if (replySendingOf(task)) return { kind: "working", text: SENDING_STATUS };
   const night = nightPlanOf(task);
   if (night?.approves) return { kind: "done", text: `plan ready · ${night.text}` };

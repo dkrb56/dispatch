@@ -57,6 +57,17 @@ export interface AutoMergeFacts {
   held: boolean;
   /** The other task that uses the work folder of the project now (ticket merge-in-the-work-folder), or null. */
   folder: string | null;
+  /**
+   * With several work folders, all of them in use: the tasks that use them (ticket
+   * the-page-lets-more-than-one-work-run); absent or empty while a folder is free.
+   */
+  folders?: readonly string[];
+}
+
+/** The names as `a`, `a and b` or `a, b and c`. */
+function joinNames(names: readonly string[]): string {
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
 /**
@@ -68,6 +79,7 @@ export function autoMergeNote(facts: AutoMergeFacts, base: string): string {
   if (!facts.gate) return "Auto-merge needs a gate command, so this branch waits for your Merge click.";
   if (!facts.done) return "Auto-merge takes only a done report, so this branch waits for your Merge click.";
   if (facts.tried) return "The automatic merge did not go through. Fix the cause, or click Merge.";
+  if (facts.folders && facts.folders.length > 0) return `Auto-merge waits for a work folder: ${joinNames(facts.folders)} use them. It tries again when one is free.`;
   if (facts.folder) return `Auto-merge waits for the work folder, which ${facts.folder} uses, and tries again when it is free.`;
   if (facts.held) return `Auto-merge waits until the checkout is on ${base} and the files of this task have no uncommitted changes.`;
   return "Auto-merge starts when no other work runs in this project.";
@@ -86,16 +98,22 @@ const MERGE_REFUSALS = [
   /the checkout has an unfinished merge/,
   /does not exist; the task had no work run/,
   /the work folder of this project is in use/,
+  /all \d+ work folders of this project are in use/,
   /would be overwritten by the merge; commit, stash or undo/,
 ];
 
 /**
- * The task that held the work folder when a merge was refused (ticket merge-in-the-work-folder): the
- * error text of the worker script holds `the work folder of this project is in use (task <name>)`.
- * Else null.
+ * The tasks that held the work folders when the worker script refused a merge, a start or a reply
+ * (tickets merge-in-the-work-folder and the-page-lets-more-than-one-work-run): the error text holds
+ * `the work folder of this project is in use (task <name>)`, `the work folder <n> of this project,
+ * where the session of this task runs, is in use (task <name>)` or `all <n> work folders of this
+ * project are in use (tasks <a>, <b>)`. Else null.
  */
-export function folderRefusal(text: string): string | null {
-  return /the work folder of this project is in use \(task ([^)]+)\)/.exec(text)?.[1] ?? null;
+export function folderRefusal(text: string): string[] | null {
+  const one = /the work folder (?:\d+ )?of this project(?:, where the session of this task runs,)? is in use \(task ([^)]+)\)/.exec(text);
+  if (one) return [one[1]];
+  const all = /all \d+ work folders of this project are in use \(tasks ([^)]*)\)/.exec(text);
+  return all ? all[1].split(", ").map((name) => name.trim()).filter(Boolean) : null;
 }
 
 /** The refusal of uncommitted changes of an older host, which a commit or a stash ends. */

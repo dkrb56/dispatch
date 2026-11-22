@@ -60,23 +60,72 @@ export class StartLeases {
 }
 
 /**
+ * A running work run of the project (ticket the-page-lets-more-than-one-work-run): its task and the
+ * paths of the section "Files to change" of its plan.
+ */
+export interface WorkRun {
+  task: string;
+  files: readonly string[];
+}
+
+/**
  * What holds every start of a project back. An uncommitted change holds only the task whose files it
  * touches (`StartCandidate.blocked`, ticket leftover-files-block-tasks), not the project.
  */
 export interface BusyFacts {
   /** The task whose branch Dispatch merges now, or null. */
   merging: string | null;
-  /** The task whose work run runs, or null. */
-  running: string | null;
+  /** The running work runs of the project, in the order of the task list. */
+  runs: readonly WorkRun[];
+  /**
+   * The work folders of the project (ticket the-page-lets-more-than-one-work-run): up to this many
+   * work runs run at the same time. Absent or below 2: one work run at a time, as before.
+   */
+  slots?: number;
   /** The task of the start lease, or null. */
   leased: string | null;
   /** The user paused the project (ticket pause-tasks): nothing starts until Resume. */
   paused?: boolean;
 }
 
-/** Whether a work run of the project can start now. A paused project starts nothing (ticket pause-tasks). */
+/** The number of work runs that can run in the project at the same time: 1 at least. */
+function slotCount(facts: BusyFacts): number {
+  const slots = Math.floor(facts.slots ?? 1);
+  return Number.isFinite(slots) && slots > 1 ? slots : 1;
+}
+
+/**
+ * Whether a work run of the project can start now. A paused project starts nothing (ticket pause-tasks).
+ * A merge or a start in flight holds the project; the running work runs hold it when they use every
+ * work folder (ticket the-page-lets-more-than-one-work-run).
+ */
 export function projectBusy(facts: BusyFacts): boolean {
-  return !!facts.paused || facts.merging !== null || facts.running !== null || facts.leased !== null;
+  return !!facts.paused || facts.merging !== null || facts.leased !== null || facts.runs.length >= slotCount(facts);
+}
+
+/**
+ * The paths of `mine` that `theirs` names too (ticket the-page-lets-more-than-one-work-run): the same
+ * path, or a path under a folder path (one that ends in `/`) of the other list, in either direction,
+ * without case. A path under `.dispatch/` never counts. The rule `Same-Files` of the worker script.
+ */
+export function sameFiles(mine: readonly string[], theirs: readonly string[]): string[] {
+  const other = theirs.map((path) => path.toLowerCase()).filter((path) => !path.startsWith(".dispatch/"));
+  if (other.length === 0) return [];
+  return mine.filter((path) => {
+    const own = path.toLowerCase();
+    if (own.startsWith(".dispatch/")) return false;
+    return other.some((that) => own === that || (that.endsWith("/") && own.startsWith(that)) || (own.endsWith("/") && that.startsWith(own)));
+  });
+}
+
+/** The first running work run of another task whose plan names a file of `files`, with those files, or null. */
+function sameFilesRun(runs: readonly WorkRun[], task: string, files: readonly string[] | undefined): { task: string; files: string[] } | null {
+  for (const run of runs) {
+    if (run.task === task) continue;
+    const same = sameFiles(files ?? [], run.files);
+    if (same.length > 0) return { task: run.task, files: same };
+  }
+  return null;
 }
 
 /**
@@ -85,6 +134,17 @@ export function projectBusy(facts: BusyFacts): boolean {
  */
 export function mergeRefusal(text: string): string | null {
   return /a merge of this project runs \(task ([^)]+)\)/.exec(text)?.[1] ?? null;
+}
+
+/**
+ * The task whose plan names the same files when the worker script refused a work run for that
+ * (ticket the-page-lets-more-than-one-work-run): the error text holds `the task <name> works on the
+ * same files (<a>, <b>); this work run starts when it has ended`. Gives the task and the files, else null.
+ */
+export function sameFilesRefusal(text: string): { task: string; files: string[] } | null {
+  const match = /the task (\S+) works on the same files \(([\s\S]*?)\); this work run starts when it has ended/.exec(text);
+  if (!match) return null;
+  return { task: match[1], files: match[2].split(", ").filter(Boolean) };
 }
 
 /** A task of the project as the choice of a start sees it. */
@@ -108,6 +168,11 @@ export interface StartCandidate {
   plain?: boolean;
   /** A part of a chain whose parent did not tick the night box (ticket subtickets): night mode does not start it. */
   nightHold?: boolean;
+  /**
+   * The paths of the section "Files to change" of its plan (ticket the-page-lets-more-than-one-work-run):
+   * it does not start while a running work run has a plan that names one of them.
+   */
+  files?: readonly string[];
 }
 
 /** The facts of one project at one poll. */
@@ -139,17 +204,24 @@ export type StartKind = "queued" | "night" | "auto" | "plain";
  * that a running action approves by itself (ticket project-actions), or a plan without decisions with
  * the setting "Start plans without decisions" (ticket simpler-process). A blocked task is skipped, and
  * the next one can start (ticket leftover-files-block-tasks). A plain plan with that setting gets the
- * kind "plain", also in night mode, so the triage line names why it started.
+ * kind "plain", also in night mode, so the triage line names why it started. With several work
+ * folders a task whose plan names a file of a running work run waits (ticket
+ * the-page-lets-more-than-one-work-run): another task can start, but a queued approval keeps its
+ * place, and nothing starts before it (user decision 1).
  */
 export function chooseStart(facts: StartFacts): { task: string; kind: StartKind } | null {
   if (projectBusy(facts)) return null;
   // The checkout stays on the branch of another task until Dispatch switches it back; the script refuses a start then.
   const held = (name: string) => !!facts.checkout && facts.checkout !== name;
-  if (facts.queued) return held(facts.queued) ? null : { task: facts.queued, kind: "queued" };
+  const clash = (name: string, files: readonly string[] | undefined) => sameFilesRun(facts.runs, name, files) !== null;
+  if (facts.queued) {
+    const files = facts.tasks.find((task) => task.name === facts.queued)?.files;
+    return held(facts.queued) || clash(facts.queued, files) ? null : { task: facts.queued, kind: "queued" };
+  }
   const plain = (task: StartCandidate) => !!facts.plain && !!task.plain;
   // A part without the night box does not start by night mode; the other ways start it as by day (ticket subtickets).
   const night = (task: StartCandidate) => facts.night && !task.nightHold;
-  const task = facts.tasks.find((task) => !held(task.name) && task.ready && !task.hold && !task.busy && !task.blocked && task.planTime !== null && task.tried !== task.planTime && (facts.auto || night(task) || !!task.auto || plain(task)));
+  const task = facts.tasks.find((task) => !held(task.name) && !clash(task.name, task.files) && task.ready && !task.hold && !task.busy && !task.blocked && task.planTime !== null && task.tried !== task.planTime && (facts.auto || night(task) || !!task.auto || plain(task)));
   if (!task) return null;
   return { task: task.name, kind: plain(task) ? "plain" : night(task) ? "night" : "auto" };
 }
@@ -158,6 +230,13 @@ export function chooseStart(facts: StartFacts): { task: string; kind: StartKind 
 export interface QueuedClick {
   task: string;
   at: number;
+  /** The paths of the plan of the task (ticket the-page-lets-more-than-one-work-run). */
+  files?: readonly string[];
+  /**
+   * For a reply with several work folders: the other task that uses the work folder of the session of
+   * this task now, or null. The reply waits for it (ticket the-page-lets-more-than-one-work-run).
+   */
+  folder?: string | null;
 }
 
 /** The facts of one project for a reply that waits in the queue (ticket an-answer-waits-in-the-queue-while). */
@@ -175,13 +254,18 @@ export interface QueuedFacts extends BusyFacts {
  * is busy (as `chooseStart`) or while the checkout is on the branch of another task. A reply takes its
  * place among the approvals by its click time: a startable approval clicked before it starts first.
  * After the reply the work run of its task holds the project, so the next approval waits for it.
+ * With several work folders (ticket the-page-lets-more-than-one-work-run) a reply needs no free folder
+ * of its own: it goes to the folder of its session, so it waits only for a pause, a merge, a start in
+ * flight, the task that uses that folder (`folder`), a running work run on the same files, or the checkout.
  */
 export function chooseQueued(facts: QueuedFacts): string | null {
-  if (projectBusy(facts)) return null;
+  const several = slotCount(facts) >= 2;
+  if (several ? !!facts.paused || facts.merging !== null || facts.leased !== null : projectBusy(facts)) return null;
   const held = (name: string) => !!facts.checkout && facts.checkout !== name;
-  const reply = [...facts.replies].sort((a, b) => a.at - b.at).find((reply) => !held(reply.task));
+  const clash = (click: QueuedClick) => several && sameFilesRun(facts.runs, click.task, click.files) !== null;
+  const reply = [...facts.replies].sort((a, b) => a.at - b.at).find((reply) => !held(reply.task) && !(several && !!reply.folder) && !clash(reply));
   if (!reply) return null;
-  if (facts.approval && !held(facts.approval.task) && facts.approval.at <= reply.at) return null;
+  if (facts.approval && !held(facts.approval.task) && !clash(facts.approval) && facts.approval.at <= reply.at) return null;
   return reply.task;
 }
 
@@ -201,7 +285,15 @@ export interface NightPlanFacts {
   tried: boolean;
   /** The task whose branch Dispatch merges now, or null. */
   merging: string | null;
-  /** The other task whose work run runs, or the holder of the start lease, or null. */
+  /**
+   * The tasks that use every work folder of the project now, with several work folders (ticket
+   * the-page-lets-more-than-one-work-run); absent or empty while a folder is free.
+   */
+  folders?: readonly string[];
+  /**
+   * The other task that holds this plan, or null: the work run or the start lease with one work
+   * folder, or the running task whose plan names the same files.
+   */
   running: string | null;
   /** The other task whose branch the main checkout is on, or null. */
   checkout: string | null;
@@ -221,6 +313,7 @@ export function nightPlan(facts: NightPlanFacts): { approves: true; text: string
   if (facts.blocked) return { approves: false, why: "changed files of this task" };
   if (facts.tried) return { approves: false, why: "night mode does not try this plan again" };
   if (facts.merging) return { approves: true, text: `night mode approves it after the merge of ${facts.merging}` };
+  if (facts.folders && facts.folders.length > 0) return { approves: true, text: `night mode approves it when a work folder is free (${facts.folders.join(", ")} ${facts.folders.length === 1 ? "uses one" : "use them"})` };
   if (facts.running) return { approves: true, text: `night mode approves it after ${facts.running}'s work run` };
   if (facts.checkout) return { approves: true, text: `night mode approves it after the checkout leaves ${facts.checkout}'s branch` };
   return { approves: true, text: "night mode approves it now" };
@@ -259,6 +352,8 @@ export interface MergeFacts extends BusyFacts {
  * The task whose branch Dispatch merges by itself at this poll, or null (ticket
  * task-branches-blocked-work): night mode or the switch "Auto-merge finished tasks" on, a gate command,
  * the project not busy and no click of any of its tasks running, and the task with the oldest done report
+ * (with several work folders a merge runs while work runs run, as long as a folder is free, and one
+ * merge at a time: ticket the-page-lets-more-than-one-work-run)
  * whose branch waits for Merge and that has no earlier try for that report. With the switch on, a held task is
  * skipped and keeps its try. The merge runs the gate first, so a check that fails merges nothing and
  * the branch waits for the user.
