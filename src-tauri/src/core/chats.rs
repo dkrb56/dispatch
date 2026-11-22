@@ -160,6 +160,12 @@ pub struct Worker {
     /// True means the run ended for good without its plan or report.
     #[serde(skip_deserializing)]
     finished: Option<bool>,
+    /// For a run with `finished` true: the `needs` text of `~/.claude/jobs/<id>/state.json`, why the
+    /// job stopped in the words of Claude Code (ticket a-work-run-that-ended-without-a-report), for
+    /// example "login required — run /login · Login reached its time limit". A model that ends its
+    /// turn with a question writes it there too. None without the field.
+    #[serde(skip_deserializing)]
+    reason: Option<String>,
     /// True for a run that `settle_turn_end` made done only through the result of a later job of
     /// the same task (ticket a-finished-work-run-that-claude-code). The window keeps quiet about
     /// that end: the report exists.
@@ -265,13 +271,30 @@ fn job_finished(text: &str) -> Option<bool> {
     Some(tasks == 0 && queued == 0)
 }
 
-/// `job_finished` of `<home>/.claude/jobs/<id>/state.json`.
-fn worker_finished(claude: &Path, id: &str) -> Option<bool> {
+/// Why a job stopped, from the text of its `state.json`: its `needs` field, trimmed and at most 200
+/// characters (ticket a-work-run-that-ended-without-a-report). None when the text is no JSON or the
+/// field is missing, no text or empty (Claude Code 2.1.321, job ea33c60b).
+fn job_needs(text: &str) -> Option<String> {
+    let state: Value = serde_json::from_str(text).ok()?;
+    let needs = state.get("needs")?.as_str()?.trim();
+    if needs.is_empty() {
+        return None;
+    }
+    Some(needs.chars().take(200).collect())
+}
+
+/// The text of `<home>/.claude/jobs/<id>/state.json`.
+fn job_state(claude: &Path, id: &str) -> Option<String> {
     // The id becomes a part of a path.
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return None;
     }
-    job_finished(&fs::read_to_string(claude.join("jobs").join(id).join("state.json")).ok()?)
+    fs::read_to_string(claude.join("jobs").join(id).join("state.json")).ok()
+}
+
+/// `job_finished` of `<home>/.claude/jobs/<id>/state.json`.
+fn worker_finished(claude: &Path, id: &str) -> Option<bool> {
+    job_finished(&job_state(claude, id)?)
 }
 
 /// The ticket of a run of the pipeline and whether it is the plan run, from the name that
@@ -397,7 +420,12 @@ pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
         }
         worker.result = run_result(worker.state.as_deref(), worker.name.as_deref(), worker.started_at, next_start, modified);
         if worker.result == Some(false) {
-            worker.finished = claude.as_deref().and_then(|claude| worker_finished(claude, &worker.id));
+            // One read of the state file gives both facts.
+            let text = claude.as_deref().and_then(|claude| job_state(claude, &worker.id));
+            worker.finished = text.as_deref().and_then(job_finished);
+            if worker.finished == Some(true) {
+                worker.reason = text.as_deref().and_then(job_needs);
+            }
         }
     }
     Ok(workers)
@@ -440,7 +468,7 @@ pub fn end_session(id: String) -> Result<String, String> {
 
 #[cfg(test)]
 mod worker_tests {
-    use super::{check_session_id, end_session, from_later_run, job_finished, run_result, timeline_end, worker_finished, Worker};
+    use super::{check_session_id, end_session, from_later_run, job_finished, job_needs, run_result, timeline_end, worker_finished, Worker};
 
     /// The form of `~/.claude/jobs/<id>/state.json` (Claude Code 2.1.319, job 6a54e3cc: a plan run
     /// that ended without its plan; job 68b71856: a done run with queued work).
@@ -465,6 +493,46 @@ mod worker_tests {
         assert_eq!(worker_finished(&claude, "abc123"), Some(true));
         assert_eq!(worker_finished(&claude, "../jobs/abc123"), None);
         std::fs::remove_dir_all(&claude).unwrap();
+    }
+
+    /// The `state.json` of job ea33c60b (Claude Code 2.1.321, 2026-11-22): a work run that stopped
+    /// 6 s after its start because the login of Claude Code ran out (ticket
+    /// a-work-run-that-ended-without-a-report). The prompt, the options and the account fields are cut.
+    #[test]
+    fn the_reason_of_a_stopped_job_is_its_needs_text() {
+        let login = r#"{
+  "state": "blocked",
+  "detail": "Login reached its time limit",
+  "tempo": "blocked",
+  "output": null,
+  "children": null,
+  "template": "bg",
+  "name": "i-need-an-autogrouping-function-in-the [work]",
+  "nameSource": "user",
+  "daemonShort": "ea33c60b",
+  "createdAt": "2026-11-22T21:10:17.976Z",
+  "updatedAt": "2026-11-22T21:10:24.115Z",
+  "firstTerminalAt": null,
+  "backend": "daemon",
+  "inFlight": {
+    "tasks": 0,
+    "queued": 0,
+    "kinds": [],
+    "drainableMonitors": 0
+  },
+  "needs": "login required — run /login · Login reached its time limit"
+}"#;
+        assert_eq!(job_needs(login).as_deref(), Some("login required — run /login · Login reached its time limit"));
+        assert_eq!(job_finished(login), Some(true));
+        // Without the field, an empty or no text field, or no JSON: no reason.
+        assert_eq!(job_needs("{\"state\":\"done\",\"inFlight\":{\"tasks\":0,\"queued\":0}}"), None);
+        assert_eq!(job_needs("{\"needs\":\"  \"}"), None);
+        assert_eq!(job_needs("{\"needs\":5}"), None);
+        assert_eq!(job_needs("{\"needs\":"), None);
+        // Trimmed, and at most 200 characters.
+        assert_eq!(job_needs("{\"needs\":\" read the plan \"}").as_deref(), Some("read the plan"));
+        let long = format!("{{\"needs\":\"{}\"}}", "é".repeat(300));
+        assert_eq!(job_needs(&long).map(|text| text.chars().count()), Some(200));
     }
 
     #[test]

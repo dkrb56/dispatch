@@ -39,6 +39,45 @@ export function runStarting(facts: RunFacts): boolean {
   return false;
 }
 
+/** A worker of a task, as `workLost` needs it. */
+export interface LostWorker {
+  /** The run of the worker: from its name, or for an older script from the order of the workers. */
+  run: "plan" | "work" | undefined;
+  /** The state after `settle` in chats.rs: `working`, `blocked`, `done`, `failed` or `stopped`. */
+  state: string | null;
+  /** For a `done` run of the pipeline: true when this run wrote its result. */
+  result?: boolean | null;
+  /** For a `done` run without its result: true when the job has nothing left in flight. */
+  finished?: boolean | null;
+  /** Milliseconds since the Unix epoch. */
+  startedAt: number | null;
+}
+
+/** The facts of a task that say whether its work run ended without a report. */
+export interface LostFacts {
+  /** The content of the state file of the script. */
+  state: string;
+  hasReport: boolean;
+  workers: readonly LostWorker[];
+}
+
+/** The status of a task whose work run ended without a report. */
+export const WORK_LOST_TEXT = "failed · the work run ended without a report";
+
+/**
+ * The work run of a task ended for good without its report (ticket a-work-run-that-ended-without-a-report):
+ * the task is approved or works, has no report and no worker that works or waits, and its newest worker
+ * is a work run that is done without its report with nothing left in flight. A newest worker that is
+ * still the plan run (the seconds after Approve), no worker, or a run with background work left is no end.
+ * A failed work run has its own case. `runStarting` still counts the task as on its way: its session stays.
+ */
+export function workLost(facts: LostFacts): boolean {
+  if ((facts.state !== "approved" && facts.state !== "working") || facts.hasReport) return false;
+  if (facts.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) return false;
+  const newest = facts.workers.reduce<LostWorker | null>((best, worker) => (!best || (worker.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity) ? worker : best), null);
+  return !!newest && newest.run === "work" && newest.state === "done" && newest.result === false && newest.finished === true;
+}
+
 /**
  * A task is in work: a worker runs, it waits for the user, or one of its runs is on its way.
  * The Overview lists these tasks; the Map shows them always and folds the other ones.

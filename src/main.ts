@@ -81,7 +81,7 @@ import {
   type PlanPlace,
   type PlanTicket,
 } from "./plantree";
-import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode } from "./overview";
+import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, type OverviewPlaces, type OverviewRect, type OverviewTask, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode, WORK_LOST_TEXT, workLost } from "./overview";
 import {
   allowanceLine,
   bars,
@@ -384,6 +384,12 @@ interface Worker {
    * when unknown (ticket a-plan-run-that-ends-without-a-plan). Absent from an older host.
    */
   finished?: boolean | null;
+  /**
+   * For a run with `finished` true: why the job stopped in the words of Claude Code, the `needs`
+   * text of its `state.json`, for example "login required — run /login · Login reached its time
+   * limit" (ticket a-work-run-that-ended-without-a-report). Null without one; absent from an older host.
+   */
+  reason?: string | null;
   /**
    * True for an old run that counts as done only through the result of a later run of the same
    * task (ticket a-finished-work-run-that-claude-code). Absent from an older host.
@@ -2745,7 +2751,7 @@ const sendingReplies = new Map<string, SendingReply>();
 /** Whether the task shows "answered": its reply goes out or went, and no worker of the task shows yet. */
 function replySendingOf(task: Task): boolean {
   const live = task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
-  return replySending(sendingReplies.get(queueKey(task)), task.info?.report?.modified, live, Date.now());
+  return replySending(sendingReplies.get(queueKey(task)), task.info?.report?.modified ?? 0, live, Date.now());
 }
 
 function loadAnswered(): Map<string, AnsweredReport> {
@@ -3258,7 +3264,9 @@ function waitingReplies(project: ProjectTasks, tasks: Task[]): QueuedReply[] {
     if (key.slice(0, at) !== folder) continue;
     const task = tasks.find((task) => task.name === key.slice(at + 1));
     const live = !!task?.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
-    if (!task?.info?.report || task.info.state === "stopped" || task.info.report.modified !== reply.record.modified || live) {
+    // A Continue of a work run that ended without a report has no report (ticket a-work-run-that-ended-without-a-report).
+    const kept = !!task?.info && (!!task.info.report || workLostOf(task));
+    if (!task?.info || !kept || task.info.state === "stopped" || (task.info.report?.modified ?? 0) !== reply.record.modified || live) {
       queuedReplies.delete(key);
       changed = true;
       continue;
@@ -4955,10 +4963,18 @@ function saveWorkerStates(states: Map<string, string | null>, ends: Set<string>,
   }
 }
 
+/**
+ * The time of the previous call of `announceWorkerChanges`, or null before the first one: a work run
+ * that started after it and is first seen ended is news (ticket a-work-run-that-ended-without-a-report).
+ */
+let lastAnnounceAt: number | null = null;
+
 /** Tells the triage chat of each project which of its workers changed to a state that needs it. */
 function announceWorkerChanges(workers: Worker[]): void {
   const whileClosed = workerStatesFromLastRun;
   workerStatesFromLastRun = false;
+  const since = lastAnnounceAt;
+  lastAnnounceAt = Date.now();
   // Every window records the states; only the window that drives a host tells triage (remote-shared-state).
   // An old session that the user ended in the list of old sessions is quiet too: its task ended long ago.
   // The rule is in src/announce.ts: the end of a job is told once, a prompt each time, and a run
@@ -4968,8 +4984,11 @@ function announceWorkerChanges(workers: Worker[]): void {
     state: worker.state,
     quiet: !driverOf(worker.host) || endingSessions.has(workerKey(worker)) || worker.superseded === true,
     result: worker.result,
-    // Only a plan run ends as done-empty; a work run without its report stays done-early.
-    finished: RUN_NAME.exec(worker.name ?? worker.id)?.[2] === "plan" ? worker.finished : null,
+    // A plan or work run without its result and with nothing in flight ends as done-empty (ticket
+    // a-work-run-that-ended-without-a-report); with background work left it stays done-early.
+    finished: worker.finished,
+    // A work run that started after the previous poll and ended before this one is news, not old news.
+    fresh: RUN_NAME.exec(worker.name ?? worker.id)?.[2] === "work" && since !== null && (worker.startedAt ?? -Infinity) >= since,
     worker,
   }));
   const { told, states, ended, early, earlyTold } = announcements(lastWorkerStates, polled, toldWorkerEnds, toldWorkerEarly);
@@ -4988,8 +5007,9 @@ function announceWorkerChanges(workers: Worker[]): void {
     const name = worker.name ?? worker.id;
     const when = whileClosed ? " (this happened while Dispatch was closed)" : "";
     const empty = states.get(workerKey(worker)) === DONE_EMPTY;
+    const file = RUN_NAME.exec(name)?.[2] === "work" ? "report" : "plan";
     const line = empty
-      ? `Worker ${name} ended without its plan${when}.`
+      ? `Worker ${name} ended without its ${file}${when}.`
       : now === "blocked"
         ? `Worker ${name} is blocked${when}${worker.waitingFor ? `: ${worker.waitingFor}` : ""}.`
         : `Worker ${name} is ${now}${when}.`;
@@ -5011,6 +5031,7 @@ function announceWorkerChanges(workers: Worker[]): void {
       state: states.get(workerKey(worker)) === DONE_EMPTY ? DONE_EMPTY : (worker.state ?? ""),
       project: projectName({ host: worker.host, root: worker.cwd ?? "" }),
       noTriage: projectNoTriage(projectFor(worker.host, worker.cwd)),
+      reason: worker.reason ?? "",
     }));
   fireAlerts(endNotices(ends, nightAny()));
   // An ended session leaves the quiet set once Claude Code reports it stopped or lists it no more.
@@ -6968,7 +6989,7 @@ function queueReply(task: Task, record: AnsweredReport, text: string, line: stri
 /** The reply of a task that waits in the queue for its report now, or undefined. */
 function queuedReplyOf(task: Task): QueuedReply | undefined {
   const reply = queuedReplies.get(queueKey(task));
-  return reply && reply.record.modified === task.info?.report?.modified ? reply : undefined;
+  return reply && reply.record.modified === (task.info?.report?.modified ?? 0) ? reply : undefined;
 }
 
 /** Why the waiting reply of a task does not go out yet, in full. Uncommitted changes hold no reply. */
@@ -8366,6 +8387,61 @@ function replanRow(task: Task): HTMLElement | null {
   return row;
 }
 
+/**
+ * The work run of a task ended for good without its report (ticket a-work-run-that-ended-without-a-report):
+ * the rule `workLost` of src/overview.ts on the workers of the task.
+ */
+function workLostOf(task: Task): boolean {
+  const info = task.info;
+  if (!info) return false;
+  const workers = task.workers.map((worker) => ({ run: workerRun(task, worker), state: worker.state, result: worker.result, finished: worker.finished, startedAt: worker.startedAt }));
+  return workLost({ state: info.state, hasReport: Boolean(info.report), workers });
+}
+
+/** The newest work worker of a task, or null. */
+function newestWorkWorker(task: Task): Worker | null {
+  return task.workers
+    .filter((worker) => workerRun(task, worker) === "work")
+    .reduce<Worker | null>((best, worker) => (!best || (worker.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity) ? worker : best), null);
+}
+
+/**
+ * The Continue row of a task whose work run ended without a report, or null (ticket
+ * a-work-run-that-ended-without-a-report): the reason that Claude Code gave, and one button that sends
+ * `Continue` to the session of the work run through the path of an answer (the queue, the wait for the
+ * project and Take back). A reply that goes out or waits in the queue hides the row, so a second click
+ * sends nothing.
+ */
+function continueRow(task: Task): HTMLElement | null {
+  if (!workLostOf(task) || replySendingOf(task) || queuedReplyOf(task)) return null;
+  const row = document.createElement("div");
+  row.className = "task-stop";
+  const reason = newestWorkWorker(task)?.reason;
+  if (reason) {
+    const said = document.createElement("div");
+    said.className = "card-reason";
+    said.textContent = `Claude Code says: ${reason}`;
+    row.append(said);
+  }
+  const button = document.createElement("button");
+  button.textContent = "Continue";
+  button.title = `Tell the work run of ${task.name} to go on where it ended`;
+  button.disabled = busyTasks.has(task.name);
+  button.addEventListener("click", () => {
+    if (replySendingOf(task) || queuedReplyOf(task) || busyTasks.has(task.name)) return;
+    button.disabled = true;
+    const line = `Task ${task.name}: the user sent Continue in Dispatch after its work run ended without a report.`;
+    void replyOrQueue(task, answeredRecord(task.info?.report?.modified ?? 0, [], new Map(), "Continue"), "Continue", line).then((result) => {
+      if (result) renderChats();
+    });
+  });
+  row.append(button);
+  // A refused reply shows its reason under the row until the next click.
+  const error = actionError(task);
+  if (error) row.append(error);
+  return row;
+}
+
 /** The tasks that the user opened or closed, by `<project key>|<task>`, until the app closes. */
 const taskOpenChoice = new Map<string, boolean>();
 
@@ -8397,6 +8473,7 @@ function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"
   if (picks === "picked" || picks === "failed") return { kind: "waits", text: pickStatusText(picks, pickAtMerge(task), task.info?.checked) };
   if (awayRun(task)) return { kind: "waits", text: "ran on another computer · no worker here" };
   if (planLost(task)) return { kind: "failed", text: "failed · the plan run ended without a plan" };
+  if (workLostOf(task)) return { kind: "failed", text: WORK_LOST_TEXT };
   if (task.info?.state === "stopped") return { kind: "failed", text: "stopped" };
   if (!task.info?.report && task.workers.some((worker) => worker.state === "failed")) return { kind: "failed", text: "failed" };
   if (reportUnverified(task)) return { kind: "waits", text: `report not verified · ${unverifiedText(task.info?.unverified ?? [], "status")}` };
@@ -8514,6 +8591,7 @@ function taskPhase(task: Task): TaskPhase {
   }
   if (mergeWaits(task)) return "merge";
   if (planLost(task)) return "failed";
+  if (workLostOf(task)) return "failed";
   if (info.state === "stopped") return "stopped";
   if (!info.report && task.workers.some((worker) => worker.state === "failed")) return "failed";
   if (info.header?.state === "failed") return "failed";
@@ -11450,6 +11528,9 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     // A plan run that ended without a plan has no Stop or Resume row; Plan again stands there.
     const replan = replanRow(task);
     if (replan) body.append(replan);
+    // A work run that ended without a report has no Stop or Resume row either; Continue stands there.
+    const goOn = continueRow(task);
+    if (goOn) body.append(goOn);
     if (body.childElementCount > 0) made.append(body);
   }
   if (planReady(task) || awayPlan(task)) made.append(planCard(task));
@@ -11463,7 +11544,7 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   // A work run that waits for the merge of other tasks (ticket a-task-that-waits-for-the-merge-of).
   const mergeWait = mergeWaitOf(task);
   if (waiting) made.append(waitingReplyCard(task, waiting));
-  else if (went && went.modified === task.info?.report?.modified) made.append(sentReplyLine(went.at));
+  else if (went && went.modified === (task.info?.report?.modified ?? 0)) made.append(sentReplyLine(went.at));
   if (repeats) made.append(repeatCard(task, repeats));
   else if (confirmAsk) made.append(confirmCard(task, confirmAsk));
   else if (questions.length > 0) made.append(questionCard(task, questions));
@@ -15046,6 +15127,7 @@ function workNode(task: Task, select: () => void): MapNode | null {
   }
   if (worker?.state === "failed") return { kind: "failed", title: "Work run", line: "failed", ...nodeTime(worker), click: watch };
   if (mergeWaits(task)) return { kind: "wait", title: "Work run", line: mergeRunning(task) ? "merging its branch" : "branch waits for Merge", ...nodeTime(worker), click: select };
+  if (workLostOf(task)) return { kind: "failed", title: "Work run", line: "ended without a report", ...nodeTime(worker), click: watch };
   if (worker || task.info.report) {
     const state = task.info.header?.state ?? worker?.state ?? "done";
     return { kind: "done", title: "Work run", line: state, ...nodeTime(worker), click: watch };

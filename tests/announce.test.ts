@@ -168,6 +168,29 @@ test("job 6a54e3cc: a plan run that ended for good without its plan is told once
   assert.deepEqual(replayFinished([["working"], ["done", false, true], ["working"], ["done", false, true]]), ["p done-empty"]);
 });
 
+// Ticket a-work-run-that-ended-without-a-report: the work runs of 2026-11-22 (jobs 27c7dbfd, ea33c60b,
+// 90f63bdb) stopped within seconds when the login of Claude Code ran out. A poll can first see such a
+// run when it has ended already; it is news when it started after the previous poll (`fresh`).
+test("a fresh work run first seen as done-empty is told once; an old one is not", () => {
+  const work = (fresh: boolean): PolledWorker => ({ key: "w", state: "done", result: false, finished: true, fresh });
+  const first = announcements(new Map(), [work(true)], new Set());
+  assert.deepEqual(first.told.map((worker) => worker.key), ["w"]);
+  assert.equal(first.states.get("w"), "done-empty");
+  // The next poll does not tell it again, fresh or not.
+  const second = announcements(first.states, [work(true)], first.ended);
+  assert.deepEqual(second.told, []);
+  assert.deepEqual(announcements(first.states, [work(false)], first.ended).told, []);
+  // Not fresh: old news at the start of Dispatch, or a run that ended long ago.
+  assert.deepEqual(announcements(new Map(), [work(false)], new Set()).told, []);
+  // The first poll of a start tells nothing, also a fresh run.
+  assert.deepEqual(announcements(null, [work(true)], new Set()).told, []);
+  // Fresh counts only for an end without the result: a plain done or a run with work in flight is old news.
+  assert.deepEqual(announcements(new Map(), [{ key: "w", state: "done", result: true, fresh: true }], new Set()).told, []);
+  assert.deepEqual(announcements(new Map(), [{ key: "w", state: "done", result: false, finished: false, fresh: true }], new Set()).told, []);
+  // A work run that was seen working and ended without its report is told as done-empty.
+  assert.deepEqual(replayFinished([["working"], ["done", false, true]]), ["p done-empty"]);
+});
+
 test("a run with work in flight or an unknown in-flight count stays done-early", () => {
   assert.deepEqual(replayFinished([["working"], ["done", false, false], ["done", false, false]]), ["p early"]);
   assert.deepEqual(replayFinished([["working"], ["done", false, null], ["done", false]]), ["p early"]);

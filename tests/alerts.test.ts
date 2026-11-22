@@ -308,12 +308,25 @@ test("no triage: a done work run and a failed run alert, a done plan run does no
 });
 
 // Ticket a-plan-run-that-ends-without-a-plan: a plan run that ended for good without its plan alerts.
-test("no triage: a plan run that ended without a plan alerts, a work run does not", () => {
+test("no triage: a plan run that ended without a plan and a work run that ended without a report alert", () => {
   assert.deepEqual(endNotices([end("t-1", "plan", "done-empty")], false), [{ name: "t-1", project: "app", text: "the plan run ended without a plan" }]);
-  assert.deepEqual(endNotices([end("t-2", "work", "done-empty")], false), []);
+  assert.deepEqual(endNotices([end("t-2", "work", "done-empty")], false), [{ name: "t-2", project: "app", text: "the work run ended without a report" }]);
   assert.deepEqual(endNotices([end("t-3", "", "done-empty")], false), [], "a worker of an older script names no run");
   assert.deepEqual(endNotices([end("t-4", "plan", "done-empty")], true), [], "night mode stays quiet");
   assert.deepEqual(endNotices([end("t-5", "plan", "done-empty", false)], false), [], "triage tells it");
+});
+
+// Ticket a-work-run-that-ended-without-a-report: the alert names the reason of Claude Code when it has one.
+test("no triage: a work run that ended without a report alerts with the reason of Claude Code", () => {
+  const login = "login required — run /login · Login reached its time limit";
+  assert.deepEqual(endNotices([{ ...end("t-1", "work", "done-empty"), reason: login }], false), [
+    { name: "t-1", project: "app", text: `the work run ended without a report · ${login}` },
+  ]);
+  assert.deepEqual(endNotices([{ ...end("t-2", "work", "done-empty"), reason: "" }], false), [{ name: "t-2", project: "app", text: "the work run ended without a report" }]);
+  // The plan text stays, also with a reason.
+  assert.deepEqual(endNotices([{ ...end("t-3", "plan", "done-empty"), reason: login }], false), [{ name: "t-3", project: "app", text: "the plan run ended without a plan" }]);
+  assert.deepEqual(endNotices([{ ...end("t-4", "work", "done-empty"), reason: login }], true), [], "night mode stays quiet");
+  assert.deepEqual(endNotices([{ ...end("t-5", "work", "done-empty", false), reason: login }], false), [], "triage tells it");
 });
 
 test("no triage: night mode and a project without the switch give no end alert", () => {

@@ -18,10 +18,15 @@ export interface PolledWorker {
   result?: boolean | null;
   /**
    * For a `done` run without its result: true when the job has nothing left in flight, so it ended
-   * for good (ticket a-plan-run-that-ends-without-a-plan). The page gives it only for a plan run; a
-   * work run without its report stays `DONE_EARLY`. Null or absent: unknown, also `DONE_EARLY`.
+   * for good (ticket a-plan-run-that-ends-without-a-plan), for a plan run and for a work run (ticket
+   * a-work-run-that-ended-without-a-report). Null or absent: unknown, also `DONE_EARLY`.
    */
   finished?: boolean | null;
+  /**
+   * The worker started after the previous poll (ticket a-work-run-that-ended-without-a-report): a run
+   * that is first seen as `DONE_EMPTY` is then news, not old news. The page sets it only for a work run.
+   */
+  fresh?: boolean;
 }
 
 /** The states that triage hears about. `working` is the start, not news. */
@@ -105,8 +110,9 @@ export function announcements<T extends PolledWorker>(
     }
     if (!before || worker.quiet) continue;
     if (was === now || !now || !ANNOUNCED_STATES.has(now)) continue;
-    // A finished worker that shows for the first time is old news, unless it waits for the user.
-    if (was === undefined && now !== "blocked") continue;
+    // A finished worker that shows for the first time is old news, unless it waits for the user or
+    // is a fresh run that ended without its result (a work run that stopped in seconds).
+    if (was === undefined && now !== "blocked" && !(now === DONE_EMPTY && worker.fresh)) continue;
     if (isEnd && toldBefore) continue;
     told.push(worker);
   }

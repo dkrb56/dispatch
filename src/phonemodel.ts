@@ -15,6 +15,10 @@ export interface PhoneWorker {
   startedAt: number | null;
   /** `working`, `blocked`, `done`, `failed` or `stopped`. */
   state: string | null;
+  /** For a `done` run of the pipeline: true when this run wrote its plan or report. Absent from an older host. */
+  result?: boolean | null;
+  /** For a `done` run without its result: true when the job has nothing left in flight. Absent from an older host. */
+  finished?: boolean | null;
 }
 
 export interface PhoneFile {
@@ -455,6 +459,18 @@ function workerRun(task: PhoneTask, worker: PhoneWorker): "plan" | "work" | unde
   return (worker.startedAt ?? Infinity) > first ? "work" : "plan";
 }
 
+/**
+ * The work run ended for good without its report: the rule `workLost` of src/overview.ts, copied here
+ * because this file has no imports (ticket a-work-run-that-ended-without-a-report).
+ */
+function workLost(task: PhoneTask): boolean {
+  const info = task.info;
+  if (!info || (info.state !== "approved" && info.state !== "working") || info.report) return false;
+  if (live(task)) return false;
+  const newest = task.workers.reduce<PhoneWorker | null>((best, worker) => (!best || (worker.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity) ? worker : best), null);
+  return !!newest && workerRun(task, newest) === "work" && newest.state === "done" && newest.result === false && newest.finished === true;
+}
+
 function unverifiedStatus(missing: readonly string[]): string {
   if (missing.length === 0) return "the work run ran no command";
   return `${missing.length} chosen check${missing.length === 1 ? "" : "s"} did not run`;
@@ -473,6 +489,7 @@ export function phoneStatus(task: PhoneTask, merging?: string | null): { kind: S
   }
   if (mergeWaits(task)) return { kind: "waits", text: merging === task.name ? "merging its branch" : "branch waits for Merge" };
   if (awayRun(task)) return { kind: "waits", text: "ran on another computer · no worker here" };
+  if (workLost(task)) return { kind: "failed", text: "failed · the work run ended without a report" };
   const info = task.info;
   if (info?.state === "stopped") return { kind: "failed", text: "stopped" };
   if (!info?.report && task.workers.some((one) => one.state === "failed")) return { kind: "failed", text: "failed" };
@@ -495,6 +512,7 @@ export function phonePhase(task: PhoneTask): PhonePhase {
     return (workerRun(task, worker) ?? (info.state === "planning" ? "plan" : "work")) === "plan" ? "planning" : "working";
   }
   if (mergeWaits(task)) return "merge";
+  if (workLost(task)) return "failed";
   if (info.state === "stopped") return "stopped";
   if (!info.report && task.workers.some((one) => one.state === "failed")) return "failed";
   if (info.header?.state === "failed") return "failed";

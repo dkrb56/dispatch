@@ -151,6 +151,11 @@ test("each status of a task", () => {
     [task({ state: "working", elsewhere: true }), "waits", "ran on another computer · no worker here", "elsewhere"],
     [task({ state: "stopped" }), "failed", "stopped", "stopped"],
     [task({ state: "working" }, [worker("t [work]", "failed")]), "failed", "failed", "failed"],
+    // A work run that ended without a report (ticket a-work-run-that-ended-without-a-report).
+    [task({ state: "working", plan: FILE }, [worker("t [plan]", "done", { startedAt: 5, result: true }), worker("t [work]", "done", { result: false, finished: true })]), "failed", "failed · the work run ended without a report", "failed"],
+    // The seconds after Approve: only the plan run is listed.
+    [task({ state: "approved", plan: FILE }, [worker("t [plan]", "done", { result: true })]), "done", "plan approved", "starting"],
+    [task({ state: "working", plan: FILE }, [worker("t [work]", "done", { result: false, finished: false })]), "done", "plan working", "starting"],
     [task({ ...REPORT("working", "nothing"), unverified: [] }), "waits", "report not verified · the work run ran no command", "unverified"],
     [task({ ...REPORT("working", "nothing"), unverified: ["a", "b"] }), "waits", "report not verified · 2 chosen checks did not run", "unverified"],
     [task({ ...REPORT("done", "nothing"), taken: { at: 1 } }), "done", "done · taken as done", "done"],
@@ -189,6 +194,9 @@ test("each status text also stands in the status of the desktop window", () => {
   ]) {
     assert.ok(status.includes(text), text);
   }
+  // The lost work run: the desktop window takes its text from src/overview.ts.
+  assert.ok(status.includes("WORK_LOST_TEXT"));
+  assert.ok(read("../src/overview.ts").includes('WORK_LOST_TEXT = "failed · the work run ended without a report"'));
   const rows = read("../src/commandrows.ts");
   for (const text of ["the work run ran no command", "chosen ${checks} did not run"]) assert.ok(rows.includes(text), text);
 });

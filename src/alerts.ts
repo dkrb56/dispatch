@@ -121,12 +121,15 @@ export interface WorkerEnd {
   project: string;
   /** The project has the switch "No triage" on (ticket no-triage-a-project-switch-no-triage-in). */
   noTriage: boolean;
+  /** Why the job stopped in the words of Claude Code, or empty (ticket a-work-run-that-ended-without-a-report). */
+  reason?: string;
 }
 
 /**
  * The notices for the ends of one poll (ticket no-triage-a-project-switch-no-triage-in, point 3):
- * one per work run that is done, per plan or work run that failed and per plan run that ended
- * without a plan (ticket a-plan-run-that-ends-without-a-plan), only for a project with "No
+ * one per work run that is done, per plan or work run that failed, per plan run that ended
+ * without a plan (ticket a-plan-run-that-ends-without-a-plan) and per work run that ended without a
+ * report, with the reason of Claude Code (ticket a-work-run-that-ended-without-a-report), only for a project with "No
  * triage" on. A done plan run gives the wait "plan", which alerts already. Night mode gives none
  * (user decision 5): it alerts only what waits for the user.
  */
@@ -137,6 +140,9 @@ export function endNotices(ends: readonly WorkerEnd[], night: boolean): Notice[]
     if (!end.noTriage) continue;
     if (end.state === "done" && end.run === "work") notices.push({ name: end.ticket, project: end.project, text: "the task is done" });
     else if (end.state === "done-empty" && end.run === "plan") notices.push({ name: end.ticket, project: end.project, text: "the plan run ended without a plan" });
+    else if (end.state === "done-empty" && end.run === "work") {
+      notices.push({ name: end.ticket, project: end.project, text: `the work run ended without a report${end.reason ? ` · ${end.reason}` : ""}` });
+    }
     else if (end.state === "failed" && (end.run === "plan" || end.run === "work")) {
       notices.push({ name: end.ticket, project: end.project, text: end.run === "plan" ? "the plan run failed" : "the work run failed" });
     }

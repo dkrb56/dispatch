@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { cardLayout, chatPlacer, doneTasks, freePlace, inWork, listedTasks, movedPlaces, OVERVIEW_CARD_WIDTH, OVERVIEW_DONE_SHOWN, OVERVIEW_EXTENDED_DONE, OVERVIEW_EXTENDED_WIDTH, OVERVIEW_GRID, type OverviewTask, parsePlaces, parseSizes, type RunFacts, runStarting, savedView, sizeOf, snapPlace, toggledSize } from "../src/overview.ts";
+import { cardLayout, chatPlacer, doneTasks, freePlace, inWork, listedTasks, type LostFacts, type LostWorker, movedPlaces, OVERVIEW_CARD_WIDTH, OVERVIEW_DONE_SHOWN, OVERVIEW_EXTENDED_DONE, OVERVIEW_EXTENDED_WIDTH, OVERVIEW_GRID, type OverviewTask, parsePlaces, parseSizes, type RunFacts, runStarting, savedView, sizeOf, snapPlace, toggledSize, WORK_LOST_TEXT, workLost } from "../src/overview.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const CSS = read("../src/styles.css");
@@ -181,6 +181,56 @@ test("a written plan, a failed or stopped worker, a stopped task and no state ar
   assert.equal(runStarting(facts("planning", { workerStates: ["stopped"] })), false);
   assert.equal(runStarting(facts("stopped", { hasPlan: true })), false);
   assert.equal(runStarting(facts("")), false);
+});
+
+// ---- A work run that ended without a report (a-work-run-that-ended-without-a-report) ------------
+
+function lost(extra: Partial<LostFacts> = {}, workers: Partial<LostWorker>[] = []): LostFacts {
+  const plan: LostWorker = { run: "plan", state: "done", result: true, finished: null, startedAt: 1000 };
+  const work: LostWorker = { run: "work", state: "done", result: false, finished: true, startedAt: 2000 };
+  return { state: "working", hasReport: false, workers: workers.length ? workers.map((one) => ({ ...work, ...one })) : [plan, work], ...extra };
+}
+
+test("a work run that is done without its report and with nothing in flight is lost", () => {
+  assert.equal(workLost(lost()), true);
+  assert.equal(workLost(lost({ state: "approved" })), true);
+  // Only the work run is listed: lost too.
+  assert.equal(workLost(lost({}, [{}])), true);
+  // The copy of a Continue that ended the same way is the newest worker: still lost.
+  assert.equal(workLost(lost({}, [{ startedAt: 2000 }, { startedAt: 3000 }])), true);
+  assert.equal(WORK_LOST_TEXT, "failed · the work run ended without a report");
+  // The task stays on its way: its session is kept, and the Overview lists it.
+  assert.equal(runStarting(facts("working", { hasPlan: true, workerStates: ["done", "done"] })), true);
+});
+
+test("a work run that only just started or still works is not lost", () => {
+  // The seconds after Approve: the newest worker is still the plan run, or no worker is listed yet.
+  assert.equal(workLost(lost({ state: "approved" }, [{ run: "plan", result: true, finished: null }])), false);
+  assert.equal(workLost(lost({ state: "working" }, [{ run: "plan", result: false, finished: true }])), false);
+  assert.equal(workLost(lost({ workers: [] })), false);
+  // A worker works or waits at a prompt, also an older one beside a newer lost one.
+  assert.equal(workLost(lost({}, [{ state: "working", result: null, finished: null }])), false);
+  assert.equal(workLost(lost({}, [{ state: "blocked", result: null, finished: null }])), false);
+  assert.equal(workLost(lost({}, [{ state: "working", startedAt: 1000, result: null }, { startedAt: 2000 }])), false);
+  // Background work still in flight, or not known.
+  assert.equal(workLost(lost({}, [{ finished: false }])), false);
+  assert.equal(workLost(lost({}, [{ finished: null }])), false);
+  assert.equal(workLost(lost({}, [{ finished: undefined }])), false);
+  // The run wrote its report, or an older host gives no result.
+  assert.equal(workLost(lost({}, [{ result: true }])), false);
+  assert.equal(workLost(lost({}, [{ result: null }])), false);
+  assert.equal(workLost(lost({ hasReport: true })), false);
+});
+
+test("another state of the task or a failed work run is no lost work run", () => {
+  assert.equal(workLost(lost({ state: "planning" })), false);
+  assert.equal(workLost(lost({ state: "stopped" })), false);
+  assert.equal(workLost(lost({ state: "" })), false);
+  // A failed work run has its own case ("failed").
+  assert.equal(workLost(lost({}, [{ state: "failed", result: null, finished: null }])), false);
+  assert.equal(workLost(lost({}, [{ state: "stopped", result: null, finished: null }])), false);
+  // A newer failed work run after a lost one.
+  assert.equal(workLost(lost({}, [{ startedAt: 2000 }, { state: "failed", startedAt: 3000, result: null }])), false);
 });
 
 test("the Map decides open with the rule of the Overview, not with the state file", () => {
