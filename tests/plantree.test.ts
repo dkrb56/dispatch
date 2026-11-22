@@ -146,6 +146,12 @@ test("the badges: next up, started early and waits", () => {
   assert.equal(canceled.get("b"), "next");
   assert.deepEqual(openBefore(TREE, "d"), ["b", "c"]);
   assert.deepEqual(openBefore(TREE, "c"), []);
+  // Ticket there-should-be-a-way-to-schedule-ticket, user decision 2: a failed ticket holds the ones after it.
+  const failed = [{ ...t("a", "done"), note: "failed" }, t("b", "new", ["a"])];
+  assert.equal(planBadges(failed).get("b"), "waits");
+  assert.deepEqual(openBefore(failed, "b"), ["a"]);
+  assert.equal(planBadges([{ ...t("a", "done"), note: "done by hand" }, t("b", "new", ["a"])]).get("b"), "next");
+  assert.equal(planBadges([{ ...t("a", "canceled"), note: "stopped" }, t("b", "new", ["a"])]).get("b"), "next");
 });
 
 test("the state word of a card", () => {

@@ -102,7 +102,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, boardTickets, inProgressView, bulkIds, canDrag, clampColumnWidth, COLUMN_WIDTHS_KEY, columnWidthsKey, columnTemplate, parseColumnWidths, type BoardColumn, type ColumnWidth, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketGroups, ticketMatches, ticketMessage, ticketRoute, type InProgressView, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
+import { addedText, boardTickets, inProgressView, bulkIds, canDrag, clampColumnWidth, COLUMN_WIDTHS_KEY, columnWidthsKey, columnTemplate, parseColumnWidths, type BoardColumn, type ColumnWidth, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, heldBy, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketGroups, ticketMatches, ticketMessage, ticketRoute, type InProgressView, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
@@ -4155,7 +4155,7 @@ async function dispatchTickets(): Promise<void> {
       // "Tickets start their plan" on, triage gets only the questions, the tickets with only images
       // and the tickets whose plan start failed.
       const queue = record.ticketsStartPlans ? record.tickets.filter((one) => ticketRoute(one) === "triage" || toTriage.has(`${key}\n${one.id}`)) : record.tickets;
-      const ticket = nextTicket(queue, [], (id) => ticketSent(key, id) || editingTicket === `${key}\n${id}`, record.paused);
+      const ticket = nextTicket(queue, [], (id) => ticketSent(key, id) || editingTicket === `${key}\n${id}`, record.paused, record.tickets);
       if (!ticket) continue;
       if (switchRuns(key) || compactRuns(key) || triageQueue.some((line) => line.project === key)) continue;
       if (!triageFree(await triageStatus(pane).catch(() => null))) continue;
@@ -9905,7 +9905,9 @@ const queueSince = new Map<string, number>();
 
 /** What Dispatch knows of the queue of a project (by its key) for its sign; it also keeps the wait time. */
 function ticketSignFacts(key: string, now = Date.now()): SignFacts {
-  const waiting = waitingTickets(key).length;
+  // A ticket that a ticket before it holds is not stuck (ticket there-should-be-a-way-to-schedule-ticket).
+  const all = projectTickets(key);
+  const waiting = waitingTickets(key).filter((ticket) => heldBy(ticket, all).length === 0).length;
   const inFlight = projectPending(key).length > 0;
   const paused = projectPaused(key);
   // A project with "No triage" needs no triage chat for its queue (ticket no-triage-a-project-switch-no-triage-in).
@@ -10457,7 +10459,16 @@ function ticketState(project: string, ticket: Ticket, queueIds: string[], record
   if (ticket.status === "backlog") return "Backlog: not sent";
   if (ticket.status === "new") {
     const card = projectPending(project).find((one) => one.entry === ticket.id);
-    return card ? pendingState(card) : `#${queueIds.indexOf(ticket.id) + 1} in the queue`;
+    if (card) return pendingState(card);
+    const place = `#${queueIds.indexOf(ticket.id) + 1} in the queue`;
+    // A ticket that comes after an open or failed ticket waits for it (ticket there-should-be-a-way-to-schedule-ticket).
+    const tickets = record?.tickets ?? projectTickets(project);
+    const held = heldBy(ticket, tickets).map((id) => {
+      const before = tickets.find((one) => one.id === id);
+      const title = before?.title || id;
+      return before && endFailed(before) ? `${title} (failed)` : title;
+    });
+    return held.length > 0 ? `${place} · waits for ${held.join(", ")}` : place;
   }
   if (ticket.status === "in-progress") {
     const task = record ? projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id)) : undefined;

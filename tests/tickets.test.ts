@@ -33,6 +33,7 @@ import {
   fitWindowPlace,
   goalHint,
   goesStraight,
+  heldBy,
   keepTickets,
   LEVELS,
   levelLabel,
@@ -492,7 +493,7 @@ test("paused: the line above the message box says that the tickets wait for Resu
 
 test("paused: the dispatcher passes the pause, and the page has the banner and the Setup switch", () => {
   const dispatch = MAIN.slice(MAIN.indexOf("async function dispatchTickets("));
-  assert.match(dispatch.slice(0, dispatch.indexOf("\n}\n")), /nextTicket\(queue, \[\], \(id\) => ticketSent\(key, id\) \|\| editingTicket === `\$\{key\}\\n\$\{id\}`, record\.paused\)/);
+  assert.match(dispatch.slice(0, dispatch.indexOf("\n}\n")), /nextTicket\(queue, \[\], \(id\) => ticketSent\(key, id\) \|\| editingTicket === `\$\{key\}\\n\$\{id\}`, record\.paused, record\.tickets\)/);
   assert.match(HTML, /id="tickets-auto" class="auto-switch"/);
   assert.match(MAIN, /autoSwitch\(/);
   assert.match(HTML, /id="tickets-auto"[^>]*><button class="auto-switch-toggle auto-switch-start" role="switch"/);
@@ -528,6 +529,35 @@ test("tickets start their plan: the next plan ticket keeps the queue and the lim
   assert.equal(nextPlanTicket(list, none, false, 5, false), null);
   // The triage lane is unchanged: nextTicket on the tickets of the route triage.
   assert.equal(nextTicket(list.filter((one) => ticketRoute(one) === "triage"), [], none, false)?.id, "q");
+});
+
+// Ticket there-should-be-a-way-to-schedule-ticket: a ticket that comes after an open or failed ticket waits.
+const after = (id: string, status: Status, order: number | null, before: string[], note = "") => ({ ...asked(id, `Task ${id}`, order, status), after: before, note });
+
+test("the order of the tickets: a ticket waits while a ticket before it is open or failed", () => {
+  const none = () => false;
+  const list = [after("one", "in-progress", null, []), after("two", "new", 1, ["one"]), after("three", "new", 2, [])];
+  assert.deepEqual(heldBy(list[1], list), ["one"]);
+  assert.equal(nextPlanTicket(list, none, false, 0, false)?.id, "three", "the held ticket is skipped, the next one goes");
+  assert.equal(nextTicket(list, [])?.id, "three", "the triage lane skips it too");
+  const triageOnly = list.filter((one) => one.id !== "one");
+  assert.equal(nextTicket(triageOnly, [], none, false, list)?.id, "three", "the arrows resolve in the full list");
+  assert.equal(nextTicket(triageOnly, [], none, false)?.id, "two", "an id outside the list does not hold");
+  for (const [status, note] of [["done", "done"], ["done", "done by hand"], ["canceled", "canceled"], ["canceled", "stopped"]] as const) {
+    const freed = [after("one", status, null, [], note), ...list.slice(1)];
+    assert.deepEqual(heldBy(freed[1], freed), [], `${status} ${note} frees it`);
+    assert.equal(nextPlanTicket(freed, none, false, 0, false)?.id, "two", `${status} ${note}: it goes in its place`);
+  }
+  // User decision 2: a failed ticket holds the tickets after it.
+  const failed = [after("one", "done", null, [], "failed"), ...list.slice(1)];
+  assert.deepEqual(heldBy(failed[1], failed), ["one"]);
+  assert.equal(nextPlanTicket(failed, none, false, 0, false)?.id, "three");
+  for (const status of ["backlog", "new"] as const) {
+    const open = [after("one", status, 5, []), ...list.slice(1)];
+    assert.deepEqual(heldBy(open[1], open), ["one"], `${status} holds it`);
+  }
+  assert.deepEqual(heldBy(after("x", "new", 1, ["gone", "one", "one"]), list), ["one"], "an unknown id and a double give nothing");
+  assert.ok(MAIN.includes("waits for ${held.join(\", \")}"), "the card names what it waits for");
 });
 
 test("tickets start their plan: the line of the chat for a new ticket", () => {
@@ -984,7 +1014,7 @@ test("edit and details: ✎ edits a waiting ticket in the ticket window, a close
   const plan = MAIN.slice(MAIN.indexOf("async function startTicketPlan("), MAIN.indexOf("/** A run of `dispatchTickets` is on its way. */"));
   assert.match(plan, /\|\| editingTicket === `\$\{key\}\\n\$\{id\}`;/);
   const triage = MAIN.slice(MAIN.indexOf("async function dispatchTickets("), MAIN.indexOf("async function dispatchTickets(") + 6000);
-  assert.match(triage, /nextTicket\(queue, \[\], \(id\) => ticketSent\(key, id\) \|\| editingTicket === `\$\{key\}\\n\$\{id\}`, record\.paused\)/);
+  assert.match(triage, /nextTicket\(queue, \[\], \(id\) => ticketSent\(key, id\) \|\| editingTicket === `\$\{key\}\\n\$\{id\}`, record\.paused, record\.tickets\)/);
   const details = MAIN.slice(MAIN.indexOf("// ---- The Ticket details window"), MAIN.indexOf("// ---- The Actions panel"));
   assert.match(details, /\["Brief", info\.brief\], \["Plan", info\.plan\], \["Report", info\.report\], \["Log", info\.log\]/);
   assert.match(details, /fileRow\(label, file!, null, null\)/);

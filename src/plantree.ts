@@ -10,6 +10,8 @@ export interface PlanTicket {
   status: string;
   /** The ids of the tickets that this ticket comes after; an older host sends none. */
   after?: readonly string[];
+  /** The end word of a Done or Canceled ticket; `failed` holds the tickets after it. A group node has none. */
+  note?: string;
 }
 
 /** One arrow: `to` starts when `from` is done. */
@@ -261,10 +263,16 @@ export function clampOffset(offset: PlanOffset, board: PlanSize, canvas: PlanSiz
  */
 export type PlanBadge = "next" | "early" | "waits" | null;
 
-/** The ids before a ticket that are not done yet, in the order of its list. */
+/**
+ * The ids before a ticket that still hold it, in the order of its list: not Done or Canceled, or Done
+ * with the note `failed` (the rule of `heldBy` in tickets.ts, ticket there-should-be-a-way-to-schedule-ticket).
+ */
 export function openBefore(tickets: readonly PlanTicket[], id: string): string[] {
-  const status = new Map(tickets.map((ticket) => [ticket.id, ticket.status]));
-  return before(planArrows(tickets), id).filter((from) => !planDone(status.get(from) ?? ""));
+  const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]));
+  return before(planArrows(tickets), id).filter((from) => {
+    const ticket = byId.get(from);
+    return !planDone(ticket?.status ?? "") || (ticket?.status === "done" && ticket.note === "failed");
+  });
 }
 
 /** The badge of each ticket of the flow. */

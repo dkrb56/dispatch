@@ -400,18 +400,40 @@ export function queueOrder<T extends Pick<Ticket, "id" | "status" | "order" | "c
 }
 
 /**
- * The ticket to send to triage next: the first New ticket that did not go yet. While a ticket of
- * the project is in flight, none: triage takes one ticket at a time. A paused project sends none
- * (ticket pause-tasks); at Resume the first ticket that did not go comes next.
+ * The ids of the tickets in `ticket.after` that still hold it, in list order (ticket
+ * there-should-be-a-way-to-schedule-ticket): a ticket before it holds it while it is open (Backlog,
+ * Scheduled, In progress) and while it is Done with the note `failed` (user decision 2). Done in any
+ * other way and Canceled free it. An id that names no ticket of `tickets` does not hold.
  */
-export function nextTicket<T extends Pick<Ticket, "id" | "status" | "order" | "created">>(
+export function heldBy(
+  ticket: { after?: readonly string[] },
+  tickets: readonly (Pick<Ticket, "id" | "status"> & { note?: string })[],
+): string[] {
+  const held: string[] = [];
+  for (const id of ticket.after ?? []) {
+    const before = tickets.find((one) => one.id === id);
+    if (before === undefined || held.includes(id)) continue;
+    const free = before.status === "canceled" || (before.status === "done" && before.note !== "failed");
+    if (!free) held.push(id);
+  }
+  return held;
+}
+
+/**
+ * The ticket to send to triage next: the first New ticket that did not go yet and that no ticket
+ * before it holds (`heldBy`, resolved in `all`, by default `tickets`). While a ticket of the project
+ * is in flight, none: triage takes one ticket at a time. A paused project sends none (ticket
+ * pause-tasks); at Resume the first ticket that did not go comes next.
+ */
+export function nextTicket<T extends Pick<Ticket, "id" | "status" | "order" | "created"> & Partial<Pick<Ticket, "note" | "after">>>(
   tickets: readonly T[],
   inFlight: readonly string[],
   sent: (id: string) => boolean = () => false,
   paused = false,
+  all: readonly (Pick<Ticket, "id" | "status"> & { note?: string })[] = tickets,
 ): T | null {
   if (paused || inFlight.length > 0) return null;
-  return queueOrder(tickets).find((ticket) => !sent(ticket.id)) ?? null;
+  return queueOrder(tickets).find((ticket) => !sent(ticket.id) && heldBy(ticket, all).length === 0) ?? null;
 }
 
 /** The most workers of a project that run while Dispatch starts a plan from a ticket (ticket simpler-process-tickets, user decision 3). */
@@ -436,9 +458,10 @@ export function ticketRoute(ticket: Pick<Ticket, "summary">, all = false): "plan
  * of the queue whose route is plan and that did not go yet. None while the project is paused, while a
  * start of the project is in flight (`starting`), or while `live` workers of the project run and
  * that is 3 or more (user decision 3). It does not wait for triage. `all`: the switch "No triage"
- * is on, so a question and a ticket with only images start their plan too.
+ * is on, so a question and a ticket with only images start their plan too. A ticket that a ticket
+ * before it holds (`heldBy`) waits; the tickets after it in the queue still go.
  */
-export function nextPlanTicket<T extends Pick<Ticket, "id" | "status" | "order" | "created" | "summary">>(
+export function nextPlanTicket<T extends Pick<Ticket, "id" | "status" | "order" | "created" | "summary"> & Partial<Pick<Ticket, "note" | "after">>>(
   tickets: readonly T[],
   sent: (id: string) => boolean,
   paused: boolean,
@@ -447,7 +470,10 @@ export function nextPlanTicket<T extends Pick<Ticket, "id" | "status" | "order" 
   all = false,
 ): T | null {
   if (paused || starting || live >= PLAN_WORKERS_MAX) return null;
-  return queueOrder(tickets).find((ticket) => ticketRoute(ticket, all) === "plan" && !sent(ticket.id)) ?? null;
+  return (
+    queueOrder(tickets).find((ticket) => ticketRoute(ticket, all) === "plan" && !sent(ticket.id) && heldBy(ticket, tickets).length === 0) ??
+    null
+  );
 }
 
 /**

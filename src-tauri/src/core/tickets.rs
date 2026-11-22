@@ -691,6 +691,23 @@ fn take_new_tickets(project: &Project) -> Result<usize, String> {
             tickets.push(ticket.clone());
             made.push(ticket);
         }
+        // The lines `After:` of the items (ticket there-should-be-a-way-to-schedule-ticket), resolved
+        // once all items of the file have their ids, so an item may name a later one.
+        if !items.is_empty() {
+            let afters = new_tickets_after(&items, &made, &tickets);
+            let first = tickets.len() - made.len();
+            for (at, after) in afters.into_iter().enumerate() {
+                made[at].after = after.clone();
+                tickets[first + at].after = after;
+            }
+            // A loop drops the arrows of this file; the tickets still open.
+            if arrow_loop(&tickets).is_some_and(|ids| ids.iter().any(|id| made.iter().any(|one| &one.id == id))) {
+                for (at, ticket) in made.iter_mut().enumerate() {
+                    ticket.after.clear();
+                    tickets[first + at].after.clear();
+                }
+            }
+        }
         if let Err(error) = append(project, &made.iter().map(open_event).collect::<Vec<_>>()) {
             // The file goes back: the next read tries again.
             let _ = fs::rename(&taking, &path);
@@ -702,6 +719,39 @@ fn take_new_tickets(project: &Project) -> Result<usize, String> {
     // A folder that still holds another file stays.
     let _ = fs::remove_dir(&dir);
     if errors.is_empty() { Ok(count) } else { Err(errors.join("; ")) }
+}
+
+/// The list `after` of each item of a file of the drop folder (ticket
+/// there-should-be-a-way-to-schedule-ticket), in the order of `made`: the tokens of its line `After:`,
+/// split by commas or spaces, with `#`, `.` and backticks stripped. A number names the item at that
+/// place of the file (1 first), any other token the id of a ticket of `tickets`. The own ticket, an
+/// unknown token and a double give no arrow.
+fn new_tickets_after(items: &[crate::core::pipeline::PlanPart], made: &[Ticket], tickets: &[Ticket]) -> Vec<Vec<String>> {
+    items
+        .iter()
+        .zip(made)
+        .map(|(item, own)| {
+            let mut after: Vec<String> = Vec::new();
+            for token in item.after.split(|c: char| c == ',' || c.is_whitespace()) {
+                let token = token.trim_matches(|c: char| c == '#' || c == '.' || c == '`' || c == ';');
+                if token.is_empty() {
+                    continue;
+                }
+                let id = match token.parse::<usize>() {
+                    Ok(number) => match made.get(number.wrapping_sub(1)) {
+                        Some(ticket) => ticket.id.clone(),
+                        None => continue,
+                    },
+                    Err(_) if tickets.iter().any(|ticket| ticket.id == token) => token.to_string(),
+                    Err(_) => continue,
+                };
+                if id != own.id && !after.contains(&id) {
+                    after.push(id);
+                }
+            }
+            after
+        })
+        .collect()
 }
 
 /// A new ticket of a message.
@@ -1776,6 +1826,46 @@ mod tests {
         assert_eq!(map.fields, TicketFields::default(), "What I see only on a fix");
         assert!(!dir.exists(), "the file, its claim and the folder go");
         assert_eq!(list(&project).len(), 3, "a second read takes nothing");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    /// Ticket there-should-be-a-way-to-schedule-ticket: the lines `After:` of a drop file become arrows.
+    #[test]
+    fn new_tickets_with_after_lines_come_in_linked() {
+        let (project, base) = scratch("new-tickets-after");
+        write_file(&project.tickets_file(), "{\"op\":\"open\",\"id\":\"old\",\"title\":\"Old\",\"status\":\"triage\",\"order\":1}
+").unwrap();
+        let text = "1. Make the store
+- Goal: A store.
+
+2. Use the store
+- Goal: Use it.
+- After: 1
+
+3. Show the store
+- Goal: Show it.
+- After: `#2`, old, nowhere, 3, 9
+";
+        write_file(&project.new_tickets_dir().join("a.md"), text).unwrap();
+        let tickets = list(&project);
+        let arrows: Vec<(&str, Vec<&str>)> = tickets.iter().map(|t| (t.id.as_str(), t.after.iter().map(String::as_str).collect())).collect();
+        assert_eq!(
+            arrows,
+            [("old", vec![]), ("make-the-store", vec![]), ("use-the-store", vec!["make-the-store"]), ("show-the-store", vec!["use-the-store", "old"])],
+            "an item number, a ticket id; not the own item, an unknown id or a missing item"
+        );
+        // A loop gives no arrow; the tickets still open.
+        write_file(&project.new_tickets_dir().join("b.md"), "1. Left
+- Goal: Left.
+- After: 2
+
+2. Right
+- Goal: Right.
+- After: 1
+").unwrap();
+        let tickets = list(&project);
+        assert_eq!(tickets.len(), 6);
+        assert!(tickets[4..].iter().all(|t| t.after.is_empty() && t.status == NEW), "{tickets:?}");
         let _ = fs::remove_dir_all(base);
     }
 

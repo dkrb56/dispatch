@@ -1071,7 +1071,7 @@ impl Project {
 - The session of a worker is named `<ticket-id> [plan]` in its plan run and `<ticket-id> [work]` in its work run; a worker of an older script has the bare ticket id. Triage checks workers with `claude agents --json --all` or `{script} status`: `done` = finished, `blocked` with `status: waiting` = at a permission prompt, `blocked` with `status: idle` = the turn ended with a question that stands in the report (`{script} status` says `done` then), `failed` or `stopped` = ended badly. It reads the plan or the report file first, `claude logs <id>` second.
 - Triage runs at most 3 workers, and at most one in its work run. Triage does not poll: Dispatch writes one line into the triage chat when a worker is done, blocked or failed, when the user approved or rejected a plan, and when the user answered a question.
 - Triage never answers a worker's question or permission prompt with its own words. A question is answered in the task card of Dispatch; a permission prompt is answered in the agent view.
-- A chat that the user asks for tickets writes them into a new Markdown file in `{reports}/new-tickets/`, never into `{reports}/tickets.jsonl`: one numbered item `N. <title>` per ticket with the list lines `Level:` (simple, medium or hard), `Type:` (fix, feature, refactor or content), `Goal:` and the optional lines `Why:`, `Done when:`, `Do not change:`, `Context:`, `What I see:` and `What I expect:`, as in the section Parts of a plan. At its next read Dispatch puts each item as a ticket at the end of New and deletes the file.
+- A chat that the user asks for tickets writes them into a new Markdown file in `{reports}/new-tickets/`, never into `{reports}/tickets.jsonl`: one numbered item `N. <title>` per ticket with the list lines `Level:` (simple, medium or hard), `Type:` (fix, feature, refactor or content), `Goal:` and the optional lines `Why:`, `Done when:`, `Do not change:`, `Context:`, `What I see:`, `What I expect:` and `After:` (the numbers of other items of the same file, or ticket ids, that must be done before this ticket starts), as in the section Parts of a plan. At its next read Dispatch puts each item as a ticket at the end of New and deletes the file.
 "
         )
     }
@@ -5417,6 +5417,9 @@ pub struct PlanPart {
     pub(crate) kind: String,
     pub(crate) goal: String,
     pub(crate) fields: crate::core::tickets::TicketFields,
+    /// The line `After:` of a file of the drop folder of the chats (ticket
+    /// there-should-be-a-way-to-schedule-ticket): item numbers of the same file or ticket ids, as written.
+    pub(crate) after: String,
 }
 
 /// The parts of a plan (ticket subtickets): the numbered items `N. <title>` of the section `Parts`
@@ -5473,6 +5476,7 @@ pub(crate) fn part_items<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<PlanPa
             "context" => &mut fields.context,
             "what i see" => &mut fields.see,
             "what i expect" => &mut fields.expect,
+            "after" => &mut part.after,
             _ => continue,
         };
         if wrapped {
