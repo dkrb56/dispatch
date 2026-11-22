@@ -414,15 +414,60 @@ test("steps: two steps with one start time keep the order of the plan", () => {
 test("the step list meets the page: under the newest work run row, a ticking current step, its look and the Help", () => {
   assert.match(MAIN, /import \{[^}]*stepRows[^}]*\} from "\.\/workerrow"/);
   assert.match(MAIN, /workSteps\?: WorkStep\[\];/);
-  assert.match(MAIN, /stepRows\(info\.workSteps, running, info\.report\?\.modified \?\? null, worker\?\.endedAt \?\? null\)/);
-  assert.match(MAIN, /time\.dataset\.runSince = String\(step\.since\);/);
+  assert.match(MAIN, /stepRows\(info\.workSteps, running, info\.report\?\.modified \?\? null, worker\?\.endedAt \?\? null, info\.workWaits \?\? \[\]\)/);
+  assert.match(MAIN, /time\.dataset\.runSince = String\(step\.since \+ step\.waitMs\);/);
   assert.match(MAIN, /workerRows\[task\.workers\.indexOf\(workRun\)\]\.after\(steps\);/);
   assert.match(MAIN, /else if \(steps\) body\.append\(steps\);/);
   assert.match(CSS, /\.task \.work-steps \{/);
   assert.match(CSS, /\.task \.work-step-text \{[^}]*text-overflow: ellipsis;[^}]*white-space: nowrap;/);
   assert.match(CSS, /\.task \.work-step\.current \{/);
   assert.match(HTML, /Under the <b>Work run<\/b> row, a list shows the steps of the plan/);
-  assert.match(HTML, /The time of a step includes a wait for your answer\./);
+  assert.match(HTML, /The time of a step counts only the work; a wait for your answer shows apart in brackets/);
+});
+
+// Ticket title-step-timer-counts-the-wait-for-the: a wait for the user does not count in the step time.
+const waitShape = (rows: ReturnType<typeof stepRows>) => rows.map((row) => [row.number, row.state, row.ms, row.waitMs]);
+
+test("step waits: no waits give the same times as before and no wait time", () => {
+  const rows = stepRows(steps, false, ms(100), null);
+  assert.deepEqual(waitShape(rows), waitShape(stepRows(steps, false, ms(100), null, [])));
+  assert.ok(rows.every((row) => row.waitMs === 0));
+});
+
+test("step waits: the current step keeps the wait apart, also a wait that ended", () => {
+  const rows = stepRows(steps, true, null, null, [{ from: at(45), to: at(55) }]);
+  assert.deepEqual(waitShape(rows)[2], [3, "current", null, 10_000]);
+  assert.equal(rows[2].since, ms(40));
+});
+
+test("step waits: a done step subtracts the wait; a wait outside a step does not touch it", () => {
+  const rows = stepRows(steps, false, ms(100), null, [{ from: at(12), to: at(20) }, { from: at(50), to: at(70) }]);
+  assert.deepEqual(waitShape(rows), [
+    [1, "done", 10_000, 0],
+    [2, "done", 22_000, 8_000],
+    [3, "done", 40_000, 20_000],
+    [4, "waiting", null, 0],
+  ]);
+});
+
+test("step waits: overlapping waits count once, and bad or empty waits count for nothing", () => {
+  const waits = [
+    { from: at(50), to: at(60) },
+    { from: at(55), to: at(70) },
+    { from: "not a time", to: at(90) },
+    { from: at(80), to: at(80) },
+    { from: at(90), to: at(85) },
+  ];
+  const rows = stepRows(steps, false, ms(100), null, waits);
+  assert.deepEqual(waitShape(rows)[2], [3, "done", 40_000, 20_000]);
+});
+
+test("step waits meet the page: the host field, the wait part and its tooltip line", () => {
+  assert.match(MAIN, /workWaits\?: WorkWait\[\];/);
+  assert.match(MAIN, /time\.textContent = durationText\(Date\.now\(\) - step\.since - step\.waitMs\);/);
+  assert.match(MAIN, /wait\.className = "work-step-time work-step-wait";/);
+  assert.match(MAIN, /`\(\+\$\{durationText\(step\.waitMs\)\} waiting\)`/);
+  assert.match(MAIN, /Waited for your answer: /);
 });
 
 // Ticket i-need-an-option-here-to-resume-stopped: a stopped task shows Resume in its card.

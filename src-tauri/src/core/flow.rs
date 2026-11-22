@@ -385,6 +385,11 @@ struct Transcript {
     results: Vec<(String, BashResult)>,
     /// The step lines of the worker in the order of the file; no agent line gives one.
     steps: Vec<StepMark>,
+    /// The time of the last main line (no agent line) with a time, RFC 3339.
+    last_time: Option<String>,
+    /// The waits for a prompt (ticket title-step-timer-counts-the-wait-for-the): from the last main
+    /// line before a prompt of the user to the time of that prompt, RFC 3339.
+    waits: Vec<(String, String)>,
 }
 
 /// A step of a work run that the worker started (ticket under-work-run-i-want-to-see-bullets-of):
@@ -471,6 +476,19 @@ fn read_transcript_line(line: &str, read: &mut Transcript) {
     let Some(message) = entry.message else { return };
     let parts = message.content.as_array().map(Vec::as_slice).unwrap_or_default();
     let text_of = |part: &Value, key: &str| part.get(key).and_then(Value::as_str).map(str::to_string);
+    // A prompt of the user (a reply or a resume) after the end of a turn: the run waited for it.
+    if let (false, Some(time)) = (entry.is_sidechain, entry.timestamp.as_ref()) {
+        let prompt = entry.kind == "user"
+            && !entry.is_meta
+            && (message.content.is_string()
+                || (!parts.is_empty() && parts.iter().all(|part| text_of(part, "type").as_deref() != Some("tool_result"))));
+        if let (true, Some(last)) = (prompt, read.last_time.as_ref()) {
+            if last < time {
+                read.waits.push((last.clone(), time.clone()));
+            }
+        }
+        read.last_time = Some(time.clone());
+    }
     match entry.kind.as_str() {
         "assistant" => {
             // An agent of the worker does not move the steps of the run.
@@ -740,6 +758,20 @@ pub fn step_marks(projects: &Path, runs: &[(String, String)]) -> Vec<StepMark> {
         }
     }
     marks.into_values().collect()
+}
+
+/// The waits of the work runs of a task for a prompt of the user (ticket
+/// title-step-timer-counts-the-wait-for-the): `runs` are the `(run, session id)` lines of the session
+/// file. Only the main transcript of a `work` run counts, as in `step_marks`. A resumed copy repeats
+/// the old lines, so a wait counts once. Sorted by the start of the wait.
+pub fn work_waits(projects: &Path, runs: &[(String, String)]) -> Vec<(String, String)> {
+    let mut waits = std::collections::BTreeSet::new();
+    for (_, session) in runs.iter().filter(|(run, session)| run == "work" && valid_session(session)) {
+        for file in find_transcripts(projects, session) {
+            waits.extend(transcript_of(&file).waits);
+        }
+    }
+    waits.into_iter().collect()
 }
 
 /// What a session and its agents did since the last read: the worker view of the Map asks
@@ -1019,6 +1051,43 @@ mod tests {
         let expected = vec![(1, "Read the code".to_string(), "2026-11-18T10:00:01.000Z".to_string()), (2, "Test it".to_string(), "2026-11-18T11:00:00.000Z".to_string())];
         assert_eq!(marks_of(&projects, &[work(first), work(copy)]), expected);
         assert_eq!(marks_of(&projects, &[work(copy), work(first)]), expected);
+        fs::remove_dir_all(&projects).unwrap();
+    }
+
+    /// A prompt of the user: a user line with a string content.
+    fn prompt_line(text: &str, time: &str) -> String {
+        serde_json::json!({"type": "user", "timestamp": time, "message": {"role": "user", "content": text}}).to_string()
+    }
+
+    #[test]
+    fn work_waits_count_the_time_before_a_prompt_once() {
+        let projects = scratch_projects("waits");
+        let (first, copy) = ("77777777-0000-0000-0000-000000000001", "77777777-0000-0000-0000-000000000002");
+        let folder = projects.join("D--project");
+        let old = [
+            prompt_line("Plan approved", "2026-11-18T01:00:00.000Z"),
+            text_line("Step 1: Read the code", "2026-11-18T01:00:01.000Z"),
+            tool_result("toolu_1", serde_json::json!("ok"), None, "2026-11-18T01:00:05.000Z"),
+            // An agent line and a meta line are no end of a turn and no prompt.
+            serde_json::json!({"type": "user", "isSidechain": true, "timestamp": "2026-11-18T01:20:00.000Z", "message": {"role": "user", "content": "agent prompt"}}).to_string(),
+            serde_json::json!({"type": "user", "isMeta": true, "timestamp": "2026-11-18T01:21:00.000Z", "message": {"role": "user", "content": "meta"}}).to_string(),
+            text_line("A question for you.", "2026-11-18T01:28:00.000Z"),
+        ];
+        fs::write(folder.join(format!("{first}.jsonl")), old.join("
+") + "
+").unwrap();
+        // The copy repeats the old lines and goes on with the answer.
+        let new = [prompt_line("Answer to question 1: Yes", "2026-11-18T09:40:00.000Z"), text_line("Step 2: Test it", "2026-11-18T09:41:00.000Z")];
+        fs::write(folder.join(format!("{copy}.jsonl")), old.join("
+") + "
+" + &new.join("
+") + "
+").unwrap();
+        let expected = vec![("2026-11-18T01:28:00.000Z".to_string(), "2026-11-18T09:40:00.000Z".to_string())];
+        assert_eq!(work_waits(&projects, &[work(first), work(copy)]), expected);
+        assert_eq!(work_waits(&projects, &[work(copy), work(first)]), expected);
+        // A plan run gives no wait.
+        assert!(work_waits(&projects, &[("plan".to_string(), copy.to_string())]).is_empty());
         fs::remove_dir_all(&projects).unwrap();
     }
 

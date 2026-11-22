@@ -112,7 +112,7 @@ import { agentListShown, asksAgain, backKey, BACK_TITLE, LIST_TITLE } from "./ag
 import { getVersion } from "@tauri-apps/api/app";
 import { type FileEntry, type FileInfo, imageFileUrl, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
-import { agentsText, fileRowTitle, reportChip, rowParts, runChip, type RunChip, runCostText, runTokensTitle, stepRows, tokenText, type WorkStep } from "./workerrow";
+import { agentsText, fileRowTitle, reportChip, rowParts, runChip, type RunChip, runCostText, runTokensTitle, stepRows, tokenText, type WorkStep, type WorkWait } from "./workerrow";
 import { commandLines, groupLabel, unverifiedText } from "./commandrows";
 import { announcements, DONE_EMPTY, parseEnded, serializeEnded } from "./announce";
 import { AUTO_END_MAX_TRIES, autoEndCandidates, type EndedSession, endedText, type FailedEnds, oldButtonText, rowTexts, staleButtonText, staleCounts, staleSessions, type StaleRow } from "./stale";
@@ -2284,6 +2284,8 @@ interface TaskInfo {
   workCommands?: number;
   /** The steps of the work run from its step lines (ticket under-work-run-i-want-to-see-bullets-of). Absent from an older host. */
   workSteps?: WorkStep[];
+  /** The waits of the work runs for your answer (ticket title-step-timer-counts-the-wait-for-the). Absent from an older host. */
+  workWaits?: WorkWait[];
   /**
    * The result of the report check of a done report (ticket the-report-check-uses-the-commands-of):
    * the commands of the chosen checks that did not run in the work run; empty with the reason in
@@ -7055,7 +7057,7 @@ function stepsList(info: TaskInfo, worker: Worker | null): HTMLElement | null {
   const running = worker?.state === "working" || worker?.state === "blocked";
   const list = document.createElement("ul");
   list.className = "work-steps";
-  for (const step of stepRows(info.workSteps, running, info.report?.modified ?? null, worker?.endedAt ?? null)) {
+  for (const step of stepRows(info.workSteps, running, info.report?.modified ?? null, worker?.endedAt ?? null, info.workWaits ?? [])) {
     const line = document.createElement("li");
     line.className = `work-step ${step.state}`;
     line.title = `Step ${step.number}, ${STEP_LOOK[step.state].word}: ${step.text}`;
@@ -7069,12 +7071,21 @@ function stepsList(info: TaskInfo, worker: Worker | null): HTMLElement | null {
     const time = document.createElement("span");
     time.className = "work-step-time";
     if (step.state === "current" && step.since !== null) {
-      time.textContent = durationText(Date.now() - step.since);
-      time.dataset.runSince = String(step.since);
+      time.textContent = durationText(Date.now() - step.since - step.waitMs);
+      time.dataset.runSince = String(step.since + step.waitMs);
     } else if (step.ms !== null) {
       time.textContent = durationText(step.ms);
     }
     line.append(mark, text, time);
+    // The wait for your answer stands apart; the ticker moves only the work time.
+    if (step.waitMs >= 60_000) {
+      const wait = document.createElement("span");
+      wait.className = "work-step-time work-step-wait";
+      wait.textContent = `(+${durationText(step.waitMs)} waiting)`;
+      line.append(wait);
+      line.title += `
+Waited for your answer: ${durationText(step.waitMs)}`;
+    }
     list.append(line);
   }
   return list;

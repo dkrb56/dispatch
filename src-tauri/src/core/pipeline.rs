@@ -4481,6 +4481,15 @@ fn task_work_steps(project: &Project, projects: &Path, name: &str, brief: &str) 
     work_steps(&fs::read_to_string(project.plans().join(format!("{name}.md"))).unwrap_or_default(), &marks)
 }
 
+/// The waits of the work runs of a task for a prompt of the user (ticket
+/// title-step-timer-counts-the-wait-for-the): the card takes them out of the time of a step.
+fn task_work_waits(project: &Project, projects: &Path, name: &str) -> Vec<WorkWait> {
+    crate::core::flow::work_waits(projects, &read_session_runs(&project.session_file(name)))
+        .into_iter()
+        .map(|(from, to)| WorkWait { from, to })
+        .collect()
+}
+
 /// Tells the work run of a task to write its step lines: the section goes into the brief, which the
 /// work run reads first, and not into the plan, whose change time holds the choices of the card. A
 /// plan without numbered steps, a missing brief and a brief with the section change nothing. A failed
@@ -5610,6 +5619,14 @@ pub struct WorkStep {
     started_at: Option<String>,
 }
 
+/// A wait of a work run for a prompt of the user (ticket title-step-timer-counts-the-wait-for-the):
+/// from the end of the turn before the prompt to the prompt, RFC 3339.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct WorkWait {
+    from: String,
+    to: String,
+}
+
 /// One task of a project, from the files of the reports folder. The frontend joins it with the
 /// workers of the same name.
 #[derive(Serialize)]
@@ -5681,6 +5698,10 @@ pub struct TaskInfo {
     /// Empty for a brief without the section of the step lines and before the first step line.
     #[serde(rename = "workSteps")]
     work_steps: Vec<WorkStep>,
+    /// The waits of the work runs for a prompt of the user, sorted by their start (ticket
+    /// title-step-timer-counts-the-wait-for-the). Empty for a task without `work_steps`.
+    #[serde(rename = "workWaits")]
+    work_waits: Vec<WorkWait>,
     /// The Verification claims of a done report that no Bash command of the evidence matches
     /// (ticket report-check). With a claim here, or without a Verification section, the header
     /// says `working` and `did` gives the reason. Empty when the report passes or is not checked.
@@ -6575,6 +6596,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             evidence: Vec::new(),
             work_commands: 0,
             work_steps: Vec::new(),
+            work_waits: Vec::new(),
             unverified: Vec::new(),
             taken: None,
             log: None,
@@ -6716,6 +6738,9 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         let text = fs::read_to_string(&path).unwrap_or_default();
         if let Some(projects) = projects.as_ref() {
             task.work_steps = task_work_steps(project, projects, &task.name, &text);
+            if !task.work_steps.is_empty() {
+                task.work_waits = task_work_waits(project, projects, &task.name);
+            }
         }
         let about = parse_brief(&text);
         if !about.is_empty() {
@@ -9766,6 +9791,7 @@ Blockers: none
             evidence: Vec::new(),
             work_commands: 0,
             work_steps: Vec::new(),
+            work_waits: Vec::new(),
             unverified: Vec::new(),
             taken: None,
             log: None,
@@ -15269,6 +15295,27 @@ process.exit(result.status === null ? 1 : result.status);
         assert_eq!(steps[1].started_at, None);
         // The section without a step line yet gives no list.
         assert!(task_work_steps(&project, &projects, "t-other", &brief).is_empty());
+        clean(&project);
+    }
+
+    #[test]
+    fn work_waits_of_a_task_come_from_its_work_run() {
+        let project = scratch("work-waits");
+        let projects = project.root.parent().unwrap().join("claude-projects");
+        let session = "77777777-0000-0000-0000-000000000003";
+        let lines = [
+            json!({"type": "assistant", "timestamp": "2026-11-18T01:28:00.000Z", "message": {"content": [{"type": "text", "text": "Step 1: Ask"}]}}),
+            json!({"type": "user", "timestamp": "2026-11-18T09:40:00.000Z", "message": {"role": "user", "content": "Answer to question 1: Yes"}}),
+        ];
+        let text: String = lines.iter().map(|line| format!("{line}
+")).collect();
+        write_file(&projects.join("D--project").join(format!("{session}.jsonl")), &text).unwrap();
+        write_file(&project.session_file("t-1"), &format!("work {session}
+")).unwrap();
+        let waits = task_work_waits(&project, &projects, "t-1");
+        assert_eq!(waits, vec![WorkWait { from: "2026-11-18T01:28:00.000Z".to_string(), to: "2026-11-18T09:40:00.000Z".to_string() }]);
+        assert_eq!(serde_json::to_value(&waits[0]).unwrap(), json!({"from": "2026-11-18T01:28:00.000Z", "to": "2026-11-18T09:40:00.000Z"}));
+        assert!(task_work_waits(&project, &projects, "t-other").is_empty());
         clean(&project);
     }
 
