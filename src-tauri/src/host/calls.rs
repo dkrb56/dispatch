@@ -280,6 +280,7 @@ pub fn run(
         "action_delete" => json(actions::action_delete(a.req("cwd")?, a.req("id")?)?),
         "action_run" => json(actions::action_run(a.req("cwd")?, a.req("id")?)?),
         "action_step" => json(actions::action_step(a.req("cwd")?, a.req("run")?)?),
+        "action_resume" => json(actions::action_resume(a.req("cwd")?, a.req("run")?, a.req("anyway")?)?),
         "triage_handoff" => {
             json(pipeline::triage_handoff(a.req("cwd")?, a.req("live")?, a.req("queued")?, a.req("tokens")?)?)
         }

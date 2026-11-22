@@ -104,6 +104,13 @@ pub struct RunStep {
     note: String,
     /// The process of Dispatch that runs the command, while it runs.
     owner: Option<u32>,
+    /// The run whose result this step shows, when a start at a later step copied it; empty when
+    /// the step ran in this run.
+    from: String,
+    /// The commit at the start of the step; empty without git, and in a run older than the field.
+    head: String,
+    /// The uncommitted files at the start of the step (`git status --porcelain`, without `.dispatch`).
+    dirty: String,
 }
 
 /// One run of an action.
@@ -434,39 +441,152 @@ fn run_with(cwd: &str, id: &str, start: Start) -> Result<ActionRun, String> {
         }
         let at = now();
         let values = placeholder_values(&project, at);
-        let steps = action
-            .steps
-            .iter()
-            .map(|step| match step {
-                Step::Command { command, limit } => RunStep {
-                    kind: "command".to_string(),
-                    text: expand(command, &values),
-                    limit: limit.unwrap_or(DEFAULT_LIMIT),
-                    state: "waiting".to_string(),
-                    ..RunStep::default()
-                },
-                Step::Claude { brief, ticket, auto } => RunStep {
-                    kind: "claude".to_string(),
-                    text: expand(brief, &values),
-                    ticket: expand(ticket, &values),
-                    auto: *auto,
-                    state: "waiting".to_string(),
-                    ..RunStep::default()
-                },
-            })
-            .collect();
-        let base = format!("{}-{}", action.id, stamp(at));
-        let mut run_id = base.clone();
-        let mut n = 2;
-        while run_path(&project, &run_id).exists() {
-            run_id = format!("{base}-{n}");
-            n += 1;
-        }
+        let steps = run_steps(action, &values);
+        let run_id = free_run_id(&project, &action.id, at);
         let run = ActionRun { id: run_id, action: action.id.clone(), name: action.name.clone(), started: at, state: "running".to_string(), values, steps, ..ActionRun::default() };
         write_run(&project, &run)?;
         run
     };
     advance(cwd, &run.id, start)
+}
+
+/// The steps of a new run: each step of the definition with the placeholders expanded, `waiting`.
+fn run_steps(action: &Action, values: &BTreeMap<String, String>) -> Vec<RunStep> {
+    action
+        .steps
+        .iter()
+        .map(|step| match step {
+            Step::Command { command, limit } => RunStep {
+                kind: "command".to_string(),
+                text: expand(command, values),
+                limit: limit.unwrap_or(DEFAULT_LIMIT),
+                state: "waiting".to_string(),
+                ..RunStep::default()
+            },
+            Step::Claude { brief, ticket, auto } => RunStep {
+                kind: "claude".to_string(),
+                text: expand(brief, values),
+                ticket: expand(ticket, values),
+                auto: *auto,
+                state: "waiting".to_string(),
+                ..RunStep::default()
+            },
+        })
+        .collect()
+}
+
+/// A run id that no run file has: `<action>-<yyyyMMdd-HHmmss>`, else with `-2`, `-3`, …
+fn free_run_id(project: &Project, action: &str, at: u64) -> String {
+    let base = format!("{action}-{}", stamp(at));
+    let mut run_id = base.clone();
+    let mut n = 2;
+    while run_path(project, &run_id).exists() {
+        run_id = format!("{base}-{n}");
+        n += 1;
+    }
+    run_id
+}
+
+/// The answer to a start at the failed step: the new run, or the changes of the project that the
+/// user must see first (ticket a-failed-action-can-start-again-at-the).
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionResume {
+    /// The new run; none when the changes wait for the user.
+    run: Option<ActionRun>,
+    /// The changes of the project since the failed step started, one sentence each.
+    changes: Vec<String>,
+}
+
+/// The line of a run without a recorded project state: older than the check, or no git.
+const OLDER_CHANGE: &str = "This run is older than the check, or the project has no git: Dispatch cannot tell whether the project changed.";
+
+/// The state of the project: the commit (`git rev-parse HEAD`) and the uncommitted files outside
+/// `.dispatch`, which holds the run files themselves. Both empty without git.
+fn project_state(project: &Project) -> (String, String) {
+    let head = git(&project.root, &["rev-parse", "HEAD"]).map(|head| head.trim().to_string()).unwrap_or_default();
+    let dirty = git(&project.root, &["status", "--porcelain", "--untracked-files=all", "--", ".", ":(exclude).dispatch"]).unwrap_or_default();
+    (head, dirty.trim_end().to_string())
+}
+
+/// The changes of the project since a step started, one sentence each; none when it is the same.
+fn changes_since(project: &Project, step: &RunStep, number: usize) -> Vec<String> {
+    if step.head.is_empty() {
+        return vec![OLDER_CHANGE.to_string()];
+    }
+    let (head, dirty) = project_state(project);
+    let short = |commit: &str| commit.chars().take(7).collect::<String>();
+    let mut changes = Vec::new();
+    if head != step.head {
+        changes.push(format!("The project has a new commit since step {number} started ({} → {}).", short(&step.head), short(&head)));
+    }
+    if dirty != step.dirty {
+        changes.push(format!("The uncommitted files changed since step {number} started."));
+    }
+    changes
+}
+
+/// Starts a failed run again at its failed step: the click on "Run from step N". The steps before
+/// it are copied from the failed run with their result and time, and do not run again; the values
+/// of the failed run stay; the steps from the failed one on are those of the definition now. When
+/// the project changed since the failed step started and `anyway` is false, gives the changes and
+/// starts nothing. Refused for a run that did not fail, a failure at step 1, a failed Claude step
+/// (its ticket exists already), and while a run of the action runs or waits.
+pub fn action_resume(cwd: String, run: String, anyway: bool) -> Result<ActionResume, String> {
+    resume_with(&cwd, &run, anyway, &script_start)
+}
+
+fn resume_with(cwd: &str, source_id: &str, anyway: bool, start: Start) -> Result<ActionResume, String> {
+    let project = Project::find(cwd)?;
+    let (run, changes) = {
+        let lock = pipeline::read_lock(&project.root);
+        let _held = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let source = read_run(&project, source_id)?;
+        if source.state != "failed" {
+            return Err(format!("the run {source_id} did not fail"));
+        }
+        let index = source.step;
+        if index == 0 {
+            return Err("the run failed at step 1: use Run".to_string());
+        }
+        let Some(failed) = source.steps.get(index) else { return Err(format!("the run {source_id} has no step {}", index + 1)) };
+        if failed.kind != "command" {
+            return Err(format!("step {} is a Claude task: its ticket exists already, so use Run", index + 1));
+        }
+        let actions = read_definitions(&project)?;
+        let action = actions.iter().find(|action| action.id == source.action).ok_or_else(|| format!("no action {}", source.action))?;
+        if action.steps.len() <= index {
+            return Err(format!("the action {} has no step {} now", action.name, index + 1));
+        }
+        if read_runs(&project).iter().any(|run| run.action == action.id && matches!(run.state.as_str(), "running" | "held")) {
+            return Err(format!("the action {} runs already", action.name));
+        }
+        let changes = changes_since(&project, failed, index + 1);
+        if !changes.is_empty() && !anyway {
+            return Ok(ActionResume { run: None, changes });
+        }
+        let at = now();
+        let mut steps: Vec<RunStep> = source.steps[..index]
+            .iter()
+            .map(|step| RunStep { from: if step.from.is_empty() { source.id.clone() } else { step.from.clone() }, ..step.clone() })
+            .collect();
+        steps.extend(run_steps(action, &source.values).into_iter().skip(index));
+        let run = ActionRun {
+            id: free_run_id(&project, &action.id, at),
+            action: action.id.clone(),
+            name: action.name.clone(),
+            started: at,
+            state: "running".to_string(),
+            step: index,
+            values: source.values.clone(),
+            steps,
+            ..ActionRun::default()
+        };
+        write_run(&project, &run)?;
+        (run, changes)
+    };
+    let run = advance(cwd, &run.id, start)?;
+    Ok(ActionResume { run: Some(run), changes })
 }
 
 /// What `advance` starts after it released the lock.
@@ -585,6 +705,9 @@ fn start_next(project: &Project, run: &mut ActionRun, at: u64) -> Todo {
     step.note.clear();
     step.state = "running".to_string();
     step.started = Some(at);
+    // The state of the project right after the earlier steps passed: a later start at this step
+    // compares the project with it.
+    (step.head, step.dirty) = project_state(project);
     if step.kind == "command" {
         step.owner = Some(std::process::id());
         RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(path);
@@ -1010,6 +1133,107 @@ mod tests {
         let refuse = |_: &Project, _: &[&str]| Err::<String, String>("no brief at somewhere".to_string());
         let run = run_with(&cwd, "refused", &refuse).unwrap();
         assert_eq!((run.state.as_str(), run.steps[0].note.as_str()), ("failed", "no brief at somewhere"));
+        clean(&project);
+    }
+
+    #[test]
+    fn a_failed_run_starts_again_at_the_failed_step() {
+        let project = git_scratch("actions-resume");
+        let root = project.root.clone();
+        let cwd = cwd_of(&project);
+        // go.txt lets step 2 pass, next.txt is the output of step 3; both ignored, so they change
+        // no uncommitted file.
+        write_file(&root.join(".git").join("info").join("exclude"), "go.txt\nnext.txt\n").unwrap();
+        commit(&root, "start.txt", "start");
+        git_ok(&root, &["tag", "v1.0.0"]);
+        save(&cwd, "rel", vec![command("echo one"), command("if exist go.txt (exit /b 0) else (exit /b 4)"), command("echo {next}> next.txt")]);
+        let resume = |run: &str, anyway: bool| resume_with(&cwd, run, anyway, &script_start);
+        // Step 1 fails: no start at step 1.
+        save(&cwd, "first", vec![command("exit /b 5"), command("echo never")]);
+        let first = action_run(cwd.clone(), "first".to_string()).unwrap();
+        let first = wait_step(&cwd, &first.id, 0);
+        assert_eq!((first.state.as_str(), first.step), ("failed", 0));
+        assert!(resume(&first.id, true).unwrap_err().contains("failed at step 1"));
+        // Run: step 1 passes, step 2 fails.
+        let run = action_run(cwd.clone(), "rel".to_string()).unwrap();
+        let run = wait_step(&cwd, &run.id, 0);
+        let run = action_step(cwd.clone(), run.id).unwrap();
+        let failed = wait_step(&cwd, &run.id, 1);
+        assert_eq!((failed.state.as_str(), failed.step, failed.steps[1].exit.as_deref()), ("failed", 1, Some("4")));
+        assert_eq!(failed.steps[1].head, git_ok(&root, &["rev-parse", "HEAD"]).trim());
+        assert!(failed.steps.iter().all(|step| step.from.is_empty()));
+        // A tag changes {next} but not the project: the start needs no question, and the old values stay.
+        write_file(&root.join("go.txt"), "go").unwrap();
+        git_ok(&root, &["tag", "v2.0.0"]);
+        let answer = resume(&failed.id, false).unwrap();
+        assert!(answer.changes.is_empty(), "{answer:?}");
+        let resumed = answer.run.unwrap();
+        assert_ne!(resumed.id, failed.id);
+        assert_eq!((resumed.state.as_str(), resumed.step, resumed.steps[1].state.as_str()), ("running", 1, "running"));
+        assert_eq!(resumed.values, failed.values);
+        let taken = &resumed.steps[0];
+        assert_eq!(taken.from, failed.id);
+        assert_eq!((taken.state.as_str(), taken.started, taken.ended, taken.exit.as_deref(), taken.output.as_str()), ("done", failed.steps[0].started, failed.steps[0].ended, Some("0"), "one"));
+        assert!(resumed.steps[1..].iter().all(|step| step.from.is_empty()));
+        let resumed = wait_step(&cwd, &resumed.id, 1);
+        let resumed = action_step(cwd.clone(), resumed.id).unwrap();
+        let resumed = wait_step(&cwd, &resumed.id, 2);
+        assert_eq!(resumed.state, "done", "{resumed:?}");
+        assert_eq!(fs::read_to_string(root.join("next.txt")).unwrap().trim(), "1.0.1");
+        // Run still starts at step 1, with new values and nothing taken.
+        fs::remove_file(root.join("go.txt")).unwrap();
+        commit(&root, "later.txt", "later");
+        git_ok(&root, &["tag", "v3.0.0"]);
+        let again = action_run(cwd.clone(), "rel".to_string()).unwrap();
+        assert_eq!((again.step, again.steps[0].state.as_str()), (0, "running"));
+        assert!(again.steps.iter().all(|step| step.from.is_empty()));
+        assert_eq!(again.values["next"], "3.0.1");
+        let again = wait_step(&cwd, &again.id, 0);
+        let again = action_step(cwd.clone(), again.id).unwrap();
+        let again = wait_step(&cwd, &again.id, 1);
+        assert_eq!((again.state.as_str(), again.step), ("failed", 1));
+        // A new uncommitted file: the panel gets the change and no run starts.
+        write_file(&root.join("extra.txt"), "extra").unwrap();
+        let answer = resume(&again.id, false).unwrap();
+        assert!(answer.run.is_none());
+        assert_eq!(answer.changes, vec!["The uncommitted files changed since step 2 started.".to_string()]);
+        // A new commit: the change names both commits.
+        commit(&root, "extra.txt", "extra");
+        let answer = resume(&again.id, false).unwrap();
+        assert!(answer.run.is_none());
+        assert_eq!(answer.changes.len(), 1, "{answer:?}");
+        assert!(answer.changes[0].starts_with("The project has a new commit since step 2 started ("), "{answer:?}");
+        // Start anyway: the run starts, with the changes in the answer.
+        let answer = resume(&again.id, true).unwrap();
+        assert_eq!(answer.changes.len(), 1);
+        let started = answer.run.unwrap();
+        assert_eq!((started.state.as_str(), started.step, started.steps[0].from.as_str()), ("running", 1, again.id.as_str()));
+        let started = wait_step(&cwd, &started.id, 1);
+        assert_eq!(started.state, "failed");
+        // A start from a resumed run keeps the run where the step really ran.
+        write_file(&root.join("go.txt"), "go").unwrap();
+        let chained = resume(&started.id, true).unwrap().run.unwrap();
+        assert_eq!(chained.steps[0].from, again.id);
+        let chained = wait_step(&cwd, &chained.id, 1);
+        let chained = action_step(cwd.clone(), chained.id).unwrap();
+        assert_eq!(wait_step(&cwd, &chained.id, 2).state, "done");
+        // A run file of an older Dispatch (no head, no dirty): it loads, and the change says that
+        // Dispatch cannot tell.
+        let old = r#"{"id":"rel-old","action":"rel","name":"Action rel","started":1,"ended":3,"state":"failed","step":1,"values":{"next":"0.9.0"},"steps":[{"kind":"command","text":"echo one","ticket":"","auto":false,"limit":3600,"state":"done","started":1,"ended":2,"exit":"0","output":"one","note":"","owner":null},{"kind":"command","text":"x","ticket":"","auto":false,"limit":3600,"state":"failed","started":2,"ended":3,"exit":"1","output":"","note":"","owner":null},{"kind":"command","text":"y","ticket":"","auto":false,"limit":3600,"state":"waiting","started":null,"ended":null,"exit":null,"output":"","note":"","owner":null}],"note":"step 2 failed"}"#;
+        write_file(&project.actions_dir().join("rel-old.json"), old).unwrap();
+        let shown = list(&Project::find(&cwd).unwrap());
+        assert!(shown.runs.iter().any(|run| run.id == "rel-old" && run.steps[0].head.is_empty()));
+        let answer = resume("rel-old", false).unwrap();
+        assert_eq!((answer.run.is_none(), answer.changes), (true, vec![OLDER_CHANGE.to_string()]));
+        // A failed Claude step: refused, because its ticket exists already.
+        let mut claude = read_run(&Project::find(&cwd).unwrap(), "rel-old").unwrap();
+        claude.id = "rel-claude".to_string();
+        claude.steps[1].kind = "claude".to_string();
+        claude.steps[1].ticket = "t-release".to_string();
+        write_run(&Project::find(&cwd).unwrap(), &claude).unwrap();
+        assert!(resume("rel-claude", true).unwrap_err().contains("is a Claude task"));
+        // A run that did not fail.
+        assert!(resume(&chained.id, true).unwrap_err().contains("did not fail"));
         clean(&project);
     }
 

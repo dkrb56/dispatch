@@ -9,7 +9,7 @@ use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, State};
 
 use crate::core::tickets::{self, PlanAdded, PlanAfter, Ticket, TicketFields};
-use crate::core::actions::{self, Action, ActionList, ActionRun};
+use crate::core::actions::{self, Action, ActionList, ActionResume, ActionRun};
 use crate::core::builds::{self, BuildFolders, CleanResult};
 use crate::core::chats::{self, Chat, ChatView, Worker};
 use crate::core::context::{self, ContextUsage};
@@ -503,6 +503,11 @@ pub fn action_run(cwd: String, id: String) -> Result<ActionRun, String> {
 #[tauri::command(async)]
 pub fn action_step(cwd: String, run: String) -> Result<ActionRun, String> {
     actions::action_step(cwd, run)
+}
+
+#[tauri::command(async)]
+pub fn action_resume(cwd: String, run: String, anyway: bool) -> Result<ActionResume, String> {
+    actions::action_resume(cwd, run, anyway)
 }
 
 #[tauri::command(async)]

@@ -16,6 +16,8 @@ import {
   lastRun,
   lastRunText,
   RELEASE_EXAMPLE,
+  resumeButtonText,
+  resumeStep,
   runButtonState,
   type RunStep,
   runningCount,
@@ -24,6 +26,7 @@ import {
   slugOf,
   stepEnded,
   stepSummary,
+  takenText,
   uniqueId,
 } from "../src/actions.ts";
 
@@ -45,6 +48,9 @@ const step = (fields: Partial<RunStep>): RunStep => ({
   output: "",
   note: "",
   owner: null,
+  from: "",
+  head: "",
+  dirty: "",
   ...fields,
 });
 
@@ -191,4 +197,47 @@ test("index.html and styles.css: the dialog, the Help section and the look of th
   assert.match(CSS, /\.action-output \{[^}]*max-height: 240px/);
   assert.match(CSS, /\.action-chip\.fail \{/);
   assert.match(CSS, /\.action-run-button\.starting:disabled \{[^}]*cursor: progress/);
+});
+
+test("resumeStep: a run that failed at a command step after step 1, and an action that still has that step", () => {
+  const action: Action = { id: "rel", name: "Rel", steps: [{ kind: "command", command: "test" }, { kind: "command", command: "push" }, { kind: "command", command: "notes" }] };
+  const steps = [step({ state: "done", exit: "0" }), step({ state: "failed", exit: "6" }), step({})];
+  const failed = run({ action: "rel", state: "failed", step: 1, steps });
+  assert.equal(resumeStep(failed, action), 1);
+  assert.equal(resumeButtonText(1), "Run from step 2");
+  // Step 1 failed: Run is the only way.
+  assert.equal(resumeStep(run({ state: "failed", step: 0, steps }), action), null);
+  // Not failed, or no run.
+  assert.equal(resumeStep(run({ state: "done", step: 2, steps }), action), null);
+  assert.equal(resumeStep(run({ state: "running", step: 1, steps }), action), null);
+  assert.equal(resumeStep(undefined, action), null);
+  // A failed Claude step: its ticket exists already.
+  assert.equal(resumeStep(run({ state: "failed", step: 1, steps: [steps[0], step({ kind: "claude", ticket: "t", state: "failed" })] }), action), null);
+  // The action has no such step now.
+  assert.equal(resumeStep(failed, { ...action, steps: action.steps.slice(0, 1) }), null);
+});
+
+test("takenText: the time of the earlier run, and that the step did not run again", () => {
+  const time = (millis: number) => `T${millis}`;
+  assert.equal(takenText(step({ from: "rel-1", started: 5, ended: 9 }), time), "taken from the run of T9, not run again");
+  assert.equal(takenText(step({ from: "rel-1", started: 5 }), time), "taken from the run of T5, not run again");
+  assert.equal(takenText(step({ from: "rel-1" }), time), "taken from an earlier run, not run again");
+});
+
+test("main.ts, index.html and styles.css: Run from step N, the question about changes, the taken steps and the Help", () => {
+  assert.match(MAIN, /call<ActionResume>\(host, "action_resume", \{ cwd, run: runId, anyway \}\)/);
+  const render = MAIN.slice(MAIN.indexOf("function renderActions("), MAIN.indexOf("function actionCard("));
+  assert.match(render, /\[\.\.\.startingActions\], \[\.\.\.resumeAsks\]\]\)/);
+  const card = MAIN.slice(MAIN.indexOf("function actionCard("), MAIN.indexOf("function runLook("));
+  assert.match(card, /resumeStep\(run, action\)/);
+  assert.match(card, /resumeCall\(key, startKey, run\.id, false\)/);
+  assert.match(card, /"Start anyway"[^\n]*resumeCall\(key, startKey, run\.id, true\)/);
+  assert.match(card, /"Cancel"/);
+  const item = MAIN.slice(MAIN.indexOf("function runStepItem("), MAIN.indexOf("function actionEditor("));
+  assert.match(item, /step\.from \? " taken" : ""/);
+  assert.match(item, /takenText\(step\)/);
+  const help = HTML.slice(HTML.indexOf("<h3>Actions</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
+  for (const part of ["Run from step N", "do not run again", "Start anyway", "Cancel", "{last_tag}", "Claude task step gets no button", "Run still starts at step 1"]) assert.ok(help.includes(part), part);
+  assert.match(CSS, /\.action-step\.taken \{/);
+  assert.match(CSS, /\.action-resume-ask \{[^}]*var\(--wait-bg\)/);
 });

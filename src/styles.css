@@ -3511,6 +3511,41 @@ button.ticket-level {
   color: var(--wait);
 }
 
+/* A step that "Run from step N" copied from an earlier run: it did not run again. */
+.action-step.taken {
+  opacity: 0.7;
+}
+
+.action-taken {
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+  font-style: italic;
+}
+
+/* The changes of the project before "Run from step N": the user starts anyway or cancels. */
+.action-resume-ask {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--wait-line);
+  border-radius: 6px;
+  background: var(--wait-bg);
+  color: var(--wait);
+}
+
+.action-resume-ask p,
+.action-resume-ask ul {
+  margin: 0 0 6px;
+}
+
+.action-resume-ask ul {
+  padding-left: 18px;
+}
+
+.action-resume-buttons {
+  display: flex;
+  gap: 6px;
+}
+
 .action-output {
   max-height: 240px;
   margin: 4px 0 0;

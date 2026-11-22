@@ -117,6 +117,7 @@ pub fn run() {
             commands::action_delete,
             commands::action_run,
             commands::action_step,
+            commands::action_resume,
             commands::triage_handoff,
             commands::project_root,
             commands::worker_flags,

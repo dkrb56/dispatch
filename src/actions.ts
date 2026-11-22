@@ -36,6 +36,12 @@ export interface RunStep {
   output: string;
   note: string;
   owner: number | null;
+  /** The run whose result this step shows, when "Run from step N" copied it; empty when it ran in this run. */
+  from: string;
+  /** The commit at the start of the step; empty without git and in an older run. */
+  head: string;
+  /** The uncommitted files at the start of the step. */
+  dirty: string;
 }
 
 /** One run of an action. */
@@ -60,6 +66,12 @@ export interface ActionList {
   runs: ActionRun[];
   /** Why the definitions file could not be read; empty else. */
   error: string;
+}
+
+/** The answer of `action_resume`: the new run, or the changes of the project that the user must see first. */
+export interface ActionResume {
+  run: ActionRun | null;
+  changes: string[];
 }
 
 /** The list of a project without actions, and of an older host. */
@@ -162,6 +174,29 @@ export function lastRunText(run: ActionRun | undefined, time: (millis: number) =
 export function runButtonState(run: ActionRun | undefined, starting: boolean): "starting" | "busy" | "ready" {
   if (starting) return "starting";
   return run?.state === "running" || run?.state === "held" ? "busy" : "ready";
+}
+
+/**
+ * The index of the step where "Run from step N" starts a failed run again, or null: the run did not
+ * fail, it failed at step 1, its failed step is a Claude task (its ticket exists already), or the
+ * action has no such step now. The host checks the same in `action_resume`.
+ */
+export function resumeStep(run: ActionRun | undefined, action: Action): number | null {
+  if (!run || run.state !== "failed" || run.step < 1) return null;
+  if (run.steps[run.step]?.kind !== "command") return null;
+  if (action.steps.length <= run.step) return null;
+  return run.step;
+}
+
+/** The text of the button that starts a failed run again at the step of this index. */
+export function resumeButtonText(index: number): string {
+  return `Run from step ${index + 1}`;
+}
+
+/** The line of a step that a start at a later step copied from an earlier run. */
+export function takenText(step: RunStep, time: (millis: number) => string = shortTime): string {
+  const when = step.ended ?? step.started;
+  return when === null ? "taken from an earlier run, not run again" : `taken from the run of ${time(when)}, not run again`;
 }
 
 /** What the task list knows of the task of a Claude step. */

@@ -933,6 +933,7 @@
           <li>A <b>command</b> step runs on the computer of the project, in the project folder. The panel shows its output and exit code. A <b>Claude task</b> step goes through the pipeline as a ticket: a plan, a work run, a report.</li>
           <li><b>Approve the plan by itself</b> on a Claude step starts the work run without your click. A plan with a HOLD decision still waits for you.</li>
           <li><b>Run</b> starts the first step. At the click the card hides the last run, and Run shows "Starting…" until the new run shows. The next step starts when a step ends well; the chain stops at the first step that fails.</li>
+          <li><b>Run from step N</b> shows on a run that failed at step 2 or later. It starts the run again at the failed step; the earlier steps do not run again.</li>
         </ul>
         <details class="help-more">
           <summary>Details</summary>
@@ -942,6 +943,7 @@
             <li><b>A Claude task</b> gets the ticket id of its step, Working on the tickets board, and a brief whose first line says that Dispatch wrote it from the action; the triage chat does not see it. A ticket id that a ticket or a task has already fails the run. The step ends when the report says done (also after Take as done) or failed, or when you stop the task.</li>
             <li><b>Commands.</b> One line each; join commands with <code>&amp;&amp;</code>. Windows runs it with <code>cmd.exe</code>. A command stops after its time limit (one hour unless the step says other). A command runs only at your click, never at a start or on a timer. A command that ran while Dispatch ended shows as failed.</li>
             <li><b>Pause.</b> A paused project holds the Claude steps: the run says "held: the project is paused" and goes on at Resume. A command step runs at your click also in a paused project.</li>
+            <li><b>Run from step N.</b> The new run shows the earlier steps with their old result and time, marked "taken from the run of …, not run again". It keeps the values of the failed run, for example <code>{last_tag}</code> and <code>{next}</code>. The steps from N on are the steps of the action now, so a fix in Edit counts. When the project got a new commit or other uncommitted changes since step N started, the panel says so first: <b>Start anyway</b> or <b>Cancel</b>. For a run from before this check, the panel says that it cannot tell. A failed Claude task step gets no button, because its ticket exists already; use Run. Run still starts at step 1.</li>
             <li><b>The window that drives the host</b> moves the chain on, as it approves plans. A push to GitHub happens only in an action that you click and whose command names it.</li>
             <li><b>Release example</b> in the editor fills in a Release: a Claude task <code>release-{next}</code> that sets the version and writes the changelog entry, approved by itself, then the command <code>git tag v{next} &amp;&amp; git push origin main v{next}</code>. Check the texts before Save; nothing exists until then.</li>
           </ul>

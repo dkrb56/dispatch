@@ -128,7 +128,7 @@ import { showTriage, triageCard, triagePanesToClose, withoutTriage, type Project
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
 import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type ReadTimes, sameFiles, sameFilesRefusal, StartLeases, type WorkRun } from "./workstart";
-import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
+import { type Action, type ActionList, type ActionResume, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, resumeButtonText, resumeStep, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, takenText, uniqueId } from "./actions";
 import { failLines, freshOnly, type GateRefusal, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { autoMergeNote, type AutoMergeFacts, folderRefusal, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
 import { type ContextBlock, TLDR_LABEL, contextBlocks, formatLines, tldrBlock } from "./decisions-context";
@@ -9386,6 +9386,11 @@ const busyRuns = new Set<string>();
 const startingActions = new Set<string>();
 /** The run state at a refused `action_step`, by project key and run id: the same state is not tried again. */
 const refusedRuns = new Map<string, string>();
+/**
+ * The changes of the project that wait for the user before "Run from step N", as
+ * `<project key>\n<action id>`: the failed run and the change lines of `action_resume`.
+ */
+const resumeAsks = new Map<string, { run: string; changes: string[] }>();
 
 /** Runs an action command for a project (by its key), reads the list again and renders. True on success. */
 async function actionCall(project: string, command: string, args: Record<string, unknown>): Promise<boolean> {
@@ -9402,6 +9407,33 @@ async function actionCall(project: string, command: string, args: Record<string,
   } finally {
     actionsShown = "";
     renderChats();
+  }
+}
+
+/**
+ * Starts a failed run again at its failed step ("Run from step N"). Without `anyway`, the host
+ * gives the changes of the project since that step started and starts nothing; the card then
+ * asks the user (Start anyway or Cancel).
+ */
+async function resumeCall(key: string, startKey: string, runId: string, anyway: boolean): Promise<void> {
+  const { host, cwd } = projectCwd(key);
+  actionsError = "";
+  resumeAsks.delete(startKey);
+  startingActions.add(startKey);
+  actionsShown = "";
+  renderActions();
+  try {
+    const answer = await call<ActionResume>(host, "action_resume", { cwd, run: runId, anyway });
+    if (!answer.run && answer.changes.length > 0) resumeAsks.set(startKey, { run: runId, changes: answer.changes });
+    await readProjectTasks(host, cwd);
+  } catch (error) {
+    actionsError = String(error);
+    console.error("action_resume failed", error);
+  } finally {
+    startingActions.delete(startKey);
+    actionsShown = "";
+    renderChats();
+    renderActions();
   }
 }
 
@@ -9483,7 +9515,7 @@ function renderActions(): void {
   if (!actionsRef) return;
   const key = refKey(actionsRef);
   const list = projectTasks.get(key)?.actions ?? EMPTY_ACTIONS;
-  const shown = JSON.stringify([key, list, actionsError, deleteArmed, editingAction !== null, [...startingActions]]);
+  const shown = JSON.stringify([key, list, actionsError, deleteArmed, editingAction !== null, [...startingActions], [...resumeAsks]]);
   if (shown === actionsShown) return;
   actionsShown = shown;
   actionsTitleEl.textContent = `Actions · ${projectName(actionsRef)}`;
@@ -9554,8 +9586,34 @@ function actionCard(key: string, action: Action, run: ActionRun | undefined, ope
       if (actionsDialog.open) renderActions();
     }, 4100);
   }, busy);
-  head.append(name, steps, runButton, edit, remove);
+  // "Run from step N": a failed run starts again at its failed step; the earlier steps are copied.
+  const ask = run ? resumeAsks.get(startKey) : undefined;
+  const asking = ask?.run === run?.id ? ask : undefined;
+  const resumeAt = buttonState === "ready" ? resumeStep(run, action) : null;
+  const resumeButton =
+    resumeAt !== null && run && !asking
+      ? ticketButton(resumeButtonText(resumeAt), `Start this run again at step ${resumeAt + 1}; steps 1 to ${resumeAt} are not run again`, () => void resumeCall(key, startKey, run.id, false))
+      : null;
+  resumeButton?.classList.add("action-resume-button");
+  head.append(name, steps, runButton, ...(resumeButton ? [resumeButton] : []), edit, remove);
   card.append(head);
+  if (asking && run && resumeAt !== null && !starting) {
+    const box = mapElement("div", "action-resume-ask");
+    box.append(mapElement("p", "", `${resumeButtonText(resumeAt)}: the project changed since the earlier steps passed.`));
+    const changes = mapElement("ul");
+    for (const change of asking.changes) changes.append(mapElement("li", "", change));
+    const buttons = mapElement("div", "action-resume-buttons");
+    buttons.append(
+      ticketButton("Start anyway", `Start at step ${resumeAt + 1} with the results of the earlier steps`, () => void resumeCall(key, startKey, run.id, true)),
+      ticketButton("Cancel", "Start nothing; Run starts at step 1", () => {
+        resumeAsks.delete(startKey);
+        actionsShown = "";
+        renderActions();
+      }),
+    );
+    box.append(changes, buttons);
+    card.append(box);
+  }
   const line = mapElement("div", "action-run");
   const chip = starting ? mapElement("span", "action-chip wait", "starting") : mapElement("span", `action-chip ${run ? runLook(run) : ""}`, run ? run.state : "new");
   line.append(chip, mapElement("span", "", starting ? "Starting…" : lastRunText(run)));
@@ -9583,10 +9641,11 @@ function runLook(run: ActionRun): string {
 
 /** One step of a run: its kind, its text or ticket, its state, and the output tail of a command. */
 function runStepItem(step: ActionRun["steps"][number]): HTMLElement {
-  const item = mapElement("li", `action-step ${step.state}`);
+  const item = mapElement("li", `action-step ${step.state}${step.from ? " taken" : ""}`);
   const what = step.kind === "claude" ? step.ticket : step.text;
   const state = [step.state, step.exit !== null ? `exit ${step.exit}` : "", step.ended ? shortTime(step.ended) : ""].filter(Boolean).join(" · ");
   item.append(mapElement("span", "action-step-kind", stepWord(step.kind)), mapElement("code", "", what), mapElement("span", "action-step-state", state));
+  if (step.from) item.append(mapElement("div", "action-taken", takenText(step)));
   if (step.note) item.append(mapElement("div", "action-note", step.note));
   if (step.kind === "command" && step.output) item.append(mapElement("pre", "action-output", step.output));
   return item;
