@@ -55,7 +55,7 @@ The user's decisions of 2026-11-21: the five rules; one work folder at the start
 - The set-up command: `.dispatch/work-setup.txt`, one command line; a first line `# limit <seconds>` sets its time limit (default 3600).
 - The record: `.dispatch/work/1.record`, with the lines `ticket:`, `use:` (`work`, `check` or `merge`), `pid:`, `job:` and `since:`.
 - The set-up log: `.dispatch/work/1-setup.log`.
-- The design holds for more than one folder. More folders permit parallel work runs later; each costs disk space and one first build.
+- The design holds for more than one folder. More folders permit parallel work runs; each costs disk space and one first build. The section "More than one work folder" says how.
 
 ### Plan run
 
@@ -104,6 +104,21 @@ Ticket moving-a-project, 2026-11-22. The user turns the switch on per project, a
 - An old branch takes the newer commits of the base with `Sync-Base -Before` in place of a plain `git merge` in the work folder: the work folder lets go of the branch, the merge commit takes `.dispatch` of the base (rule 4), and task files that the old branch committed make no conflict.
 - A newer report that an old branch holds comes onto the base also with the switch on, so a question or an answer of the old run stands on the card. The merge of the work folder then takes the card files of the base.
 
+## More than one work folder
+
+Tickets up-to-4-work-folders-more-than-one-task and setup-pipeline-shows-the-cost-of-a, 2026-11-22. Rules 1 to 5 hold for each folder.
+
+- The setting: `workFolderCount` in `.dispatch/options.json`, 1 to 4, the box "Work folders" under the switch "Work folder" in Setup pipeline. The folders are `.dispatch/work/1` to `.dispatch/work/4`, each with its own record `<n>.record`. The default is 1, and then every path and text is the one of one folder.
+- The pick of a folder for a task: the folder that has `task/<ticket>` checked out (git checks out a branch in one folder only), else the folder whose record names the task, else the lowest free folder that exists, else the lowest number without a folder; Dispatch makes that folder at that time.
+- The wait: up to N tasks are in their work run at once. A task beyond N waits, and its card names the tasks that use the folders.
+- The folder of an answer: when a task stops with a question, its folder becomes free. The answer later goes to the same folder as before and waits for it, not for another folder.
+- The same-file rule: two tasks whose plans name the same file, or a file under the same folder path, never work at the same time. The later task waits, also with an answer, until the other is done; its card names the file. Paths under `.dispatch/` never count.
+- The build folder: a test or build output folder that the project rules share between runs keeps its name in work folder 1 and gets the suffix `-<n>` in work folder `<n>`: the variable `DISPATCH_WORK_FOLDER` holds the number, and a test copy builds into `test-copy-<n>`. Two runs never write into one folder.
+- A folder above a lowered number: Dispatch does not remove it. It stays and serves its task until that task ends; Setup pipeline says it is there. A new task does not take it.
+- The merge: it takes any free folder, one merge at a time (the merge lock), and runs beside the work runs in other folders.
+- The cost: each folder takes about the disk space of folder 1 and one first build. Setup pipeline measures folder 1 each time the window opens, in the background, and shows the size under the number; the line says "Measuring…" until the number arrives, and says so when the folder does not exist yet. A walk over 43 GB (this repository, with its build output) took 5.6 seconds on 2026-11-22.
+- The user's decisions of the plan of ticket up-to-4-work-folders-more-than-one-task: (1) a folder becomes free when its task stops with a question, and the answer waits only for that same folder; (2) two tasks on the same file do not work at the same time; (3) the shared build folder gets the number of the work folder; (4) a folder above a lowered number stays and keeps serving its task.
+
 ## What goes away
 
 When every project uses work folders (the last task below):
@@ -116,7 +131,7 @@ When every project uses work folders (the last task below):
 
 - The two runs, the plan, Approve, the questions, the report and its header.
 - The branch `task/<ticket>`, the branch file, the gate command, the picked checks, auto-merge in the order of the done reports, Push after the merge, the detection of a merge outside Dispatch.
-- One work run per project at a time, while the project has one work folder.
+- One work run per project at a time, while the project has one work folder; with N work folders, up to N.
 - A project with Task branches off works as today.
 
 ## Open points to prove first

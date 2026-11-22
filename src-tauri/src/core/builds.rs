@@ -94,7 +94,7 @@ fn target_folders(root: &Path) -> Vec<PathBuf> {
 
 /// The sum of the file lengths below `dir`, without the sub folders named in `except`. It follows no
 /// symlink or junction; an unreadable entry counts 0.
-fn size_of(dir: &Path, except: &[&str]) -> u64 {
+pub(crate) fn size_of(dir: &Path, except: &[&str]) -> u64 {
     let Ok(entries) = fs::read_dir(dir) else { return 0 };
     let mut total = 0;
     for entry in entries.flatten() {

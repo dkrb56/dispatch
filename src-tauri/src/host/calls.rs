@@ -206,6 +206,7 @@ pub fn run(
         "set_measure_commands" => json(pipeline::set_measure_commands(a.req("cwd")?, a.req("text")?)?),
         "set_merge_gate" => json(pipeline::set_merge_gate(a.req("cwd")?, a.req("text")?)?),
         "set_work_setup" => json(pipeline::set_work_setup(a.req("cwd")?, a.req("text")?)?),
+        "work_folder_size" => json(pipeline::work_folder_size(a.req("cwd")?)?),
         "set_checks" => json(pipeline::set_checks(a.req("cwd")?, a.req("text")?)?),
         "set_checks_all" => json(pipeline::set_checks_all(a.req("cwd")?, a.req("text")?)?),
         "find_checks" => json(pipeline::find_checks(a.req("cwd")?, a.req("text")?)?),

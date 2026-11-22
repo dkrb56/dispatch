@@ -8400,6 +8400,17 @@ pub fn set_work_setup(cwd: String, text: String) -> Result<Plan, String> {
     plan(&project)
 }
 
+/// The size of work folder 1 in bytes (ticket setup-pipeline-shows-the-cost-of-a), or none when the
+/// folder does not exist. Setup pipeline shows it, so the user can judge the cost of more folders.
+pub fn work_folder_size(cwd: String) -> Result<Option<u64>, String> {
+    let project = Project::find(&cwd)?;
+    let dir = project.work_dir().join("1");
+    if !fs::metadata(&dir).is_ok_and(|m| m.is_dir()) {
+        return Ok(None);
+    }
+    Ok(Some(crate::core::builds::size_of(&dir, &[])))
+}
+
 /// Saves the list of checks of the project of a folder (ticket task-checks): the text of the box,
 /// each line trimmed, empty lines at the end dropped. The steps then show what Apply must change.
 pub fn set_checks(cwd: String, text: String) -> Result<Plan, String> {
@@ -13124,6 +13135,32 @@ if (args[0] === 'agents') {
         assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-2.txt")]).is_some());
         assert_no_merge_left(&project);
         clean(&project);
+    }
+
+    /// Ticket setup-pipeline-shows-the-cost-of-a: the size of work folder 1 is none without the
+    /// folder and the sum of the file lengths with it.
+    #[test]
+    fn work_folder_size_is_none_without_the_folder_and_the_sum_with_it() {
+        let project = scratch("work-folder-size");
+        let cwd = project.root.to_string_lossy().into_owned();
+        assert_eq!(work_folder_size(cwd.clone()).unwrap(), None);
+        let folder = project.work_dir().join("1");
+        fs::create_dir_all(folder.join("sub")).unwrap();
+        fs::write(folder.join("a.txt"), "12345").unwrap();
+        fs::write(folder.join("sub").join("b.txt"), "1234567").unwrap();
+        assert_eq!(work_folder_size(cwd).unwrap(), Some(12));
+        clean(&project);
+    }
+
+    /// Ticket setup-pipeline-shows-the-cost-of-a: the walk over the project folder of this
+    /// repository, for the report. Run it with `-- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn work_folder_size_walk() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let started = std::time::Instant::now();
+        let bytes = crate::core::builds::size_of(root, &[]);
+        println!("walk: {bytes} bytes in {} ms", started.elapsed().as_millis());
     }
 
     /// Ticket up-to-4-work-folders-more-than-one-task: the tests of more than one work folder. The

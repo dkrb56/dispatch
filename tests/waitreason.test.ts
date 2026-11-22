@@ -276,3 +276,22 @@ test("the Help and the README name Work folder (ticket moving-a-project)", () =>
   assert.match(HTML, /<tr><td>Work folder<\/td><td><code>\.dispatch\/work\/1<\/code><\/td>/);
   assert.ok(read("../README.md").includes('"Work folder"'));
 });
+
+test("the Help and the README explain more than one work folder (ticket setup-pipeline-shows-the-cost-of-a)", () => {
+  const help = HTML.slice(HTML.indexOf("<h3>Project settings</h3>"), HTML.indexOf("<h3>The workspace</h3>"));
+  assert.ok(help.includes("1 to 4"));
+  assert.ok(help.includes("a task beyond that number waits"));
+  assert.ok(help.includes("An answer goes to the folder where its task works"));
+  assert.ok(help.includes("Two tasks whose plans name the same file never work at the same time"));
+  assert.ok(help.includes("a folder above it stays and serves its task"));
+  assert.ok(!HTML.includes("One task uses the side folder at a time."));
+  assert.ok(!HTML.includes("A second task waits until the side folder is free."));
+  // The size line stands in the block of the number, under its explanation.
+  const at = HTML.indexOf('id="setup-work-size"');
+  assert.ok(at > 0);
+  const block = HTML.slice(HTML.lastIndexOf('<div class="switch-field setup-full">', at), at);
+  assert.ok(block.includes('id="setup-work-count"'));
+  const readme = read("../README.md");
+  assert.ok(readme.includes('"Work folders"'));
+  assert.ok(readme.includes("1 to 4"));
+});

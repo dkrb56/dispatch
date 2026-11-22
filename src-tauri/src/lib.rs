@@ -75,6 +75,7 @@ pub fn run() {
             commands::set_measure_commands,
             commands::set_merge_gate,
             commands::set_work_setup,
+            commands::work_folder_size,
             commands::set_checks,
             commands::set_checks_all,
             commands::find_checks,

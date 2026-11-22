@@ -1,5 +1,5 @@
 import { call, type HostId } from "./backend";
-import { type BuildFolders, cleanable, type CleanResult, cleanText, rowCells } from "./builds";
+import { type BuildFolders, cleanable, type CleanResult, cleanText, rowCells, workSizeText } from "./builds";
 import { type FullRunInfo, fullRunLines, timeMinutes, timeText } from "./checks";
 import { initDialogTabs } from "./dialogtabs";
 import { type FileEntry, openViewer, statFile } from "./files";
@@ -118,6 +118,10 @@ const gateEl = document.querySelector<HTMLTextAreaElement>("#setup-merge-gate")!
 const setupEl = document.querySelector<HTMLTextAreaElement>("#setup-work-setup")!;
 /** The number of work folders, under the switch "Work folder" (ticket up-to-4-work-folders-more-than-one-task). */
 const workCountEl = document.querySelector<HTMLInputElement>("#setup-work-count")!;
+/** The line under that number: what work folder 1 takes (ticket setup-pipeline-shows-the-cost-of-a). */
+const workSizeEl = document.querySelector<HTMLElement>("#setup-work-size")!;
+/** True once the dialog has asked for the size in this open: one walk per open. */
+let sizeAsked = false;
 /** The box with the checks of the project (ticket task-checks). It has no switch: an empty list is off. */
 const checksEl = document.querySelector<HTMLTextAreaElement>("#setup-checks")!;
 /** The button that adds the tests that Dispatch finds in the project to that box. */
@@ -253,6 +257,18 @@ async function showBuilds(host: HostId, target: string, note = ""): Promise<void
   }
 }
 
+/** Measures work folder 1 and fills the line under the number. The dialog does not wait for the walk; a reply of an older open is dropped. */
+async function showWorkSize(host: HostId, target: string): Promise<void> {
+  const run = checkRun;
+  workSizeEl.textContent = "Measuring work folder 1…";
+  try {
+    const bytes = await call<number | null>(host, "work_folder_size", { cwd: target });
+    if (run === checkRun) workSizeEl.textContent = workSizeText(bytes);
+  } catch (error) {
+    if (run === checkRun) workSizeEl.textContent = `The size of work folder 1 could not be read: ${error}`;
+  }
+}
+
 /** The checkboxes of the working rules of a step. A change keeps the choice in `rulesOff`. */
 function rulesElement(rules: string[]): HTMLElement {
   const list = document.createElement("div");
@@ -382,6 +398,12 @@ function show(plan: Plan): void {
   setupEl.disabled = !(plan.options.taskBranches && plan.options.workFolders);
   if (document.activeElement !== workCountEl) workCountEl.value = String(plan.options.workFolderCount ?? 1);
   workCountEl.disabled = !(plan.options.taskBranches && plan.options.workFolders);
+  // The size line shows only with both switches on; the walk starts once per open, in the background.
+  workSizeEl.hidden = workCountEl.disabled;
+  if (!workCountEl.disabled && !sizeAsked && folder) {
+    sizeAsked = true;
+    void showWorkSize(folderHost, folder);
+  }
   if (document.activeElement !== checksEl) checksEl.value = plan.checks ?? "";
   checksEl.disabled = false;
   findChecksEl.disabled = false;
@@ -554,6 +576,9 @@ function open(host: HostId, target: string | null): void {
   setupEl.disabled = true;
   workCountEl.value = "";
   workCountEl.disabled = true;
+  workSizeEl.textContent = "";
+  workSizeEl.hidden = true;
+  sizeAsked = false;
   checksEl.value = "";
   checksEl.disabled = true;
   findChecksEl.disabled = true;

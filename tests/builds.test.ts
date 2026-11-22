@@ -2,7 +2,7 @@
 // size text, the row text, which rows the clean takes and the text after a clean. Run: node --test tests/
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BuildRow, cleanable, cleanText, rowCells, rowText, sizeText } from "../src/builds.ts";
+import { type BuildRow, cleanable, cleanText, rowCells, rowText, sizeText, workSizeText } from "../src/builds.ts";
 
 const row = (name: string, kind: BuildRow["kind"], bytes: number): BuildRow => ({ target: "D:\p\target", name, kind, bytes });
 
@@ -12,6 +12,15 @@ test("sizes in words", () => {
   assert.equal(sizeText(820 * 1024 * 1024), "820 MB");
   assert.equal(sizeText(5.4 * 1024 ** 3), "5.4 GB");
   assert.equal(sizeText(150 * 1024 ** 3), "150 GB");
+});
+
+test("the work folder line names the size, the cost of more folders and a missing folder", () => {
+  const size = workSizeText(5.4 * 1024 ** 3);
+  assert.ok(size.includes(`Work folder 1 takes ${sizeText(5.4 * 1024 ** 3)}.`), size);
+  assert.ok(size.includes("Each further folder takes about as much, and one first build."), size);
+  const none = workSizeText(null);
+  assert.ok(none.includes("does not exist yet"), none);
+  assert.ok(none.includes("one first build"), none);
 });
 
 test("a row names its folder, size and kind", () => {

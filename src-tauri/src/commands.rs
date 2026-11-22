@@ -252,6 +252,11 @@ pub fn set_work_setup(cwd: String, text: String) -> Result<Plan, String> {
 }
 
 #[tauri::command(async)]
+pub fn work_folder_size(cwd: String) -> Result<Option<u64>, String> {
+    pipeline::work_folder_size(cwd)
+}
+
+#[tauri::command(async)]
 pub fn set_checks(cwd: String, text: String) -> Result<Plan, String> {
     pipeline::set_checks(cwd, text)
 }

@@ -43,6 +43,15 @@ export function sizeText(bytes: number): string {
   return `${value.toFixed(digits)} ${units[unit]}`;
 }
 
+/** The line of Setup pipeline under the number of work folders: what folder 1 takes (none: it does
+ * not exist yet) and that each further folder costs about as much and one first build. */
+export function workSizeText(bytes: number | null): string {
+  if (bytes === null) {
+    return "Work folder 1 does not exist yet. Dispatch makes it at the first Approve; each folder then takes about as much as your build output, and one first build.";
+  }
+  return `Work folder 1 takes ${sizeText(bytes)}. Each further folder takes about as much, and one first build.`;
+}
+
 /** One row in words: the name, the size and the kind. */
 export function rowText(row: BuildRow): string {
   return `${row.name} · ${sizeText(row.bytes)} · ${KIND_TEXT[row.kind]}`;
