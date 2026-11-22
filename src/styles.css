@@ -2716,6 +2716,16 @@ button.ticket-level {
   cursor: pointer;
 }
 
+/* The work folder of a working ticket (ticket show-the-work-folder-of-a-ticket-on-its). */
+.ticket-folder {
+  flex: none;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
 .ticket-level.level-hard {
   border-color: var(--accent-line);
   color: var(--accent);

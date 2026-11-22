@@ -127,7 +127,7 @@ import { HOLD_NOTE, holdWait } from "./holdstep";
 import { showTriage, triageCard, triagePanesToClose, withoutTriage, type ProjectLoad } from "./notriage";
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
-import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type ReadTimes, sameFiles, sameFilesRefusal, StartLeases, type WorkRun } from "./workstart";
+import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type ReadTimes, ticketFolder, sameFiles, sameFilesRefusal, StartLeases, type WorkRun } from "./workstart";
 import { type Action, type ActionList, type ActionResume, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, resumeButtonText, resumeStep, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, takenText, uniqueId } from "./actions";
 import { failLines, freshOnly, type GateRefusal, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { autoMergeNote, type AutoMergeFacts, folderRefusal, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
@@ -5214,6 +5214,29 @@ function sessionFolder(task: Task): number | null {
   if (number) return Number(number);
   const at = task.project?.workFolderUsers.indexOf(task.name) ?? -1;
   return at >= 0 ? at + 1 : null;
+}
+
+/**
+ * The label "Folder N" of a ticket card while the work run or the merge of its task runs in work
+ * folder N, else null (ticket show-the-work-folder-of-a-ticket-on-its).
+ */
+function folderLabel(task: Task | undefined): HTMLElement | null {
+  const project = task?.project;
+  if (!task || !project) return null;
+  const running = workRuns(projectTaskList(project, false)).some((run) => run.name === task.name);
+  const number = ticketFolder({
+    workFolders: !!project.workFolders,
+    running,
+    merging: project.merging === task.name,
+    session: sessionFolder(task),
+    users: project.workFolderUsers,
+    legacyUser: project.workFolderUser,
+    task: task.name,
+  });
+  if (number === null) return null;
+  const label = mapElement("span", "ticket-folder", `Folder ${number}`);
+  label.title = `This ticket works in work folder ${number}`;
+  return label;
 }
 
 /**
@@ -11121,6 +11144,8 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   // A parent whose own work ended waits for its parts: a dashed grey frame (ticket order-is-messed-up-in-the-tasks-list-and).
   else if (partProgress(ticket, tickets).total > 0) card.classList.add("parts");
   meta.append(tag, levelTag, mapElement("span", "ticket-date", chatTime(ticket.created)));
+  const folderTag = folderLabel(ticketTask);
+  if (folderTag) meta.append(folderTag);
   // An In progress ticket with a task shows the task card instead of the state line (ticket tasks-column-on-the-left-is-redundant).
   if (!ticketTask) meta.append(state);
   // The chain of the parts (ticket subtickets): a part names its place and its parent, a parent its count.
@@ -16800,6 +16825,8 @@ function renderPlan(): void {
     const dot = mapElement("span", `plan-dot ${state.dot}`);
     dot.setAttribute("aria-hidden", "true");
     top.append(dot, mapElement("span", "plan-name", ticket.id));
+    const folderTag = ticket.status === "in-progress" && record ? folderLabel(projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id))) : null;
+    if (folderTag) top.append(folderTag);
     const line = mapElement("div", "plan-state", state.word);
     if (state.detail) {
       line.append(" · ");
@@ -16834,6 +16861,8 @@ function renderPlan(): void {
       const dot = mapElement("span", `plan-dot ${state.dot}`);
       dot.setAttribute("aria-hidden", "true");
       top.append(dot, mapElement("span", "plan-name", ticket.id));
+      const folderTag = ticket.status === "in-progress" && record ? folderLabel(projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id))) : null;
+      if (folderTag) top.append(folderTag);
       const line = mapElement("div", "plan-state", state.word);
       if (state.detail) {
         line.append(" · ");

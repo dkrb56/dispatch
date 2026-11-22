@@ -103,6 +103,37 @@ export function projectBusy(facts: BusyFacts): boolean {
   return !!facts.paused || facts.merging !== null || facts.leased !== null || facts.runs.length >= slotCount(facts);
 }
 
+/** The facts of `ticketFolder` for one task. */
+export interface TicketFolderFacts {
+  /** Work folder is on in the project. */
+  workFolders: boolean;
+  /** The work run of the task is working or blocked. */
+  running: boolean;
+  /** The merge of the task runs. */
+  merging: boolean;
+  /** The folder number from the cwd of its newest `[work]` worker, or null. */
+  session: number | null;
+  /** The ticket of the record of each work folder, from folder 1. */
+  users: readonly (string | null)[];
+  /** The task that an older host names as the user of folder 1 (the single field), or null. */
+  legacyUser?: string | null;
+  /** The name of the task. */
+  task: string;
+}
+
+/**
+ * The work folder number that a ticket card shows (ticket show-the-work-folder-of-a-ticket-on-its),
+ * or null: only while the work run or the merge of the task runs, and only with Work folder on. A
+ * record alone is stale (a work run leaves its record), so it never gives a label by itself.
+ */
+export function ticketFolder(facts: TicketFolderFacts): number | null {
+  if (!facts.workFolders || (!facts.running && !facts.merging)) return null;
+  if (facts.running && facts.session !== null) return facts.session;
+  const at = facts.users.indexOf(facts.task);
+  if (at >= 0) return at + 1;
+  return facts.legacyUser === facts.task && facts.users.length === 0 ? 1 : null;
+}
+
 /**
  * The paths of `mine` that `theirs` names too (ticket the-page-lets-more-than-one-work-run): the same
  * path, or a path under a folder path (one that ends in `/`) of the other list, in either direction,

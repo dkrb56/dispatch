@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type QueuedFacts, sameFiles, sameFilesRefusal, StartLeases, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts, type WorkRun } from "../src/workstart.ts";
+import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type QueuedFacts, sameFiles, sameFilesRefusal, StartLeases, ticketFolder, type TicketFolderFacts, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts, type WorkRun } from "../src/workstart.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -692,4 +692,23 @@ test("main.ts: the card with several work folders names all folders, the same fi
   assert.match(night, /running: editing && editing !== task\.name \? editing : null,/);
   assert.match(body("folderHolders"), /projectTaskList\(project, false\)/);
   assert.match(body("replyFolderHolder"), /projectTaskList\(project, false\)/);
+});
+
+const folderFacts = (over: Partial<TicketFolderFacts>): TicketFolderFacts => ({ workFolders: true, running: true, merging: false, session: null, users: [], legacyUser: null, task: "t", ...over });
+
+test("ticketFolder: the folder number of a working or merging task, else null", () => {
+  assert.equal(ticketFolder(folderFacts({ workFolders: false, users: ["t"] })), null);
+  assert.equal(ticketFolder(folderFacts({ session: 2 })), 2);
+  assert.equal(ticketFolder(folderFacts({ users: ["x", "t"] })), 2);
+  assert.equal(ticketFolder(folderFacts({ users: ["t"] })), 1);
+  assert.equal(ticketFolder(folderFacts({ running: false, merging: true, users: ["a", "b", "t"] })), 3);
+  assert.equal(ticketFolder(folderFacts({ running: false, users: ["x", "t"] })), null);
+  assert.equal(ticketFolder(folderFacts({ users: ["x"] })), null);
+  assert.equal(ticketFolder(folderFacts({ legacyUser: "t" })), 1);
+});
+
+test("ticketFolder: the ticket card and both Plan card loops call the label helper", () => {
+  assert.match(MAIN, /function ticketCard[\s\S]*?folderLabel\(ticketTask\)/);
+  const plan = MAIN.slice(MAIN.indexOf("function renderPlan"));
+  assert.equal((plan.match(/folderLabel\(/g) ?? []).length >= 2, true);
 });
