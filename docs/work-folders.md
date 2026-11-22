@@ -53,7 +53,7 @@ The user's decisions of 2026-11-21: the five rules; one work folder at the start
 - The record of the folder names its user: the ticket, the kind of use (work run or merge) and the id of the job or process. The folder is free when that job or process has ended. A second user waits; its card says "waits for the work folder" and names the task that has it.
 - The switch: `workFolders` in `.dispatch/options.json`, "Work folder" under Task branches in Setup pipeline. It works only with Task branches on.
 - The set-up command: `.dispatch/work-setup.txt`, one command line; a first line `# limit <seconds>` sets its time limit (default 3600).
-- The record: `.dispatch/work/1.record`, with the lines `ticket:`, `use:` (`work` or `check`), `pid:`, `job:` and `since:`.
+- The record: `.dispatch/work/1.record`, with the lines `ticket:`, `use:` (`work`, `check` or `merge`), `pid:`, `job:` and `since:`.
 - The set-up log: `.dispatch/work/1-setup.log`.
 - The design holds for more than one folder. More folders permit parallel work runs later; each costs disk space and one first build.
 
@@ -75,12 +75,12 @@ The user's decisions of 2026-11-21: the five rules; one work folder at the start
 
 ### Merge
 
-1. Dispatch takes the work folder and checks out the tip of the base without a branch (detached).
-2. `git merge --no-ff task/<ticket>` makes the merge commit there. A conflict is undone, and the card lists the files. The project folder is not touched.
+1. Dispatch takes the work folder and checks out the tip of the base without a branch (detached). While a work run or a check run of another task has the folder, the merge waits up to a minute, then the card names that task ("the work folder of this project is in use (task <name>)"). That refusal is no try of auto-merge: the card says that auto-merge waits for the work folder, and auto-merge tries again by itself when the folder is free.
+2. The merge commit is built as a finished commit, with no index of a folder: the tree of `git merge-tree --write-tree <tip> task/<ticket>`, with `.dispatch` as the tip of the base has it, and a commit with the tip and the branch as parents (as `git merge --no-ff` makes it). The work folder then checks it out. A conflict outside `.dispatch` makes no commit, and the card lists the files. The project folder is not touched.
 3. The picked checks and the gate command run in the work folder on the merge commit, in a clean tree.
 4. Tracked files that the gate changed follow the decision of ticket `bug-report-from-the-project-rockhoppers`: they are committed on top of the merge commit.
-5. The base moves. With the project folder on the base: `git merge --ff-only <commit>` there. Git refuses the step as a whole when a changed file of the user is a file of the merge; the card names the file, and Dispatch tries again when the change is gone. With the project folder on another branch: `git update-ref` with the old tip as the condition.
-6. When the base moved since step 1, Dispatch makes the merge again on the new tip. Same code as the gated commit (the files outside `.dispatch` are equal): no new gate. Different code: the gate runs again.
+5. The base moves. With the project folder on the base: `git merge --ff-only <commit>` there. Git refuses the step as a whole when a changed file of the user is a file of the merge; the card names the file ("these uncommitted files of the project folder would be overwritten by the merge; commit, stash or undo them, then click Merge again: <paths>"), and the base stays as it was. With the project folder on another branch: `git update-ref` with the old tip as the condition.
+6. When the base moved since step 1, Dispatch makes the merge again on the new tip, up to three times. Same code as the gated commit (the files outside `.dispatch` are equal): no new gate, and the commit of the gate files is picked onto the new merge. Different code: the gate runs again. The file `.dispatch/merge/<ticket>.gated` remembers the gated merge (the merge commit, the commit of the gate files or `-`, and the tip of the task branch), so a later Merge of the same code, for example after a stopped step 5, runs no new gate either.
 7. The branch file gets `merge: done`, the branch goes, and Push after the merge works as today.
 
 A killed merge leaves its rest in the work folder only. The next user of the folder cleans it.
@@ -148,13 +148,13 @@ Still untried:
 - The place next to the project folder.
 - Tools that scan the project folder (file watchers, search tools, editors) with a work folder inside it.
 - Whether a second `--settings` replaces or adds to the first; the proof showed only that the rules of the second hold.
-- The merge steps 6 and 7 (a base that moved during the gate, and the branch file); the merge by the app itself, with its Merge button.
+- The Merge button and auto-merge of the running app with the switch on, also while another task has the work folder; the tests call the same backend command.
 - A project folder or a work folder that Claude Code does not trust.
 
 ## Tasks that follow
 
 1. **Proof.** A scratch project, one real work run and one gated merge in a work folder; the answers to the open points in this file. No change of the app.
 2. **Work run in the work folder** (ticket work-run-in-the-work-folder, 2026-11-21). A project switch (only with Task branches on, off by default): the folder with its set-up command and its record; Approve, reply, stop, resume and the checks there; the report by its full path; the card names the wait for the folder. With the switch off, every text and step is the one of today.
-3. **Merge in the work folder.** The merge commit, the checks and the gate there; the one-step move of the base; "same code, no new gate"; the cleaning of a left merge; auto-merge and Push after the merge.
+3. **Merge in the work folder** (ticket merge-in-the-work-folder, 2026-11-22). The merge commit, the checks and the gate there; the one-step move of the base; "same code, no new gate"; the cleaning of a left merge; auto-merge and Push after the merge.
 4. **Moving a project.** A task that waits on a branch of the old path (with card files on the branch) merges and answers with the switch on; Setup pipeline, the Help and the README say what the switch does.
 5. **Removing the old path.** Only on the user's word, after this project, Starminer and Rockhoppers ran with the switch on. The user turns the switch on per project in Setup pipeline.

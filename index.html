@@ -183,7 +183,7 @@
               </label>
               <label class="switch-row" data-under="taskBranches">
                 <input type="checkbox" data-option="workFolders" />
-                <span><b>Work folder</b> The work run of a task runs in a side folder of Dispatch (<code>.dispatch/work/1</code>, a git checkout of the task branch). Your project folder stays on your branch while it runs, and the worker still writes its report into the task folder of your project. A second task waits until the side folder is free. The Merge still runs in your project folder in this version. <small class="when-on">Changes the steps "Section in CLAUDE.md" and "Work folder".</small><small class="when-off">Turn on Task branches first.</small></span>
+                <span><b>Work folder</b> The work run of a task runs in a side folder of Dispatch (<code>.dispatch/work/1</code>, a git checkout of the task branch). Your project folder stays on your branch while it runs, and the worker still writes its report into the task folder of your project. A second task waits until the side folder is free. Merge also works there: the merge, the checks and the gate run in the side folder, and your project folder gets the result in one step. <small class="when-on">Changes the steps "Section in CLAUDE.md" and "Work folder".</small><small class="when-off">Turn on Task branches first.</small></span>
               </label>
               <div class="switch-field">
                 <label for="setup-work-setup">Set-up command of the side folder</label>

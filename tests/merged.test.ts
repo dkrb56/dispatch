@@ -4,13 +4,16 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { autoMergeNote, mergedWords, mergeParts, missingFileGone, outsideLine, pushWords, refusalGoes } from "../src/merged.ts";
+import { autoMergeNote, folderRefusal, mergedWords, mergeParts, missingFileGone, outsideLine, pushWords, refusalGoes } from "../src/merged.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 const DIRTY = "refused: the checkout has uncommitted changes; commit or stash them first:\n M .claude/mistakes.md\n M CLAUDE.md";
 const GATE = "refused: the gate command failed with exit code 1, so nothing was merged (npm test; the log is C:\\p\\.dispatch\\merge\\t-1.log). Its last 40 lines:\nFAIL one";
 const CONFLICT = "refused: the merge of task/t-1 into main does not apply; nothing was merged. Conflicts in:\nsrc/a.ts";
+// Ticket merge-in-the-work-folder: the two refusals of the merge with Work folder on.
+const FOLDER = "refused: the work folder of this project is in use (task t-1); the merge starts when it is free";
+const MOVE = "refused: these uncommitted files of the project folder would be overwritten by the merge; commit, stash or undo them, then click Merge again: work-t-1.txt";
 
 test("the merge of Dispatch keeps its words in the branch row", () => {
   assert.equal(mergedWords("done 5cb18fc 2026-11-14T18:10:00"), "merged 5cb18fc 2026-11-14T18:10:00");
@@ -42,6 +45,20 @@ test("a gate refusal and a conflict refusal stay while the branch is unmerged, a
   assert.equal(refusalGoes(DIRTY, { merged: true, dirty: [" M CLAUDE.md"] }), true);
 });
 
+test("the refusals of the merge in the work folder stay while the branch is unmerged, and go at the merge", () => {
+  for (const error of [FOLDER, MOVE]) {
+    assert.equal(refusalGoes(error, { merged: false, dirty: [] }), false, error);
+    assert.equal(refusalGoes(error, { merged: true, dirty: [] }), true, error);
+  }
+});
+
+test("folderRefusal gives the task that holds the work folder, and null for any other text", () => {
+  assert.equal(folderRefusal(FOLDER), "t-1");
+  assert.equal(folderRefusal("refused: the work folder of this project is in use (task fix-login); the run starts when it is free"), "fix-login");
+  assert.equal(folderRefusal(DIRTY), null);
+  assert.equal(folderRefusal(MOVE), null);
+});
+
 test("an error of another card is no merge refusal and stays", () => {
   const approve = "refused: the working tree of D:\\p has uncommitted changes; commit or stash them first (after Setup pipeline, …)";
   assert.equal(refusalGoes(approve, { merged: true, dirty: [] }), false);
@@ -60,7 +77,7 @@ test("the line for triage names the ticket, the branch, the base and the merge c
 });
 
 test("main.ts: the branch row, the task lists and the refusal rule use the module", () => {
-  assert.match(MAIN, /import \{ autoMergeNote, type AutoMergeFacts, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes \} from "\.\/merged";/);
+  assert.match(MAIN, /import \{ autoMergeNote, type AutoMergeFacts, folderRefusal, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes \} from "\.\/merged";/);
   const row = MAIN.slice(MAIN.indexOf("function branchRow("), MAIN.indexOf("function stopRow("));
   assert.match(row, /mergedWords\(branch\.merge\)/);
   const store = MAIN.slice(MAIN.indexOf("function storeProjectTasks("), MAIN.indexOf("/** The last reply of the `task_list` command"));
@@ -142,7 +159,7 @@ test("index.html: the Setup dialog has the three switches of simpler-process", (
 });
 
 // Ticket create-project-settings-option-to-auto: the sentence of the merge card.
-const AUTO = { on: true, gate: true, done: true, tried: false, held: false };
+const AUTO = { on: true, gate: true, done: true, tried: false, held: false, folder: null };
 
 test("autoMergeNote: no text with the switch off", () => {
   assert.equal(autoMergeNote({ ...AUTO, on: false }, "main"), "");
@@ -154,6 +171,16 @@ test("autoMergeNote: each state has its sentence", () => {
   assert.match(autoMergeNote({ ...AUTO, tried: true }, "main"), /did not go through.*click Merge/);
   assert.match(autoMergeNote({ ...AUTO, held: true }, "trunk"), /checkout is on trunk.*uncommitted changes/);
   assert.match(autoMergeNote(AUTO, "main"), /starts when no other work runs/);
+  // Ticket merge-in-the-work-folder: the wait for the work folder names the task that uses it.
+  assert.match(autoMergeNote({ ...AUTO, held: true, folder: "t-1" }, "main"), /waits for the work folder, which t-1 uses, and tries again when it is free/);
+});
+
+test("main.ts: a refusal for the work folder is no try of auto-merge", () => {
+  const body = MAIN.slice(MAIN.indexOf("async function mergeTask("), MAIN.indexOf("function mergeCard("));
+  assert.match(body, /const holder = folderRefusal\(String\(error\)\);/);
+  assert.match(body, /nightDone\.delete\(mergeTryKey\(task\)\)/);
+  const held = MAIN.slice(MAIN.indexOf("function mergeHeld("), MAIN.indexOf("function autoMergeFacts("));
+  assert.match(held, /folderHolder\(task\) !== null/);
 });
 
 test("main.ts: the line for triage says that auto-merge merged", () => {

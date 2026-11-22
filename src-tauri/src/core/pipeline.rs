@@ -246,7 +246,7 @@ fn branches_rule(reports: &str, script: &str) -> String {
 /// on (ticket work-run-in-the-work-folder). `reports` is the reports folder with `/`.
 fn work_folders_rule(reports: &str) -> String {
     format!(
-        "- Work folder is on in this project: a work run works in the work folder `{reports}/work/1`, a git worktree of the project that Dispatch makes once and keeps. Approve, a reply, a resume and the Run checks button of a task check out its branch `{BRANCH_PREFIX}<ticket-id>` there and run there, in place of the switch of the main checkout that the line of Task branches names; one task uses the work folder at a time, and another task waits until it is free. The project folder stays on the base branch, and Dispatch never switches it. The worker writes its report and every other task file by their full paths in `{reports}` of the project folder; the work folder has no copy of them. A change that a run left uncommitted in the work folder is committed on its branch as `<ticket-id> WIP (Dispatch: files of the work run)` before the folder is used again. An uncommitted change of the user in the project folder holds no Approve and no reply.
+        "- Work folder is on in this project: a work run works in the work folder `{reports}/work/1`, a git worktree of the project that Dispatch makes once and keeps. Approve, a reply, a resume and the Run checks button of a task check out its branch `{BRANCH_PREFIX}<ticket-id>` there and run there, in place of the switch of the main checkout that the line of Task branches names; one task uses the work folder at a time, and another task waits until it is free. The project folder stays on the base branch, and Dispatch never switches it. The worker writes its report and every other task file by their full paths in `{reports}` of the project folder; the work folder has no copy of them. A change that a run left uncommitted in the work folder is committed on its branch as `<ticket-id> WIP (Dispatch: files of the work run)` before the folder is used again. An uncommitted change of the user in the project folder holds no Approve and no reply. The Merge button and auto-merge build the merge commit in the work folder, run the picked checks and the gate command there, and move the base in one step (`git merge --ff-only` in the project folder, or `git update-ref` when the project folder is on another branch); a change of the user in a file of the merge stops that step and changes nothing, the project folder never has an open merge, and a merge waits up to a minute for the work folder.
 "
     )
 }
@@ -1554,6 +1554,8 @@ The script finds the project from its own folder, and the options files name pat
 project, so a clone on another path or computer needs no change.
 With Work folder on (workFolders and taskBranches in options.json), approve, reply, resume of a work run and check <ticket-id> work in the work folder work\1, a git worktree on the task branch;
 work-setup.txt runs once in a new one, work\1.record names the task that uses it, and a second task is refused until the folder is free.
+merge <ticket-id> then builds the merge commit and runs the checks and the gate in the work folder (it waits up to 60 s for it),
+and moves the base in one step: git merge --ff-only in the project folder, or git update-ref when it is on another branch.
 #>
 param(
   [Parameter(Mandatory = $true, Position = 0)]
@@ -1892,8 +1894,8 @@ function Folders-On {
 function Work-Folder { Join-Path $Reports 'work\1' }
 function Work-Record { Join-Path $Reports 'work\1.record' }
 
-# The record of the work folder (rule 5 of docs/work-folders.md): the lines ticket, use (work or
-# check), pid (of the script that wrote it), job (of the claude run, or -) and since. $null without it.
+# The record of the work folder (rule 5 of docs/work-folders.md): the lines ticket, use (work, check
+# or merge), pid (of the script that wrote it), job (of the claude run, or -) and since. $null without it.
 function Read-Record {
   $file = Work-Record
   if (-not (Test-Path -LiteralPath $file)) { return $null }
@@ -1941,11 +1943,24 @@ function Work-Job {
 # its task branch as WIP (or dropped on any other checkout), the task branch is checked out, and for
 # work it takes the newer commits of the base. The settings of Claude Code that the work folder does
 # not track come from the project folder. Last, the record names this task.
+# $Use merge (ticket merge-in-the-work-folder) waits up to 60 s for the folder (DISPATCH_FOLDER_WAIT
+# seconds, for the tests), writes no branch file, and checks out the tip of the base without a branch.
 function Enter-WorkFolder([string]$Use) {
   $holder = Record-Holder
+  if ($holder -and $Use -eq 'merge') {
+    $wait = 60
+    $seconds = 0
+    if ([int]::TryParse("$env:DISPATCH_FOLDER_WAIT", [ref]$seconds) -and $seconds -ge 0) { $wait = $seconds }
+    $deadline = (Get-Date).AddSeconds($wait)
+    while ($holder -and (Get-Date) -lt $deadline) {
+      Start-Sleep -Seconds 2
+      $holder = Record-Holder
+    }
+    if ($holder) { Refuse "the work folder of this project is in use (task $holder); the merge starts when it is free" }
+  }
   if ($holder) { Refuse "the work folder of this project is in use (task $holder); the run starts when it is free" }
   $folder = Work-Folder
-  $info = Ensure-BranchFile
+  $info = if ($Use -eq 'merge') { Read-BranchFile $Id } else { Ensure-BranchFile }
   Invoke-Git @('worktree', 'prune') | Out-Null
   if (-not (Test-Path -LiteralPath (Join-Path $folder '.git'))) {
     $parent = Split-Path -Parent $folder
@@ -1989,7 +2004,12 @@ function Enter-WorkFolder([string]$Use) {
     Invoke-GitAt $folder @('clean', '-fdq') | Out-Null
   }
   $note = ''
-  if ((Invoke-Git @('rev-parse', '--verify', '--quiet', "refs/heads/$($info.branch)")).Code -eq 0) {
+  if ($Use -eq 'merge') {
+    # Step 1 of the section Merge of docs/work-folders.md: the tip of the base, detached.
+    $baseTip = "$((Invoke-Git @('rev-parse', '--verify', "refs/heads/$($info.base)")).Lines | Select-Object -Last 1)".Trim()
+    $out = Invoke-GitAt $folder @('checkout', '-q', '-f', '--detach', $baseTip)
+    if ($out.Code -ne 0) { Refuse "git could not check out $($info.base) in the work folder: $($out.Text)" }
+  } elseif ((Invoke-Git @('rev-parse', '--verify', '--quiet', "refs/heads/$($info.branch)")).Code -eq 0) {
     $out = Invoke-GitAt $folder @('checkout', '-q', $info.branch)
     if ($out.Code -ne 0) { Refuse "git could not check out $($info.branch) in the work folder: $($out.Text)" }
     if ($Use -eq 'work') {
@@ -2266,6 +2286,143 @@ function Merge-Branch($Info, [string]$Gate, [int]$Limit) {
   ''
 }
 
+# The picked checks and the gate command on the merge commit $Merge in the work folder (ticket
+# merge-in-the-work-folder, steps 3 and 4 of the section Merge of docs/work-folders.md), with the texts
+# of Merge-Branch; the tree there is clean, so each tracked file that differs from HEAD after them is a
+# file that they wrote, and it goes into a commit on top. Gives the reason of a refusal, or ''; then
+# $script:GateTop is the commit on top, or '' when they wrote no tracked file.
+function Gate-InWorkFolder([string]$Merge, [string]$Gate, [int]$Limit) {
+  $work = Work-Folder
+  $script:GateTop = ''
+  $out = Invoke-GitAt $work @('checkout', '-q', '-f', '--detach', $Merge)
+  if ($out.Code -ne 0) { return "git could not check out the merge in the work folder: $($out.Text)" }
+  if ((Option-On 'pickChecks') -and -not ($Gate -and (Option-On 'checksAtGate'))) {
+    $dir = Join-Path $Reports 'merge'
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
+    $failed = Run-Checks 'merge' { param($n) Join-Path $Reports "merge\$Id-$n.log" } (Command-Limit 'checks.txt' 14400) -StopAtFailure -RunIn $work
+    if ($null -ne $failed) {
+      $tail = if (Test-Path -LiteralPath $failed.Log) { (Get-Content -LiteralPath $failed.Log -Tail 40) -join "`n" } else { '' }
+      return "the check $($failed.Name) failed with exit code $($failed.Code), so nothing was merged ($($failed.Command); the log is $($failed.Log)). Its last 40 lines:`n$tail"
+    }
+  }
+  if ($Gate) {
+    $log = Join-Path $Reports "merge\$Id.log"
+    $env:DISPATCH_TICKET = $Id
+    $env:DISPATCH_CHECKS = Join-Path $Reports "$Id.checks"
+    $code = Run-Measured $Gate $log $Limit $work
+    Remove-Item Env:DISPATCH_TICKET, Env:DISPATCH_CHECKS -ErrorAction SilentlyContinue
+    if ($code -ne 0) {
+      $tail = if (Test-Path -LiteralPath $log) { (Get-Content -LiteralPath $log -Tail 40) -join "`n" } else { '' }
+      return "the gate command failed with exit code $code, so nothing was merged ($Gate; the log is $log). Its last 40 lines:`n$tail"
+    }
+  }
+  $changed = Invoke-GitAt $work @('-c', 'core.quotePath=false', 'diff', '--name-only', 'HEAD', '--', '.', ':(exclude).dispatch')
+  $written = @($changed.Lines | Where-Object { $_ -and $_ -notmatch '^(warning|error|fatal|hint): ' })
+  if ($changed.Code -eq 0 -and $written.Count -gt 0) {
+    $own = Invoke-GitAt $work (@('commit', '-q', '-m', "${Id}: files that the merge gate wrote", '--') + $written)
+    if ($own.Code -eq 0) { $script:GateTop = (Invoke-GitAt $work @('rev-parse', 'HEAD')).Text }
+    else { [Console]::Error.WriteLine("warning: git could not commit the files that the merge gate wrote ($($written -join ', ')): $($own.Text)") }
+  }
+  ''
+}
+
+# The commit that the base can move to with no new gate run (ticket merge-in-the-work-folder, user
+# decision 1): the file merge\<ticket>.gated names the merge on which the checks and the gate passed,
+# the commit on top of it (or -) and the tip of the task branch. With the same branch tip and the same
+# files outside .dispatch as $Merge, the gated commit is taken as it is when it has the same first
+# parent, else its commit on top is picked onto $Merge in the work folder. '' when no gate passed on
+# this code.
+function Gated-Target([string]$Merge, [string]$BranchTip) {
+  $file = Join-Path $Reports "merge\$Id.gated"
+  if (-not (Test-Path -LiteralPath $file)) { return '' }
+  $fields = @("$(Get-Content -LiteralPath $file -Raw -ErrorAction SilentlyContinue)".Trim() -split "`t")
+  if ($fields.Count -lt 3 -or $fields[2] -ne $BranchTip) { return '' }
+  $old = $fields[0]
+  $top = if ($fields[1] -eq '-') { '' } else { $fields[1] }
+  if ((Invoke-Git @('cat-file', '-e', "${old}^{commit}")).Code -ne 0) { return '' }
+  if ($top -and (Invoke-Git @('cat-file', '-e', "${top}^{commit}")).Code -ne 0) { return '' }
+  if ((Invoke-Git @('diff', '--quiet', $old, $Merge, '--', '.', ':(exclude).dispatch')).Code -ne 0) { return '' }
+  if ((Invoke-Git @('rev-parse', "${old}^1")).Text -eq (Invoke-Git @('rev-parse', "${Merge}^1")).Text) {
+    if ($top) { return $top }
+    return $old
+  }
+  if (-not $top) { return $Merge }
+  $work = Work-Folder
+  if ((Invoke-GitAt $work @('checkout', '-q', '-f', '--detach', $Merge)).Code -ne 0) { return '' }
+  $pick = Invoke-GitAt $work @('cherry-pick', $top)
+  if ($pick.Code -ne 0) {
+    Invoke-GitAt $work @('cherry-pick', '--abort') | Out-Null
+    return ''
+  }
+  (Invoke-GitAt $work @('rev-parse', 'HEAD')).Text
+}
+
+# The merge with Work folder on (ticket merge-in-the-work-folder, steps 1 to 7 of the section Merge of
+# docs/work-folders.md): the work folder on the tip of the base, the merge as a finished commit
+# (Build-Merge), the checks and the gate on it there (Gate-InWorkFolder), unless a gate passed on the
+# same code (Gated-Target), and then the base moves in one step: git merge --ff-only in the project
+# folder when it is on the base, else git update-ref with the old tip as the condition. A base that
+# moved gets a new merge, up to 3 times. An uncommitted file of the project folder that the move would
+# overwrite stops it, and the gated merge stays for the next Merge. The project folder never has an
+# open merge. Gives the reason of a refusal, or '' after the merge; $script:Merged holds the commit then.
+function Merge-InWorkFolder($Info, [string]$Gate, [int]$Limit) {
+  $branch = $Info.branch
+  $base = $Info.base
+  Enter-WorkFolder 'merge' | Out-Null
+  $gated = Join-Path $Reports "merge\$Id.gated"
+  $branchTip = "$((Invoke-Git @('rev-parse', '--verify', "refs/heads/$branch")).Lines | Select-Object -Last 1)".Trim()
+  $built = $null
+  $from = ''
+  $target = ''
+  $moves = 0
+  while ($true) {
+    $now = "$((Invoke-Git @('rev-parse', '--verify', "refs/heads/$base")).Lines | Select-Object -Last 1)".Trim()
+    if ($now -ne $from) {
+      if ($from) {
+        $moves++
+        if ($moves -ge 3) { return "the base $base moved three times during the merge; click Merge again" }
+      }
+      $built = Build-Merge $now $Info
+      if ($built.Why) { return "git could not merge ${branch}: $($built.Why)" }
+      if ($built.Conflicts.Count -gt 0) { return "the merge of $branch into $base does not apply; nothing was merged. Conflicts in:`n$($built.Conflicts -join "`n")" }
+      if (-not $built.Commit) {
+        # Nothing to merge: the base holds the branch.
+        Invoke-Git @('branch', '-D', $branch) | Out-Null
+        $script:Merged = 'nothing to merge'
+        Write-BranchFile $branch $base "done nothing-to-merge $((Get-Date).ToString('s'))"
+        Remove-Item -LiteralPath $gated -Force -ErrorAction SilentlyContinue
+        return ''
+      }
+      $from = $now
+      $target = Gated-Target $built.Commit $branchTip
+      if (-not $target) {
+        $why = Gate-InWorkFolder $built.Commit $Gate $Limit
+        if ($why) { return $why }
+        $target = if ($script:GateTop) { $script:GateTop } else { $built.Commit }
+        $top = if ($script:GateTop) { $script:GateTop } else { '-' }
+        [IO.File]::WriteAllText($gated, "$($built.Commit)`t$top`t$branchTip`t$((Get-Date).ToString('o'))`n")
+        # The gate can run for hours: the base is read again before the move.
+        continue
+      }
+    }
+    if ((Current-Branch) -eq $base) {
+      $blocking = @(Switch-Blockers $target)
+      if ($blocking.Count -gt 0) { return "these uncommitted files of the project folder would be overwritten by the merge; commit, stash or undo them, then click Merge again: $($blocking -join ', ')" }
+      $move = Invoke-Git @('merge', '--ff-only', '-q', $target)
+    } else {
+      $move = Invoke-Git @('update-ref', "refs/heads/$base", $target, $now)
+    }
+    if ($move.Code -eq 0) { break }
+    $after = "$((Invoke-Git @('rev-parse', '--verify', "refs/heads/$base")).Lines | Select-Object -Last 1)".Trim()
+    if ($after -eq $now) { return "git could not move ${base}: $($move.Text)" }
+  }
+  $script:Merged = (Invoke-Git @('rev-parse', '--short', $target)).Text
+  Invoke-Git @('branch', '-D', $branch) | Out-Null
+  Write-BranchFile $branch $base "done $script:Merged $((Get-Date).ToString('s'))"
+  Remove-Item -LiteralPath $gated -Force -ErrorAction SilentlyContinue
+  ''
+}
+
 # Pushes the base after its merge (Push after the merge, ticket simpler-process): only the base to its
 # upstream branch (branch.<base>.remote and branch.<base>.merge), never with force, without a prompt
 # for a password, with the time limit of 300 s. Gives the value of the push line of the branch file.
@@ -2438,6 +2595,51 @@ function Sync-Base([switch]$Before) {
   $forward = if ($on) { Invoke-Git @('merge', '--ff-only', '-q', $made) } else { Invoke-Git @('update-ref', "refs/heads/$($info.branch)", $made, $tip) }
   if ($forward.Code -ne 0) { return "git could not move the branch: $($forward.Text)" }
   ''
+}
+
+# Builds the merge of the task branch into the commit $Tip as a finished commit, with no checkout and
+# no index of a folder (ticket merge-in-the-work-folder, steps 2 and 6 of the section Merge of
+# docs/work-folders.md): git merge-tree, the folder .dispatch as $Tip has it (rule 4: a card file that
+# a worker committed goes), and a commit with $Tip and the branch tip as parents, as merge --no-ff
+# makes it. Gives Commit (the sha; '' when $Tip holds the branch), Conflicts (the paths outside
+# .dispatch that changed on both sides) and Why (the error of git, or '').
+function Build-Merge([string]$Tip, $Info) {
+  $built = [pscustomobject]@{ Commit = ''; Conflicts = @(); Why = '' }
+  $head = "$((Invoke-Git @('rev-parse', '--verify', "refs/heads/$($Info.branch)")).Lines | Select-Object -Last 1)".Trim()
+  if ((Invoke-Git @('merge-base', '--is-ancestor', $head, $Tip)).Code -eq 0) { return $built }
+  $merge = Invoke-Git @('-c', 'core.quotePath=false', 'merge-tree', '--write-tree', '--name-only', '--no-messages', $Tip, $head)
+  $lines = @($merge.Lines | Where-Object { $_ })
+  if (($merge.Code -ne 0 -and $merge.Code -ne 1) -or $lines.Count -eq 0) {
+    $built.Why = "git merge-tree failed: $($merge.Text)"
+    return $built
+  }
+  $built.Conflicts = @($lines | Select-Object -Skip 1 | Where-Object { -not $_.StartsWith('.dispatch/') } | Select-Object -Unique)
+  if ($built.Conflicts.Count -gt 0) { return $built }
+  # A separate index builds the tree; the index of the project folder stays as it is.
+  $index = Join-Path ([IO.Path]::GetTempPath()) "dispatch-merge-$PID.index"
+  $env:GIT_INDEX_FILE = $index
+  try {
+    $done = (Invoke-Git @('read-tree', $lines[0])).Code -eq 0
+    if ($done) { $done = (Invoke-Git @('rm', '--cached', '-r', '-q', '-f', '--ignore-unmatch', '--', '.dispatch')).Code -eq 0 }
+    if ($done -and (Invoke-Git @('rev-parse', '--verify', '--quiet', "${Tip}:.dispatch")).Code -eq 0) {
+      $done = (Invoke-Git @('read-tree', '--prefix=.dispatch/', "${Tip}:.dispatch")).Code -eq 0
+    }
+    $tree = if ($done) { Invoke-Git @('write-tree') } else { $null }
+  } finally {
+    Remove-Item Env:GIT_INDEX_FILE -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $index -Force -ErrorAction SilentlyContinue
+  }
+  if ($null -eq $tree -or $tree.Code -ne 0) {
+    $built.Why = 'git could not build the merged tree'
+    return $built
+  }
+  $commit = Invoke-Git @('commit-tree', "$($tree.Lines | Select-Object -Last 1)".Trim(), '-p', $Tip, '-p', $head, '-m', "Merge $($Info.branch) into $($Info.base) ($Id)")
+  if ($commit.Code -ne 0) {
+    $built.Why = "git could not make the merge commit: $($commit.Text)"
+    return $built
+  }
+  $built.Commit = "$($commit.Lines | Select-Object -Last 1)".Trim()
+  $built
 }
 
 # Whether a commit tracks a file under .dispatch.
@@ -2793,24 +2995,32 @@ switch ($Verb) {
     if ($info.merge) { Refuse "the branch $($info.branch) is merged already: $($info.merge)" }
     if ((Invoke-Git @('rev-parse', '--verify', '--quiet', "refs/heads/$($info.branch)")).Code -ne 0) { Refuse "the branch $($info.branch) does not exist; the task had no work run" }
     $current = Current-Branch
-    if ($current -ne $info.base) { Refuse "the checkout is on $current, not on the base $($info.base); Dispatch switches back when the work run has ended" }
-    if ((Invoke-Git @('rev-parse', '-q', '--verify', 'MERGE_HEAD')).Code -eq 0) { Refuse 'the checkout has an unfinished merge; finish it or run git merge --abort first' }
-    # Only a change in a file that the branch changes holds the merge (ticket leftover-files-block-tasks);
-    # the gate then runs with the other changes in the folder.
-    $held = @(Task-Leftovers)
-    if ($held.Count -gt 0) { Refuse "the checkout has uncommitted changes in files that the branch changes; commit, stash or undo them first:`n$($held -join "`n")" }
-    # The changed task files (the tickets file among them) go into one commit first, so git merge
-    # never meets a changed file of .dispatch. With "Task files local only" on, git tracks none.
-    $local = Tasks-Local
-    $tasks = if ($local) { @() } else { @((Invoke-Git @('status', '--porcelain', '--untracked-files=all', '--', '.dispatch')).Lines | Where-Object { $_ }) }
-    if ($tasks.Count -gt 0) {
-      Invoke-Git @('add', '--all', '--', '.dispatch') | Out-Null
-      $saved = Invoke-Git @('commit', '-q', '-m', "Dispatch: task files before the merge of $Id", '--', '.dispatch')
-      if ($saved.Code -ne 0) { Refuse "git could not commit the task files before the merge: $($saved.Text)" }
+    # Work folder (ticket merge-in-the-work-folder): the merge runs in the work folder, so the project
+    # folder can be on any branch and its task files stay as they are.
+    $folders = Folders-On
+    if (-not $folders) {
+      if ($current -ne $info.base) { Refuse "the checkout is on $current, not on the base $($info.base); Dispatch switches back when the work run has ended" }
+      if ((Invoke-Git @('rev-parse', '-q', '--verify', 'MERGE_HEAD')).Code -eq 0) { Refuse 'the checkout has an unfinished merge; finish it or run git merge --abort first' }
     }
-    # The branch holds the task files as the base does, so the merge deletes none of them.
-    $aligned = "$(Align-Tasks $info.branch)"
-    if ($aligned) { Refuse $aligned }
+    # Only a change in a file that the branch changes holds the merge (ticket leftover-files-block-tasks);
+    # the gate then runs with the other changes in the folder. With Work folder on, only while the
+    # project folder is on the base: then the move would meet the change, and no gate runs in vain.
+    $held = if (-not $folders -or $current -eq $info.base) { @(Task-Leftovers) } else { @() }
+    if ($held.Count -gt 0) { Refuse "the checkout has uncommitted changes in files that the branch changes; commit, stash or undo them first:`n$($held -join "`n")" }
+    if (-not $folders) {
+      # The changed task files (the tickets file among them) go into one commit first, so git merge
+      # never meets a changed file of .dispatch. With "Task files local only" on, git tracks none.
+      $local = Tasks-Local
+      $tasks = if ($local) { @() } else { @((Invoke-Git @('status', '--porcelain', '--untracked-files=all', '--', '.dispatch')).Lines | Where-Object { $_ }) }
+      if ($tasks.Count -gt 0) {
+        Invoke-Git @('add', '--all', '--', '.dispatch') | Out-Null
+        $saved = Invoke-Git @('commit', '-q', '-m', "Dispatch: task files before the merge of $Id", '--', '.dispatch')
+        if ($saved.Code -ne 0) { Refuse "git could not commit the task files before the merge: $($saved.Text)" }
+      }
+      # The branch holds the task files as the base does, so the merge deletes none of them.
+      $aligned = "$(Align-Tasks $info.branch)"
+      if ($aligned) { Refuse $aligned }
+    }
     $gate ="$(@(Command-Lines 'merge-gate.txt') | Select-Object -First 1)"
     $limit = Command-Limit 'merge-gate.txt' 14400
     # A switch back of Dispatch holds the lock for seconds (ticket merge-issue): the merge waits up to 60 s.
@@ -2824,12 +3034,23 @@ switch ($Verb) {
     $marker = Join-Path $Reports 'merge\open'
     $tip = (Invoke-Git @('rev-parse', "refs/heads/$($info.branch)")).Text
     $head = (Invoke-Git @('rev-parse', 'HEAD')).Text
-    [IO.File]::WriteAllText($marker, "$PID`t$Id`t$tip`t$head`t$((Get-Date).ToString('o'))`n")
+    if ($folders) {
+      # The sixth field folder: the merge runs in the work folder, and the fourth field is the tip of
+      # the base; Dispatch cancels no merge in the project folder for it.
+      $head = (Invoke-Git @('rev-parse', "refs/heads/$($info.base)")).Text
+      [IO.File]::WriteAllText($marker, "$PID`t$Id`t$tip`t$head`t$((Get-Date).ToString('o'))`tfolder`n")
+    } else {
+      [IO.File]::WriteAllText($marker, "$PID`t$Id`t$tip`t$head`t$((Get-Date).ToString('o'))`n")
+    }
     try {
-      $refusal = "$(Merge-Branch $info $gate $limit)"
+      $refusal = if ($folders) { "$(Merge-InWorkFolder $info $gate $limit)" } else { "$(Merge-Branch $info $gate $limit)" }
     } finally {
-      # Every way out inside PowerShell (a refusal, an error, Ctrl+C) leaves no open merge.
-      if (-not $script:Merged -and (Invoke-Git @('rev-parse', '-q', '--verify', 'MERGE_HEAD')).Code -eq 0) {
+      if ($folders) {
+        # A merge left in the work folder stays there; its next user cleans it.
+        $record = Read-Record
+        if ($null -ne $record -and $record.pid -eq "$PID") { Remove-Item -LiteralPath (Work-Record) -Force -ErrorAction SilentlyContinue }
+      } elseif (-not $script:Merged -and (Invoke-Git @('rev-parse', '-q', '--verify', 'MERGE_HEAD')).Code -eq 0) {
+        # Every way out inside PowerShell (a refusal, an error, Ctrl+C) leaves no open merge.
         Invoke-Git @('merge', '--abort') | Out-Null
       }
       Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
@@ -3405,7 +3626,7 @@ fn work_folders_step(project: &Project, on: bool) -> Step {
         target,
         done: project.ignores(WORK_IGNORE),
         detail: format!(
-            "The work run of a task works in the work folder {reports}/work/1, a git worktree of the project that Dispatch makes at the first Approve and keeps. {setup} Approve, a reply, a resume and Run checks check out the task branch there; the project folder stays on the base. The record {reports}/work/1.record names the task that uses the folder; a second task waits. Apply adds the line {WORK_IGNORE} to {reports}/.gitignore. The section in CLAUDE.md says so. The Merge still runs in the project folder in this version."
+            "The work run of a task works in the work folder {reports}/work/1, a git worktree of the project that Dispatch makes at the first Approve and keeps. {setup} Approve, a reply, a resume and Run checks check out the task branch there; the project folder stays on the base. The record {reports}/work/1.record names the task that uses the folder; a second task waits. Apply adds the line {WORK_IGNORE} to {reports}/.gitignore. The section in CLAUDE.md says so. Merge builds the merge commit there, runs the checks and the gate there, and moves the base in one step."
         ),
         rules: None,
     }
@@ -7313,6 +7534,8 @@ fn unfinished_git(project: &Project) -> bool {
 /// happens. Else only the merge that the marker names is cancelled: `MERGE_HEAD` is the recorded tip
 /// and HEAD the recorded base. A merge of the user stays. The reason goes into
 /// `.dispatch/merge/<ticket>.aborted` for the card. Gives the reason, or none without a cancel.
+/// With Work folder on, the marker has a sixth field `folder`, and no merge of the project folder is
+/// cancelled (ticket merge-in-the-work-folder).
 fn cancel_left_merge(project: &Project) -> Option<String> {
     let dir = project.merge_dir();
     let marker = dir.join("open");
@@ -7331,6 +7554,25 @@ fn cancel_left_merge(project: &Project) -> Option<String> {
     }
     let field = |at: usize| fields.get(at).copied().unwrap_or_default();
     let (ticket, tip, base) = (field(1), field(2), field(3));
+    // Work folder (ticket merge-in-the-work-folder): the sixth field `folder` says that the merge ran
+    // in the work folder, and the fourth field is the tip of the base. The project folder has no open
+    // merge to cancel; the next user of the work folder cleans it. While the base is at that tip, the
+    // card says why nothing was merged; a base that moved needs no reason.
+    if field(5) == "folder" {
+        let _ = fs::remove_file(&marker);
+        if check_ticket(ticket).is_err() || base.is_empty() {
+            return None;
+        }
+        let now = read_branch_file(&project.branch_file(ticket))
+            .and_then(|info| git(&project.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", info.base)]))
+            .map(|text| text.trim().to_string());
+        if now.as_deref() != Some(base) {
+            return None;
+        }
+        let reason = "The merge stopped halfway: the merge script ended before it was done, for example when Dispatch closed or restarted. The base did not move, so nothing was merged; Dispatch cleans the work folder at its next use. Click Merge to try again.";
+        let _ = write_file(&dir.join(format!("{ticket}.aborted")), &format!("{reason}\n"));
+        return Some(format!("{ticket}: {reason}"));
+    }
     let merge_head = git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).map(|text| text.trim().to_string());
     let head = git(&project.root, &["rev-parse", "HEAD"]).map(|text| text.trim().to_string());
     let ours = check_ticket(ticket).is_ok() && !tip.is_empty() && merge_head.as_deref() == Some(tip) && head.as_deref() == Some(base);
@@ -12060,6 +12302,313 @@ if (args[0] === 'agents') {
         for task in &list.tasks {
             assert!(task.leftovers.is_empty(), "{}: {:?}", task.name, task.leftovers);
         }
+        clean(&project);
+    }
+
+    /// A gate command that appends one line to `.dispatch\merge\gate-count.txt` of the project, so a
+    /// test counts the gate runs (ticket merge-in-the-work-folder).
+    fn gate_counter(project: &Project) -> String {
+        format!("echo gate>> \"{}\"", project.merge_dir().join("gate-count.txt").display())
+    }
+
+    /// The runs of the gate of `gate_counter`.
+    fn gate_runs(project: &Project) -> usize {
+        read(&project.merge_dir().join("gate-count.txt")).lines().count()
+    }
+
+    /// Ticket merge-in-the-work-folder: with Work folder on, the merge commit, the gate and the commit of
+    /// the files that the gate wrote are made in the work folder. The project folder has no open merge at
+    /// any time, and its base moves in one step to the gated commit.
+    #[test]
+    fn a_merge_with_the_work_folder_never_opens_a_merge_in_the_project_folder() {
+        let (project, fake, base) = work_project("work-merge");
+        let cwd = project.root.to_string_lossy().into_owned();
+        let folder = project.work_folder();
+        write_file(&project.root.join("logs").join("gate.md"), "# the log of the session\n").unwrap();
+        git_out(&project, &["add", "--", "logs/gate.md"]);
+        git_out(&project, &["commit", "-q", "-m", "the log"]);
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        set_merge_gate(cwd, "cd & echo EVIDENCE>> logs\\gate.md & ping -n 3 127.0.0.1 >nul\n".to_string()).unwrap();
+        let old = git_out(&project, &["rev-parse", &base]);
+        let tip = git_out(&project, &["rev-parse", "task/t-1"]);
+
+        // A thread asks git for an open merge in the project folder every 100 ms, from before the merge to after it.
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let watch = {
+            let (root, stop) = (project.root.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let (mut samples, mut hits) = (0, 0);
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    samples += 1;
+                    if git(&root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_some() {
+                        hits += 1;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                (samples, hits)
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let (code, out) = run_script(&project, &fake, "done", &["merge", "t-1"]);
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let (samples, hits) = watch.join().unwrap();
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(hits, 0, "the project folder had an open merge in {hits} of {samples} samples");
+        assert!(samples >= 10, "{samples} samples");
+
+        // The gate ran in the work folder; its line is in a commit of its own on top of the merge commit.
+        let log = read(&project.merge_dir().join("t-1.log"));
+        assert!(log.lines().any(|line| same_folder(line, &folder)), "{log}");
+        let head = git_out(&project, &["rev-parse", &base]);
+        let short = git_out(&project, &["rev-parse", "--short", &base]);
+        assert_eq!(out.lines().next().unwrap_or_default(), format!("merged task/t-1 into {base}: {short}"), "{out}");
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", &base]), "t-1: files that the merge gate wrote");
+        assert_eq!(last_commit_files(&project, &base), ["logs/gate.md"]);
+        let merge = format!("{base}~1");
+        assert!(git_out(&project, &["log", "-1", "--format=%s", &merge]).starts_with("Merge task/t-1 into "));
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%P", &merge]), format!("{old} {tip}"));
+        assert!(read(&project.root.join("logs").join("gate.md")).contains("EVIDENCE"));
+        assert!(project.root.join("work-t-1.txt").is_file());
+        assert_no_merge_left(&project);
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        assert!(git(&project.root, &["rev-parse", "--verify", "--quiet", "refs/heads/task/t-1"]).is_none(), "the branch stayed");
+        let file = read(&project.branch_file("t-1"));
+        assert!(file.contains(&format!("\nmerge: done {short} ")), "{file}");
+        // The work folder: no task files, no record, detached at the gated commit.
+        assert!(!folder.join(".dispatch").exists());
+        assert!(!project.work_record().exists(), "the merge left its record");
+        assert_eq!(run_git(&folder, &["rev-parse", "HEAD"]).unwrap().trim(), head);
+        assert!(run_git(&folder, &["symbolic-ref", "-q", "HEAD"]).is_err(), "the work folder is on a branch");
+        for name in ["open", "lock", "t-1.gated"] {
+            assert!(!project.merge_dir().join(name).exists(), "{name} stayed");
+        }
+        clean(&project);
+    }
+
+    /// Ticket merge-in-the-work-folder: a change of the user in a file of the merge holds the merge
+    /// before its gate while the project folder is on the base, and a change made during the gate stops
+    /// the move; the base and the file stay as they are. After the user undid the change, the next Merge
+    /// moves the base with no new gate run (user decision 1). A change outside the merge stays.
+    #[test]
+    fn a_merge_with_the_work_folder_stops_before_a_changed_file_of_the_user() {
+        let (project, fake, base) = work_project("work-merge-dirty");
+        let cwd = project.root.to_string_lossy().into_owned();
+        // The base has its own work-t-1.txt, and the work run changes it.
+        let user_file = project.root.join("work-t-1.txt");
+        write_file(&user_file, "the text of the base\n").unwrap();
+        git_out(&project, &["add", "work-t-1.txt"]);
+        git_out(&project, &["commit", "-q", "-m", "a file of the base"]);
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        write_file(&project.root.join("README.md"), "a change of the user outside the merge\n").unwrap();
+        let counter = gate_counter(&project);
+        set_merge_gate(cwd.clone(), format!("{counter}\n")).unwrap();
+
+        // A change before the merge: no gate runs.
+        write_file(&user_file, "a change of the user\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["merge", "t-1"]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("uncommitted changes in files that the branch changes") && out.contains("work-t-1.txt"), "{out}");
+        assert_eq!(gate_runs(&project), 0);
+        git_out(&project, &["checkout", "--", "work-t-1.txt"]);
+
+        // A change during the gate: the gate passes, and the move stops before it starts.
+        set_merge_gate(cwd.clone(), format!("{counter} & echo a change of the user> \"{}\"\n", user_file.display())).unwrap();
+        let head = git_out(&project, &["rev-parse", &base]);
+        let (code, out) = run_script(&project, &fake, "done", &["merge", "t-1"]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("these uncommitted files of the project folder would be overwritten by the merge; commit, stash or undo them, then click Merge again: work-t-1.txt"), "{out}");
+        assert_eq!(gate_runs(&project), 1);
+        assert_eq!(git_out(&project, &["rev-parse", &base]), head);
+        assert_eq!(read(&user_file), "a change of the user\n");
+        assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_none());
+        assert!(project.merge_dir().join("t-1.gated").is_file());
+        assert!(!project.merge_dir().join("open").exists() && !project.merge_dir().join("lock").exists());
+        assert!(listed_branch(&project, "t-1").exists);
+
+        // The user undid the change: the next Merge moves the base to the gated merge, with no new gate run.
+        git_out(&project, &["checkout", "--", "work-t-1.txt"]);
+        let tip = git_out(&project, &["rev-parse", "task/t-1"]);
+        let merged = task_merge(cwd, "t-1".to_string()).unwrap();
+        assert!(merged.starts_with("merged task/t-1 into "), "{merged}");
+        assert_eq!(gate_runs(&project), 1, "the gate ran again on the same code");
+        assert!(git_out(&project, &["log", "-1", "--format=%s", &base]).starts_with("Merge task/t-1 into "));
+        assert_eq!(git_out(&project, &["rev-parse", &format!("{base}^2")]), tip);
+        assert_eq!(read(&user_file), "the work of the task\n");
+        assert_eq!(read(&project.root.join("README.md")), "a change of the user outside the merge\n");
+        assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_none());
+        assert_eq!(git_out(&project, &["status", "--porcelain", "--untracked-files=no", "--", ".", NOT_TASKS]), "M README.md");
+        assert!(!project.merge_dir().join("t-1.gated").exists());
+        clean(&project);
+    }
+
+    /// Ticket merge-in-the-work-folder: a merge script that is killed during its gate leaves its rest in
+    /// the work folder only: the project folder has no open merge and its base did not move. The next task
+    /// read says so on the card, and the next Merge cleans the work folder and merges.
+    #[test]
+    fn a_killed_merge_with_the_work_folder_leaves_its_rest_in_the_work_folder() {
+        let (project, fake, base) = work_project("work-merge-killed");
+        let cwd = project.root.to_string_lossy().into_owned();
+        let folder = project.work_folder();
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        set_merge_gate(cwd.clone(), "ping -n 60 127.0.0.1 >nul\n".to_string()).unwrap();
+        let head = git_out(&project, &["rev-parse", &base]);
+        let log = project.merge_dir().join("t-1.log");
+        let mut child = spawn_merge(&project, &fake, "t-1");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !log.exists() {
+            assert!(std::time::Instant::now() < deadline, "the gate did not start");
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        Command::new("taskkill").args(["/T", "/F", "/PID", &child.id().to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+        child.wait().unwrap();
+        // The rest: the merge commit checked out in the work folder, its record and the marker.
+        assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_none(), "the project folder has an open merge");
+        assert_eq!(git_out(&project, &["rev-parse", &base]), head);
+        assert_no_merge_left(&project);
+        assert!(project.merge_dir().join("open").exists(), "the killed script removed its marker");
+        assert!(read(&project.work_record()).starts_with("ticket: t-1\nuse: merge\n"), "{}", read(&project.work_record()));
+        assert!(run_git(&folder, &["log", "-1", "--format=%s", "HEAD"]).unwrap().starts_with("Merge task/t-1 into "));
+
+        let list = task_list(cwd.clone()).unwrap();
+        assert!(list.repairs.iter().any(|line| line.starts_with("t-1: The merge stopped halfway") && line.contains("The base did not move")), "{:?}", list.repairs);
+        assert!(!project.merge_dir().join("open").exists(), "the marker stayed");
+        assert!(!project.merge_dir().join("lock").exists(), "the merge lock stayed");
+        let branch = list.tasks.into_iter().find(|task| task.name == "t-1").and_then(|task| task.branch).unwrap();
+        assert!(branch.exists && branch.merge.is_empty() && branch.aborted.contains("The base did not move"), "{branch:?}");
+        assert_no_merge_left(&project);
+
+        // The next Merge cleans the work folder, merges and clears the reason.
+        set_merge_gate(cwd.clone(), "cmd /c exit 0\n".to_string()).unwrap();
+        let merged = task_merge(cwd, "t-1".to_string()).unwrap();
+        assert!(merged.starts_with("merged task/t-1"), "{merged}");
+        assert!(!project.merge_dir().join("t-1.aborted").exists());
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
+        assert!(listed_branch(&project, "t-1").aborted.is_empty());
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    /// Ticket merge-in-the-work-folder: with the project folder on another branch, the base moves by a
+    /// guarded ref update; the project folder keeps its branch and its files. On the base, the merge is a
+    /// fast-forward of the project folder.
+    #[test]
+    fn a_merge_with_the_work_folder_moves_a_base_that_is_not_checked_out() {
+        let (project, fake, base) = work_project("work-merge-side");
+        let cwd = project.root.to_string_lossy().into_owned();
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        plan_and_approve(&project, &fake, "t-2");
+        write_report(&project, "t-2");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        set_merge_gate(cwd, "cmd /c exit 0\n".to_string()).unwrap();
+        git_out(&project, &["checkout", "-q", "-b", "side"]);
+        let side = git_out(&project, &["rev-parse", "side"]);
+        let old = git_out(&project, &["rev-parse", &base]);
+        let tip = git_out(&project, &["rev-parse", "task/t-1"]);
+        let (code, out) = run_script(&project, &fake, "done", &["merge", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.starts_with(&format!("merged task/t-1 into {base}: ")), "{out}");
+        assert_eq!(current_branch(&project).as_deref(), Some("side"));
+        assert_eq!(git_out(&project, &["rev-parse", "side"]), side);
+        let moved = git_out(&project, &["rev-parse", &base]);
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%P", &moved]), format!("{old} {tip}"));
+        assert!(!project.root.join("work-t-1.txt").exists(), "the files of the project folder changed");
+        assert!(git(&project.root, &["rev-parse", "--verify", "--quiet", "refs/heads/task/t-1"]).is_none(), "the branch stayed");
+        assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_none());
+        // git update-ref writes no message into the reflog of the base; a fast-forward names itself.
+        assert!(!git_out(&project, &["reflog", "-1", "--format=%gs", &base]).contains("Fast-forward"));
+
+        // The project folder on the base again: the merge of t-2 is a fast-forward there.
+        git_out(&project, &["checkout", "-q", &base]);
+        let (code, out) = run_script(&project, &fake, "done", &["merge", "t-2"]);
+        assert_eq!(code, 0, "{out}");
+        let reflog = git_out(&project, &["reflog", "-1", "--format=%gs", &base]);
+        assert!(reflog.contains("Fast-forward"), "{reflog}");
+        assert_eq!(git_out(&project, &["rev-parse", &format!("{base}^1")]), moved);
+        assert!(project.root.join("work-t-1.txt").is_file() && project.root.join("work-t-2.txt").is_file());
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    /// Ticket merge-in-the-work-folder, user decision 1: the gate moves the base by a commit with the same
+    /// code, so the merge is made again on the new tip with no new gate run; then a gate commits a change
+    /// of a file of the base, so the new merge has other code and the gate runs again on it.
+    #[test]
+    fn a_moved_base_gets_a_new_merge_and_the_same_code_no_new_gate() {
+        let (project, fake, base) = work_project("work-merge-moved");
+        let cwd = project.root.to_string_lossy().into_owned();
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        plan_and_approve(&project, &fake, "t-2");
+        write_report(&project, "t-2");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        let counter = gate_counter(&project);
+        let root = project.root.display().to_string();
+        let once = project.merge_dir().join("moved-1.txt").display().to_string();
+        set_merge_gate(cwd.clone(), format!("{counter} & if not exist \"{once}\" (git -C \"{root}\" commit -q --allow-empty -m moved & echo x> \"{once}\")\n")).unwrap();
+        let old = git_out(&project, &["rev-parse", &base]);
+        let (code, out) = run_script(&project, &fake, "done", &["merge", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(gate_runs(&project), 1, "the gate ran again on the same code");
+        assert!(git_out(&project, &["log", "-1", "--format=%s", &base]).starts_with("Merge task/t-1 into "));
+        let first = format!("{base}^1");
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", &first]), "moved");
+        assert_eq!(git_out(&project, &["rev-parse", &format!("{first}^1")]), old);
+        assert!(project.root.join("work-t-1.txt").is_file());
+        assert_no_merge_left(&project);
+
+        // Other code: the gate runs again on the merge with the new tip.
+        let twice = project.merge_dir().join("moved-2.txt").display().to_string();
+        set_merge_gate(cwd, format!("{counter} & if not exist \"{twice}\" (echo more>> \"{root}\\README.md\" & git -C \"{root}\" commit -q -m moved -- README.md & echo x> \"{twice}\")\n")).unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["merge", "t-2"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(gate_runs(&project), 3, "the gate did not run again on other code");
+        assert!(git_out(&project, &["show", &format!("{base}:README.md")]).contains("more"));
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-2.txt")]).is_some());
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%s", &format!("{base}^1")]), "moved");
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    /// Ticket merge-in-the-work-folder, user decision 2: while the work run of another task holds the
+    /// work folder, a merge waits (here 2 s), then is refused with the name of that task, and nothing
+    /// changes; when that run has ended, the merge goes on.
+    #[test]
+    fn a_merge_with_the_work_folder_waits_while_a_run_holds_the_folder() {
+        let (project, fake, base) = work_project("work-merge-wait");
+        let cwd = project.root.to_string_lossy().into_owned();
+        plan_and_approve(&project, &fake, "t-1");
+        plan_and_approve(&project, &fake, "t-2");
+        write_report(&project, "t-2");
+        assert!(!listed_branch(&project, "t-2").checked_out);
+        set_merge_gate(cwd, "cmd /c exit 0\n".to_string()).unwrap();
+        // The work run of t-1 uses the work folder again.
+        write_file(&project.work_record(), &format!("ticket: t-1\nuse: work\npid: {NO_PROCESS}\njob: -\nsince: 2026-11-22T10:00:00\n")).unwrap();
+        let head = git_out(&project, &["rev-parse", &base]);
+        let started = std::time::Instant::now();
+        let (code, out) = run_script_env(&project, &fake, "working", &["merge", "t-2"], &[("FAKE_NAME", "t-1 [work]"), ("DISPATCH_FOLDER_WAIT", "2")]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("the work folder of this project is in use (task t-1); the merge starts when it is free"), "{out}");
+        assert!(started.elapsed() >= std::time::Duration::from_secs(2), "the merge did not wait");
+        assert_eq!(git_out(&project, &["rev-parse", &base]), head);
+        assert!(git(&project.root, &["rev-parse", "--verify", "--quiet", "refs/heads/task/t-2"]).is_some());
+        assert!(read(&project.work_record()).starts_with("ticket: t-1\nuse: work\n"));
+        for name in ["open", "lock", "t-2.aborted"] {
+            assert!(!project.merge_dir().join(name).exists(), "{name} is there");
+        }
+        // The work run of t-1 has ended: the merge takes the folder.
+        let (code, out) = run_script_env(&project, &fake, "done", &["merge", "t-2"], &[("FAKE_NAME", "t-1 [work]")]);
+        assert_eq!(code, 0, "{out}");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-2.txt")]).is_some());
+        assert_no_merge_left(&project);
         clean(&project);
     }
 

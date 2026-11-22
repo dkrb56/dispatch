@@ -129,7 +129,7 @@ import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, rev
 import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type ReadTimes, StartLeases } from "./workstart";
 import { type Action, type ActionList, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, uniqueId } from "./actions";
 import { failLines, freshOnly, type GateRefusal, gateRefusal, logName, refusalHeadline } from "./mergefail";
-import { autoMergeNote, type AutoMergeFacts, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
+import { autoMergeNote, type AutoMergeFacts, folderRefusal, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
 import { type ContextBlock, TLDR_LABEL, contextBlocks, formatLines, tldrBlock } from "./decisions-context";
 import {
   type CheckInfo,
@@ -7237,10 +7237,32 @@ function mergeTryKey(task: Task): string {
   return `merge:${projectKey(taskHost(task), taskCwd(task))}:${task.name}:${task.info?.report?.modified ?? ""}`;
 }
 
-/** The task cannot merge yet: the checkout is on its branch, or its files have uncommitted changes. */
+/**
+ * The merges that the worker script refused because another task used the work folder (ticket
+ * merge-in-the-work-folder, user decision 2), by task name: that task and when. For 60 s the merge
+ * counts as held, so the poll does not run the script into one wait after another.
+ */
+const folderWaits = new Map<string, { holder: string; at: number }>();
+
+/**
+ * The other task that uses the work folder of the project, or null: the user of the record while its
+ * work run runs (as `waitFacts` reads it), else the task of a folder refusal of the last 60 s.
+ */
+function folderHolder(task: Task): string | null {
+  const project = task.project;
+  const user = project?.workFolders ? project.workFolderUser : null;
+  if (project && user && user !== task.name && workRun(projectTaskList(project))?.name === user) return user;
+  const wait = folderWaits.get(task.name);
+  return wait && Date.now() - wait.at < 60_000 ? wait.holder : null;
+}
+
+/**
+ * The task cannot merge yet: the checkout is on its branch, its files have uncommitted changes, or
+ * another task uses the work folder.
+ */
 function mergeHeld(task: Task): boolean {
   const leftovers = task.project ? taskLeftovers(task.project, task.info) : (task.info?.leftovers ?? dirtyLines);
-  return !!task.info?.branch?.checkedOut || leftovers.length > 0;
+  return !!task.info?.branch?.checkedOut || leftovers.length > 0 || folderHolder(task) !== null;
 }
 
 /** What the card and the alert know about "Auto-merge finished tasks" for this task. */
@@ -7251,6 +7273,7 @@ function autoMergeFacts(task: Task): AutoMergeFacts {
     done: task.info?.header?.state === "done",
     tried: mergeTried(task),
     held: mergeHeld(task),
+    folder: folderHolder(task),
   };
 }
 
@@ -7354,6 +7377,7 @@ async function mergeTask(task: Task, by: "click" | "night" | "auto" = "click"): 
       await call(host, "task_pick_choice", { cwd, id: task.name, names: choiceNames(task.info.checks ?? [], pickChoice(task)) });
     }
     const result = await call<string>(host, "task_merge", { cwd, id: task.name });
+    folderWaits.delete(task.name);
     // The first line names the merge commit; with "Push after the merge" a second line says what the
     // push did (ticket simpler-process).
     const [first = "", pushed = ""] = result.split(/\r?\n/);
@@ -7366,7 +7390,16 @@ async function mergeTask(task: Task, by: "click" | "night" | "auto" = "click"): 
         : `Branch ${branch.name} of ${task.name} merged into ${branch.base} in Dispatch (merge ${commit}). ${push}`;
     tellTriage(projectFor(host, cwd), line);
   } catch (error) {
-    actionErrors.set(task.name, String(error));
+    // Another task used the work folder (ticket merge-in-the-work-folder, user decision 2): that is no
+    // try of auto-merge; the card says that it waits, and the poll tries again when the folder is free.
+    const holder = folderRefusal(String(error));
+    if (holder) {
+      nightDone.delete(mergeTryKey(task));
+      folderWaits.set(task.name, { holder, at: Date.now() });
+    } else {
+      folderWaits.delete(task.name);
+    }
+    if (!holder || by === "click") actionErrors.set(task.name, String(error));
     const refusal = gateRefusal(String(error));
     if (refusal && freshOnly(refusal.tail) && autoMergeFacts(task).on) regate = { refusal, error: String(error) };
   } finally {
