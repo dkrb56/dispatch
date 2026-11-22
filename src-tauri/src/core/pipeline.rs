@@ -208,6 +208,12 @@ impl Default for Options {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// A test that checks the text of a project with "No triage" off sets this: the saved value then stays.
+    static KEEP_SAVED_NO_TRIAGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// The command that runs the worker script. `reports` is the reports folder with `/`.
 fn script_command(reports: &str) -> String {
     format!("powershell -ExecutionPolicy Bypass -File {reports}/{SCRIPT_NAME}")
@@ -907,10 +913,20 @@ impl Project {
 
     /// The settings of the project. Without the file, each setting has its value of `Default`.
     pub(crate) fn options(&self) -> Options {
-        fs::read_to_string(self.options_file())
+        let mut options: Options = fs::read_to_string(self.options_file())
             .ok()
             .and_then(|text| serde_json::from_str(text.trim_start_matches('\u{feff}')).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // The window has no switch for it: every project works without a triage chat, an older
+        // one with a saved `noTriage: false` too (ticket remove-the-triage-from-options).
+        #[cfg(test)]
+        let keep = KEEP_SAVED_NO_TRIAGE.with(|keep| keep.get());
+        #[cfg(not(test))]
+        let keep = false;
+        if !keep {
+            options.no_triage = true;
+        }
+        options
     }
 
     /// The text of the file with the triage role, with `\n` at each line end.
@@ -12315,6 +12331,7 @@ if (args[0] === 'agents') {
 
     /// Sets "No triage" (ticket no-triage-a-project-switch-no-triage-in) in the settings file, as the switch does.
     fn set_no_triage(project: &Project, on: bool) {
+        KEEP_SAVED_NO_TRIAGE.with(|keep| keep.set(true));
         let options = Options { no_triage: on, ..project.options() };
         write_file(&project.options_file(), &format!("{}\n", serde_json::to_string_pretty(&options).unwrap())).unwrap();
     }
@@ -12328,18 +12345,27 @@ if (args[0] === 'agents') {
     }
 
     #[test]
-    fn an_old_settings_file_has_no_triage_off() {
+    fn a_saved_off_value_or_a_missing_field_reads_as_on() {
+        // Ticket remove-the-triage-from-options: the window has no switch, so every project has it on.
         let project = scratch("no-triage-old");
-        apply_with_triage(&project);
+        apply(&project, &[0]).unwrap();
         // The settings file of 0.1.69: no field for this switch.
-        write_file(&project.options_file(), "{\n  \"shortReports\": true,\n  \"triageName\": true,\n  \"autoApprove\": false,\n  \"measureBeforePlan\": false,\n  \"taskBranches\": false,\n  \"ignoreTasks\": false,\n  \"notesInGit\": false,\n  \"paused\": false,\n  \"startPlainPlans\": false,\n  \"checksAtGate\": false,\n  \"pushAfterMerge\": false,\n  \"ticketsStartPlans\": false\n}\n").unwrap();
-        assert!(!project.options().no_triage);
+        write_file(&project.options_file(), "{
+  \"shortReports\": true,
+  \"triageName\": true
+}
+").unwrap();
+        assert!(project.options().no_triage);
+        write_file(&project.options_file(), "{
+  \"shortReports\": true,
+  \"noTriage\": false
+}
+").unwrap();
+        assert!(project.options().no_triage);
         let shown = serde_json::to_value(&plan(&project).unwrap().options).unwrap();
-        assert_eq!(shown["noTriage"], json!(false));
+        assert_eq!(shown["noTriage"], json!(true));
         let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
-        assert!(!list.no_triage);
-        assert_eq!(serde_json::to_value(&list).unwrap()["noTriage"], json!(false));
-        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+        assert!(list.no_triage);
         clean(&project);
     }
 
@@ -13609,16 +13635,6 @@ if (args[0] === 'agents') {
         assert!(project.options().no_triage);
         let cwd = project.root.to_string_lossy().into_owned();
         assert_eq!(serde_json::to_value(project_root(cwd).unwrap()).unwrap()["noTriage"], json!(true));
-        clean(&project);
-    }
-
-    #[test]
-    fn a_choice_before_the_first_apply_stays() {
-        let project = scratch("no-triage-before");
-        fs::create_dir_all(&project.reports).unwrap();
-        set_no_triage(&project, false);
-        apply(&project, &[0]).unwrap();
-        assert!(!project.options().no_triage);
         clean(&project);
     }
 
