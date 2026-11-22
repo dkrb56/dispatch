@@ -774,9 +774,10 @@ mod tests {
         action
     }
 
-    /// The run file after its command step ended: polls up to 30 s.
+    /// The run file after its command step ended: polls up to 10 minutes. The limit only guards a
+    /// hang; on a busy computer the start of one process can take seconds.
     fn wait_step(cwd: &str, run_id: &str, index: usize) -> ActionRun {
-        wait_step_for(cwd, run_id, index, Duration::from_secs(30))
+        wait_step_for(cwd, run_id, index, Duration::from_secs(600))
     }
 
     /// The run file after its command step ended: polls up to `most`.
@@ -869,15 +870,15 @@ mod tests {
         let lines: Vec<&str> = run.steps[0].output.lines().collect();
         assert_eq!((lines.len(), lines[0], lines[199]), (200, "line 51", "line 250"));
         // The time limit ends the process tree; the exit is `timeout`. The command sleeps about
-        // 2 minutes; the bound of 60 s proves that the limit stopped the step long before the
+        // 15 minutes; the bound of 5 minutes proves that the limit stopped the step long before the
         // command could end by itself. The span also holds about 9 process starts (git, cmd, ping,
-        // taskkill), which a busy computer makes slow, so the bound keeps a wide margin.
-        let action = Action { id: "slow".to_string(), name: "Slow".to_string(), steps: vec![Step::Command { command: "ping -n 120 127.0.0.1 >nul".to_string(), limit: Some(1) }] };
+        // taskkill), and one start took up to 11 s on a busy computer, so the bound keeps a wide margin.
+        let action = Action { id: "slow".to_string(), name: "Slow".to_string(), steps: vec![Step::Command { command: "ping -n 900 127.0.0.1 >nul".to_string(), limit: Some(1) }] };
         action_save(cwd.clone(), action).unwrap();
         let began = Instant::now();
-        let bound = Duration::from_secs(60);
+        let bound = Duration::from_secs(300);
         let run = action_run(cwd.clone(), "slow".to_string()).unwrap();
-        let run = wait_step_for(&cwd, &run.id, 0, Duration::from_secs(90));
+        let run = wait_step_for(&cwd, &run.id, 0, Duration::from_secs(600));
         assert!(began.elapsed() < bound, "the step ended after {:?}, the bound is {bound:?}", began.elapsed());
         assert_eq!((run.steps[0].exit.as_deref(), run.state.as_str()), (Some("timeout"), "failed"));
         assert!(run.steps[0].note.contains("time limit of 1 s"), "{run:?}");

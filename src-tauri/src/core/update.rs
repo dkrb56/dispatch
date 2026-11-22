@@ -219,7 +219,8 @@ mod tests {
         let child = Command::new("sleep").arg("1").stdout(Stdio::null()).spawn().unwrap();
         *INSTALLER.lock().unwrap() = Some(child);
         assert!(update_installer_open());
-        let ended = (0..50).any(|_| {
+        // Up to 60 s: the limit only guards a hang, also on a busy computer.
+        let ended = (0..600).any(|_| {
             std::thread::sleep(std::time::Duration::from_millis(100));
             !update_installer_open()
         });

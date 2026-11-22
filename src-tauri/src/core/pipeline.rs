@@ -10142,12 +10142,16 @@ if (args[0] === 'agents') {
         }
         let lock = project.measure_dir().join("lock");
 
-        // Two measurings at once: the second waits until the first one ends.
-        write_file(&project.measure_commands_file(), "# limit 30\nping -n 4 127.0.0.1\ncmd /c echo second\n").unwrap();
+        // Two measurings at once: the second waits until the first one ends. The second starts once
+        // the first holds the lock; the limit of 300 s only guards a hang.
+        write_file(&project.measure_commands_file(), "# limit 300\nping -n 4 127.0.0.1\ncmd /c echo second\n").unwrap();
         let start = std::time::Instant::now();
         let (first, second) = std::thread::scope(|scope| {
             let first = scope.spawn(|| (run_script(&project, &fake, "done", &["measure", "t-1", "1"]), start.elapsed()));
-            std::thread::sleep(std::time::Duration::from_millis(1500));
+            while !lock.exists() {
+                assert!(start.elapsed().as_secs() < 600, "the first measuring took no lock");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             let second = scope.spawn(|| (run_script(&project, &fake, "done", &["measure", "t-2", "2"]), start.elapsed()));
             (first.join().unwrap(), second.join().unwrap())
         });
@@ -10167,7 +10171,8 @@ if (args[0] === 'agents') {
         assert!(start.elapsed().as_secs_f64() >= 2.0, "it waited: {:?}", start.elapsed());
         assert!(lock.exists(), "the lock of the other task stays");
 
-        // A lock whose process is gone is removed, and the command runs.
+        // A lock whose process is gone is removed, and the command runs (within a limit that only guards a hang).
+        write_file(&project.measure_commands_file(), "# limit 300\nping -n 300 127.0.0.1\ncmd /c echo second\n").unwrap();
         let mut gone = Command::new("cmd").args(["/c", "exit"]).spawn().unwrap();
         gone.wait().unwrap();
         write_file(&lock, &format!("{}\tt-gone\t2026-11-12T22:00:00\n", gone.id())).unwrap();
@@ -10176,14 +10181,17 @@ if (args[0] === 'agents') {
         assert!(out.contains("second") && !lock.exists(), "{out}");
 
         // A command over the time limit is stopped with its process tree: exit code 124, log kept.
+        // The limit of 20 s gives ping the time to start and print on a busy computer; ping alone
+        // runs about 5 minutes, and the bound of 150 s proves the stop at the limit.
+        write_file(&project.measure_commands_file(), "# limit 20\nping -n 300 127.0.0.1\ncmd /c echo second\n").unwrap();
         let start = std::time::Instant::now();
         let (code, out) = run_script(&project, &fake, "done", &["measure", "t-1", "1"]);
         let took = start.elapsed();
         assert_eq!(code, 124, "{out}");
-        assert!(took.as_secs_f64() < 20.0, "stopped at the limit, not after 30 pings: {took:?}");
+        assert!(took.as_secs_f64() < 150.0, "stopped at the limit, not after 300 pings: {took:?}");
         let log = read(&project.measure_dir().join("t-1").join("1.log"));
         assert!(log.contains("Pinging 127.0.0.1") || log.contains("127.0.0.1"), "{log}");
-        assert!(log.contains("stopped after 2 s: the time limit of the measuring commands"), "{log}");
+        assert!(log.contains("stopped after 20 s: the time limit of the measuring commands"), "{log}");
         assert!(out.contains("ended with exit code 124"), "{out}");
         assert!(!lock.exists());
         clean(&project);
@@ -10513,6 +10521,8 @@ if (args[0] === 'agents') {
         assert!(code == 2 && out.contains("another check run of this project runs (task t-9)"), "{out}");
         assert!(!project.checked_file("t-1").exists(), "a refused run writes no result");
         fs::remove_file(project.measure_dir().join("lock")).unwrap();
+        // The checks run within a limit that only guards a hang: a busy computer starts a cmd slowly.
+        write_file(&project.checks_file(), "# limit 300\none | cmd /c echo one & exit 0\ntwo | cmd /c echo two & exit 3\n").unwrap();
         let (code, out) = run_script(&project, &fake, "done", &["check", "t-1"]);
         assert_eq!(code, 0, "{out}");
         assert!(out.contains("one: exit 0") && out.contains("two: exit 3"), "{out}");
@@ -12665,11 +12675,13 @@ if (args[0] === 'agents') {
         plan_and_approve(&project, &fake, "t-1");
         write_report(&project, "t-1");
         assert!(!listed_branch(&project, "t-1").checked_out);
-        set_merge_gate(cwd.clone(), "ping -n 60 127.0.0.1 >nul\n".to_string()).unwrap();
+        // The gate runs about 15 minutes, longer than the wait below, which only guards a hang: the
+        // kill always comes while the gate runs, also on a busy computer.
+        set_merge_gate(cwd.clone(), "ping -n 900 127.0.0.1 >nul\n".to_string()).unwrap();
         let head = git_out(&project, &["rev-parse", &base]);
         let log = project.merge_dir().join("t-1.log");
         let mut child = spawn_merge(&project, &fake, "t-1");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
         while !log.exists() {
             assert!(std::time::Instant::now() < deadline, "the gate did not start");
             std::thread::sleep(std::time::Duration::from_millis(200));
@@ -13515,9 +13527,10 @@ if (args[0] === 'agents') {
             .unwrap()
     }
 
-    /// Waits up to 60 s until git has an open merge in the checkout.
+    /// Waits up to 10 minutes until git has an open merge in the checkout. The limit only guards a
+    /// hang; the gate of the caller runs longer.
     fn wait_for_merge_head(project: &Project) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
         while git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_none() {
             assert!(std::time::Instant::now() < deadline, "the merge did not start");
             std::thread::sleep(std::time::Duration::from_millis(200));
@@ -13534,7 +13547,8 @@ if (args[0] === 'agents') {
         plan_and_approve(&project, &fake, "t-1");
         write_report(&project, "t-1");
         assert!(!listed_branch(&project, "t-1").checked_out);
-        set_merge_gate(cwd.clone(), "ping -n 60 127.0.0.1 >nul\n".to_string()).unwrap();
+        // The gate runs about 15 minutes: the kill always comes while it runs, also on a busy computer.
+        set_merge_gate(cwd.clone(), "ping -n 900 127.0.0.1 >nul\n".to_string()).unwrap();
         let mut child = spawn_merge(&project, &fake, "t-1");
         wait_for_merge_head(&project);
         // A plain kill leaves the cmd.exe of the gate alive: the whole tree goes.
