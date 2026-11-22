@@ -15,6 +15,7 @@ import {
   newWaits,
   notificationText,
   parseAlertOptions,
+  speechText,
   type Wait,
   type WaitKind,
   waitsForUser,
@@ -92,11 +93,11 @@ test("picked checks that wait for the click alert by day and not at night", () =
 });
 
 test("each switch turns off only its own action", () => {
-  assert.deepEqual(alertActions(DEFAULT_ALERT_OPTIONS, true), { notify: true, chime: true, blink: true });
-  assert.deepEqual(alertActions(DEFAULT_ALERT_OPTIONS, false), { notify: false, chime: false, blink: false }, "nothing new");
-  assert.deepEqual(alertActions({ notify: false, chime: true, blink: true }, true), { notify: false, chime: true, blink: true });
-  assert.deepEqual(alertActions({ notify: true, chime: false, blink: true }, true), { notify: true, chime: false, blink: true });
-  assert.deepEqual(alertActions({ notify: true, chime: true, blink: false }, true), { notify: true, chime: true, blink: false });
+  assert.deepEqual(alertActions(DEFAULT_ALERT_OPTIONS, true), { notify: true, chime: true, blink: true, voice: true });
+  assert.deepEqual(alertActions(DEFAULT_ALERT_OPTIONS, false), { notify: false, chime: false, blink: false, voice: false }, "nothing new");
+  assert.deepEqual(alertActions({ notify: false, chime: true, blink: true, voice: true }, true), { notify: false, chime: true, blink: true, voice: true });
+  assert.deepEqual(alertActions({ notify: true, chime: false, blink: true, voice: true }, true), { notify: true, chime: false, blink: true, voice: true });
+  assert.deepEqual(alertActions({ notify: true, chime: true, blink: false, voice: true }, true), { notify: true, chime: true, blink: false, voice: true });
 });
 
 test("a missing or broken stored value gives all three switches on", () => {
@@ -106,13 +107,22 @@ test("a missing or broken stored value gives all three switches on", () => {
   assert.deepEqual(parseAlertOptions("{broken"), DEFAULT_ALERT_OPTIONS);
   assert.deepEqual(parseAlertOptions("[1,2]"), DEFAULT_ALERT_OPTIONS);
   assert.deepEqual(parseAlertOptions('{"chime":"no"}'), DEFAULT_ALERT_OPTIONS);
-  assert.deepEqual(parseAlertOptions('{"chime":false}'), { notify: true, chime: false, blink: true });
-  assert.deepEqual(parseAlertOptions(JSON.stringify({ notify: false, chime: false, blink: false })), { notify: false, chime: false, blink: false });
+  assert.deepEqual(parseAlertOptions('{"chime":false}'), { notify: true, chime: false, blink: true, voice: true });
+  assert.deepEqual(parseAlertOptions(JSON.stringify({ notify: false, chime: false, blink: false, voice: false })), { notify: false, chime: false, blink: false, voice: false });
 });
 
 test("the notification names the task, its project and what it waits for", () => {
   assert.deepEqual(notificationText([wait("alerts-options", "plan", "1")]), { title: "Dispatch", body: "alerts-options (p): plan ready · waits for you" });
   assert.deepEqual(notificationText([wait("a", "plan", "1"), wait("b", "question", "2")]), { title: "Dispatch", body: "2 tasks wait for you: a, b" });
+});
+
+test("the voice names each project once, without the host", () => {
+  const n = (project: string) => ({ name: "t", project, text: "x" });
+  assert.equal(speechText([n("starminer")]), "starminer is waiting for you");
+  assert.equal(speechText([n("a"), n("b")]), "a and b are waiting for you");
+  assert.equal(speechText([n("a"), n("b"), n("c")]), "3 projects are waiting for you");
+  assert.equal(speechText([n("a"), n("a")]), "a is waiting for you");
+  assert.equal(speechText([n("starminer · desktop")]), "starminer is waiting for you");
 });
 
 test("the chime is short and quiet", () => {
@@ -130,7 +140,7 @@ test("the Options dialog holds the three switches and both lists; the top bar ho
   const start = HTML.indexOf('<dialog id="options">');
   assert.ok(start >= 0, "index.html has the Options dialog");
   const dialog = HTML.slice(start, HTML.indexOf("</dialog>", start));
-  for (const name of ["notify", "chime", "blink"]) assert.match(dialog, new RegExp(`type="checkbox" data-alert="${name}"`), name);
+  for (const name of ["notify", "chime", "blink", "voice"]) assert.match(dialog, new RegExp(`type="checkbox" data-alert="${name}"`), name);
   assert.ok(dialog.includes('id="theme"') && dialog.includes('id="text-size"'), "both pickers are in the dialog");
 });
 
@@ -154,6 +164,7 @@ test("the Help says where the theme and the text size are and what the alerts do
   assert.match(section, /size of the text/);
   assert.match(section, /notification/);
   assert.match(section, /chime/);
+  assert.match(section, /voice/);
   assert.match(section, /blinks/);
 });
 
@@ -267,7 +278,7 @@ test("the Options dialog has six tabs, one panel each, and every switch and list
     const at = dialog.indexOf(needle);
     return at >= 0 && panels.some((panel) => at > panel.start && at < panel.end);
   };
-  for (const name of ["notify", "chime", "blink"]) assert.ok(inside(`data-alert="${name}"`), name);
+  for (const name of ["notify", "chime", "blink", "voice"]) assert.ok(inside(`data-alert="${name}"`), name);
   for (const needle of ['data-attention="pulse"', 'data-compact="triage"', 'id="theme"', 'id="text-size"', 'name="work-mode"', 'id="host-run-start"', 'id="phone-start"']) {
     assert.ok(inside(needle), needle);
   }

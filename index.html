@@ -1082,7 +1082,7 @@
           <li><b>Rules</b> shows all the rules that Claude Code gets in the project. <b>Analyse rules</b> finds old or bad rules.</li>
           <li><b>Update to …</b> shows when a new version is ready. Click it to install the update.</li>
           <li><b>Options</b> (the wrench) holds the mode, the alerts, the triage compaction, the colour theme and the size of the text.</li>
-          <li><b>Alerts.</b> Dispatch tells you when a task waits: a <b>notification</b>, a <b>chime</b>, and a taskbar button that <b>blinks</b>.</li>
+          <li><b>Alerts.</b> Dispatch tells you when a task waits: a <b>notification</b>, a <b>chime</b> or a spoken <b>voice</b> that names the project, and a taskbar button that <b>blinks</b>.</li>
           <li><b>The bar at the bottom</b> shows your Claude account, its weekly usage and the versions.</li>
           <li><b>What's new</b> next to Check for update lists what each version brought.</li>
           <li><b>?</b> opens this help.</li>
@@ -1101,7 +1101,7 @@
             <li>The line below the title of this window shows the version and the result of the check. Dispatch checks once an hour; <b>Check for update</b> checks now, and installs a new version that it found.</li>
             <li>The Options window holds where the work runs (see Where the work runs), the alerts, the switch <b>Compact triage after each task</b>, the colour theme of the window and the terminals (Slate, or Graphite with a blue, indigo, teal or amber accent) and the size of the text (90 to 150 percent). A change applies at once, and Dispatch keeps the choices on this computer. The window shows its sections in a list at the left, one section at a time, and opens on the first one. The theme is a row of cards with a preview of each theme, and the text size a row of buttons.</li>
             <li>An alert comes one time when a plan is ready, a report has a question or needs a permission, or a worker waits at a prompt. Each alert has its own switch in Options. The notification names the task and what it waits for. The button blinks until you open the window.</li>
-            <li>The tasks that already wait when Dispatch starts give no alert. The chime plays only after your first key or click in Dispatch, because the window may play sound only then. In night mode only a plan with a HOLD decision, a permission and a prompt alert. A test build that runs with <code>npm run tauri dev</code> shows the notification as from PowerShell.</li>
+            <li>The tasks that already wait when Dispatch starts give no alert. The chime and the voice start only after your first key or click in Dispatch, because the window may play sound only then. With the voice on, it replaces the chime; the chime plays when the computer has no voice. In night mode only a plan with a HOLD decision, a permission and a prompt alert. A test build that runs with <code>npm run tauri dev</code> shows the notification as from PowerShell.</li>
             <li>The bar at the bottom shows "Claude account:" with the email of the account that Claude Code uses on the computer that does the work. Then come the weekly usage for all models and for Fable, the version of Claude Code and the version of Dispatch. The email stays on this computer.</li>
             <li>The computer that does the work is this PC, or the computer of the focused terminal with hosts. With several hosts the host name stands in front of the account. When the versions of this window and a host differ, the bar shows both in the wait colour.</li>
             <li>Dispatch reads the account and the versions at the start and then once a minute. Without a login the bar says "Not signed in to Claude Code"; without Claude Code it says "Claude Code not found".</li>
@@ -1264,6 +1264,10 @@
               <label class="switch-row">
                 <input type="checkbox" data-alert="chime" />
                 <span><b>Chime</b> A short, quiet sound, one time per task.</span>
+              </label>
+              <label class="switch-row">
+                <input type="checkbox" data-alert="voice" />
+                <span><b>Voice</b> The system voice says which project waits, in place of the chime.</span>
               </label>
               <label class="switch-row">
                 <input type="checkbox" data-alert="blink" />

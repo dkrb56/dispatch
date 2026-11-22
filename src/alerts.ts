@@ -1,5 +1,5 @@
 // The alerts when a task starts to wait for the user (ticket alerts-options): a system notification,
-// a short chime and the blinking taskbar button, each with its own switch in the Options screen.
+// a short chime (or the system voice in its place) and the blinking taskbar button, each with its own switch in the Options screen.
 // This module holds the rule that decides when an alert fires, the texts and the data of the chime.
 // No DOM, no imports: tests/alerts.test.ts imports it in Node.
 
@@ -8,12 +8,14 @@ export interface AlertOptions {
   notify: boolean;
   chime: boolean;
   blink: boolean;
+  /** The system voice says which project waits, in place of the chime. */
+  voice: boolean;
 }
 
 /** The localStorage key of the switches. */
 export const ALERT_OPTIONS_KEY = "alert-options";
 
-export const DEFAULT_ALERT_OPTIONS: AlertOptions = { notify: true, chime: true, blink: true };
+export const DEFAULT_ALERT_OPTIONS: AlertOptions = { notify: true, chime: true, blink: true, voice: true };
 
 /**
  * What a task waits for: a plan without a HOLD decision, a plan with one, a question in the report,
@@ -59,7 +61,7 @@ export function parseAlertOptions(stored: string | null | undefined): AlertOptio
   }
   const record = saved !== null && typeof saved === "object" ? (saved as Record<string, unknown>) : {};
   const pick = (name: keyof AlertOptions) => (typeof record[name] === "boolean" ? (record[name] as boolean) : DEFAULT_ALERT_OPTIONS[name]);
-  return { notify: pick("notify"), chime: pick("chime"), blink: pick("blink") };
+  return { notify: pick("notify"), chime: pick("chime"), blink: pick("blink"), voice: pick("voice") };
 }
 
 /**
@@ -101,7 +103,7 @@ export function newWaits(waits: Wait[], scopes: string[], state: AlertState, nig
 
 /** The actions of the alert: each one only when its switch is on and a wait is new. */
 export function alertActions(options: AlertOptions, anyNew: boolean): AlertOptions {
-  return { notify: anyNew && options.notify, chime: anyNew && options.chime, blink: anyNew && options.blink };
+  return { notify: anyNew && options.notify, chime: anyNew && options.chime, blink: anyNew && options.blink, voice: anyNew && options.voice };
 }
 
 /** What a notification names: the task or worker name, the project folder name and the text. */
@@ -150,6 +152,18 @@ export function notificationText(waits: Notice[]): { title: string; body: string
     return { title, body: `${wait.name} (${wait.project}): ${wait.text}` };
   }
   return { title, body: `${waits.length} tasks wait for you: ${waits.map((wait) => wait.name).join(", ")}` };
+}
+
+/** The text the system voice says: the project names, each once, without the ` · host` part. */
+export function speechText(notices: Notice[]): string {
+  const names: string[] = [];
+  for (const notice of notices) {
+    const name = notice.project.split(" · ")[0];
+    if (!names.includes(name)) names.push(name);
+  }
+  if (names.length === 1) return `${names[0]} is waiting for you`;
+  if (names.length === 2) return `${names[0]} and ${names[1]} are waiting for you`;
+  return `${names.length} projects are waiting for you`;
 }
 
 /** One note of the chime: its pitch in hertz, its start and its length in seconds. */

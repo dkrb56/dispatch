@@ -158,7 +158,7 @@ import { initPipeline, openSetup, setupNeeded, setupTodo, showSetup } from "./pi
 import { setupDue, setupLook, setupStamp, setupTitle } from "./setupmark";
 import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersion } from "./help";
 import { lastRunVersion, newEntries } from "./changelog";
-import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, type Wait, type WorkerEnd } from "./alerts";
+import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, speechText, type Wait, type WorkerEnd } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
 import { alertOptions, compactOn, initOptions, openOptions, ownHostRuns, phoneTabWanted, pulseOn, stopOwnHost, useOwnHost } from "./options";
 import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
@@ -11127,11 +11127,14 @@ let blockedBefore = new Set<string>();
 const promptCounts = new Map<string, number>();
 /** The audio of the chime. The window may play sound only after a key or a click of the user. */
 let chimeAudio: AudioContext | null = null;
+/** A key or a click came in this run; the window may speak only after it. */
+let userActivated = false;
 /** The permission for system notifications was asked in this run. */
 let notifyAsked = false;
 
 /** Makes the audio of the chime at the first key or click. */
 function startChimeAudio(): void {
+  userActivated = true;
   if (chimeAudio) return;
   try {
     chimeAudio = new AudioContext();
@@ -11159,6 +11162,26 @@ function playChime(): void {
     tone.connect(volume).connect(audio.destination);
     tone.start(begin);
     tone.stop(end + 0.02);
+  }
+}
+
+/** Says the text with the system voice. False when there is no voice or no key or click came yet; on a speech error the chime plays. */
+function speak(text: string): boolean {
+  if (!userActivated || typeof window === "undefined" || !("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") return false;
+  try {
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.addEventListener("error", () => {
+      try {
+        playChime();
+      } catch (error) {
+        console.error("chime after a speech error failed", error);
+      }
+    });
+    window.speechSynthesis.speak(utterance);
+    return true;
+  } catch (error) {
+    console.warn("no voice for the alert", error);
+    return false;
   }
 }
 
@@ -11247,7 +11270,8 @@ function fireAlerts(found: Notice[]): void {
   const act = alertActions(alertOptions(), found.length > 0);
   const failed = (error: unknown) => console.error("alert failed", error);
   if (act.notify) notify(found).catch(failed);
-  if (act.chime) {
+  const spoken = act.voice && speak(speechText(found));
+  if (act.chime && !spoken) {
     try {
       playChime();
     } catch (error) {
