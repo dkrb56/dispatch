@@ -135,7 +135,11 @@ pub(crate) fn file_entry(path: &Path) -> Option<FileEntry> {
 
 pub(crate) fn git(cwd: &Path, args: &[&str]) -> Option<String> {
     // `--no-optional-locks`: a poll must not take the index lock from a git command of the user.
-    let output = Command::new("git")
+    // The program is the real git behind the launcher (ticket dispatch-starts-the-git-program-for-each).
+    #[cfg(test)]
+    crate::core::gitfiles::count_start(true, args);
+    let output = crate::core::gitfiles::git_program()
+        .command()
         .arg("--no-optional-locks")
         .arg("-C")
         .arg(cwd)

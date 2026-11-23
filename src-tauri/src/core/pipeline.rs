@@ -14,6 +14,7 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::core::gitfiles;
 use crate::core::info::{file_entry, git, FileEntry, NoWindow};
 use crate::core::testfind::find_tests;
 use crate::core::{err, pty::session_flags};
@@ -439,6 +440,51 @@ pub(crate) struct Project {
     pub(crate) reports: PathBuf,
     /// The folder is in a git repository. `root` is then the top folder of the repository.
     in_git: bool,
+    /// The repository of the folder, read from its files (ticket
+    /// dispatch-starts-the-git-program-for-each); none outside git. Its `top` is the folder that git
+    /// gives as the top, which in a work folder of Dispatch is the work folder, not `root`.
+    repo: Option<gitfiles::Repo>,
+}
+
+/// The ignored and the tracked setup files of a project, as `Project::git_sets` reads them.
+#[derive(Default)]
+struct GitSets {
+    in_git: bool,
+    /// The paths among the local settings file and the notes files that an ignore rule names.
+    ignored: Vec<String>,
+    /// The tracked files among the local settings file and the task folder, from the top folder.
+    tracked: Vec<String>,
+}
+
+impl GitSets {
+    /// An ignore rule of git names the local settings file, by Dispatch or by hand (a line `.claude/`
+    /// ignores it too).
+    fn local_settings_ignored(&self) -> bool {
+        self.ignored.iter().any(|path| path == LOCAL_SETTINGS)
+    }
+
+    /// Git tracks the local settings file. False outside git.
+    fn local_settings_tracked(&self) -> bool {
+        self.tracked.iter().any(|path| path == LOCAL_SETTINGS)
+    }
+
+    /// The local settings file stays on this computer: git ignores it and does not track it. Always
+    /// true outside git.
+    fn local_settings_private(&self) -> bool {
+        !self.in_git || (self.local_settings_ignored() && !self.local_settings_tracked())
+    }
+
+    /// Git tracks at least one file of the task folder. False outside git.
+    fn tasks_tracked(&self) -> bool {
+        let prefix = format!("{TASKS_DIR}/");
+        self.tracked.iter().any(|path| path.starts_with(&prefix))
+    }
+
+    /// An ignore rule of git names at least one of the notes files (ticket project-notes-in-git).
+    /// False outside git.
+    fn notes_ignored(&self) -> bool {
+        self.ignored.iter().any(|path| NOTES_FILES.contains(&path.as_str()))
+    }
 }
 
 /// The reply of the `project_root` command.
@@ -478,20 +524,23 @@ impl Project {
         if !cwd.is_dir() {
             return Err(format!("not a folder: {}", cwd.display()));
         }
-        let top = git(cwd, &["rev-parse", "--show-toplevel"])
-            .map(|top| PathBuf::from(top.trim().replace('/', "\\")))
-            .filter(|top| top.is_dir());
+        // The top folder from the files of git, with no program start (ticket
+        // dispatch-starts-the-git-program-for-each): as `git rev-parse --show-toplevel` gave it.
+        let repo = gitfiles::Repo::find(cwd).filter(|repo| repo.top.is_dir());
         // A work folder of Dispatch (`<project>\.dispatch\work\<n>`, ticket work-run-in-the-work-folder)
         // is a git worktree, so git gives the work folder as the top; its project is two levels up.
-        let top = top.map(|top| work_folder_project(&top).unwrap_or(top));
+        let top = repo.as_ref().map(|repo| work_folder_project(&repo.top).unwrap_or_else(|| repo.top.clone()));
         let in_git = top.is_some();
         let root = top.unwrap_or_else(|| cwd.to_path_buf());
+        // From a work folder, the facts of the project are those of the main checkout (as the git calls
+        // in `root` gave them), not those of the worktree.
+        let repo = repo.filter(|repo| repo.top == root).or_else(|| in_git.then(|| gitfiles::Repo::find(&root)).flatten());
         // The task files are in the project, so git tracks them and a clone has them, unless the
         // option "Task files in git" (`ignore_tasks`) is on: then the root `.gitignore` ignores the
         // folder. Dispatch commits them itself (`keep_tasks_committed`), and Approve does not count
         // them as changes.
         let reports = root.join(TASKS_DIR);
-        Ok(Project { root, reports, in_git })
+        Ok(Project { root, reports, in_git, repo })
     }
 
     /// The reports folder of the old layout: `<project>-reports` next to the project. The step
@@ -537,7 +586,20 @@ impl Project {
     /// A project with given folders, for the tests of other modules.
     #[cfg(test)]
     pub(crate) fn scratch(root: PathBuf, reports: PathBuf) -> Project {
-        Project { root, reports, in_git: false }
+        Project { root, reports, in_git: false, repo: None }
+    }
+
+    /// The repository of the root for the reads of `gitfiles`; none outside git. A test project
+    /// that became a repository after `scratch` sets `repo` with `set_repo`.
+    fn repo(&self) -> Option<&gitfiles::Repo> {
+        self.repo.as_ref().filter(|_| self.in_git)
+    }
+
+    /// Reads the repository of the root again after `git init` (the tests).
+    #[cfg(test)]
+    pub(crate) fn set_repo(&mut self) {
+        self.repo = gitfiles::Repo::find(&self.root);
+        self.in_git = self.repo.is_some();
     }
 
     /// The plans that the plan runs write, one file per ticket.
@@ -609,35 +671,19 @@ impl Project {
         self.root_ignore_lines().windows(2).any(|pair| pair[0] == TASKS_IGNORE_MARK && pair[1] == ROOT_TASKS_IGNORE)
     }
 
-    /// An ignore rule of git names the local settings file, by Dispatch or by hand (a line `.claude/`
-    /// ignores it too). `--no-index`: the rule counts also while git still tracks the file.
-    fn local_settings_ignored(&self) -> bool {
-        self.in_git && git(&self.root, &["check-ignore", "-q", "--no-index", LOCAL_SETTINGS]).is_some()
-    }
-
-    /// Git tracks the local settings file. False outside git.
-    fn local_settings_tracked(&self) -> bool {
-        self.in_git && git(&self.root, &["ls-files", "--", LOCAL_SETTINGS]).is_some_and(|files| !files.trim().is_empty())
-    }
-
-    /// The local settings file stays on this computer: git ignores it and does not track it. Always
-    /// true outside git.
-    fn local_settings_private(&self) -> bool {
-        !self.in_git || (self.local_settings_ignored() && !self.local_settings_tracked())
-    }
-
-    /// Git tracks at least one file of the task folder. False outside git.
-    fn tasks_tracked(&self) -> bool {
-        self.in_git && git(&self.root, &["ls-files", "--", TASKS_DIR]).is_some_and(|files| !files.trim().is_empty())
-    }
-
-    /// An ignore rule of git names at least one of the notes files (ticket project-notes-in-git).
-    /// `git check-ignore` with several paths exits 0 when any is ignored; `-q` takes only one path,
-    /// so the output is dropped instead. False outside git.
-    fn notes_ignored(&self) -> bool {
-        let mut args = vec!["check-ignore", "--no-index"];
-        args.extend(NOTES_FILES);
-        self.in_git && git(&self.root, &args).is_some()
+    /// The ignore and tracked facts of the setup files (ticket dispatch-starts-the-git-program-for-each):
+    /// the ignored paths among the local settings file and the notes files from one
+    /// `check-ignore --no-index`, kept while the ignore files did not change, and the tracked files
+    /// among the local settings file and the task folder from the index file (`gitfiles`). Empty
+    /// outside git. `plan` reads them once for all its steps; `apply` reads them again where it
+    /// changes the rules between two questions, so no memo lives in the project.
+    fn git_sets(&self) -> GitSets {
+        let Some(repo) = self.repo() else { return GitSets::default() };
+        let mut paths = vec![LOCAL_SETTINGS];
+        paths.extend(NOTES_FILES);
+        let ignored = gitfiles::ignored(repo, &paths);
+        let tracked = gitfiles::tracked(repo, &[LOCAL_SETTINGS, TASKS_DIR]);
+        GitSets { in_git: true, ignored, tracked }
     }
 
     /// The root `.gitignore` has the mark of the notes block of Dispatch.
@@ -3700,19 +3746,22 @@ fn plan(project: &Project) -> Result<Plan, String> {
         lines.extend(changes.missing_dirs.iter().map(|dir| format!("read folder: {dir}")));
         lines.join("\n")
     };
-    // The local settings stay on this computer (ticket second-computer, user decision 3).
-    let private = project.local_settings_private();
+    // The local settings stay on this computer (ticket second-computer, user decision 3). The ignore
+    // and tracked facts of every step come from two git calls (ticket
+    // dispatch-starts-the-git-program-for-each).
+    let sets = project.git_sets();
+    let private = sets.local_settings_private();
     let rules_detail = if !project.in_git {
         rules_detail
     } else if private {
         format!("{rules_detail}\n\nGit ignores {LOCAL_SETTINGS}: these rules stay on this computer, and Apply writes them on each computer.")
     } else {
         let mut text = format!("{rules_detail}\n\nThe rules and the folders stay on this computer: ");
-        if !project.local_settings_ignored() {
+        if !sets.local_settings_ignored() {
             text.push_str(&format!("Apply adds the line {LOCAL_SETTINGS} with a comment line to .gitignore of the project"));
         }
-        if project.local_settings_tracked() {
-            if !project.local_settings_ignored() {
+        if sets.local_settings_tracked() {
+            if !sets.local_settings_ignored() {
                 text.push_str(", and ");
             } else {
                 text.push_str("Apply ");
@@ -3808,8 +3857,8 @@ fn plan(project: &Project) -> Result<Plan, String> {
         },
         measure_step(project, options.measure_before_plan)?,
         branches_step(project, options.task_branches),
-        ignore_step(project, options.ignore_tasks),
-        notes_step(project, options.notes_in_git),
+        ignore_step(project, options.ignore_tasks, &sets),
+        notes_step(project, options.notes_in_git, &sets),
         checks_step(project, checks_saved, &found_checks),
         // Last, so the positions that `apply` reads stay as they were.
         work_folders_step(project, options.work_folders && options.task_branches),
@@ -3922,7 +3971,7 @@ fn work_folders_step(project: &Project, on: bool) -> Step {
 /// The step "Task files in git" (ticket ignore-tasks). On, it is done when the root `.gitignore` has
 /// the line `.dispatch/` and git tracks no task file. Off, it is done when the line of Dispatch (the
 /// pair under its mark) is absent; a line that the user wrote by hand stays (user decision 1).
-fn ignore_step(project: &Project, on: bool) -> Step {
+fn ignore_step(project: &Project, on: bool, sets: &GitSets) -> Step {
     let target = project.root_ignore().to_string_lossy().into_owned();
     if !on {
         let ours = project.tasks_ignored_by_dispatch();
@@ -3936,13 +3985,13 @@ fn ignore_step(project: &Project, on: bool) -> Step {
     let mut detail = format!(
         "Git ignores the folder .dispatch: tickets, briefs, plans, reports, logs and the other task files stay on this computer, and a clone has none. Apply adds the line {ROOT_TASKS_IGNORE} with a comment line to .gitignore of the project"
     );
-    if project.tasks_tracked() {
+    if sets.tasks_tracked() {
         detail.push_str(&format!(
             ", takes the task files out of git (they stay on the disk) and commits that with the message \"{TASKS_LOCAL_MESSAGE}\""
         ));
     }
     detail.push_str(". Commit to git then commits .gitignore. Off again, Apply puts the folder back into git.");
-    Step { title: "Task files in git", target, done: project.root_ignores_tasks() && !project.tasks_tracked(), detail, rules: None }
+    Step { title: "Task files in git", target, done: project.root_ignores_tasks() && !sets.tasks_tracked(), detail, rules: None }
 }
 
 /// Adds the line of Dispatch with its mark to the root `.gitignore` when no line `.dispatch/` is
@@ -3992,7 +4041,7 @@ fn notes_block_lines() -> Vec<String> {
 /// The step "Project notes in git" (ticket project-notes-in-git). On, it is done when git ignores
 /// none of the notes files; Apply then writes nothing (user decision 1). Off, it is done when the
 /// block of Dispatch is absent; the notes that git tracks stay in git.
-fn notes_step(project: &Project, on: bool) -> Step {
+fn notes_step(project: &Project, on: bool, sets: &GitSets) -> Step {
     let target = project.root_ignore().to_string_lossy().into_owned();
     let files = NOTES_FILES.join(", ");
     if !on {
@@ -4008,7 +4057,7 @@ fn notes_step(project: &Project, on: bool) -> Step {
         "Git tracks the notes of Claude for this project: {files}. A clone has them. When git ignores one of them, Apply adds these lines under a comment line at the end of .gitignore of the project: {}. Your own line .claude/ stays. {LOCAL_SETTINGS} and .claude/state stay on this computer. Commit to git then commits .gitignore and the notes. Dispatch commits later changes of memory.md, mistakes.md and agents-override.md with the task files.",
         notes_block_lines().join(", ")
     );
-    Step { title: NOTES_STEP, target, done: !project.notes_ignored(), detail, rules: None }
+    Step { title: NOTES_STEP, target, done: !sets.notes_ignored(), detail, rules: None }
 }
 
 /// Removes an old notes block of Dispatch and adds the block at the end of the root `.gitignore`,
@@ -6208,7 +6257,7 @@ fn commit_own(project: &Project, ticket: &str, lines: &[String]) -> Result<(), S
 fn task_files(project: &Project, ticket: &str, branch: Option<&BranchInfo>) -> Vec<String> {
     let mut files = plan_files(&fs::read_to_string(project.plans().join(format!("{ticket}.md"))).unwrap_or_default());
     if let Some(info) = branch.filter(|info| info.merge.is_empty() && !info.name.is_empty() && !info.base.is_empty()) {
-        if git(&project.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", info.name)]).is_some() {
+        if branch_hash(project, &info.name).is_some() {
             let range = format!("{}...{}", info.base, info.name);
             for file in git(&project.root, &["diff", "--name-only", &range]).unwrap_or_default().lines().map(str::trim).filter(|file| !file.is_empty()) {
                 if !files.iter().any(|known| known == file) {
@@ -6421,8 +6470,15 @@ fn set_card_changes_aside(project: &Project) -> Result<Vec<CardChange>, String> 
         let content = fs::read(&file).ok().map(|bytes| (bytes, fs::metadata(&file).and_then(|meta| meta.modified()).ok()));
         changes.push(CardChange { path, content });
     }
+    // One `ls-tree` for all changed files in place of one `cat-file -e` per file (ticket
+    // dispatch-starts-the-git-program-for-each).
+    let in_head: Vec<String> = if changes.is_empty() {
+        Vec::new()
+    } else {
+        git(&project.root, &["ls-tree", "-r", "-z", "--name-only", "HEAD", "--", TASKS_DIR]).unwrap_or_default().split('\0').filter(|path| !path.is_empty()).map(str::to_string).collect()
+    };
     for change in &changes {
-        let tracked = git(&project.root, &["cat-file", "-e", &format!("HEAD:{}", change.path)]).is_some();
+        let tracked = in_head.iter().any(|path| *path == change.path);
         let result = if tracked {
             run_git(&project.root, &["checkout", "-q", "HEAD", "--", &change.path]).map(|_| ())
         } else {
@@ -6573,8 +6629,7 @@ fn worker_runs_in(json: &str, root: &Path, ticket: &str) -> Option<bool> {
 /// report, and the merge of the work folder takes the card files of the base.
 fn task_branch(project: &Project, ticket: &str, current: &str, check_merged: bool) -> Option<(BranchInfo, bool)> {
     let mut info = read_branch_file(&project.branch_file(ticket))?;
-    let exists = |name: &str| git(&project.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_some();
-    info.exists = info.merge.is_empty() && exists(&info.name);
+    info.exists = info.merge.is_empty() && branch_hash(project, &info.name).is_some();
     info.checked_out = current == info.name;
     if info.merge.is_empty() {
         info.aborted = fs::read_to_string(project.merge_dir().join(format!("{ticket}.aborted"))).unwrap_or_default().trim().to_string();
@@ -6615,7 +6670,8 @@ fn task_branch(project: &Project, ticket: &str, current: &str, check_merged: boo
         }
     }
     if info.exists {
-        info.base_head = git(&project.root, &["rev-parse", "--short", &format!("refs/heads/{}", info.base)]).map(|head| head.trim().to_string()).unwrap_or_default();
+        // The short hash of the base: one git call per new hash, none while the base did not move.
+        info.base_head = branch_hash(project, &info.base).and_then(|hash| project.repo().and_then(|repo| gitfiles::short_hash(repo, &hash))).unwrap_or_default();
     }
     Some((info, changed))
 }
@@ -6633,7 +6689,12 @@ fn unmerged_tips() -> &'static std::sync::Mutex<std::collections::HashMap<(PathB
 /// the branch has a change that the base lacks. One `rev-parse` per call; the two checks run only
 /// when a tip moved since the last call that found the branch unmerged.
 fn merged_outside(project: &Project, info: &BranchInfo) -> Option<String> {
-    let tips = git(&project.root, &["rev-parse", &format!("refs/heads/{}", info.name), &info.base])?;
+    // The tips from the files of git (ticket dispatch-starts-the-git-program-for-each); a base that
+    // is no local branch, or refs in the reftable format, asks git as before.
+    let tips = match (branch_hash(project, &info.name), branch_hash(project, &info.base)) {
+        (Some(tip), Some(base)) => format!("{tip} {base}"),
+        _ => git(&project.root, &["rev-parse", &format!("refs/heads/{}", info.name), &info.base])?,
+    };
     let key = (project.root.clone(), info.name.clone());
     let tips = tips.split_whitespace().collect::<Vec<_>>().join(" ");
     if unmerged_tips().lock().ok()?.get(&key) == Some(&tips) {
@@ -6663,9 +6724,21 @@ fn merged_outside(project: &Project, info: &BranchInfo) -> Option<String> {
     how
 }
 
-/// The branch that the main checkout is on, or none (detached HEAD, no repository).
+/// The branch that the main checkout is on, or none (detached HEAD, no repository). From the file
+/// `HEAD` (ticket dispatch-starts-the-git-program-for-each); `git symbolic-ref --short` gave
+/// `heads/<name>` when a tag had the same name, the file gives `<name>`.
 fn current_branch(project: &Project) -> Option<String> {
-    git(&project.root, &["symbolic-ref", "--short", "-q", "HEAD"]).map(|name| name.trim().to_string()).filter(|name| !name.is_empty())
+    project.repo()?.head_branch().filter(|name| !name.is_empty())
+}
+
+/// The hash of a local branch by name, from the files of git; none when the branch does not exist.
+/// With refs in the reftable format the question goes to git.
+fn branch_hash(project: &Project, name: &str) -> Option<String> {
+    let full = format!("refs/heads/{name}");
+    match project.repo() {
+        Some(repo) if repo.refs_readable() => repo.ref_hash(&full),
+        _ => git(&project.root, &["rev-parse", "--verify", "--quiet", &full]).map(|text| text.trim().to_string()).filter(|text| !text.is_empty()),
+    }
 }
 
 /// "Checks at the gate" works in the project (ticket simpler-process, change 3): the switch, task
@@ -7220,18 +7293,19 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
 /// not merged into the current branch (ticket local-only-deletes-task-files, user decision 2): a
 /// checkout or a sync could delete the file, and the Merge card needs it. The base is the branch of
 /// the oldest reflog entry `branch: Created from <base>` when that branch exists; else the current
-/// branch when it is no task branch; else no file. One `for-each-ref` per read.
+/// branch when it is no task branch; else no file. No git start while no task lost its file.
 fn restore_branch_files(project: &Project, tasks: &[TaskInfo]) {
     let missing: Vec<&str> = tasks.iter().map(|task| task.name.as_str()).filter(|name| !project.branch_file(name).is_file()).collect();
     if missing.is_empty() {
         return;
     }
-    let Some(refs) = git(&project.root, &["for-each-ref", "--format=%(refname:short)", "refs/heads/task/"]) else { return };
     let Some(current) = current_branch(project) else { return };
-    let exists = |name: &str| git(&project.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{name}")]).is_some();
+    // Whether the branch exists comes from the files of git, in place of one `for-each-ref` per read
+    // (ticket dispatch-starts-the-git-program-for-each).
+    let exists = |name: &str| branch_hash(project, name).is_some();
     for name in missing {
         let branch = format!("task/{name}");
-        if !refs.lines().any(|line| line.trim() == branch) {
+        if !exists(&branch) {
             continue;
         }
         if git(&project.root, &["merge-base", "--is-ancestor", &branch, &current]).is_some() {
@@ -7732,10 +7806,11 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
     if !done(1) {
         add_rules(project)?;
         // The local settings stay on each computer (ticket second-computer, user decision 3).
-        if project.in_git && !project.local_settings_ignored() {
+        let sets = project.git_sets();
+        if project.in_git && !sets.local_settings_ignored() {
             add_ignore_pair(project, LOCAL_SETTINGS_MARK, LOCAL_SETTINGS)?;
         }
-        if project.local_settings_tracked() {
+        if sets.local_settings_tracked() {
             untrack(project, LOCAL_SETTINGS, LOCAL_SETTINGS_MESSAGE)?;
         }
     }
@@ -7772,7 +7847,7 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
     if !done(9) {
         if project.options().ignore_tasks {
             add_root_ignore(project)?;
-            if project.tasks_tracked() {
+            if project.git_sets().tasks_tracked() {
                 untrack_tasks(project)?;
             }
         } else {
@@ -7816,7 +7891,10 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<String, String> {
 /// `run_git` on another index file than the one of the repository, when `index` names one. A commit
 /// then takes that index, and the staged changes of the user stay staged in theirs.
 fn run_git_index(cwd: &Path, index: Option<&Path>, args: &[&str]) -> Result<String, String> {
-    let mut command = Command::new("git");
+    // The real git behind the launcher (ticket dispatch-starts-the-git-program-for-each).
+    #[cfg(test)]
+    gitfiles::count_start(false, args);
+    let mut command = gitfiles::git_program().command();
     command.arg("-C").arg(cwd).args(args).stdin(Stdio::null());
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
@@ -7872,13 +7950,13 @@ fn unfinished_git(project: &Project) -> bool {
     if !project.in_git {
         return false;
     }
-    if let Some(dir) = git(&project.root, &["rev-parse", "--absolute-git-dir"]) {
-        let dir = PathBuf::from(dir.trim());
-        if ["MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"].iter().any(|name| dir.join(name).exists()) {
-            return true;
-        }
+    // The markers from the git folder and the unmerged entries from one `ls-files -u` per change of
+    // the index (ticket dispatch-starts-the-git-program-for-each).
+    let Some(repo) = project.repo() else { return false };
+    if ["MERGE_HEAD", "REBASE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply"].iter().any(|name| repo.marker(name).exists()) {
+        return true;
     }
-    git(&project.root, &["ls-files", "-u", "--", TASKS_DIR]).is_some_and(|text| !text.trim().is_empty())
+    gitfiles::unmerged(repo, TASKS_DIR)
 }
 
 /// Cancels a merge that a killed merge script of Dispatch left open (ticket
@@ -7917,9 +7995,7 @@ fn cancel_left_merge(project: &Project) -> Option<String> {
         if check_ticket(ticket).is_err() || base.is_empty() {
             return None;
         }
-        let now = read_branch_file(&project.branch_file(ticket))
-            .and_then(|info| git(&project.root, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", info.base)]))
-            .map(|text| text.trim().to_string());
+        let now = read_branch_file(&project.branch_file(ticket)).and_then(|info| branch_hash(project, &info.base));
         if now.as_deref() != Some(base) {
             return None;
         }
@@ -7927,8 +8003,8 @@ fn cancel_left_merge(project: &Project) -> Option<String> {
         let _ = write_file(&dir.join(format!("{ticket}.aborted")), &format!("{reason}\n"));
         return Some(format!("{ticket}: {reason}"));
     }
-    let merge_head = git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).map(|text| text.trim().to_string());
-    let head = git(&project.root, &["rev-parse", "HEAD"]).map(|text| text.trim().to_string());
+    let merge_head = project.repo().and_then(gitfiles::Repo::merge_head);
+    let head = project.repo().and_then(gitfiles::Repo::head_hash);
     let ours = check_ticket(ticket).is_ok() && !tip.is_empty() && merge_head.as_deref() == Some(tip) && head.as_deref() == Some(base);
     if !ours {
         // No open merge, or one that is not of Dispatch: it stays as it is.
@@ -8522,7 +8598,7 @@ pub(crate) mod tests {
         let base = std::env::temp_dir().join(format!("dispatch-test-{name}-{nanos}"));
         let root = base.join("proj");
         fs::create_dir_all(&root).unwrap();
-        Project { reports: root.join(TASKS_DIR), root, in_git: false }
+        Project { reports: root.join(TASKS_DIR), root, in_git: false, repo: None }
     }
 
     fn read(path: &Path) -> String {
@@ -8573,7 +8649,7 @@ pub(crate) mod tests {
         // A global ignore file can hide `.claude/settings.local.json` (on the machine of the user
         // it does). The repository names a file that does not exist in its place.
         init_repo(&root);
-        project.in_git = true;
+        project.set_repo();
         // A file of the user that the commit must leave alone.
         write_file(&root.join("notes.txt"), "mine\n").unwrap();
         for file in project.setup_files() {
@@ -10552,7 +10628,7 @@ if (args[0] === 'agents') {
         let project = |name: &str| {
             let root = dir.join(name);
             fs::create_dir_all(&root).unwrap();
-            Project { reports: root.join(TASKS_DIR), root, in_git: false }
+            Project { reports: root.join(TASKS_DIR), root, in_git: false, repo: None }
         };
         let on = project("on");
         git_init(&on);
@@ -10595,8 +10671,9 @@ if (args[0] === 'agents') {
         for (name, measure) in [("off", false), ("on", true)] {
             let root = dir.join(name);
             fs::create_dir_all(&root).unwrap();
-            let project = Project { reports: root.join(TASKS_DIR), root, in_git: true };
+            let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false, repo: None };
             git_init(&project);
+            project.set_repo();
             write_file(&project.root.join("README.md"), "scratch project\n").unwrap();
             write_file(&project.local_settings(), &json!({ "permissions": { "allow": [format!("Edit({}/**)", project.rule_path())] } }).to_string()).unwrap();
             apply(&project, &[]).unwrap();
@@ -10610,7 +10687,7 @@ if (args[0] === 'agents') {
             fs::remove_file(project.instructions()).unwrap();
             run_git(&project.root, &["add", "--all"]).unwrap();
             run_git(&project.root, &["commit", "-q", "-m", "scratch setup"]).unwrap();
-            assert!(!project.local_settings_tracked(), "git must not track the local settings");
+            assert!(!project.git_sets().local_settings_tracked(), "git must not track the local settings");
         }
     }
 
@@ -10625,8 +10702,9 @@ if (args[0] === 'agents') {
         let dir = PathBuf::from(dir);
         let root = dir.join("after");
         fs::create_dir_all(&root).unwrap();
-        let project = Project { reports: root.join(TASKS_DIR), root, in_git: true };
+        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false, repo: None };
         git_init(&project);
+        project.set_repo();
         write_file(&project.root.join("README.md"), "scratch project\n").unwrap();
         apply(&project, &[]).unwrap();
         write_file(&project.briefs().join("t-1.md"), "# t-1: a scratch brief\n").unwrap();
@@ -10640,7 +10718,7 @@ if (args[0] === 'agents') {
         fs::remove_file(project.plans().join("t-1.md")).unwrap();
         fs::remove_file(project.reports.join("t-1.state")).unwrap();
         write_file(&dir.join("flags.json"), &serde_json::to_string(&last_call(&fake)).unwrap()).unwrap();
-        assert!(!project.local_settings_tracked(), "git must not track the local settings");
+        assert!(!project.git_sets().local_settings_tracked(), "git must not track the local settings");
     }
 
     /// Plan again (ticket a-plan-run-that-ends-without-a-plan): only a task in `planning` without a
@@ -11174,7 +11252,7 @@ if (args[0] === 'agents') {
     pub(crate) fn git_scratch(name: &str) -> Project {
         let mut project = scratch(name);
         init_repo(&project.root);
-        project.in_git = true;
+        project.set_repo();
         project
     }
 
@@ -11189,6 +11267,127 @@ if (args[0] === 'agents') {
         let mut text = fs::read_to_string(&config).unwrap();
         text.push_str("[user]\n\tname = Dispatch test\n\temail = test@example.invalid\n[commit]\n\tgpgsign = false\n[core]\n\texcludesFile = no-such-ignore-file\n");
         fs::write(&config, text).unwrap();
+    }
+
+    /// The git starts of one call on this thread: all of them, and those of `info::git`
+    /// (`--no-optional-locks`). Ticket dispatch-starts-the-git-program-for-each.
+    fn git_starts<T>(call: impl FnOnce() -> T) -> (T, usize, usize) {
+        gitfiles::STARTS.with(|starts| starts.set((0, 0)));
+        let value = call();
+        let (all, reads) = gitfiles::STARTS.with(|starts| starts.get());
+        (value, all, reads)
+    }
+
+    /// Ticket dispatch-starts-the-git-program-for-each: a look at a project that did not change
+    /// starts git at most twice (the two `status` calls), once with `--no-optional-locks`; the branch,
+    /// the git folder, the refs and the merge markers come from the files of git.
+    #[test]
+    fn an_idle_task_read_starts_git_at_most_twice() {
+        let project = git_scratch("idle-look");
+        let cwd = project.root.to_string_lossy().into_owned();
+        apply(&project, &[]).unwrap();
+        write_file(&project.briefs().join("t-1.md"), "brief\n").unwrap();
+        write_file(&project.reports.join("t-1.state"), "planning\n").unwrap();
+        write_file(&project.plans().join("t-1.md"), "# Plan t-1: one\n").unwrap();
+        // The first read commits the task files and so changes the index; the next read asks git once
+        // about the new index. A file as new as the index is "racily clean": the `status` of a read
+        // then checks it again and writes the index after the read asked about it, and the read after
+        // that asks once more. So the measured look comes after a second at rest and two reads, as a
+        // look at a project of the user that did not change.
+        let settle = || {
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            task_list(cwd.clone()).unwrap();
+            task_list(cwd.clone()).unwrap();
+        };
+        let first = task_list(cwd.clone()).unwrap();
+        assert_eq!(first.tasks.len(), 1);
+        settle();
+        let (list, all, reads) = git_starts(|| task_list(cwd.clone()).unwrap());
+        assert_eq!(list.tasks.len(), 1);
+        assert!(all <= 2, "{all} git starts in an idle look, {reads} of them reads");
+        assert_eq!(reads, 1, "one read with --no-optional-locks: the status outside the task files");
+        // Also with a task branch that exists and waits for nothing: the branch, its tip and the short
+        // hash of the base come from the files and the cache. Two calls stay per look while the branch
+        // is not checked out: the `diff` of `report_from_branch` and, with a dirty project, the `diff`
+        // of `task_files` (both outside this ticket; see its report).
+        set_branches(&project, true);
+        run_git(&project.root, &["branch", "task/t-1"]).unwrap();
+        write_file(&project.branch_file("t-1"), "branch: task/t-1\nbase: master\nmerge: \n").unwrap();
+        let list = task_list(cwd.clone()).unwrap();
+        let branch = list.tasks[0].branch.as_ref().expect("the branch of the task");
+        assert!(branch.exists && !branch.base_head.is_empty(), "{branch:?}");
+        settle();
+        let (list, all, reads) = git_starts(|| task_list(cwd.clone()).unwrap());
+        assert_eq!(list.tasks[0].branch.as_ref().map(|branch| branch.base_head.clone()), Some(branch.base_head.clone()));
+        assert!(all <= 4, "{all} git starts in an idle look with a task branch, {reads} of them reads");
+        clean(&project);
+    }
+
+    /// Ticket dispatch-starts-the-git-program-for-each: a project found from its work folder (a git
+    /// worktree under `.dispatch/work`) reads the branch and the markers of the main checkout, as the
+    /// git calls in the project folder did before.
+    #[test]
+    fn a_project_found_from_its_work_folder_reads_the_main_checkout() {
+        let project = git_scratch("find-from-work");
+        let root = project.root.clone();
+        write_file(&root.join("a.txt"), "a\n").unwrap();
+        run_git(&root, &["add", "a.txt"]).unwrap();
+        run_git(&root, &["commit", "-q", "-m", "base"]).unwrap();
+        run_git(&root, &["branch", "-M", "main"]).unwrap();
+        fs::create_dir_all(project.reports.join("work")).unwrap();
+        let work = project.reports.join("work").join("1");
+        run_git(&root, &["worktree", "add", "-q", "--detach", &work.to_string_lossy(), "main"]).unwrap();
+        run_git(&work, &["checkout", "-q", "-b", "task/t-1"]).unwrap();
+        let found = Project::find(&work.to_string_lossy()).unwrap();
+        assert_eq!(found.root, root);
+        assert_eq!(found.repo().map(|repo| repo.top.clone()), Some(root.clone()));
+        assert_eq!(current_branch(&found).as_deref(), Some("main"), "the branch of the main checkout, not of the worktree");
+        let plain = Project::find(&root.to_string_lossy()).unwrap();
+        assert_eq!(plain.repo().map(|repo| repo.git_dir.clone()), found.repo().map(|repo| repo.git_dir.clone()));
+        run_git(&root, &["worktree", "remove", "--force", &work.to_string_lossy()]).unwrap();
+        clean(&project);
+    }
+
+    /// Ticket dispatch-starts-the-git-program-for-each: the Setup plan of a git project asks git once
+    /// for the ignore rules and once for the tracked files, and its steps keep their `done` values
+    /// through the changes that Apply makes to the rules.
+    #[test]
+    fn plan_ignored_and_tracked_come_from_two_git_calls() {
+        let project = git_scratch("plan-sets");
+        let step = |plan: &Plan, title: &str| plan.steps.iter().find(|step| step.title == title).unwrap_or_else(|| panic!("{title}")).done;
+        // Before Apply: the local settings are not ignored, nothing is tracked.
+        let (before, _, reads) = git_starts(|| plan(&project).unwrap());
+        assert!(reads <= 2, "{reads} reads for the plan before Apply");
+        assert!(!step(&before, "Allow rules"), "the rules are missing");
+        assert!(step(&before, "Task files in git"), "off: nothing of Dispatch in .gitignore");
+        apply(&project, &[]).unwrap();
+        // After Apply: the ignore rule of the local settings is there, the task files are tracked
+        // after the first task read, and the plan sees both through one check-ignore and one ls-files.
+        task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        let (after, _, reads) = git_starts(|| plan(&project).unwrap());
+        assert!(reads <= 1, "{reads} reads: at most one check-ignore; the tracked files come from the index file");
+        assert!(step(&after, "Allow rules"), "{:?}", after.steps.iter().map(|step| (step.title, step.done)).collect::<Vec<_>>());
+        let sets = project.git_sets();
+        assert!(sets.local_settings_ignored() && !sets.local_settings_tracked() && sets.tasks_tracked() && !sets.notes_ignored(), "{:?} {:?}", sets.ignored, sets.tracked);
+        // Task files local only on: the plan says the step is not done while git tracks the files; Apply
+        // untracks them and the next plan says done.
+        set_ignore(&project, true);
+        assert!(!step(&plan(&project).unwrap(), "Task files in git"));
+        apply(&project, &[]).unwrap();
+        assert!(step(&plan(&project).unwrap(), "Task files in git"));
+        assert!(!project.git_sets().tasks_tracked());
+        // A tracked local settings file: the plan sees it in the same ls-files.
+        set_ignore(&project, false);
+        write_file(&project.root.join(".gitignore"), "").unwrap();
+        run_git(&project.root, &["add", "-f", "--", LOCAL_SETTINGS]).unwrap();
+        let sets = project.git_sets();
+        assert!(sets.local_settings_tracked() && !sets.local_settings_ignored(), "{:?} {:?}", sets.ignored, sets.tracked);
+        assert!(!step(&plan(&project).unwrap(), "Allow rules"));
+        // A notes file that a rule ignores.
+        write_file(&project.root.join(".gitignore"), ".claude/\n").unwrap();
+        let sets = project.git_sets();
+        assert!(sets.notes_ignored() && sets.local_settings_ignored(), "{:?}", sets.ignored);
+        clean(&project);
     }
 
     #[test]
@@ -15580,11 +15779,11 @@ process.exit(result.status === null ? 1 : result.status);
         let project = |name: &str| {
             let root = dir.join(name);
             fs::create_dir_all(&root).unwrap();
-            Project { reports: root.join(TASKS_DIR), root, in_git: false }
+            Project { reports: root.join(TASKS_DIR), root, in_git: false, repo: None }
         };
         let mut on = project("on");
         git_init(&on);
-        on.in_git = true;
+        on.set_repo();
         write_file(&on.root.join("README.md"), "scratch project\n").unwrap();
         apply(&on, &[0]).unwrap();
         set_branches(&on, true);
@@ -15629,9 +15828,9 @@ process.exit(result.status === null ? 1 : result.status);
         let dir = PathBuf::from(dir);
         let root = dir.join("proj");
         fs::create_dir_all(&root).unwrap();
-        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false };
+        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false, repo: None };
         git_init(&project);
-        project.in_git = true;
+        project.set_repo();
         write_file(&project.root.join("README.md"), "scratch project of the task-checks proof\n").unwrap();
         let cwd = project.root.to_string_lossy().into_owned();
         set_checks(cwd.clone(), "# The checks of the scratch project\nunit | npm test | always\nlint | npx tsc --noEmit\nnet | node net-test.mjs\n".to_string()).unwrap();
@@ -15664,9 +15863,9 @@ process.exit(result.status === null ? 1 : result.status);
         let dir = PathBuf::from(dir);
         let root = dir.join("proj");
         fs::create_dir_all(&root).unwrap();
-        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false };
+        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false, repo: None };
         git_init(&project);
-        project.in_git = true;
+        project.set_repo();
         write_file(&project.root.join("README.md"), "scratch project of the merge-fail-list proof\n").unwrap();
         apply(&project, &[0]).unwrap();
         set_branches(&project, true);
@@ -15703,9 +15902,9 @@ process.exit(result.status === null ? 1 : result.status);
         let dir = PathBuf::from(dir);
         let root = dir.join("proj");
         fs::create_dir_all(&root).unwrap();
-        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false };
+        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false, repo: None };
         git_init(&project);
-        project.in_git = true;
+        project.set_repo();
         write_file(&project.root.join("README.md"), "scratch project of the merged-outside proof\n").unwrap();
         apply(&project, &[0]).unwrap();
         set_branches(&project, true);
@@ -15746,9 +15945,9 @@ process.exit(result.status === null ? 1 : result.status);
         let dir = PathBuf::from(dir);
         let root = dir.join("proj");
         fs::create_dir_all(&root).unwrap();
-        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false };
+        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false, repo: None };
         git_init(&project);
-        project.in_git = true;
+        project.set_repo();
         write_file(&project.root.join("README.md"), "scratch project of the auto-merge proof\n").unwrap();
         apply(&project, &[0]).unwrap();
         set_branches(&project, true);
@@ -15790,9 +15989,9 @@ process.exit(result.status === null ? 1 : result.status);
         let dir = PathBuf::from(dir);
         let root = dir.join("proj");
         fs::create_dir_all(&root).unwrap();
-        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false };
+        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false, repo: None };
         git_init(&project);
-        project.in_git = true;
+        project.set_repo();
         write_file(&project.root.join("README.md"), "scratch project of the stale-report-loop proof\n").unwrap();
         apply(&project, &[0]).unwrap();
         set_branches(&project, true);

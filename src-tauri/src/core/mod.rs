@@ -10,6 +10,7 @@ pub mod builds;
 pub mod chats;
 pub mod context;
 pub mod flow;
+pub mod gitfiles;
 pub mod hostrun;
 pub mod phonepin;
 pub mod info;
