@@ -60,6 +60,7 @@ import {
   withArrow,
   withoutArrow,
   withTicketAfter,
+  withTicketInGroup,
   type PlanGroup,
   type PlanTicket,
 } from "../src/plantree.ts";
@@ -696,4 +697,25 @@ test("the page has Auto group, its host command, its blocks and its Help", () =>
   assert.match(css, /\.plan-block-about \{/);
   assert.match(html, /<b>Auto group<\/b> in the toolbar asks Claude/);
   assert.match(html, /keeps your titles/);
+});
+
+test("a new ticket joins a group once, at its end; an unknown group changes nothing", () => {
+  const group = (id: string, tickets: string[]): PlanGroup => ({ id, title: id, color: 0, collapsed: true, tickets, auto: false, description: "" });
+  const groups = [group("a", ["t1"]), group("b", ["t2"])];
+  const added = withTicketInGroup(groups, "a", "t3");
+  assert.deepEqual(added[0].tickets, ["t1", "t3"]);
+  assert.deepEqual(added[1].tickets, ["t2"]);
+  assert.deepEqual(withTicketInGroup(added, "a", "t3"), added);
+  assert.deepEqual(withTicketInGroup(groups, "zzz", "t3"), groups);
+  assert.deepEqual(groups[0].tickets, ["t1"]);
+});
+
+test("the right-click menu of a group adds a new ticket to it", () => {
+  const main = read("../src/main.ts");
+  const html = read("../index.html");
+  assert.match(main, /New ticket in this group \(Scheduled\)/);
+  assert.match(main, /New ticket in this group \(Backlog\)/);
+  assert.match(main, /openAddTicket\(project, column, group\.id\)/);
+  assert.match(main, /withTicketInGroup\(old, groupTarget\.id, addedId\)/);
+  assert.match(html, /New ticket in this group/);
 });

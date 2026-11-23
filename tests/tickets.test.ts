@@ -1166,7 +1166,7 @@ test("a right-click on the board adds a ticket to New or Backlog", () => {
   assert.ok(fill.includes('item("New ticket in Backlog", "backlog", '));
   assert.match(fill, /openAddTicket\(project, column\)/);
   assert.match(fill, /closest\("dialog"\)/);
-  assert.match(MAIN, /function openAddTicket\(ref: ProjectRef, column: "new" \| "backlog" = "new"\): void \{/);
+  assert.match(MAIN, /function openAddTicket\(ref: ProjectRef, column: "new" \| "backlog" = "new", group: string \| null = null\): void \{/);
   assert.ok(MAIN.includes("The ticket goes to Backlog. Dispatch does not start it: drag it to Scheduled when it should go."));
   assert.match(MAIN, /"New ticket · Backlog"/);
   assert.match(CSS, /\.ticket-menu \{[^}]*position: fixed;/);

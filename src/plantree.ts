@@ -475,6 +475,13 @@ export function groupMembers<T extends PlanTicket>(tickets: readonly T[], group:
   });
 }
 
+/** The groups with a ticket added at the end of one group, once; an unknown group or a member already in it gives the list unchanged. */
+export function withTicketInGroup(groups: readonly PlanGroup[], groupId: string, ticketId: string): PlanGroup[] {
+  const target = groups.find((group) => group.id === groupId);
+  if (!target || target.tickets.includes(ticketId)) return [...groups];
+  return groups.map((group) => (group === target ? { ...group, tickets: [...group.tickets, ticketId] } : group));
+}
+
 export function groupCounts(tickets: readonly PlanTicket[], group: PlanGroup): GroupCounts {
   const inside = groupMembers(tickets, group);
   const ids = new Set(inside.map((ticket) => ticket.id));

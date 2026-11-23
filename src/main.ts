@@ -49,6 +49,7 @@ import {
   groupCounts,
   groupMembers,
   groupNodeId,
+  withTicketInGroup,
   layoutTickets,
   makeDraft,
   movedArrow,
@@ -3990,11 +3991,14 @@ function waitingTickets(key: string): Ticket[] {
 
 /** The error of the last ticket action of the board; it shows at its top until the next action. */
 let ticketError = "";
+/** The id of the ticket that the last `ticket_add` made; empty when none came back. */
+let ticketAddedId = "";
 
 /** Runs a ticket command for a project (by its key), reads the list again and renders. True on success. */
 async function ticketAction(project: string, command: string, args: Record<string, unknown>): Promise<boolean> {
   const { host, cwd } = projectCwd(project);
   ticketError = "";
+  ticketAddedId = "";
   try {
     const reply = await call<unknown>(host, command, { cwd, ...args });
     // A move answers with the tickets of the file (ticket moving-ticket-from-cancelled-to-done): the board
@@ -4009,6 +4013,7 @@ async function ticketAction(project: string, command: string, args: Record<strin
     // the board shows it at once and the window closes; the slow task read runs without a wait.
     const oneTicket = command === "ticket_add" || command === "ticket_edit" || command === "ticket_add_part";
     if (oneTicket && reply && typeof (reply as Ticket).id === "string") {
+      if (command === "ticket_add") ticketAddedId = (reply as Ticket).id;
       setBoardTickets(project, withTicket(projectTickets(project), reply as Ticket));
       ticketsChangedAt.set(project, Date.now());
       readProjectTasks(host, cwd).catch((error) => console.warn("task list read failed", error));
@@ -9079,6 +9084,8 @@ const addTicketTitleEl = document.querySelector<HTMLElement>("#ticket-add-title"
 let addTicketRef: ProjectRef | null = null;
 /** The column of a new ticket: New, or Backlog from the right-click menu of the board. */
 let addTicketColumn: "new" | "backlog" = "new";
+/** The group that a new ticket of the open window joins (right click on a group in the Plan view), or null. */
+let addTicketGroup: { key: string; id: string } | null = null;
 /** One draft per project key: Esc keeps it for the next open of the window. */
 const addTicketDrafts = new Map<string, TicketDraft>();
 /** The pasted images of each project key: the saved file and its picture. Esc keeps them with the draft. */
@@ -9246,11 +9253,12 @@ function addTicketDraft(key: string): TicketDraft {
 }
 
 /** Opens the Add ticket window for a project; the Goal box gets the keyboard. The ticket goes to `column`. */
-function openAddTicket(ref: ProjectRef, column: "new" | "backlog" = "new"): void {
+function openAddTicket(ref: ProjectRef, column: "new" | "backlog" = "new", group: string | null = null): void {
   if (addTicketWindowStays(null)) return;
   endTicketEdit();
   addTicketRef = ref;
   addTicketColumn = column;
+  addTicketGroup = group ? { key: refKey(ref), id: group } : null;
   addTicketError = "";
   showAddTicketWindow();
   renderAddTicket();
@@ -9298,6 +9306,8 @@ function renderAddTicket(): void {
       : projectNoTriage(key)
         ? "The ticket goes to the end of Scheduled. Dispatch starts its plan."
         : "The ticket goes to the end of Scheduled. Dispatch sends it when triage is free.";
+  const joined = addTicketGroup && addTicketGroup.key === key ? (planGroups.get(key) ?? []).find((group) => group.id === addTicketGroup!.id) : undefined;
+  if (joined) addTicketNoteEl.textContent += ` It joins the group "${joined.title || "Untitled"}".`;
   showAddTicketError();
   addTicketBodyEl.replaceChildren(addTicketForm(addTicketDraft(key)));
 }
@@ -9489,7 +9499,10 @@ async function saveAddTicket(): Promise<void> {
     renderTickets();
     return;
   }
+  const groupTarget = addTicketGroup;
+  const groupRef = addTicketRef;
   const added = await ticketAction(key, "ticket_add", { text, kind: draft.kind || null, level: draft.level, fields: filled ? fields : null, column: addTicketColumn });
+  const addedId = ticketAddedId;
   setAddTicketBusy(false);
   if (!added) {
     addTicketError = `The ticket could not be added: ${ticketError}`;
@@ -9500,6 +9513,17 @@ async function saveAddTicket(): Promise<void> {
   addTicketDrafts.delete(key);
   clearAddTicketImages(key);
   if (addTicketDialog.open) addTicketDialog.close();
+  addTicketGroup = null;
+  if (groupTarget && groupTarget.key === key) {
+    const old = planGroups.get(key) ?? [];
+    if (addedId) {
+      const next = withTicketInGroup(old, groupTarget.id, addedId);
+      if (JSON.stringify(next) !== JSON.stringify(old)) void planSetGroups(groupRef, next);
+    } else {
+      planGroupsError.set(key, "The ticket was added, but not to the group.");
+      renderPlan();
+    }
+  }
   renderTickets();
 }
 
@@ -16398,7 +16422,26 @@ function planGroupMenu(event: MouseEvent, ref: ProjectRef, group: PlanGroup): vo
   });
   const line = mapElement("div", "plan-menu-line");
   line.setAttribute("role", "separator");
-  menu.append(line, ...planBoardItems(ref));
+  menu.append(line);
+  // A topic group or a stacked group card shows its new member at once; a comment box does not (user decision 1).
+  if (group.auto || group.collapsed) {
+    const project: ProjectRef = { host: ref.host, root: ref.root };
+    const own = mapElement("div", "plan-menu-line");
+    own.setAttribute("role", "separator");
+    const add = (label: string, column: "new" | "backlog"): HTMLButtonElement => {
+      const button = mapElement("button", "", label);
+      button.type = "button";
+      button.title = `Open the New ticket window; the ticket joins "${group.title || "Untitled"}"`;
+      button.setAttribute("role", "menuitem");
+      button.addEventListener("click", () => {
+        closeBoardMenu();
+        openAddTicket(project, column, group.id);
+      });
+      return button;
+    };
+    menu.append(add("New ticket in this group (Scheduled)", "new"), add("New ticket in this group (Backlog)", "backlog"), own);
+  }
+  menu.append(...planBoardItems(ref));
   showMenu(menu, event, null);
 }
 
