@@ -10925,6 +10925,98 @@ svg.links {
   pointer-events: none;
 }
 
+/* The ticket window of the Plan view: the Tickets board card of a ticket, joined to its Plan card by a line. */
+.plan-wire {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.plan-wire line {
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+
+.plan-window {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 11;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 360px;
+  max-height: calc(100% - 32px);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgb(0 0 0 / 45%);
+  color: var(--text);
+  cursor: default;
+}
+
+.plan-window[style*="left"] {
+  right: auto;
+}
+
+.plan-window-head {
+  display: flex;
+  flex: none;
+  gap: 4px;
+  align-items: center;
+  height: 32px;
+  padding: 0 2px 0 10px;
+  border-bottom: 1px solid var(--hairline);
+  cursor: move;
+  user-select: none;
+}
+
+.plan-window.min .plan-window-head {
+  border-bottom: 0;
+}
+
+.plan-window-name {
+  flex: 1;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.plan-window-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: calc(16px * var(--text-scale));
+  cursor: pointer;
+}
+
+.plan-window-button:hover {
+  background: var(--card);
+}
+
+.plan-window-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+.plan-window.min .plan-window-body {
+  display: none;
+}
+
+.plan-window .ticket-card {
+  flex: 1 1 auto;
+  width: auto;
+}
+
 /* The four colours of a comment or group: the colours of the app (user decision 1). */
 .plan-color-0 {
   --plan-color: var(--accent);

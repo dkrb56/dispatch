@@ -431,6 +431,22 @@ export interface PlanRect {
 }
 
 /**
+ * The shortest line between two rectangles, each end on the border of its own rectangle. On an axis
+ * where the rectangles overlap, both ends take the middle of the overlap; else the facing edges.
+ */
+export function planJoin(a: PlanRect, b: PlanRect): { x1: number; y1: number; x2: number; y2: number } {
+  const axis = (a0: number, a1: number, b0: number, b1: number): [number, number] => {
+    if (a1 <= b0) return [a1, b0];
+    if (b1 <= a0) return [a0, b1];
+    const middle = (Math.max(a0, b0) + Math.min(a1, b1)) / 2;
+    return [middle, middle];
+  };
+  const [x1, x2] = axis(a.x, a.x + a.width, b.x, b.x + b.width);
+  const [y1, y2] = axis(a.y, a.y + a.height, b.y, b.y + b.height);
+  return { x1, y1, x2, y2 };
+}
+
+/**
  * The box of an open group around the cards of its tickets: the padding on each side and the title
  * bar above, the top `PLAN_BOX_TITLE` px of the box. A hidden ticket counts at the place of its group
  * card. No card of the group on the canvas gives no box.

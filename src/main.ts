@@ -69,6 +69,7 @@ import {
   planBadges,
   planBlocks,
   planCentre,
+  planJoin,
   planLayout,
   planShelf,
   planSort,
@@ -10720,6 +10721,8 @@ function typingIn(container: HTMLElement): boolean {
 function renderTickets(): void {
   showTicketButtons();
   if (ticketDragging) return;
+  // The ticket window of the Plan view shows the same card: it follows each change of the card.
+  renderPlanWindow();
   // The window is modal: while it is open, the keyboard goes to the window, not to a Focus board.
   const windowOpen = ticketsRef !== null && ticketsDialog.open;
   renderFocusBoards(!windowOpen);
@@ -11215,13 +11218,13 @@ function ticketState(project: string, ticket: Ticket, queueIds: string[], record
 /**
  * The card of a ticket: the grip ⠿ marks a card that drags by its whole body (`canDrag`), the title
  * (a click renames it), the type tag (a click changes it), the date and the state line, and the
- * buttons of its column.
+ * buttons of its column. A `still` card (the window of the Plan view) does not drag.
  */
-function ticketCard(project: string, ticket: Ticket, queueIds: string[], record: ProjectTasks | undefined): HTMLElement {
+function ticketCard(project: string, ticket: Ticket, queueIds: string[], record: ProjectTasks | undefined, still = false): HTMLElement {
   const inFlight = projectPending(project).some((card) => card.entry === ticket.id);
   // A dropped card that still saves shows a spinner and does not drag (ticket moving-ticket-from-cancelled-to-done).
   const saving = savingTickets.has(`${project}\n${ticket.id}`);
-  const draggable = canDrag(ticket, inFlight) && !saving;
+  const draggable = canDrag(ticket, inFlight) && !saving && !still;
   const card = mapElement("div", `ticket-card ${ticket.status}${inFlight ? " in-flight" : ""}${draggable ? " draggable" : ""}${saving ? " saving" : ""}`);
   card.dataset.ticket = ticket.id;
   const top = mapElement("div", "ticket-top");
@@ -16022,6 +16025,15 @@ const planGroupsBroken = new Set<string>();
 const planGroupsSavedAt = new Map<string, number>();
 /** A selection box is drawn: a render waits, so the box stays. */
 let planBoxDragging = false;
+/**
+ * The open ticket window of the Plan view (ticket a-plan-view-ticket-opens-in-a-window): the project
+ * key, the ticket id, folded or not, and its place on the board (null: the top right corner). A
+ * render rebuilds the canvas, so the window lives here and each render puts it back.
+ */
+let planWindow: { key: string; ticket: string; min: boolean; at: { x: number; y: number } | null } | null = null;
+/** The window with the Tickets board card of the ticket, and the line from its Plan card to the window; made once. */
+const planWindowEl = mapElement("section", "plan-window");
+const planWireEl = planSvg("svg", { class: "plan-wire", "aria-hidden": "true" });
 /** The places of the cards of the last render, on the canvas; the selection box hits them. */
 let planPlaces: PlanPlace[] = [];
 /** The place of the canvas on the board of each project, by project key: a drag moves it, a render keeps it (ticket plan-mode-is-unusable-on-wide-screen). */
@@ -16105,8 +16117,11 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
   planEl.append(planToolbarEl, planFlowBarEl, body);
   // The keys work only while the board has the focus; there is no key handler on the page.
   planBoardEl.tabIndex = 0;
+  /** The target is inside the ticket window: the board keys, pan, wheel and menu leave it alone. */
+  const inWindow = (target: EventTarget | null) => target instanceof Node && planWindowEl.contains(target);
   planBoardEl.addEventListener("keydown", (event) => {
     const target = event.target;
+    if (inWindow(target)) return;
     if (target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     const key = event.key;
@@ -16147,6 +16162,7 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
   const emptyAt = (target: EventTarget | null) => target === planBoardEl || (target instanceof HTMLElement && target.matches(".plan-canvas, .plan-shelf-title, .plan-empty, .plan-group-box"));
   const offsetOf = (key: string, canvas: HTMLElement): PlanOffset => planOffsets.get(key) ?? { x: canvas.offsetLeft, y: canvas.offsetTop };
   planBoardEl.addEventListener("pointerdown", (event) => {
+    if (inWindow(event.target)) return;
     const canvas = canvasOf();
     const ref = planProject();
     if (!canvas || !ref) return;
@@ -16235,6 +16251,7 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
   planBoardEl.addEventListener(
     "wheel",
     (event) => {
+      if (inWindow(event.target)) return;
       const canvas = canvasOf();
       const ref = planProject();
       if (event.ctrlKey || !canvas || !ref) return;
@@ -16251,6 +16268,7 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
   );
   // The right-click menu of the board (user decision 3): a card that is not selected is selected first.
   planBoardEl.addEventListener("contextmenu", (event) => {
+    if (inWindow(event.target)) return;
     const ref = planProject();
     if (!ref || !canvasOf()) return;
     // A right click in an edit box keeps the menu of the browser.
@@ -16303,6 +16321,129 @@ function planPlaceCanvas(key: string, offset: PlanOffset, canvas = planBoardEl.q
   }
   // The dots: a dot stands at each corner of the 50 px grid of the canvas.
   planBoardEl.style.backgroundPosition = `${kept.x - PLAN_GRID / 2}px ${kept.y - PLAN_GRID / 2}px`;
+  // The line of the ticket window follows its card.
+  planDrawWire();
+}
+
+/** Opens the ticket window on a ticket of a project; a window that stood somewhere keeps its place. */
+function planOpenWindow(key: string, ticketId: string): void {
+  planWindow = { key, ticket: ticketId, min: false, at: planWindow?.at ?? null };
+  renderPlanWindow();
+}
+
+/** Closes the ticket window and its line. */
+function planCloseWindow(): void {
+  planWindow = null;
+  planWindowEl.remove();
+  planWireEl.remove();
+}
+
+/** Keeps a place of the window inside the board; a hidden board keeps it as it is. */
+function planWindowPlace(at: { x: number; y: number }): { x: number; y: number } {
+  const width = planBoardEl.clientWidth;
+  const height = planBoardEl.clientHeight;
+  if (width <= 0) return at;
+  return {
+    x: Math.max(0, Math.min(at.x, width - planWindowEl.offsetWidth)),
+    y: Math.max(0, Math.min(at.y, height - planWindowEl.offsetHeight)),
+  };
+}
+
+/**
+ * Draws the ticket window of the Plan view again: the Tickets board card of its ticket, the – and ×
+ * buttons, its place, and the line to its card. A text box in the window holds it; the blur draws it.
+ */
+function renderPlanWindow(): void {
+  if (!planWindow) {
+    planWindowEl.remove();
+    planWireEl.remove();
+    return;
+  }
+  const ref = planProject();
+  const record = projectTasks.get(planWindow.key);
+  const ticket = record?.tickets.find((one) => one.id === planWindow?.ticket);
+  if (!ref || refKey(ref) !== planWindow.key || !record || !ticket) {
+    planCloseWindow();
+    return;
+  }
+  if (planWindowEl.isConnected && typingIn(planWindowEl)) {
+    renderSkipped = true;
+    return;
+  }
+  const open = planWindow;
+  const scroll = planWindowEl.querySelector(".plan-window-body")?.scrollTop ?? 0;
+  const head = mapElement("header", "plan-window-head");
+  const fold = mapElement("button", "plan-window-button", open.min ? "▢" : "–");
+  fold.type = "button";
+  fold.title = open.min ? "Unfold the window" : "Fold the window to its title bar";
+  fold.setAttribute("aria-label", fold.title);
+  fold.addEventListener("click", () => {
+    open.min = !open.min;
+    renderPlanWindow();
+  });
+  const close = mapElement("button", "plan-window-button", "×");
+  close.type = "button";
+  close.title = "Close the window";
+  close.setAttribute("aria-label", close.title);
+  close.addEventListener("click", () => planCloseWindow());
+  head.append(mapElement("span", "plan-window-name", ticket.id), fold, close);
+  // A drag of the title bar moves the window; the place stays until the next drag.
+  head.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button"))) return;
+    event.preventDefault();
+    const from = { x: planWindowEl.offsetLeft, y: planWindowEl.offsetTop, clientX: event.clientX, clientY: event.clientY };
+    head.setPointerCapture(event.pointerId);
+    const move = (moved: PointerEvent) => {
+      const at = planWindowPlace({ x: from.x + moved.clientX - from.clientX, y: from.y + moved.clientY - from.clientY });
+      open.at = at;
+      planWindowEl.style.left = `${at.x}px`;
+      planWindowEl.style.top = `${at.y}px`;
+      planDrawWire();
+    };
+    const end = () => {
+      head.removeEventListener("pointermove", move);
+      head.removeEventListener("pointerup", end);
+      head.removeEventListener("pointercancel", end);
+    };
+    head.addEventListener("pointermove", move);
+    head.addEventListener("pointerup", end);
+    head.addEventListener("pointercancel", end);
+  });
+  const body = mapElement("div", "plan-window-body");
+  body.append(ticketCard(planWindow.key, ticket, queueOrder(record.tickets).map((one) => one.id), record, true));
+  planWindowEl.replaceChildren(head, body);
+  planWindowEl.classList.toggle("min", open.min);
+  planWindowEl.setAttribute("aria-label", `Ticket ${ticket.id}`);
+  // The line stands above the canvas and under the window.
+  if (!planWireEl.isConnected || planWireEl.parentElement !== planBoardEl) planBoardEl.append(planWireEl);
+  if (!planWindowEl.isConnected || planWindowEl.parentElement !== planBoardEl) planBoardEl.append(planWindowEl);
+  body.scrollTop = scroll;
+  const width = planBoardEl.clientWidth;
+  if (!open.at && width > 0) open.at = { x: width - planWindowEl.offsetWidth - 16, y: 16 };
+  if (open.at) {
+    open.at = planWindowPlace(open.at);
+    planWindowEl.style.left = `${open.at.x}px`;
+    planWindowEl.style.top = `${open.at.y}px`;
+  }
+  focusTicketBox(planWindowEl);
+  planDrawWire();
+}
+
+/** The line from the Plan card of the window's ticket to the nearest border of the window; no card on the canvas gives no line. */
+function planDrawWire(): void {
+  planWireEl.replaceChildren();
+  if (!planWindow || !planWindowEl.isConnected) return;
+  const card = planBoardEl.querySelector<HTMLElement>(`.plan-canvas .plan-ticket[data-ticket="${CSS.escape(planWindow.ticket)}"]`);
+  if (!card) return;
+  const board = planBoardEl.getBoundingClientRect();
+  planWireEl.setAttribute("width", String(planBoardEl.clientWidth));
+  planWireEl.setAttribute("height", String(planBoardEl.clientHeight));
+  const rectOf = (el: Element) => {
+    const rect = el.getBoundingClientRect();
+    return { x: rect.left - board.left - planBoardEl.clientLeft, y: rect.top - board.top - planBoardEl.clientTop, width: rect.width, height: rect.height };
+  };
+  const join = planJoin(rectOf(card), rectOf(planWindowEl));
+  planWireEl.append(planSvg("line", join));
 }
 
 /** Centre the tree: the next render puts the root card in the middle of the board again. */
@@ -17124,9 +17265,14 @@ function renderPlan(): void {
 
   // A click on a card while an arrow is drawn or a ticket is placed picks it; else it selects.
   const picking = draft !== null && (planDrawFrom !== null || planPlacing !== null);
+  // A plain click on a ticket card also opens its window (ticket a-plan-view-ticket-opens-in-a-window); a Shift or Ctrl click only selects.
   const cardClick = (id: string) => (event: MouseEvent) => {
     if (picking) planPickCard(id);
-    else planSelect(toggleSelection(planSelected, id, event.shiftKey || event.ctrlKey || event.metaKey));
+    else {
+      const extend = event.shiftKey || event.ctrlKey || event.metaKey;
+      planSelect(toggleSelection(planSelected, id, extend));
+      if (!extend && !draft && byId.has(id)) planOpenWindow(key, id);
+    }
   };
   // The + under a card while planning: then a click on the ticket that comes after it draws the arrow.
   const plusButton = (id: string) => {
@@ -17297,7 +17443,11 @@ function renderPlan(): void {
     el.addEventListener("click", (event) => {
       if (picking) planPickCard(ticket.id);
       else if (draft) planPlace(ticket.id);
-      else planSelect(toggleSelection(planSelected, ticket.id, event.shiftKey || event.ctrlKey || event.metaKey));
+      else {
+        const extend = event.shiftKey || event.ctrlKey || event.metaKey;
+        planSelect(toggleSelection(planSelected, ticket.id, extend));
+        if (!extend) planOpenWindow(key, ticket.id);
+      }
     });
     return el;
   };
@@ -17391,6 +17541,8 @@ function renderPlan(): void {
     canvas.append(note);
   }
   planBoardEl.replaceChildren(canvas);
+  // The replace took the ticket window and its line out of the board; this puts them back.
+  renderPlanWindow();
   if (planFocusEdit) {
     planFocusEdit = false;
     const box = planBoardEl.querySelector<HTMLInputElement | HTMLTextAreaElement>(".plan-group-name-input, .plan-about-input");

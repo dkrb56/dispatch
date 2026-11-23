@@ -42,6 +42,7 @@ import {
   planBadges,
   planBlocks,
   planCentre,
+  planJoin,
   planLayout,
   planRows,
   planShelf,
@@ -212,9 +213,26 @@ test("the page has the Plan button, its canvas and its Help, and main.ts draws i
   assert.match(html, /<b>Centre the tree<\/b>/);
   assert.match(html, /Shift-drag on the empty board draws a box/);
   assert.ok(/#plan \.plan-board \{[^}]*\}/.exec(css)?.[0].includes("overflow: hidden"), "the Plan board does not scroll");
+  // Ticket a-plan-view-ticket-opens-in-a-window: the ticket window, its line and its Help.
+  assert.match(css, /\.plan-window \{/);
+  assert.match(css, /\.plan-wire \{[^}]*pointer-events: none/);
+  assert.match(main, /function renderPlanWindow\(\): void/);
+  assert.match(html, /joined to the card by a line/);
 });
 
 const g = (id: string, tickets: string[], collapsed = true, title = "Group"): PlanGroup => ({ id, title, color: 0, collapsed, tickets, auto: false, description: "" });
+
+test("the line from a card to the window joins the nearest borders", () => {
+  const card = { x: 0, y: 100, width: 200, height: 84 };
+  // The window right of the card, sharing rows 120 to 184: a horizontal line at the middle of them.
+  assert.deepEqual(planJoin(card, { x: 500, y: 120, width: 360, height: 400 }), { x1: 200, y1: 152, x2: 500, y2: 152 });
+  // The window under the card, sharing columns 100 to 200: a vertical line between the facing edges.
+  assert.deepEqual(planJoin(card, { x: 100, y: 300, width: 360, height: 400 }), { x1: 150, y1: 184, x2: 150, y2: 300 });
+  // Apart on both axes: corner to corner.
+  assert.deepEqual(planJoin(card, { x: 400, y: 0, width: 100, height: 50 }), { x1: 200, y1: 100, x2: 400, y2: 50 });
+  // Overlapping on both axes: both ends at the middle of the overlap.
+  assert.deepEqual(planJoin(card, { x: 100, y: 150, width: 300, height: 300 }), { x1: 150, y1: 167, x2: 150, y2: 167 });
+});
 
 test("the host reply of the groups is read safely", () => {
   assert.deepEqual(parsePlanGroups(null), []);
