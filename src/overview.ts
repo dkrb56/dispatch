@@ -57,6 +57,12 @@ export interface LostWorker {
    * a-run-that-stopped-at-a-login-or-limit). Null or absent without one.
    */
   error?: string | null;
+  /**
+   * For the newest run of its name that is `failed` without its result: the time (ISO) at which the
+   * daemon of Claude Code found the session dead while it worked (ticket
+   * a-failed-plan-run-or-work-run-gives-a). Null or absent without one.
+   */
+  reapedAt?: string | null;
 }
 
 /** The facts of a task that say whether its work run ended without a report. */
@@ -83,10 +89,12 @@ export function newestWorker<T extends { startedAt: number | null }>(workers: re
 
 /**
  * The newest worker of a run ended for good without its result: done with nothing left in flight,
- * or done or stopped at an error of Claude Code (ticket a-run-that-stopped-at-a-login-or-limit). The
- * session of a run that stopped at an error can be ended later; its error stays in its transcript.
+ * done or stopped at an error of Claude Code (ticket a-run-that-stopped-at-a-login-or-limit), or
+ * failed (ticket a-failed-plan-run-or-work-run-gives-a). The session of a run that stopped at an
+ * error can be ended later; its error stays in its transcript.
  */
 function endedWithoutResult(worker: LostWorker): boolean {
+  if (worker.state === "failed") return true;
   if (worker.error && (worker.state === "done" || worker.state === "stopped")) return true;
   return worker.state === "done" && worker.result === false && worker.finished === true;
 }
@@ -97,7 +105,8 @@ function endedWithoutResult(worker: LostWorker): boolean {
  * is a work run that is done without its report with nothing left in flight. A newest worker that is
  * still the plan run (the seconds after Approve), no worker, or a run with background work left is no end.
  * A work run that stopped at an error of Claude Code is lost too, also after its session was ended
- * (ticket a-run-that-stopped-at-a-login-or-limit). A failed work run has its own case. `runStarting`
+ * (ticket a-run-that-stopped-at-a-login-or-limit). A failed work run is lost too (ticket
+ * a-failed-plan-run-or-work-run-gives-a). `runStarting`
  * still counts the task as on its way while its session stays.
  */
 export function workLost(facts: LostFacts): boolean {
@@ -125,7 +134,7 @@ export function planLost(facts: PlanLostFacts): boolean {
   if (facts.state !== "planning" || facts.hasPlan) return false;
   if (facts.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) return false;
   const newest = newestWorker(facts.workers);
-  return !!newest && newest.run === "plan" && (newest.state === "failed" || endedWithoutResult(newest));
+  return !!newest && newest.run === "plan" && endedWithoutResult(newest);
 }
 
 /**

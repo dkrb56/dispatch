@@ -222,15 +222,23 @@ test("a work run that only just started or still works is not lost", () => {
   assert.equal(workLost(lost({ hasReport: true })), false);
 });
 
-test("another state of the task or a failed work run is no lost work run", () => {
+test("another state of the task is no lost work run; a failed work run is lost", () => {
   assert.equal(workLost(lost({ state: "planning" })), false);
   assert.equal(workLost(lost({ state: "stopped" })), false);
   assert.equal(workLost(lost({ state: "" })), false);
-  // A failed work run has its own case ("failed").
-  assert.equal(workLost(lost({}, [{ state: "failed", result: null, finished: null }])), false);
+  // A failed work run is lost too (ticket a-failed-plan-run-or-work-run-gives-a).
+  assert.equal(workLost(lost({}, [{ state: "failed", result: null, finished: null }])), true);
   assert.equal(workLost(lost({}, [{ state: "stopped", result: null, finished: null }])), false);
   // A newer failed work run after a lost one.
-  assert.equal(workLost(lost({}, [{ startedAt: 2000 }, { state: "failed", startedAt: 3000, result: null }])), false);
+  assert.equal(workLost(lost({}, [{ startedAt: 2000 }, { state: "failed", startedAt: 3000, result: null }])), true);
+});
+
+test("a failed work run that the daemon found dead is lost, but not beside a report, in a stopped task or before a newer plan run", () => {
+  const reaped = "2026-11-23T07:49:15.671Z";
+  assert.equal(workLost(lost({}, [{ state: "failed", result: null, finished: null, error: null, reapedAt: reaped }])), true);
+  assert.equal(workLost(lost({ hasReport: true }, [{ state: "failed", result: null, reapedAt: reaped }])), false);
+  assert.equal(workLost(lost({ state: "stopped" }, [{ state: "failed", result: null, reapedAt: reaped }])), false);
+  assert.equal(workLost(lost({}, [{ state: "failed", result: null, startedAt: 2000 }, { run: "plan", state: "done", result: true, startedAt: 3000 }])), false);
 });
 
 // ---- A run that stopped at an error of Claude Code (a-run-that-stopped-at-a-login-or-limit) ------
@@ -244,6 +252,8 @@ test("a work run that stopped at an error is lost, also after Dispatch ended its
   assert.equal(workLost(lost({}, [{ state: "done", result: false, finished: null, error: LOGIN }])), true);
   assert.equal(workLost(lost({}, [{ state: "done", result: false, finished: true, error: LOGIN }])), true);
   assert.equal(workLost(lost({ state: "approved" }, [{ state: "stopped", result: null, finished: null, error: LOGIN }])), true);
+  // A failed work run with an error (ticket a-failed-plan-run-or-work-run-gives-a).
+  assert.equal(workLost(lost({}, [{ state: "failed", result: null, error: LOGIN }])), true);
 });
 
 test("a stopped work run without an error, or a task that the user stopped, is not lost", () => {
@@ -251,10 +261,9 @@ test("a stopped work run without an error, or a task that the user stopped, is n
   assert.equal(workLost(lost({}, [{ state: "done", result: false, finished: null }])), false);
   // The user's Stop writes the task state stopped: no Continue.
   assert.equal(workLost(lost({ state: "stopped" }, [{ state: "stopped", result: null, finished: null, error: LOGIN }])), false);
-  // A report, a worker that runs or waits, a failed run, or a newer plan run.
+  // A report, a worker that runs or waits, or a newer plan run.
   assert.equal(workLost(lost({ hasReport: true }, [{ state: "stopped", error: LOGIN }])), false);
   assert.equal(workLost(lost({}, [{ state: "blocked", error: LOGIN }])), false);
-  assert.equal(workLost(lost({}, [{ state: "failed", result: null, error: LOGIN }])), false);
   assert.equal(workLost(lost({}, [{ state: "stopped", error: LOGIN, startedAt: 2000 }, { run: "plan", state: "done", result: true, startedAt: 3000 }])), false);
   assert.equal(WORK_ERROR_TEXT, "failed · the work run stopped at an error");
 });

@@ -969,6 +969,7 @@ const continueStates = new Map<string, { busy: boolean; error: string }>();
 function continueElements(lost: PhoneLost, task: string, root: string, button: boolean): HTMLElement[] {
   const parts: HTMLElement[] = [];
   if (lost.message) parts.push(element("p", "lost-message", `Claude Code says: ${lost.message}`));
+  else if (lost.died) parts.push(element("p", "lost-message", lost.died));
   if (!button) return parts;
   const state = continueStates.get(lost.mark) ?? { busy: false, error: "" };
   const go = element("button", "", "Continue");

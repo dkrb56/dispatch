@@ -412,6 +412,12 @@ interface Worker {
    */
   error?: string | null;
   /**
+   * For the newest run of its name that is failed without its plan or report: the time (ISO) at
+   * which the daemon of Claude Code found the session dead while it worked (ticket
+   * a-failed-plan-run-or-work-run-gives-a). Null without one; absent from an older host.
+   */
+  reapedAt?: string | null;
+  /**
    * True for an old run that counts as done only through the result of a later run of the same
    * task (ticket a-finished-work-run-that-claude-code). Absent from an older host.
    */
@@ -8483,7 +8489,7 @@ function resumeRow(task: Task): HTMLElement | null {
 
 /** The workers of a task as the rules `workLost` and `planLost` of src/overview.ts see them. */
 function lostWorkers(task: Task): LostWorker[] {
-  return task.workers.map((worker) => ({ run: workerRun(task, worker), state: worker.state, result: worker.result, finished: worker.finished, startedAt: worker.startedAt, error: worker.error }));
+  return task.workers.map((worker) => ({ run: workerRun(task, worker), state: worker.state, result: worker.result, finished: worker.finished, startedAt: worker.startedAt, error: worker.error, reapedAt: worker.reapedAt }));
 }
 
 /**
@@ -8511,13 +8517,15 @@ function lostError(task: Task): string | null {
  * The Plan again row of a task whose plan run ended without a plan, or null (ticket
  * a-plan-run-that-ends-without-a-plan). One click starts a new plan run from the brief. A plan run
  * that stopped at an error gets the message and Continue beside Plan again (ticket
- * a-run-that-stopped-at-a-login-or-limit, user decision 1).
+ * a-run-that-stopped-at-a-login-or-limit, user decision 1), and so does a failed plan run (ticket
+ * a-failed-plan-run-or-work-run-gives-a, user decision 1).
  */
 function replanRow(task: Task): HTMLElement | null {
   if (!planLost(task)) return null;
   const row = document.createElement("div");
   row.className = "task-stop";
-  if (lostError(task) && !replySendingOf(task) && !queuedReplyOf(task)) row.append(...continueParts(task, "plan"));
+  const failed = newestWorker(task.workers)?.state === "failed";
+  if ((lostError(task) || failed) && !replySendingOf(task) && !queuedReplyOf(task)) row.append(...continueParts(task, "plan"));
   const button = document.createElement("button");
   button.textContent = "Plan again";
   button.title = `Start a new plan run of ${task.name} from its brief`;
@@ -8553,28 +8561,36 @@ function newestWorkWorker(task: Task): Worker | null {
 /**
  * The message of Claude Code and the Continue button of a lost run (tickets
  * a-work-run-that-ended-without-a-report and a-run-that-stopped-at-a-login-or-limit): the error at
- * which the run stopped, else the reason of its `state.json`, and one button that sends `Continue`
- * to the session of the run through the path of an answer (the queue, the wait for the project and
- * Take back).
+ * which the run stopped, else the reason of its `state.json`, else for a failed run the time at which
+ * its session died (ticket a-failed-plan-run-or-work-run-gives-a, user decision 2), and one button
+ * that sends `Continue` to the session of the run through the path of an answer (the queue, the wait
+ * for the project and Take back).
  */
 function continueParts(task: Task, run: "plan" | "work"): HTMLElement[] {
   const parts: HTMLElement[] = [];
   const worker = run === "plan" ? newestWorker(task.workers) : newestWorkWorker(task);
+  const failed = worker?.state === "failed";
   const message = worker?.error ?? worker?.reason;
   if (message) {
     const said = document.createElement("div");
     said.className = "card-reason";
     said.textContent = `Claude Code says: ${message}`;
     parts.push(said);
+  } else if (failed && worker?.reapedAt) {
+    const died = document.createElement("div");
+    died.className = "card-reason";
+    const at = Date.parse(worker.reapedAt);
+    died.textContent = Number.isNaN(at) ? "The session died while it worked." : `The session died while it worked, at ${shortTime(at)}.`;
+    parts.push(died);
   }
   const button = document.createElement("button");
   button.textContent = "Continue";
-  button.title = `Tell the ${run} run of ${task.name} to go on where it ${worker?.error ? "stopped" : "ended"}`;
+  button.title = `Tell the ${run} run of ${task.name} to go on where it ${failed ? "failed" : worker?.error ? "stopped" : "ended"}`;
   button.disabled = busyTasks.has(task.name);
   button.addEventListener("click", () => {
     if (replySendingOf(task) || queuedReplyOf(task) || busyTasks.has(task.name)) return;
     button.disabled = true;
-    const how = worker?.error ? "stopped at an error" : "ended without a report";
+    const how = failed ? "failed" : worker?.error ? "stopped at an error" : "ended without a report";
     const line = `Task ${task.name}: the user sent Continue in Dispatch after its ${run} run ${how}.`;
     void replyOrQueue(task, answeredRecord(task.info?.report?.modified ?? 0, [], new Map(), "Continue"), "Continue", line).then((result) => {
       if (result) renderChats();

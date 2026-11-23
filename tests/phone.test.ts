@@ -150,7 +150,7 @@ test("each status of a task", () => {
     [task({ ...REPORT("done", "nothing"), branch: { exists: true, merge: "" } }), "waits", "branch waits for Merge", "merge"],
     [task({ state: "working", elsewhere: true }), "waits", "ran on another computer · no worker here", "elsewhere"],
     [task({ state: "stopped" }), "failed", "stopped", "stopped"],
-    [task({ state: "working" }, [worker("t [work]", "failed")]), "failed", "failed", "failed"],
+    [task({ state: "working" }, [worker("t [work]", "failed")]), "failed", "failed · the work run ended without a report", "failed"],
     // A work run that ended without a report (ticket a-work-run-that-ended-without-a-report).
     [task({ state: "working", plan: FILE }, [worker("t [plan]", "done", { startedAt: 5, result: true }), worker("t [work]", "done", { result: false, finished: true })]), "failed", "failed · the work run ended without a report", "failed"],
     // The seconds after Approve: only the plan run is listed.
@@ -631,13 +631,42 @@ test("the row of a run that stopped at an error has the message and Continue, an
   assert.deepEqual(phoneLost(task({ state: "planning" }, [worker("t [plan]", "stopped", { id: "p2", error: LOGIN })]), new Set()), { run: "plan", message: LOGIN, mark: "t:continue:p2", sent: false });
   const ended = task({ state: "working", plan: FILE }, [PLANNED, worker("t [work]", "done", { id: "w2", result: false, finished: true, reason: "login required" })]);
   assert.deepEqual(phoneLost(ended, new Set()), { run: "work", message: "login required", mark: "t:continue:w2", sent: false });
-  // No Continue for a plan run without an error (Plan again is on the computer), a stopped task, or a run that works.
-  assert.equal(phoneLost(task({ state: "planning" }, [worker("t [plan]", "failed")]), new Set()), null);
+  // A failed plan run has Continue too (ticket a-failed-plan-run-or-work-run-gives-a).
+  assert.deepEqual(phoneLost(task({ state: "planning" }, [worker("t [plan]", "failed")]), new Set()), { run: "plan", message: "", mark: "t:continue:id-t [plan]", sent: false });
+  // No Continue for a plan run that ended without a plan and without an error (Plan again is on the computer), a stopped task, or a run that works.
+  assert.equal(phoneLost(task({ state: "planning" }, [worker("t [plan]", "done", { result: false, finished: true })]), new Set()), null);
   assert.equal(phoneLost(task({ state: "stopped", plan: FILE }, [PLANNED, worker("t [work]", "stopped", { error: LOGIN })]), new Set()), null);
   assert.equal(phoneLost(task({ state: "working", plan: FILE }, [PLANNED, worker("t [work]", "working", { error: LOGIN })]), new Set()), null);
   // The card row carries it.
   const cards = phoneCards([{ root: ROOT, list: { tasks: [info("t", { state: "working", plan: FILE })], tickets: [] }, error: "" }], [{ ...PLANNED, name: "t [plan]" }, worker("t [work]", "stopped", { id: "w1", error: LOGIN })], tools);
   assert.deepEqual(allRows(cards).find((one) => one.name === "t")?.lost, lost);
+});
+
+// Ticket a-failed-plan-run-or-work-run-gives-a: a run that Claude Code marks failed.
+test("a failed work run or plan run shows its status and Continue on the phone, with the time the session died", () => {
+  const reaped = "2026-11-23T07:49:15.671Z";
+  const failed = task({ state: "working", plan: FILE }, [PLANNED, worker("t [work]", "failed", { id: "w3" })]);
+  assert.deepEqual(phoneStatus(failed), { kind: "failed", text: "failed · the work run ended without a report" });
+  assert.equal(phonePhase(failed), "failed");
+  assert.deepEqual(phoneLost(failed, new Set()), { run: "work", message: "", mark: "t:continue:w3", sent: false });
+  assert.deepEqual(rowAction(row({ lost: phoneLost(failed, new Set()) })), { kind: "continue", label: "Continue" });
+  const said = task({ state: "working", plan: FILE }, [PLANNED, worker("t [work]", "failed", { id: "w4", error: LOGIN })]);
+  assert.deepEqual(phoneStatus(said), { kind: "failed", text: "failed · the work run stopped at an error" });
+  assert.deepEqual(phoneLost(said, new Set()), { run: "work", message: LOGIN, mark: "t:continue:w4", sent: false });
+  // The daemon found the session dead: the line says when, in local time.
+  const died = phoneLost(task({ state: "working", plan: FILE }, [PLANNED, worker("t [work]", "failed", { id: "w5", reapedAt: reaped })]), new Set())!;
+  const at = new Date(Date.parse(reaped));
+  const two = (n: number) => String(n).padStart(2, "0");
+  const time = `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())} ${two(at.getHours())}:${two(at.getMinutes())}`;
+  assert.deepEqual(died, { run: "work", message: "", died: `The session died while it worked, at ${time}.`, mark: "t:continue:w5", sent: false });
+  // An error wins over the time of the death.
+  assert.equal(phoneLost(task({ state: "working", plan: FILE }, [PLANNED, worker("t [work]", "failed", { id: "w6", error: LOGIN, reapedAt: reaped })]), new Set())?.died, undefined);
+  const plan = task({ state: "planning" }, [worker("t [plan]", "failed", { id: "p3", reapedAt: reaped })]);
+  assert.deepEqual(phoneStatus(plan), { kind: "failed", text: "failed · the plan run ended without a plan" });
+  assert.equal(phoneLost(plan, new Set())?.run, "plan");
+  // A report or a stopped task: no Continue.
+  assert.equal(phoneLost(task({ state: "working", plan: FILE, ...REPORT("done", "nothing") }, [PLANNED, worker("t [work]", "failed")]), new Set()), null);
+  assert.equal(phoneLost(task({ state: "stopped", plan: FILE }, [PLANNED, worker("t [work]", "failed")]), new Set()), null);
 });
 
 test("the phone page and the desktop window show the message and send Continue", () => {
@@ -657,6 +686,10 @@ test("the phone page and the desktop window show the message and send Continue",
   const replan = main.slice(main.indexOf("function replanRow("), main.indexOf("function workLostOf("));
   assert.match(replan, /continueParts\(task, "plan"\)/);
   assert.ok(replan.includes('"Plan again"'));
+  // A failed plan run has Continue too (ticket a-failed-plan-run-or-work-run-gives-a, user decision 1).
+  assert.match(replan, /state === "failed"/);
+  // The phone shows the time the session died without the prefix of a message (user decision 3).
+  assert.match(block, /lost\.died/);
 });
 
 test("the New ticket screen picks the project of the last ticket when it shows, else the first one", () => {

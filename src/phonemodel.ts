@@ -26,6 +26,11 @@ export interface PhoneWorker {
    * Code when the run stopped at an error (ticket a-run-that-stopped-at-a-login-or-limit). Absent from an older host.
    */
   error?: string | null;
+  /**
+   * For the newest run of its name that is failed without its result: the time (ISO) at which the
+   * daemon of Claude Code found the session dead (ticket a-failed-plan-run-or-work-run-gives-a). Absent from an older host.
+   */
+  reapedAt?: string | null;
 }
 
 export interface PhoneFile {
@@ -261,6 +266,11 @@ export interface PhoneRow {
 export interface PhoneLost {
   run: "plan" | "work";
   message: string;
+  /**
+   * For a failed run without a message: "The session died while it worked, at <time>." (ticket
+   * a-failed-plan-run-or-work-run-gives-a, user decision 3). Absent otherwise.
+   */
+  died?: string;
   mark: string;
   sent: boolean;
 }
@@ -485,16 +495,18 @@ function newestWorker(task: PhoneTask): PhoneWorker | null {
   return task.workers.reduce<PhoneWorker | null>((best, worker) => (!best || (worker.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity) ? worker : best), null);
 }
 
-/** A run ended for good without its result, or stopped at an error: `endedWithoutResult` of src/overview.ts. */
+/** A run ended for good without its result, stopped at an error, or failed: `endedWithoutResult` of src/overview.ts. */
 function endedWithoutResult(worker: PhoneWorker): boolean {
+  if (worker.state === "failed") return true;
   if (worker.error && (worker.state === "done" || worker.state === "stopped")) return true;
   return worker.state === "done" && worker.result === false && worker.finished === true;
 }
 
 /**
- * The work run ended for good without its report or stopped at an error: the rule `workLost` of
- * src/overview.ts, copied here because this file has no imports (tickets
- * a-work-run-that-ended-without-a-report and a-run-that-stopped-at-a-login-or-limit).
+ * The work run ended for good without its report, stopped at an error or failed: the rule `workLost`
+ * of src/overview.ts, copied here because this file has no imports (tickets
+ * a-work-run-that-ended-without-a-report, a-run-that-stopped-at-a-login-or-limit and
+ * a-failed-plan-run-or-work-run-gives-a).
  */
 function workLost(task: PhoneTask): boolean {
   const info = task.info;
@@ -510,7 +522,7 @@ function planLost(task: PhoneTask): boolean {
   if (!info || info.state !== "planning" || info.plan) return false;
   if (live(task)) return false;
   const newest = newestWorker(task);
-  return !!newest && workerRun(task, newest) === "plan" && (newest.state === "failed" || endedWithoutResult(newest));
+  return !!newest && workerRun(task, newest) === "plan" && endedWithoutResult(newest);
 }
 
 /** The error at which the lost run of a task stopped, or null. */
@@ -519,17 +531,28 @@ function lostError(task: PhoneTask): string | null {
   return newestWorker(task)?.error ?? null;
 }
 
+/** `shortTime` of src/actions.ts: local `YYYY-MM-DD HH:MM`, copied because this file has no imports. */
+function shortTime(millis: number): string {
+  const date = new Date(millis);
+  const two = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())} ${two(date.getHours())}:${two(date.getMinutes())}`;
+}
+
 /**
  * The Continue block of a task (ticket a-run-that-stopped-at-a-login-or-limit): a work run that ended
- * without its report, or a plan run that stopped at an error, as on the task card of the computer.
+ * without its report, or a plan run that stopped at an error or failed (ticket
+ * a-failed-plan-run-or-work-run-gives-a), as on the task card of the computer.
  */
 export function phoneLost(task: PhoneTask, sent: ReadonlySet<string>): PhoneLost | null {
-  const plan = planLost(task) && lostError(task) !== null;
+  const plan = planLost(task) && (lostError(task) !== null || newestWorker(task)?.state === "failed");
   if (!plan && !workLost(task)) return null;
   const newest = newestWorker(task);
   if (!newest) return null;
   const mark = `${task.name}:continue:${newest.id}`;
-  return { run: plan ? "plan" : "work", message: newest.error ?? newest.reason ?? "", mark, sent: sent.has(mark) };
+  const message = newest.error ?? newest.reason ?? "";
+  const at = newest.reapedAt ? Date.parse(newest.reapedAt) : NaN;
+  const died = !message && newest.state === "failed" && newest.reapedAt ? `The session died while it worked${Number.isNaN(at) ? "" : `, at ${shortTime(at)}`}.` : "";
+  return { run: plan ? "plan" : "work", message, ...(died ? { died } : {}), mark, sent: sent.has(mark) };
 }
 
 function unverifiedStatus(missing: readonly string[]): string {

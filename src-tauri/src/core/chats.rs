@@ -179,6 +179,12 @@ pub struct Worker {
     /// `state.json`; the transcript keeps the error. None for every other worker.
     #[serde(skip_deserializing)]
     error: Option<String>,
+    /// For the newest run of the pipeline of its name that is `failed` without its result: the
+    /// `reapedMidWorkAt` text of its `~/.claude/jobs/<id>/state.json`, the time (ISO) at which the
+    /// daemon found the session dead while it worked (ticket a-failed-plan-run-or-work-run-gives-a).
+    /// Such a job has no `needs`. None for every other worker.
+    #[serde(skip_deserializing)]
+    reaped_at: Option<String>,
     /// True for a run that `settle_turn_end` made done only through the result of a later job of
     /// the same task (ticket a-finished-work-run-that-claude-code). The window keeps quiet about
     /// that end: the report exists.
@@ -310,6 +316,18 @@ fn job_needs(text: &str) -> Option<String> {
         return None;
     }
     Some(needs.chars().take(200).collect())
+}
+
+/// The time at which the daemon found a job dead while it worked, from the text of its
+/// `state.json`: its `reapedMidWorkAt` field, trimmed (ticket a-failed-plan-run-or-work-run-gives-a).
+/// None when the text is no JSON or the field is missing, no text or empty.
+fn job_reaped(text: &str) -> Option<String> {
+    let state: Value = serde_json::from_str(text).ok()?;
+    let at = state.get("reapedMidWorkAt")?.as_str()?.trim();
+    if at.is_empty() {
+        return None;
+    }
+    Some(at.to_string())
 }
 
 /// The text of `<home>/.claude/jobs/<id>/state.json`.
@@ -626,13 +644,18 @@ pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
         }
         // The newest run of its name that ended without its result may have stopped at an error of
         // Claude Code. Only that one reads its transcript: the list has hundreds of old sessions.
+        // A failed run counts as a stopped one (ticket a-failed-plan-run-or-work-run-gives-a).
         let without_result = match worker.state.as_deref() {
             Some("done") => worker.result == Some(false),
-            Some("stopped") => worker.name.as_deref().and_then(run_of).zip(worker.started_at).is_some_and(|((ticket, plan), start)| !from_run(modified(ticket, plan), start, next_start)),
+            Some("stopped") | Some("failed") => worker.name.as_deref().and_then(run_of).zip(worker.started_at).is_some_and(|((ticket, plan), start)| !from_run(modified(ticket, plan), start, next_start)),
             _ => false,
         };
         if without_result && next_start.is_none() {
             worker.error = worker.session_id.as_deref().and_then(|id| worker_error(&projects, id));
+            // A failed job that the daemon found dead has no error; its state file says when it died.
+            if worker.state.as_deref() == Some("failed") {
+                worker.reaped_at = claude.as_deref().and_then(|claude| job_state(claude, &worker.id)).as_deref().and_then(job_reaped);
+            }
         }
     }
     Ok(workers)
@@ -675,7 +698,7 @@ pub fn end_session(id: String) -> Result<String, String> {
 
 #[cfg(test)]
 mod worker_tests {
-    use super::{check_session_id, end_session, from_later_run, job_finished, job_needs, permission_prompt, run_result, timeline_end, transcript_error, worker_finished, Worker, WorkerPrompt};
+    use super::{check_session_id, end_session, from_later_run, job_finished, job_needs, job_reaped, permission_prompt, run_result, timeline_end, transcript_error, worker_finished, Worker, WorkerPrompt};
 
     /// The form of `~/.claude/jobs/<id>/state.json` (Claude Code 2.1.319, job 6a54e3cc: a plan run
     /// that ended without its plan; job 68b71856: a done run with queued work).
@@ -740,6 +763,32 @@ mod worker_tests {
         assert_eq!(job_needs("{\"needs\":\" read the plan \"}").as_deref(), Some("read the plan"));
         let long = format!("{{\"needs\":\"{}\"}}", "é".repeat(300));
         assert_eq!(job_needs(&long).map(|text| text.chars().count()), Some(200));
+    }
+
+    /// The form of a job that the daemon found dead while it worked (Claude Code 2.1.319, job
+    /// 027a57c3, without the account fields): `failed`, `reapedMidWorkAt`, no `needs`, no `inFlight`.
+    #[test]
+    fn job_reaped_is_the_time_at_which_the_daemon_found_the_run_dead() {
+        let reaped = r#"{
+  "state": "failed",
+  "detail": "waiting on a check",
+  "tempo": "idle",
+  "tokens": 147543,
+  "output": null,
+  "children": null,
+  "template": "bg",
+  "name": "t [work]",
+  "backend": "daemon",
+  "reapedMidWorkAt": "2026-11-23T07:49:15.671Z"
+}"#;
+        assert_eq!(job_reaped(reaped).as_deref(), Some("2026-11-23T07:49:15.671Z"));
+        assert_eq!(job_needs(reaped), None);
+        assert_eq!(job_finished(reaped), None);
+        // Without the field, an empty or no text field, or no JSON: no time.
+        assert_eq!(job_reaped("{\"state\":\"failed\"}"), None);
+        assert_eq!(job_reaped("{\"reapedMidWorkAt\":\"  \"}"), None);
+        assert_eq!(job_reaped("{\"reapedMidWorkAt\":5}"), None);
+        assert_eq!(job_reaped("{\"reapedMidWorkAt\":"), None);
     }
 
     // The end of the transcript of job ea33c60b (work run, 2026-11-22 21:10) and line 565 of
