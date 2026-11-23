@@ -129,6 +129,7 @@ import { badgeText, moveUp, railDrop, type RailGroup, railItems, railLetters, ra
 import { pasteSkipsPane } from "./chattabs";
 import { autoSwitch, holdPause, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
+import { countdownText, keepDeadline, promptKey } from "./permissionprompt";
 import { answerWait, type WaitFacts, waitReason } from "./waitreason";
 import { autoContinueLine, autoContinueQueued, countsMerged, goOnLine, isAutoContinue, type MergeWait, mergeWait, mergeWaitLines, mergeWaitShort, mergeWaitText, mergeWaitTitle, stopLine, type WaitTask } from "./mergewait";
 import { HOLD_NOTE, holdWait } from "./holdstep";
@@ -371,6 +372,12 @@ interface Worker {
   state: string | null;
   /** Why a blocked worker waits for the user. */
   waitingFor: string | null;
+  /**
+   * For a worker at a permission prompt: the prompt as the screen of the session shows it (ticket
+   * a-worker-that-waits-at-a-permission). Null when Dispatch could not read it; absent from an
+   * older host. `refreshWorkers` moves `secondsLeft` into `promptDeadlines` and `blocksAt`, and sets it to null.
+   */
+  prompt?: WorkerPrompt | null;
   /** The agents that the worker started. */
   agents: number;
   /** The agents that wrote to their chat file a short time ago. It is an estimate. */
@@ -409,6 +416,20 @@ interface Worker {
    * task (ticket a-finished-work-run-that-claude-code). Absent from an older host.
    */
   superseded?: boolean;
+}
+
+/** The permission prompt of a worker (`WorkerPrompt` in chats.rs). */
+interface WorkerPrompt {
+  /** The title line, for example "Bash command". */
+  tool: string;
+  /** The lines of the command or the file. */
+  command: string;
+  /** Why Claude Code asks, or null. */
+  reason: string | null;
+  /** The seconds until Claude Code refuses the request by itself, or null without a countdown. */
+  secondsLeft: number | null;
+  /** The window only: the time when Claude Code refuses the request, from the first read with seconds left. */
+  blocksAt?: number | null;
 }
 
 /** The Claude Code command with which the shell of a new terminal starts. */
@@ -7389,6 +7410,62 @@ function permissionCard(task: Task): HTMLElement {
   return card;
 }
 
+/** The countdown line of a prompt card, from the milliseconds until Claude Code refuses the request. */
+function promptCountdownLine(msLeft: number): string {
+  return msLeft > 0 ? `Claude Code refuses it by itself in ${countdownText(msLeft)}` : "Claude Code refuses it now";
+}
+
+/**
+ * The card of a run that waits at a permission prompt (ticket a-worker-that-waits-at-a-permission):
+ * the tool, the command, the reason and the countdown, as the screen of the session shows them. The
+ * user answers in the agent view; the card goes away when the run no longer waits.
+ */
+function promptCard(task: Task, worker: Worker): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "task-card";
+  const title = document.createElement("div");
+  title.className = "card-title";
+  const run = workerRun(task, worker);
+  title.textContent = `${run === "plan" ? "Plan run" : run === "work" ? "Work run" : "Worker"} waits for your permission`;
+  card.append(title);
+  const prompt = worker.prompt;
+  if (prompt) {
+    const command = document.createElement("div");
+    command.className = "card-result";
+    command.textContent = `${prompt.tool}\n${prompt.command}`;
+    card.append(command);
+    if (prompt.reason) {
+      const reason = document.createElement("div");
+      reason.className = "card-question";
+      reason.textContent = prompt.reason;
+      card.append(reason);
+    }
+    const deadline = prompt.blocksAt;
+    if (typeof deadline === "number") {
+      const countdown = document.createElement("div");
+      countdown.className = "card-question";
+      countdown.dataset.blocksAt = String(deadline);
+      countdown.textContent = promptCountdownLine(deadline - Date.now());
+      card.append(countdown);
+    }
+  } else {
+    const text = document.createElement("div");
+    text.className = "card-question";
+    text.textContent = "Dispatch could not read the prompt. Open the agent view to see it.";
+    card.append(text);
+  }
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const button = document.createElement("button");
+  button.className = "primary";
+  button.textContent = "Open in agent view";
+  button.title = "Answer the prompt where Claude Code shows it";
+  button.addEventListener("click", () => void openWorker(worker));
+  actions.append(button);
+  card.append(actions);
+  return card;
+}
+
 /**
  * The card of a work run that waits for the merge of other tasks (ticket a-task-that-waits-for-the-merge-of):
  * one line per named task with its title and state, and the two ways to end the wait by hand, Go on
@@ -11617,6 +11694,9 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     if (goOn) body.append(goOn);
     if (body.childElementCount > 0) made.append(body);
   }
+  // A run at a permission prompt shows the prompt and its countdown (ticket a-worker-that-waits-at-a-permission).
+  const atPrompt = task.workers.find((worker) => worker.state === "blocked");
+  if (atPrompt) made.append(promptCard(task, atPrompt));
   if (planReady(task) || awayPlan(task)) made.append(planCard(task));
   const questions = openQuestions(task);
   const repeats = repeatedQuestionsOf(task);
@@ -11644,6 +11724,9 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
   return made;
 }
 
+/** The deadline of each permission prompt on screen, by `promptKey`: the first read sets it (ticket a-worker-that-waits-at-a-permission). */
+const promptDeadlines = new Map<string, number>();
+
 /** When the last worker read of each host with success began: the start lease waits for it (ticket one-work-run-race). */
 const workerReadTimes = new Map<HostId, number>();
 
@@ -11661,6 +11744,18 @@ async function refreshWorkers(poll = false): Promise<void> {
     return [host, list] as const;
   });
   const workers = mergeLists(byHost, workerList, (worker) => worker.startedAt ?? 0);
+  // The seconds left change at each read; the first deadline of a prompt stays in `blocksAt`, so the
+  // list changes once when the deadline is known and then stays the same, and the cards do not draw
+  // again at each read (ticket a-worker-that-waits-at-a-permission).
+  const prompts = new Set<string>();
+  for (const worker of workers) {
+    if (!worker.prompt) continue;
+    const key = promptKey(workerKey(worker), worker.prompt);
+    prompts.add(key);
+    const blocksAt = keepDeadline(promptDeadlines, key, readAt, worker.prompt.secondsLeft);
+    worker.prompt = { ...worker.prompt, secondsLeft: null, blocksAt };
+  }
+  for (const key of promptDeadlines.keys()) if (!prompts.has(key)) promptDeadlines.delete(key);
   const shown = JSON.stringify(workers);
   if (shown === workersShown) return;
   workersShown = shown;
@@ -17446,6 +17541,10 @@ function tickRunTimes(): void {
   for (const time of document.querySelectorAll<HTMLElement>("[data-run-since]")) {
     const text = durationText(now - Number(time.dataset.runSince));
     if (time.textContent !== text) time.textContent = text;
+  }
+  for (const line of document.querySelectorAll<HTMLElement>("[data-blocks-at]")) {
+    const text = promptCountdownLine(Number(line.dataset.blocksAt) - now);
+    if (line.textContent !== text) line.textContent = text;
   }
 }
 

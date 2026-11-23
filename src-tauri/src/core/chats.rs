@@ -134,6 +134,12 @@ pub struct Worker {
     status: Option<String>,
     /// Why a blocked worker waits for the user.
     waiting_for: Option<String>,
+    /// For a worker at a permission prompt (`blocked` and `waiting`): the prompt as the screen of
+    /// its session shows it (ticket a-worker-that-waits-at-a-permission). `claude agents` gives
+    /// only `waitingFor: permission prompt`. None for every other worker and when the screen has
+    /// no prompt box.
+    #[serde(skip_deserializing)]
+    prompt: Option<WorkerPrompt>,
     /// The process of the session while Claude Code still runs one for it.
     pid: Option<u32>,
     /// Claude Code still holds the session (ticket stale-workers-list): its state before `settle`
@@ -178,6 +184,22 @@ pub struct Worker {
     /// that end: the report exists.
     #[serde(skip_deserializing)]
     superseded: bool,
+}
+
+/// The permission prompt of a worker, read from the screen of its session (ticket
+/// a-worker-that-waits-at-a-permission).
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerPrompt {
+    /// The title line of the box, for example "Bash command".
+    tool: String,
+    /// The lines between the two dashed rules of the box (the command), or every text line of the
+    /// box without these rules.
+    command: String,
+    /// The other text lines of the box: the description of the command, and why Claude Code asks.
+    reason: Option<String>,
+    /// The seconds from "will automatically block this request in M:SS", None without that line.
+    seconds_left: Option<u32>,
 }
 
 impl Worker {
@@ -338,6 +360,136 @@ fn worker_error(projects: &[PathBuf], session_id: &str) -> Option<String> {
     transcript_error(&read_part(&mut file, size - len, len)?)
 }
 
+/// The text of a terminal screen without its control codes: a cursor position (CSI `H` or `f`) starts
+/// a new line, a cursor forward (CSI `C`) gives its spaces, every other CSI and OSC code and `\r` go.
+fn screen_text(screen: &str) -> String {
+    let mut out = String::with_capacity(screen.len());
+    let mut chars = screen.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\x1b' => match chars.next() {
+                Some('[') => {
+                    let mut params = String::new();
+                    let mut last = None;
+                    for c in chars.by_ref() {
+                        if ('\x40'..='\x7e').contains(&c) {
+                            last = Some(c);
+                            break;
+                        }
+                        params.push(c);
+                    }
+                    match last {
+                        Some('H' | 'f') => out.push('\n'),
+                        Some('C') => out.extend(std::iter::repeat_n(' ', params.parse::<usize>().unwrap_or(1).min(1000))),
+                        _ => {}
+                    }
+                }
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\x07' {
+                            break;
+                        }
+                        if c == '\x1b' {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            '\n' | '\t' => out.push(c),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The rows of a screen text. Claude Code writes a row of the full width without a line end, and
+/// the terminal wraps it; the longest run of `─` (the top rule of a box) gives that width. Each
+/// longer line becomes rows of that width (job 76547e4f: 200 columns).
+fn screen_rows(text: &str) -> Vec<String> {
+    let width = text.split(|c| c != '─').map(|run| run.chars().count()).max().unwrap_or(0);
+    let mut rows = Vec::new();
+    for line in text.split('\n') {
+        let chars: Vec<char> = line.chars().collect();
+        if width < 20 || chars.len() <= width {
+            rows.push(line.to_string());
+        } else {
+            rows.extend(chars.chunks(width).map(|chunk| chunk.iter().collect::<String>()));
+        }
+    }
+    rows
+}
+
+/// A row that is only a rule of the character `rule`, at least 10 long.
+fn is_rule(row: &str, rule: char) -> bool {
+    let row = row.trim();
+    row.chars().count() >= 10 && row.chars().all(|c| c == rule)
+}
+
+/// The seconds of "will automatically block this request in M:SS" in a row (the words of the
+/// prompt that the ticket quotes from `claude logs`).
+fn countdown(row: &str) -> Option<u32> {
+    let rest = row.split("automatically block this request in ").nth(1)?;
+    let time: String = rest.chars().take_while(|c| c.is_ascii_digit() || *c == ':').collect();
+    let (minutes, seconds) = time.split_once(':')?;
+    Some(minutes.parse::<u32>().ok()? * 60 + seconds.parse::<u32>().ok()?)
+}
+
+/// Lines without their common indent and without empty lines at the start and the end.
+fn block(lines: &[&str]) -> String {
+    let indent = lines.iter().filter(|line| !line.trim().is_empty()).map(|line| line.len() - line.trim_start_matches(' ').len()).min().unwrap_or(0);
+    let lines: Vec<&str> = lines.iter().map(|line| line.get(indent..).unwrap_or("").trim_end()).collect();
+    lines.join("\n").trim_matches('\n').to_string()
+}
+
+/// The last permission prompt on the screen of a session, from the output of `claude logs <id>`
+/// (Claude Code 2.1.319, job 76547e4f). The box starts at a rule of `─` over the full width; its
+/// first row is the title ("Bash command"), a row "Tip: …" can follow; dashed rules (`╌`) frame
+/// the command; the row "Do you want to …" ends the box, and the options and "Esc to cancel"
+/// follow. None when the screen has no such box.
+fn permission_prompt(screen: &str) -> Option<WorkerPrompt> {
+    let rows = screen_rows(&screen_text(screen));
+    let question = rows.iter().rposition(|row| row.trim_start().starts_with("Do you want to"))?;
+    let top = rows[..question].iter().rposition(|row| is_rule(row, '─'))?;
+    let title_at = (top + 1..question).find(|&at| !rows[at].trim().is_empty())?;
+    let tool = rows[title_at].trim().split("   ").next().unwrap_or("").trim().to_string();
+    // The countdown can stand in the box or under the options, up to "Esc to cancel".
+    let end = (question..rows.len()).find(|&at| rows[at].trim_start().starts_with("Esc to cancel")).unwrap_or((question + 12).min(rows.len() - 1));
+    let seconds_left = rows[top..=end].iter().find_map(|row| countdown(row));
+    let (mut framed, mut other) = (Vec::new(), Vec::new());
+    let (mut inside, mut rules) = (false, 0);
+    for row in &rows[title_at + 1..question] {
+        if is_rule(row, '╌') {
+            inside = !inside;
+            rules += 1;
+        } else if inside {
+            framed.push(row.as_str());
+        } else if !row.trim().is_empty() && !row.trim_start().starts_with("Tip:") && countdown(row).is_none() {
+            other.push(row.as_str());
+        }
+    }
+    let (command, reason) = if rules >= 2 { (block(&framed), Some(block(&other))) } else { (block(&other), None) };
+    let reason = reason.filter(|reason| !reason.is_empty()).map(|reason| reason.chars().take(500).collect());
+    Some(WorkerPrompt { tool, command: command.chars().take(2000).collect(), reason, seconds_left })
+}
+
+/// The bytes of the end of `claude logs <id>` that `worker_prompt` reads: the prompt is on the last
+/// screen, and the output repeats the screen many times (job 76547e4f: 327 KB, 3 KB per screen).
+const LOGS_TAIL_BYTES: usize = 64 * 1024;
+
+/// The permission prompt of a background session, from `claude logs <id>`.
+fn worker_prompt(id: &str) -> Option<WorkerPrompt> {
+    check_session_id(id).ok()?;
+    let output = claude_command().args(["logs", id]).stdin(Stdio::null()).no_window().output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let tail = &output.stdout[output.stdout.len().saturating_sub(LOGS_TAIL_BYTES)..];
+    permission_prompt(&String::from_utf8_lossy(tail))
+}
+
 /// The ticket of a run of the pipeline and whether it is the plan run, from the name that
 /// worker.ps1 gives it. None for a bare ticket id of the older script and for any other name.
 fn run_of(name: &str) -> Option<(&str, bool)> {
@@ -408,6 +560,10 @@ pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
         .collect();
     for worker in &mut workers {
         worker.settle();
+        // Only a session at a permission prompt runs `claude logs`.
+        if worker.state.as_deref() == Some("blocked") && worker.status.as_deref() == Some("waiting") {
+            worker.prompt = worker_prompt(&worker.id);
+        }
         // A worker that runs has no end yet: the window counts from its start until now.
         let live = matches!(worker.state.as_deref(), Some("working" | "blocked"));
         if !live {
@@ -519,7 +675,7 @@ pub fn end_session(id: String) -> Result<String, String> {
 
 #[cfg(test)]
 mod worker_tests {
-    use super::{check_session_id, end_session, from_later_run, job_finished, job_needs, run_result, timeline_end, transcript_error, worker_finished, Worker};
+    use super::{check_session_id, end_session, from_later_run, job_finished, job_needs, permission_prompt, run_result, timeline_end, transcript_error, worker_finished, Worker, WorkerPrompt};
 
     /// The form of `~/.claude/jobs/<id>/state.json` (Claude Code 2.1.319, job 6a54e3cc: a plan run
     /// that ended without its plan; job 68b71856: a done run with queued work).
@@ -805,6 +961,94 @@ mod worker_tests {
         }
         assert!(check_session_id("973fe72b").is_ok());
         assert!(check_session_id("973fe72b-902a-4267").is_ok());
+    }
+
+    /// The last screen of `claude logs 76547e4f` (Claude Code 2.1.319, 2026-11-23): a background
+    /// session in the default permission mode at the prompt of a Bash command, 200 columns wide.
+    /// This mode shows no countdown; the full capture is in the proof folder of the ticket.
+    const SCREEN: &str = "\
+        \x1b[H\x1b[K\x1b[38;2;215;119;87m\r\n\
+        \x20▐\x1b[48;2;0;0;0m▛███▛█\x1b[m   \x1b[1mClaude Code\x1b[22m \x1b[38;2;153;153;153mv2.1.319\x1b[K\x1b[38;2;215;119;87m\r\n\
+        ▝▜\x1b[48;2;0;0;0m█████\x1b[49m█▀  \x1b[38;2;153;153;153mHaiku 5.5 · Claude Ultra\x1b[K\x1b[38;2;215;119;87m\r\n\
+        \x20▝▝   ▝▝   \x1b[38;2;153;153;153mD:\\dev_projects\\dispatch\\src-tauri\\target\\perm-proof\\proj · \x1b[38;2;78;186;101m/rc\x1b[m\x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\x1b[38;2;153;153;153m\x1b[48;2;55;55;55m\r\n\
+        ❯ \x1b[38;2;255;255;255mRun exactly this one Bash command and nothing else: echo hello > note.txt . Then end your turn.                                                                                                       \x1b[m\r\n\
+        \x1b[K\x1b[38;2;153;153;153m\r\n\
+        ● \x1b[mRunning \x1b[1m1\x1b[22m shell command…                                                                                                                                                                              \x1b[38;2;153;153;153m  ⎿  $ echo hello > note.txt\x1b[K\x1b[m\r\n\
+        \x1b[K\x1b[38;2;177;185;249m\r\n\
+        ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────\x1b[m \x1b[38;2;177;185;249m\x1b[1mBash command\x1b[m                                                                                                                                                                                            \x1b[1mTip: auto mode handles these prompts for you — choose \"switch to auto mode\" below\x1b[22m\x1b[K\r\n\
+        \x20\x1b[38;2;153;153;153mWrite hello into note.txt                                                                                                                                                                              \x1b[38;2;80;80;80m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\x1b[m echo hello > note.txt\x1b[K\x1b[38;2;80;80;80m\r\n\
+        ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\x1b[m Do you want to proceed?\x1b[K\r\n\
+        \x20\x1b[38;2;177;185;249m❯ \x1b[38;2;153;153;153m1. \x1b[38;2;177;185;249mYes\x1b[K\x1b[m\r\n\
+        \x20  \x1b[38;2;153;153;153m2. \x1b[mYes, and always allow access to \x1b[1mD:\\dev_projects\\dispatch\\src-tauri\\target\\perm-proof\\proj\x1b[22m from this project\x1b[K\r\n\
+        \x20  \x1b[38;2;153;153;153m3. \x1b[mYes, and switch to auto mode \x1b[38;2;153;153;153m· auto mode handles these prompts for you\x1b[K\x1b[m\r\n\
+        \x20  \x1b[38;2;153;153;153m4. \x1b[mNo\x1b[K\r\n\
+        \x1b[K\r\n\
+        \x20\x1b[38;2;153;153;153mEsc to cancel · Tab to amend\x1b[K\x1b[m\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x1b[K\r\n\
+        \x20                                                                                                                                                                                                       \r\n\
+        \x1b[K\r\n\
+        \x20                                                                                                                                                                                                       \x1b[38;2;136;136;136m───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── perm-proof-1 ─\x1b[m";
+
+    /// The words of the countdown as the ticket quotes them from `claude logs` of a work run in auto mode.
+    const COUNTDOWN: &str = " Claude Code will automatically block this request in 0:41";
+
+    fn prompt(tool: &str, command: &str, reason: Option<&str>, seconds_left: Option<u32>) -> Option<WorkerPrompt> {
+        Some(WorkerPrompt { tool: tool.to_string(), command: command.to_string(), reason: reason.map(str::to_string), seconds_left })
+    }
+
+    #[test]
+    fn permission_prompt_reads_the_captured_screen() {
+        assert_eq!(permission_prompt(SCREEN), prompt("Bash command", "echo hello > note.txt", Some("Write hello into note.txt"), None));
+    }
+
+    #[test]
+    fn permission_prompt_reads_the_countdown_in_the_box_and_under_the_options() {
+        let in_box = SCREEN.replace(" Do you want to proceed?", &format!("{COUNTDOWN}\r\n Do you want to proceed?"));
+        assert_eq!(permission_prompt(&in_box), prompt("Bash command", "echo hello > note.txt", Some("Write hello into note.txt"), Some(41)));
+        let below = SCREEN.replace(" \x1b[38;2;153;153;153mEsc to cancel", " Claude Code will automatically block this request in 1:05\r\n Esc to cancel");
+        assert_eq!(permission_prompt(&below).and_then(|found| found.seconds_left), Some(65));
+    }
+
+    #[test]
+    fn permission_prompt_is_none_without_a_prompt_box() {
+        assert_eq!(permission_prompt(""), None);
+        let before_box = &SCREEN[..SCREEN.find("Bash command\x1b[m").unwrap()];
+        assert_eq!(permission_prompt(before_box), None);
+        assert_eq!(permission_prompt("Do you want to proceed?"), None);
+    }
+
+    #[test]
+    fn permission_prompt_reads_the_last_box_of_the_output() {
+        let later = SCREEN.replace("echo hello > note.txt", "echo bye > other.txt");
+        assert_eq!(permission_prompt(&format!("{SCREEN}{later}")).map(|found| found.command), Some("echo bye > other.txt".to_string()));
+    }
+
+    #[test]
+    fn permission_prompt_without_dashed_rules_takes_every_line_as_the_command() {
+        let screen = format!("{}\r\n Edit file\r\n  note.txt\r\n  + hello\r\n Do you want to make this edit to note.txt?\r\n", "─".repeat(40));
+        assert_eq!(permission_prompt(&screen), prompt("Edit file", "note.txt\n+ hello", None, None));
     }
 }
 
