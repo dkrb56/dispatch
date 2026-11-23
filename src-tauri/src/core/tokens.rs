@@ -248,7 +248,7 @@ fn is_release(tag: &str) -> bool {
 /// on and off from the files of the `nightmode` skill.
 fn events_of(project: &Project) -> Vec<TokenEvent> {
     let mut events = Vec::new();
-    let tags = crate::core::info::git(&project.root, &["for-each-ref", "--format=%(refname:short) %(creatordate:unix)", "refs/tags"]).unwrap_or_default();
+    let tags = crate::core::gitfiles::Repo::find(&project.root).map(|repo| crate::core::gitfiles::tag_dates(&repo)).unwrap_or_default();
     for line in tags.lines() {
         let Some((tag, time)) = line.trim().split_once(' ') else { continue };
         let Ok(seconds) = time.trim().parse::<u64>() else { continue };
@@ -613,6 +613,48 @@ mod tests {
         assert_eq!(events.iter().find(|event| event.kind == "night-on").unwrap().time, parse_time("2026-11-13T23:50:50Z"));
         assert_eq!(events.iter().find(|event| event.kind == "night-off").unwrap().time, parse_time("2026-11-14T06:36:28Z"));
         assert_eq!(approval_stamp("## User decisions\nThe user took these decisions in Dispatch on soon. x\n"), None);
+        fs::remove_dir_all(projects.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn token_events_ask_git_only_when_the_tags_change() {
+        let (project, projects, _) = project_and_transcripts("events-tags");
+        let root = &project.root;
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git").arg("-C").arg(root).args(args).output().unwrap();
+            assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        };
+        git(&["init", "-q"]);
+        let commit = |message: &str| git(&["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", message]);
+        commit("start");
+        git(&["tag", "v1.0.0"]);
+        let project = Project::find(&root.to_string_lossy()).unwrap();
+        // The releases of one read of the events, its git starts, and the releases of a direct `for-each-ref`.
+        let read = |label: &str, starts: usize| {
+            crate::core::gitfiles::STARTS.with(|s| s.set((0, 0)));
+            let releases: Vec<(String, Option<u64>)> = events_of(&project).into_iter().filter(|event| event.kind == "release").map(|event| (event.text, event.time)).collect();
+            let counted = crate::core::gitfiles::STARTS.with(|s| s.get()).0;
+            let text = git(&["for-each-ref", "--format=%(refname:short) %(creatordate:unix)", "refs/tags"]);
+            let expected: Vec<(String, Option<u64>)> = text
+                .lines()
+                .filter_map(|line| line.trim().split_once(' '))
+                .filter(|(tag, _)| is_release(tag))
+                .map(|(tag, time)| (format!("release {}", &tag[1..]), time.trim().parse::<u64>().ok().map(|seconds| seconds * 1000)))
+                .collect();
+            assert_eq!(releases, expected, "{label}: the releases");
+            assert_eq!(counted, starts, "{label}: the git starts");
+            releases.len()
+        };
+        assert_eq!(read("first read", 1), 1);
+        assert_eq!(read("second read", 0), 1);
+        commit("next");
+        git(&["tag", "-a", "-m", "two", "v2.0.0"]);
+        assert_eq!(read("a new tag", 1), 2);
+        git(&["pack-refs", "--all"]);
+        assert_eq!(read("packed tags", 0), 2);
+        git(&["tag", "-d", "v1.0.0"]);
+        assert_eq!(read("a deleted tag", 1), 1);
         fs::remove_dir_all(projects.parent().unwrap()).unwrap();
     }
 }

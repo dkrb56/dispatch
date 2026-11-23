@@ -398,6 +398,61 @@ pub(crate) fn short_hash(repo: &Repo, hash: &str) -> Option<String> {
     Some(short)
 }
 
+/// The tag refs of a repository from its files, sorted by full name: each loose file under
+/// `refs/tags` (its first line) and each tag line of `packed-refs` that no loose file covers. A
+/// change of this list is a change of the tags. None when the refs are not plain files (reftable).
+pub(crate) fn tag_refs(repo: &Repo) -> Option<Vec<(String, String)>> {
+    if !repo.refs_readable() {
+        return None;
+    }
+    let mut refs: HashMap<String, String> = HashMap::new();
+    let mut folders = vec![(repo.common_dir.join("refs").join("tags"), "refs/tags".to_string())];
+    while let Some((folder, prefix)) = folders.pop() {
+        for entry in fs::read_dir(&folder).into_iter().flatten().flatten() {
+            let name = format!("{prefix}/{}", entry.file_name().to_string_lossy());
+            let path = entry.path();
+            if path.is_dir() {
+                folders.push((path, name));
+            } else if !name.ends_with(".lock") {
+                let line = fs::read_to_string(&path).ok().and_then(|text| text.lines().next().map(|line| line.trim().to_string())).unwrap_or_default();
+                refs.insert(name, line);
+            }
+        }
+    }
+    let packed = fs::read_to_string(repo.common_dir.join("packed-refs")).unwrap_or_default();
+    for line in packed.lines().filter(|line| !line.starts_with('#') && !line.starts_with('^')) {
+        let Some((hash, name)) = line.trim_end().split_once(' ') else { continue };
+        if name.starts_with("refs/tags/") && is_hash(hash) {
+            refs.entry(name.to_string()).or_insert_with(|| hash.to_string());
+        }
+    }
+    let mut refs: Vec<(String, String)> = refs.into_iter().collect();
+    refs.sort();
+    Some(refs)
+}
+
+/// The output of `git for-each-ref --format=%(refname:short) %(creatordate:unix) refs/tags`, kept
+/// per common folder while `tag_refs` gives the same list (user decision 2 of ticket
+/// the-side-panel-and-the-token-events-read): the time of a tag is fixed by its object, so the same
+/// names and hashes give the same text. Without readable refs git answers each time.
+pub(crate) fn tag_dates(repo: &Repo) -> String {
+    static DATES: OnceLock<Mutex<HashMap<PathBuf, (Vec<(String, String)>, String)>>> = OnceLock::new();
+    let ask = || git(&repo.top, &["for-each-ref", "--format=%(refname:short) %(creatordate:unix)", "refs/tags"]);
+    let Some(refs) = tag_refs(repo) else { return ask().unwrap_or_default() };
+    let map = DATES.get_or_init(Default::default);
+    if let Some((known, text)) = map.lock().ok().and_then(|map| map.get(&repo.common_dir).cloned()) {
+        if known == refs {
+            return text;
+        }
+    }
+    // A failed call is not kept: the next read asks again.
+    let Some(text) = ask() else { return String::new() };
+    if let Ok(mut map) = map.lock() {
+        map.insert(repo.common_dir.clone(), (refs, text.clone()));
+    }
+    text
+}
+
 /// The git program of the app and the environment of its child (user decision 2 of ticket
 /// dispatch-starts-the-git-program-for-each).
 pub(crate) struct GitProgram {
@@ -640,6 +695,36 @@ mod tests {
     }
 
     /// The index of this repository itself (a real one, with its extensions) against `git ls-files`.
+    #[test]
+    fn gitfiles_tag_refs_equal_for_each_ref() {
+        let project = git_scratch("tag-refs");
+        let root = project.root.clone();
+        let same = |label: &str| {
+            let repo = Repo::find(&root).unwrap();
+            let text = ask(&root, &["for-each-ref", "--format=%(refname) %(objectname)", "refs/tags"]).unwrap_or_default();
+            let mut expected: Vec<(String, String)> = text.lines().filter_map(|line| line.split_once(' ')).map(|(name, hash)| (name.to_string(), hash.to_string())).collect();
+            expected.sort();
+            assert_eq!(tag_refs(&repo), Some(expected), "{label}");
+        };
+        same("no commit, no tag");
+        commit(&root, "one.txt");
+        same("no tag");
+        run(&root, &["tag", "v1.0.0"]);
+        run(&root, &["tag", "deep/er/v2"]);
+        run(&root, &["tag", "-a", "-m", "annotated", "v1.1.0"]);
+        same("loose, nested and annotated");
+        run(&root, &["pack-refs", "--all"]);
+        same("packed");
+        commit(&root, "two.txt");
+        run(&root, &["tag", "-f", "v1.0.0"]);
+        run(&root, &["tag", "v3"]);
+        same("a loose tag over a packed one, and a new one");
+        run(&root, &["tag", "-d", "deep/er/v2"]);
+        run(&root, &["tag", "-d", "v3"]);
+        same("deleted packed and loose tags");
+        clean(&project);
+    }
+
     #[test]
     fn gitfiles_reads_the_index_of_this_repository() {
         let here = Path::new(env!("CARGO_MANIFEST_DIR"));

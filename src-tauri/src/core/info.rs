@@ -154,15 +154,20 @@ fn git_info(cwd: &Path) -> Option<GitInfo> {
     let status = git(cwd, &["status", "--porcelain=v2", "--branch"])?;
     let mut branch = String::new();
     let mut untracked = 0;
+    let mut changed = false;
     for line in status.lines() {
         if let Some(head) = line.strip_prefix("# branch.head ") {
             branch = head.to_string();
         } else if line.starts_with("? ") {
             untracked += 1;
+        } else if line.starts_with("1 ") || line.starts_with("2 ") || line.starts_with("u ") {
+            changed = true;
         }
     }
     // Example: " 3 files changed, 120 insertions(+), 4 deletions(-)". A new repository has no HEAD.
-    let stat = git(cwd, &["diff", "HEAD", "--shortstat"]).unwrap_or_default();
+    // Without a changed, renamed or unmerged tracked entry the diff has nothing to count, and the
+    // panel of a clean folder costs one git start (ticket the-side-panel-and-the-token-events-read).
+    let stat = if changed { git(cwd, &["diff", "HEAD", "--shortstat"]).unwrap_or_default() } else { String::new() };
     let count = |word: &str| {
         stat.split(',')
             .find(|part| part.contains(word))
@@ -1233,6 +1238,63 @@ mod tests {
         #[cfg(windows)]
         assert!(git_file_diff(cwd.clone(), "C:\\Windows\\win.ini".to_string(), true).is_err());
         fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    /// The side panel values of a folder as the two git calls of before gave them: the status, then
+    /// `diff HEAD --shortstat` each time.
+    fn git_info_of_two_calls(cwd: &Path) -> Option<(String, u32, u32, u32)> {
+        let status = git(cwd, &["status", "--porcelain=v2", "--branch"])?;
+        let branch = status.lines().find_map(|line| line.strip_prefix("# branch.head ")).unwrap_or_default().to_string();
+        let untracked = status.lines().filter(|line| line.starts_with("? ")).count() as u32;
+        let stat = git(cwd, &["diff", "HEAD", "--shortstat"]).unwrap_or_default();
+        let count = |word: &str| stat.split(',').find(|part| part.contains(word)).and_then(|part| part.trim().split(' ').next()?.parse().ok()).unwrap_or(0);
+        Some((branch, count("insertion"), count("deletion"), untracked))
+    }
+
+    #[test]
+    fn side_panel_git_info_equals_git_and_asks_once_when_clean() {
+        let project = crate::core::pipeline::tests::git_scratch("side-panel");
+        let root = project.root.clone();
+        let run = |args: &[&str]| git(&root, args).unwrap_or_else(|| panic!("git {args:?} failed"));
+        // The values and the git starts of `git_info` against the two calls of before.
+        let check = |cwd: &Path, label: &str, starts: usize| {
+            crate::core::gitfiles::STARTS.with(|s| s.set((0, 0)));
+            let info = git_info(cwd);
+            let counted = crate::core::gitfiles::STARTS.with(|s| s.get()).0;
+            let got = info.map(|info| (info.branch, info.insertions, info.deletions, info.untracked));
+            assert_eq!(got, git_info_of_two_calls(cwd), "{label}: the values");
+            assert_eq!(counted, starts, "{label}: the git starts");
+            got
+        };
+        // A new repository with a staged file: the diff runs and fails, the counts stay 0.
+        fs::write(root.join("a.txt"), "one
+two
+").unwrap();
+        run(&["add", "a.txt"]);
+        check(&root, "new repository, staged file", 2);
+        run(&["commit", "-q", "-m", "first"]);
+        let clean = check(&root, "clean", 1).unwrap();
+        assert!(!clean.0.is_empty() && clean.0 != "(detached)", "{clean:?}");
+        fs::write(root.join("new.txt"), "x
+").unwrap();
+        fs::create_dir_all(root.join("deep")).unwrap();
+        fs::write(root.join("deep").join("b.txt"), "y
+").unwrap();
+        assert_eq!(check(&root, "only new files", 1).unwrap().3, 2);
+        fs::write(root.join("a.txt"), "one
+three
+four
+").unwrap();
+        let changed = check(&root, "changed file", 2).unwrap();
+        assert_eq!((changed.1, changed.2), (2, 1));
+        run(&["add", "a.txt"]);
+        check(&root, "staged file", 2);
+        run(&["commit", "-q", "-m", "second"]);
+        run(&["checkout", "-q", "--detach", "HEAD~1"]);
+        assert_eq!(check(&root, "detached", 1).unwrap().0, "(detached)");
+        let outside = root.parent().unwrap();
+        assert_eq!(check(outside, "outside git", 1), None);
+        crate::core::pipeline::tests::clean(&project);
     }
 
     #[test]
