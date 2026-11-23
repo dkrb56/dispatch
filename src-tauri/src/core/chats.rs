@@ -166,6 +166,13 @@ pub struct Worker {
     /// turn with a question writes it there too. None without the field.
     #[serde(skip_deserializing)]
     reason: Option<String>,
+    /// For the newest run of the pipeline of its name that is `done` or `stopped` without its result:
+    /// the text of the last message of its transcript when Claude Code wrote it as an API error, for
+    /// example "Login reached its time limit · Please run /login" (ticket
+    /// a-run-that-stopped-at-a-login-or-limit). `claude stop` takes `needs` and `inFlight` out of
+    /// `state.json`; the transcript keeps the error. None for every other worker.
+    #[serde(skip_deserializing)]
+    error: Option<String>,
     /// True for a run that `settle_turn_end` made done only through the result of a later job of
     /// the same task (ticket a-finished-work-run-that-claude-code). The window keeps quiet about
     /// that end: the report exists.
@@ -297,6 +304,40 @@ fn worker_finished(claude: &Path, id: &str) -> Option<bool> {
     job_finished(&job_state(claude, id)?)
 }
 
+/// The error of a transcript, from the text of its end: the text of its last `user` or `assistant`
+/// line when that line is a message of the model that Claude Code wrote as an API error
+/// (`isApiErrorMessage`), trimmed and at most 200 characters (ticket a-run-that-stopped-at-a-login-or-limit).
+/// Other lines (`system`, `last-prompt`, `cost-state`) and a half line at the start are skipped. A
+/// resumed copy has the old error near its start and its own lines after it: no error then.
+fn transcript_error(text: &str) -> Option<String> {
+    let last = text.lines().rev().find_map(|line| {
+        let entry: Value = serde_json::from_str(line.trim()).ok()?;
+        matches!(entry.get("type")?.as_str()?, "user" | "assistant").then_some(entry)
+    })?;
+    if last.get("type").and_then(Value::as_str) != Some("assistant") || last.get("isApiErrorMessage").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let content = last.get("message")?.get("content")?.as_array()?;
+    let error = content.iter().find_map(|part| part.get("text")?.as_str())?.trim();
+    if error.is_empty() {
+        return None;
+    }
+    Some(error.chars().take(200).collect())
+}
+
+/// `transcript_error` of the last `PART_BYTES` of `<project>/<session>.jsonl`.
+fn worker_error(projects: &[PathBuf], session_id: &str) -> Option<String> {
+    // The id becomes a part of a path.
+    if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return None;
+    }
+    let path = projects.iter().map(|project| project.join(format!("{session_id}.jsonl"))).find(|path| path.is_file())?;
+    let mut file = fs::File::open(path).ok()?;
+    let size = file.metadata().ok()?.len();
+    let len = size.min(PART_BYTES);
+    transcript_error(&read_part(&mut file, size - len, len)?)
+}
+
 /// The ticket of a run of the pipeline and whether it is the plan run, from the name that
 /// worker.ps1 gives it. None for a bare ticket id of the older script and for any other name.
 fn run_of(name: &str) -> Option<(&str, bool)> {
@@ -418,7 +459,7 @@ pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
                 worker.agents_active = 0;
             }
         }
-        worker.result = run_result(worker.state.as_deref(), worker.name.as_deref(), worker.started_at, next_start, modified);
+        worker.result = run_result(worker.state.as_deref(), worker.name.as_deref(), worker.started_at, next_start, &mut modified);
         if worker.result == Some(false) {
             // One read of the state file gives both facts.
             let text = claude.as_deref().and_then(|claude| job_state(claude, &worker.id));
@@ -426,6 +467,16 @@ pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
             if worker.finished == Some(true) {
                 worker.reason = text.as_deref().and_then(job_needs);
             }
+        }
+        // The newest run of its name that ended without its result may have stopped at an error of
+        // Claude Code. Only that one reads its transcript: the list has hundreds of old sessions.
+        let without_result = match worker.state.as_deref() {
+            Some("done") => worker.result == Some(false),
+            Some("stopped") => worker.name.as_deref().and_then(run_of).zip(worker.started_at).is_some_and(|((ticket, plan), start)| !from_run(modified(ticket, plan), start, next_start)),
+            _ => false,
+        };
+        if without_result && next_start.is_none() {
+            worker.error = worker.session_id.as_deref().and_then(|id| worker_error(&projects, id));
         }
     }
     Ok(workers)
@@ -468,7 +519,7 @@ pub fn end_session(id: String) -> Result<String, String> {
 
 #[cfg(test)]
 mod worker_tests {
-    use super::{check_session_id, end_session, from_later_run, job_finished, job_needs, run_result, timeline_end, worker_finished, Worker};
+    use super::{check_session_id, end_session, from_later_run, job_finished, job_needs, run_result, timeline_end, transcript_error, worker_finished, Worker};
 
     /// The form of `~/.claude/jobs/<id>/state.json` (Claude Code 2.1.319, job 6a54e3cc: a plan run
     /// that ended without its plan; job 68b71856: a done run with queued work).
@@ -533,6 +584,44 @@ mod worker_tests {
         assert_eq!(job_needs("{\"needs\":\" read the plan \"}").as_deref(), Some("read the plan"));
         let long = format!("{{\"needs\":\"{}\"}}", "é".repeat(300));
         assert_eq!(job_needs(&long).map(|text| text.chars().count()), Some(200));
+    }
+
+    // The end of the transcript of job ea33c60b (work run, 2026-11-22 21:10) and line 565 of
+    // b96e8aa7, without the account fields, the usage and the prompt.
+    const LOGIN_ERROR: &str = r#"{"parentUuid":"33ef2864","isSidechain":false,"type":"assistant","uuid":"4cf41cab","timestamp":"2026-11-22T21:10:24.105Z","message":{"id":"c8c9642d","model":"<synthetic>","role":"assistant","stop_reason":"stop_sequence","type":"message","content":[{"type":"text","text":"Login reached its time limit · Please run /login"}]},"error":"authentication_failed","isApiErrorMessage":true,"failedResponseHadNoToolCall":true,"sessionKind":"bg","sessionId":"ea33c60b"}"#;
+    const LIMIT_ERROR: &str = r#"{"parentUuid":"0e2b4d66","isSidechain":false,"type":"assistant","uuid":"4cab2e1d","timestamp":"2026-11-12T11:58:17.396Z","message":{"id":"65dd368e","model":"<synthetic>","role":"assistant","type":"message","content":[{"type":"text","text":"You've hit your weekly limit · resets 7pm (Europe/Ljubljana)"}]},"apiError":"usage_limit_reached","error":"rate_limit","isApiErrorMessage":true,"apiErrorStatus":429,"sessionId":"b96e8aa7"}"#;
+    const TAIL: &str = r#"{"parentUuid":"4cf41cab","type":"system","subtype":"turn_duration","durationMs":1983,"sessionId":"ea33c60b"}
+{"type":"last-prompt","lastPrompt":"Plan approved: …","sessionId":"ea33c60b"}
+{"type":"cost-state","sessionId":"ea33c60b","totalCostUSD":0}"#;
+
+    #[test]
+    fn transcript_error_is_the_last_message_when_claude_code_wrote_it_as_an_error() {
+        let user = r#"{"type":"user","message":{"role":"user","content":"Plan approved: …"},"sessionId":"ea33c60b"}"#;
+        // A half line at the start of the read part, then the error and the lines after it.
+        let login = format!("e\":\"x\"}}\n{user}\n{LOGIN_ERROR}\n{TAIL}\n");
+        assert_eq!(transcript_error(&login).as_deref(), Some("Login reached its time limit · Please run /login"));
+        let limit = format!("{user}\n{LIMIT_ERROR}\n{TAIL}");
+        assert_eq!(transcript_error(&limit).as_deref(), Some("You've hit your weekly limit · resets 7pm (Europe/Ljubljana)"));
+    }
+
+    #[test]
+    fn transcript_error_is_none_for_a_resumed_copy_or_a_normal_end() {
+        // A resumed copy (bb8edfa3): the old error, then its own prompt and answer.
+        let resumed_user = r#"{"type":"user","message":{"role":"user","content":"Continue"},"sessionId":"bb8edfa3"}"#;
+        let answer = r#"{"type":"assistant","message":{"model":"claude-opus-5-5","role":"assistant","content":[{"type":"text","text":"Step 1: read the plan"}]},"sessionId":"bb8edfa3"}"#;
+        assert_eq!(transcript_error(&format!("{LOGIN_ERROR}\n{TAIL}\n{resumed_user}\n{answer}\n{TAIL}")), None);
+        // The copy got the prompt, and no answer came yet.
+        assert_eq!(transcript_error(&format!("{LOGIN_ERROR}\n{resumed_user}\n")), None);
+        // A turn that ended normally.
+        assert_eq!(transcript_error(&format!("{answer}\n{TAIL}")), None);
+        // An error flag that is not true, an empty text, no conversation line, no JSON.
+        assert_eq!(transcript_error(&LOGIN_ERROR.replace("\"isApiErrorMessage\":true", "\"isApiErrorMessage\":false")), None);
+        assert_eq!(transcript_error(&LOGIN_ERROR.replace("Login reached its time limit · Please run /login", "  ")), None);
+        assert_eq!(transcript_error(TAIL), None);
+        assert_eq!(transcript_error("no json"), None);
+        // Trimmed, and at most 200 characters.
+        let long = LOGIN_ERROR.replace("Login reached its time limit · Please run /login", &format!(" {} ", "é".repeat(300)));
+        assert_eq!(transcript_error(&long).map(|text| text.chars().count()), Some(200));
     }
 
     #[test]

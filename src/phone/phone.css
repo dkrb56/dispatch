@@ -825,6 +825,14 @@ body.screen-open #app > :not(.screen) {
   margin: 4px 0 0;
 }
 
+/* What Claude Code said when a run stopped (ticket a-run-that-stopped-at-a-login-or-limit). */
+.lost-message {
+  margin: 4px 0 0;
+  color: var(--text-2);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
 .option {
   width: 100%;
   min-height: 44px;

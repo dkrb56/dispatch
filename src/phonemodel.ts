@@ -19,6 +19,13 @@ export interface PhoneWorker {
   result?: boolean | null;
   /** For a `done` run without its result: true when the job has nothing left in flight. Absent from an older host. */
   finished?: boolean | null;
+  /** For a run with `finished` true: why the job stopped in the words of Claude Code. Absent from an older host. */
+  reason?: string | null;
+  /**
+   * For the newest run of its name that is done or stopped without its result: the message of Claude
+   * Code when the run stopped at an error (ticket a-run-that-stopped-at-a-login-or-limit). Absent from an older host.
+   */
+  error?: string | null;
 }
 
 export interface PhoneFile {
@@ -242,6 +249,20 @@ export interface PhoneRow {
   answer: PhoneAnswer | null;
   /** The plan block of a task whose plan waits for Approve; null else. */
   plan: PhonePlan | null;
+  /**
+   * The Continue of a run that ended without its result or stopped at an error (ticket
+   * a-run-that-stopped-at-a-login-or-limit); null else. `message` is what Claude Code said, or empty.
+   * `mark` names the task and its newest worker; `sent` is true after the phone sent Continue to it.
+   */
+  lost: PhoneLost | null;
+}
+
+/** The Continue block of a row. */
+export interface PhoneLost {
+  run: "plan" | "work";
+  message: string;
+  mark: string;
+  sent: boolean;
 }
 
 /** One project card. */
@@ -459,16 +480,56 @@ function workerRun(task: PhoneTask, worker: PhoneWorker): "plan" | "work" | unde
   return (worker.startedAt ?? Infinity) > first ? "work" : "plan";
 }
 
+/** The newest worker of a task by its start, or null. */
+function newestWorker(task: PhoneTask): PhoneWorker | null {
+  return task.workers.reduce<PhoneWorker | null>((best, worker) => (!best || (worker.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity) ? worker : best), null);
+}
+
+/** A run ended for good without its result, or stopped at an error: `endedWithoutResult` of src/overview.ts. */
+function endedWithoutResult(worker: PhoneWorker): boolean {
+  if (worker.error && (worker.state === "done" || worker.state === "stopped")) return true;
+  return worker.state === "done" && worker.result === false && worker.finished === true;
+}
+
 /**
- * The work run ended for good without its report: the rule `workLost` of src/overview.ts, copied here
- * because this file has no imports (ticket a-work-run-that-ended-without-a-report).
+ * The work run ended for good without its report or stopped at an error: the rule `workLost` of
+ * src/overview.ts, copied here because this file has no imports (tickets
+ * a-work-run-that-ended-without-a-report and a-run-that-stopped-at-a-login-or-limit).
  */
 function workLost(task: PhoneTask): boolean {
   const info = task.info;
   if (!info || (info.state !== "approved" && info.state !== "working") || info.report) return false;
   if (live(task)) return false;
-  const newest = task.workers.reduce<PhoneWorker | null>((best, worker) => (!best || (worker.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity) ? worker : best), null);
-  return !!newest && workerRun(task, newest) === "work" && newest.state === "done" && newest.result === false && newest.finished === true;
+  const newest = newestWorker(task);
+  return !!newest && workerRun(task, newest) === "work" && endedWithoutResult(newest);
+}
+
+/** The plan run ended for good without its plan, failed, or stopped at an error: the rule `planLost` of src/overview.ts. */
+function planLost(task: PhoneTask): boolean {
+  const info = task.info;
+  if (!info || info.state !== "planning" || info.plan) return false;
+  if (live(task)) return false;
+  const newest = newestWorker(task);
+  return !!newest && workerRun(task, newest) === "plan" && (newest.state === "failed" || endedWithoutResult(newest));
+}
+
+/** The error at which the lost run of a task stopped, or null. */
+function lostError(task: PhoneTask): string | null {
+  if (!planLost(task) && !workLost(task)) return null;
+  return newestWorker(task)?.error ?? null;
+}
+
+/**
+ * The Continue block of a task (ticket a-run-that-stopped-at-a-login-or-limit): a work run that ended
+ * without its report, or a plan run that stopped at an error, as on the task card of the computer.
+ */
+export function phoneLost(task: PhoneTask, sent: ReadonlySet<string>): PhoneLost | null {
+  const plan = planLost(task) && lostError(task) !== null;
+  if (!plan && !workLost(task)) return null;
+  const newest = newestWorker(task);
+  if (!newest) return null;
+  const mark = `${task.name}:continue:${newest.id}`;
+  return { run: plan ? "plan" : "work", message: newest.error ?? newest.reason ?? "", mark, sent: sent.has(mark) };
 }
 
 function unverifiedStatus(missing: readonly string[]): string {
@@ -489,7 +550,8 @@ export function phoneStatus(task: PhoneTask, merging?: string | null): { kind: S
   }
   if (mergeWaits(task)) return { kind: "waits", text: merging === task.name ? "merging its branch" : "branch waits for Merge" };
   if (awayRun(task)) return { kind: "waits", text: "ran on another computer · no worker here" };
-  if (workLost(task)) return { kind: "failed", text: "failed · the work run ended without a report" };
+  if (planLost(task)) return { kind: "failed", text: lostError(task) ? "failed · the plan run stopped at an error" : "failed · the plan run ended without a plan" };
+  if (workLost(task)) return { kind: "failed", text: lostError(task) ? "failed · the work run stopped at an error" : "failed · the work run ended without a report" };
   const info = task.info;
   if (info?.state === "stopped") return { kind: "failed", text: "stopped" };
   if (!info?.report && task.workers.some((one) => one.state === "failed")) return { kind: "failed", text: "failed" };
@@ -512,6 +574,7 @@ export function phonePhase(task: PhoneTask): PhonePhase {
     return (workerRun(task, worker) ?? (info.state === "planning" ? "plan" : "work")) === "plan" ? "planning" : "working";
   }
   if (mergeWaits(task)) return "merge";
+  if (planLost(task)) return "failed";
   if (workLost(task)) return "failed";
   if (info.state === "stopped") return "stopped";
   if (!info.report && task.workers.some((one) => one.state === "failed")) return "failed";
@@ -645,7 +708,7 @@ function taskRow(task: PhoneTask, merging: string | null | undefined, tools: Pho
     run: worker ? (workerRun(task, worker) ?? (task.info?.state === "planning" ? "plan" : "work")) : undefined,
     hasPlan: Boolean(task.info?.plan),
   });
-  return { name: task.name, kind: status.kind, status: status.text, about, now, answer: phoneAnswer(task, tools, sent), plan: phonePlan(task, tools, sent) };
+  return { name: task.name, kind: status.kind, status: status.text, about, now, answer: phoneAnswer(task, tools, sent), plan: phonePlan(task, tools, sent), lost: phoneLost(task, sent) };
 }
 
 /** The count of the head of a project: what waits for the user, what works, or paused. */
@@ -805,13 +868,15 @@ export type PhoneRowAction =
   | { kind: "plan"; label: string }
   | { kind: "answer"; label: string }
   | { kind: "cancel"; label: string; note: string }
+  | { kind: "continue"; label: "Continue" }
   | { kind: "note"; text: string };
 
 export const APPROVED_NOTE = "Approved. The work run starts when the computer is free.";
 export const REJECTED_NOTE = "Sent back to the planner. A new plan comes.";
 export const ANSWERED_NOTE = "Your answer went to the worker. It goes on when the computer starts it.";
+export const CONTINUED_NOTE = "Continue went to the worker. It goes on when the computer starts it.";
 
-export function rowAction(row: Pick<PhoneRow, "answer" | "plan">): PhoneRowAction | null {
+export function rowAction(row: Pick<PhoneRow, "answer" | "plan" | "lost">): PhoneRowAction | null {
   if (row.plan) {
     if (row.plan.state === "ready") return { kind: "plan", label: "Review plan" };
     if (row.plan.state === "approved") return { kind: "cancel", label: "Cancel approval", note: APPROVED_NOTE };
@@ -821,6 +886,8 @@ export function rowAction(row: Pick<PhoneRow, "answer" | "plan">): PhoneRowActio
     if (row.answer.sent) return { kind: "note", text: ANSWERED_NOTE };
     return { kind: "answer", label: row.answer.kind === "confirm" ? "Confirm" : "Answer" };
   }
+  // A run that ended without its result or stopped at an error (ticket a-run-that-stopped-at-a-login-or-limit).
+  if (row.lost) return row.lost.sent ? { kind: "note", text: CONTINUED_NOTE } : { kind: "continue", label: "Continue" };
   return null;
 }
 
@@ -837,7 +904,7 @@ export interface PhoneTile {
 
 const TILE_TONES: Record<StatusKind, PhoneTile["tone"]> = { waits: "wait", working: "work", failed: "fail", done: "plain" };
 
-export function rowTile(row: Pick<PhoneRow, "kind" | "status" | "answer" | "plan">): PhoneTile {
+export function rowTile(row: Pick<PhoneRow, "kind" | "status" | "answer" | "plan" | "lost">): PhoneTile {
   const tone = TILE_TONES[row.kind];
   if (row.plan) {
     if (row.plan.state === "ready") {
@@ -853,6 +920,7 @@ export function rowTile(row: Pick<PhoneRow, "kind" | "status" | "answer" | "plan
     const line = row.answer.kind === "confirm" ? "Check result · tap to confirm" : "Question · tap to answer";
     return { tone, line, opens: { kind: "answer", mark: row.answer.mark } };
   }
+  if (row.lost?.sent) return { tone, line: "Continue sent · it goes on when the computer starts it", opens: null };
   const status = row.status.trim();
   if (status === "Plan run working") return { tone, line: "Planning", opens: null };
   if (status === "Work run working" || status === "Worker working") return { tone, line: "Working", opens: null };

@@ -6,7 +6,9 @@
 //
 // The Board view (ticket phone-version-i-need-an-option-to-see) shows the seven columns of the tickets
 // board per project; a column head opens and closes the column. A waiting task takes its answer here
-// with `task_reply`, as the computer sends it; the phone writes no line into a triage chat.
+// with `task_reply`, as the computer sends it; the phone writes no line into a triage chat. A run that
+// ended without its result or stopped at an error of Claude Code shows the message and Continue, which
+// sends `Continue` with `task_reply` (ticket a-run-that-stopped-at-a-login-or-limit).
 //
 // A plan that waits for Approve shows its block (ticket approve-or-reject-a-plan-from-the-phone):
 // Approve writes the choices with `task_approve_queue` and leaves a marker; the Dispatch window on
@@ -47,6 +49,7 @@ import {
   type PhoneCard,
   type PhoneChoices,
   type PhoneLayout,
+  type PhoneLost,
   type PhonePlan,
   PHONE_EFFORTS,
   PHONE_MODELS,
@@ -956,14 +959,56 @@ function planElement(plan: PhonePlan, root: string, bar: HTMLElement): HTMLEleme
   return block;
 }
 
-/** A task row: the status, the two short lines, and what `rowAction` gives: a button that opens a screen, Cancel approval, or a note. */
+/** The state of a Continue tap, by the mark of the lost run, so a new read keeps it. */
+const continueStates = new Map<string, { busy: boolean; error: string }>();
+
+/**
+ * What Claude Code said when a run stopped, and with `button` the Continue button that sends
+ * `Continue` to the run as an answer goes (ticket a-run-that-stopped-at-a-login-or-limit).
+ */
+function continueElements(lost: PhoneLost, task: string, root: string, button: boolean): HTMLElement[] {
+  const parts: HTMLElement[] = [];
+  if (lost.message) parts.push(element("p", "lost-message", `Claude Code says: ${lost.message}`));
+  if (!button) return parts;
+  const state = continueStates.get(lost.mark) ?? { busy: false, error: "" };
+  const go = element("button", "", "Continue");
+  go.type = "button";
+  go.disabled = state.busy;
+  go.addEventListener("click", () => {
+    state.busy = true;
+    state.error = "";
+    continueStates.set(lost.mark, state);
+    go.disabled = true;
+    call("task_reply", { cwd: root, id: task, text: "Continue" })
+      .then(() => {
+        sentMarks.add(lost.mark);
+        continueStates.delete(lost.mark);
+        lastRound = 0;
+        scheduleRound();
+      })
+      .catch((error) => {
+        state.error = `Not sent: ${error}`;
+      })
+      .finally(() => {
+        state.busy = false;
+        draw();
+      });
+  });
+  const errorEl = element("p", "answer-error", state.error);
+  errorEl.hidden = state.error === "";
+  parts.push(go, errorEl);
+  return parts;
+}
+
+/** A task row: the status, the two short lines, and what `rowAction` gives: a button that opens a screen, Cancel approval, Continue, or a note. */
 function rowElement(row: PhoneRow, root: string): HTMLElement {
   const made = element("article", "task");
   made.append(element("span", `status ${row.kind}`, row.status));
   made.append(element("p", "about", row.about || row.name));
   if (row.now) made.append(element("p", "", row.now));
   const action = rowAction(row);
-  if (!action) return made;
+  if (row.lost) made.append(...continueElements(row.lost, row.name, root, action?.kind === "continue"));
+  if (!action || action.kind === "continue") return made;
   if (action.kind === "note") {
     made.append(element("p", "answer-sent", action.text));
   } else if (action.kind === "cancel") {
@@ -1000,6 +1045,8 @@ function tileElement(row: PhoneRow, root: string): HTMLElement {
     made.addEventListener("click", () => openScreen({ kind: opens.kind, root, mark: opens.mark }));
   } else if (rowAction(row)?.kind === "cancel") {
     made.append(...cancelButton(row.plan!, root));
+  } else if (row.lost) {
+    made.append(...continueElements(row.lost, row.name, root, rowAction(row)?.kind === "continue"));
   }
   return made;
 }

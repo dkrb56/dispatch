@@ -9,7 +9,7 @@ import { phoneLink, phonePinOk, phoneSetup } from "../src/phonelink.ts";
 import { replyText } from "../src/answers.ts";
 import { confirmChoice, confirmQuestion } from "../src/confirm.ts";
 import { defaultChoice } from "../src/checks.ts";
-import { allRows, approvalQueued, homeScreenHint, inProgressPlace, keyAddress, keyBytes, pasteBytes, PHONE_KEYS, terminalLabel, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, PIN_ERRORS, pinMessage, phoneApproval, phoneBoards, phoneCards, phonePhase, phonePlan, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, planMark, reportMark, rowAction, rowTile, screenRow, showAllKey, shownRoots, ticketProjects, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneRow, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
+import { allRows, approvalQueued, homeScreenHint, inProgressPlace, keyAddress, keyBytes, pasteBytes, PHONE_KEYS, terminalLabel, keyFromAddress, keyFromHash, keyFromText, oldKeyText, phoneAnswer, PIN_ERRORS, pinMessage, phoneApproval, phoneBoards, phoneCards, phoneLost, phonePhase, phonePlan, phoneReply, phoneStatus, phoneTasks, type PhoneTicket, planMark, reportMark, rowAction, rowTile, screenRow, showAllKey, shownRoots, ticketProjects, ticketTask, toggleColumn, toggleRoot, viewFromText, viewToText, type PhoneRow, type PhoneTask, type PhoneTaskInfo, type PhoneTools, type PhoneWorker, workerInProject } from "../src/phonemodel.ts";
 import { boardTickets, type BoardColumn, columnCards, type InProgressView, COLUMNS, countText, type Ticket } from "../src/tickets.ts";
 import { taskTldr } from "../src/tldr.ts";
 import { groupCount } from "../src/topbar.ts";
@@ -537,7 +537,7 @@ test("the approval: a tapped option or own words per decision, and the checked c
 
 // Ticket the-phone-page-follows-the-new-mobile: what a row offers, the row of an open screen, the projects of the New ticket screen.
 function row(fields: Partial<PhoneRow>): PhoneRow {
-  return { name: "t", kind: "waits", status: "", about: "", now: "", answer: null, plan: null, ...fields };
+  return { name: "t", kind: "waits", status: "", about: "", now: "", answer: null, plan: null, lost: null, ...fields };
 }
 
 test("a row offers Review plan, Cancel approval, Answer or Confirm, or a note after a send", () => {
@@ -595,6 +595,68 @@ test("the row of an open screen is found by its plan mark or its report mark, ov
   assert.equal(screenRow(fromBoards, "plan:plan:5")?.plan?.state, "ready");
   assert.equal(screenRow(fromBoards, "ask:5")?.answer?.kind, "questions");
   assert.equal(screenRow(allRows([]), "ask:5"), null, "no project");
+});
+
+// Ticket a-run-that-stopped-at-a-login-or-limit: a run that stopped at an error of Claude Code.
+const LOGIN = "Login reached its time limit · Please run /login";
+const PLANNED = worker("t [plan]", "done", { id: "p1", startedAt: 5, result: true });
+
+test("a run that stopped at an error shows its status on the phone, also after its session ended", () => {
+  const cases: [PhoneTask, string, string][] = [
+    [task({ state: "working", plan: FILE }, [PLANNED, worker("t [work]", "stopped", { error: LOGIN })]), "failed", "failed · the work run stopped at an error"],
+    [task({ state: "approved", plan: FILE }, [PLANNED, worker("t [work]", "done", { result: false, finished: null, error: LOGIN })]), "failed", "failed · the work run stopped at an error"],
+    [task({ state: "planning" }, [worker("t [plan]", "stopped", { error: LOGIN })]), "failed", "failed · the plan run stopped at an error"],
+    [task({ state: "planning" }, [worker("t [plan]", "done", { result: false, finished: true })]), "failed", "failed · the plan run ended without a plan"],
+  ];
+  for (const [one, kind, text] of cases) {
+    assert.deepEqual(phoneStatus(one), { kind, text }, text);
+    assert.equal(phonePhase(one), "failed", text);
+  }
+  // Without an error a stopped work run is no lost run; the user's Stop says stopped.
+  assert.equal(phoneStatus(task({ state: "working", plan: FILE }, [PLANNED, worker("t [work]", "stopped")])).text, "plan working");
+  assert.equal(phoneStatus(task({ state: "stopped", plan: FILE }, [PLANNED, worker("t [work]", "stopped", { error: LOGIN })])).text, "stopped");
+});
+
+test("the row of a run that stopped at an error has the message and Continue, and a note after the send", () => {
+  const work = task({ state: "working", plan: FILE }, [PLANNED, worker("t [work]", "stopped", { id: "w1", error: LOGIN })]);
+  const lost = phoneLost(work, new Set())!;
+  assert.deepEqual(lost, { run: "work", message: LOGIN, mark: "t:continue:w1", sent: false });
+  assert.deepEqual(rowAction(row({ lost })), { kind: "continue", label: "Continue" });
+  assert.deepEqual(rowTile(row({ kind: "failed", status: "failed · the work run stopped at an error", lost })), { tone: "fail", line: "Failed · the work run stopped at an error", opens: null });
+  const sent = phoneLost(work, new Set([lost.mark]))!;
+  assert.equal(sent.sent, true);
+  assert.deepEqual(rowAction(row({ lost: sent })), { kind: "note", text: "Continue went to the worker. It goes on when the computer starts it." });
+  assert.equal(rowTile(row({ kind: "failed", lost: sent })).line, "Continue sent · it goes on when the computer starts it");
+  // The plan run that stopped at an error, and a work run that ended without a report with the reason of its state file.
+  assert.deepEqual(phoneLost(task({ state: "planning" }, [worker("t [plan]", "stopped", { id: "p2", error: LOGIN })]), new Set()), { run: "plan", message: LOGIN, mark: "t:continue:p2", sent: false });
+  const ended = task({ state: "working", plan: FILE }, [PLANNED, worker("t [work]", "done", { id: "w2", result: false, finished: true, reason: "login required" })]);
+  assert.deepEqual(phoneLost(ended, new Set()), { run: "work", message: "login required", mark: "t:continue:w2", sent: false });
+  // No Continue for a plan run without an error (Plan again is on the computer), a stopped task, or a run that works.
+  assert.equal(phoneLost(task({ state: "planning" }, [worker("t [plan]", "failed")]), new Set()), null);
+  assert.equal(phoneLost(task({ state: "stopped", plan: FILE }, [PLANNED, worker("t [work]", "stopped", { error: LOGIN })]), new Set()), null);
+  assert.equal(phoneLost(task({ state: "working", plan: FILE }, [PLANNED, worker("t [work]", "working", { error: LOGIN })]), new Set()), null);
+  // The card row carries it.
+  const cards = phoneCards([{ root: ROOT, list: { tasks: [info("t", { state: "working", plan: FILE })], tickets: [] }, error: "" }], [{ ...PLANNED, name: "t [plan]" }, worker("t [work]", "stopped", { id: "w1", error: LOGIN })], tools);
+  assert.deepEqual(allRows(cards).find((one) => one.name === "t")?.lost, lost);
+});
+
+test("the phone page and the desktop window show the message and send Continue", () => {
+  const page = read("../src/phone/main.ts");
+  const block = page.slice(page.indexOf("function continueElements("), page.indexOf("function rowElement("));
+  assert.match(block, /Claude Code says: \$\{lost\.message\}/);
+  assert.match(block, /call\("task_reply", \{ cwd: root, id: task, text: "Continue" \}\)/);
+  assert.match(block, /sentMarks\.add\(lost\.mark\)/);
+  assert.ok(page.slice(page.indexOf("function rowElement("), page.indexOf("function part(")).split("continueElements(").length === 3, "the row and the tile show it");
+  const main = read("../src/main.ts");
+  const status = main.slice(main.indexOf("function taskStatus("), main.indexOf("function taskAttentionWait("));
+  assert.ok(status.includes("PLAN_ERROR_TEXT") && status.includes("WORK_ERROR_TEXT"));
+  const overview = read("../src/overview.ts");
+  assert.ok(overview.includes('WORK_ERROR_TEXT = "failed · the work run stopped at an error"'));
+  assert.ok(overview.includes('PLAN_ERROR_TEXT = "failed · the plan run stopped at an error"'));
+  // The plan run that stopped at an error has Continue beside Plan again (user decision 1).
+  const replan = main.slice(main.indexOf("function replanRow("), main.indexOf("function workLostOf("));
+  assert.match(replan, /continueParts\(task, "plan"\)/);
+  assert.ok(replan.includes('"Plan again"'));
 });
 
 test("the New ticket screen picks the project of the last ticket when it shows, else the first one", () => {

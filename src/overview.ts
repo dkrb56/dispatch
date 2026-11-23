@@ -51,6 +51,12 @@ export interface LostWorker {
   finished?: boolean | null;
   /** Milliseconds since the Unix epoch. */
   startedAt: number | null;
+  /**
+   * For the newest run of its name that is `done` or `stopped` without its result: the message of
+   * Claude Code when the run stopped at an error, for example a login or a limit (ticket
+   * a-run-that-stopped-at-a-login-or-limit). Null or absent without one.
+   */
+  error?: string | null;
 }
 
 /** The facts of a task that say whether its work run ended without a report. */
@@ -64,18 +70,62 @@ export interface LostFacts {
 /** The status of a task whose work run ended without a report. */
 export const WORK_LOST_TEXT = "failed · the work run ended without a report";
 
+/** The status of a task whose work run stopped at an error of Claude Code (ticket a-run-that-stopped-at-a-login-or-limit). */
+export const WORK_ERROR_TEXT = "failed · the work run stopped at an error";
+
+/** The status of a task whose plan run stopped at an error of Claude Code. */
+export const PLAN_ERROR_TEXT = "failed · the plan run stopped at an error";
+
+/** The newest worker of a list by its start, or null. */
+export function newestWorker<T extends { startedAt: number | null }>(workers: readonly T[]): T | null {
+  return workers.reduce<T | null>((best, worker) => (!best || (worker.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity) ? worker : best), null);
+}
+
+/**
+ * The newest worker of a run ended for good without its result: done with nothing left in flight,
+ * or done or stopped at an error of Claude Code (ticket a-run-that-stopped-at-a-login-or-limit). The
+ * session of a run that stopped at an error can be ended later; its error stays in its transcript.
+ */
+function endedWithoutResult(worker: LostWorker): boolean {
+  if (worker.error && (worker.state === "done" || worker.state === "stopped")) return true;
+  return worker.state === "done" && worker.result === false && worker.finished === true;
+}
+
 /**
  * The work run of a task ended for good without its report (ticket a-work-run-that-ended-without-a-report):
  * the task is approved or works, has no report and no worker that works or waits, and its newest worker
  * is a work run that is done without its report with nothing left in flight. A newest worker that is
  * still the plan run (the seconds after Approve), no worker, or a run with background work left is no end.
- * A failed work run has its own case. `runStarting` still counts the task as on its way: its session stays.
+ * A work run that stopped at an error of Claude Code is lost too, also after its session was ended
+ * (ticket a-run-that-stopped-at-a-login-or-limit). A failed work run has its own case. `runStarting`
+ * still counts the task as on its way while its session stays.
  */
 export function workLost(facts: LostFacts): boolean {
   if ((facts.state !== "approved" && facts.state !== "working") || facts.hasReport) return false;
   if (facts.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) return false;
-  const newest = facts.workers.reduce<LostWorker | null>((best, worker) => (!best || (worker.startedAt ?? -Infinity) > (best.startedAt ?? -Infinity) ? worker : best), null);
-  return !!newest && newest.run === "work" && newest.state === "done" && newest.result === false && newest.finished === true;
+  const newest = newestWorker(facts.workers);
+  return !!newest && newest.run === "work" && endedWithoutResult(newest);
+}
+
+/** The facts of a task that say whether its plan run ended without a plan. */
+export interface PlanLostFacts {
+  /** The content of the state file of the script. */
+  state: string;
+  hasPlan: boolean;
+  workers: readonly LostWorker[];
+}
+
+/**
+ * The plan run of a task ended for good without its plan (ticket a-plan-run-that-ends-without-a-plan):
+ * the task plans, has no plan file and no worker that runs, and its newest worker is a plan run that
+ * failed, that is done without its plan with nothing left in flight, or that stopped at an error of
+ * Claude Code (ticket a-run-that-stopped-at-a-login-or-limit).
+ */
+export function planLost(facts: PlanLostFacts): boolean {
+  if (facts.state !== "planning" || facts.hasPlan) return false;
+  if (facts.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) return false;
+  const newest = newestWorker(facts.workers);
+  return !!newest && newest.run === "plan" && (newest.state === "failed" || endedWithoutResult(newest));
 }
 
 /**
