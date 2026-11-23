@@ -396,6 +396,12 @@ pub fn plan_groups_save(cwd: String, groups: Vec<PlanGroup>) -> Result<PlanGroup
     plangroups::plan_groups_save(cwd, groups)
 }
 
+/// Sorts the tickets without a topic group into topic groups with Claude (Auto group of the Plan view).
+#[tauri::command(async)]
+pub fn plan_groups_auto(cwd: String) -> Result<PlanGroups, String> {
+    plangroups::plan_groups_auto(cwd)
+}
+
 /// Confirm of "Plan the flow": writes the arrows, the added tickets and the order of New at once.
 #[tauri::command(async)]
 pub fn plan_confirm(cwd: String, arrows: Vec<PlanAfter>, queue: Vec<String>, added: Vec<PlanAdded>) -> Result<Vec<Ticket>, String> {

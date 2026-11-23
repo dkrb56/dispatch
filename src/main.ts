@@ -43,6 +43,7 @@ import {
   type DraftChange,
   flowTickets,
   GROUP_PREFIX,
+  autoGroupNote,
   groupBadge,
   groupBox,
   groupCounts,
@@ -53,6 +54,7 @@ import {
   movedArrow,
   notInFlow,
   parsePlanGroups,
+  PLAN_BOX_PAD,
   PLAN_BOX_TITLE,
   PLAN_CARD_HEIGHT,
   PLAN_CARD_WIDTH,
@@ -64,6 +66,7 @@ import {
   runningAfter,
   planArrows,
   planBadges,
+  planBlocks,
   planCentre,
   planLayout,
   planShelf,
@@ -73,6 +76,8 @@ import {
   standLine,
   takenOut,
   toggleSelection,
+  topicBlocks,
+  topicFoldText,
   turnedArrow,
   withArrow,
   withoutArrow,
@@ -15822,6 +15827,9 @@ let planFocusAdd = false;
 /** Confirm saves: its button is off. */
 let planConfirming = false;
 const planFlowButton = mapElement("button", "plan-tool plan-flow-start", "Plan the flow");
+/** Auto group (ticket i-need-an-autogrouping-function-in-the): the projects whose call to Claude runs. */
+const planAutoBusy = new Set<string>();
+const planAutoButton = mapElement("button", "plan-tool plan-auto-group", "Auto group");
 const planNoteEl = mapElement("span", "plan-note");
 const planFlowBarEl = mapElement("div", "plan-flow-bar");
 
@@ -15839,6 +15847,9 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
   planFlowButton.type = "button";
   planFlowButton.title = "Edit the arrows in a draft; nothing is saved until you click Confirm";
   planFlowButton.addEventListener("click", planStartFlow);
+  planAutoButton.type = "button";
+  planAutoButton.title = "Claude sorts the tickets without a topic group into groups by topic, with a title and a description; your groups and titles stay";
+  planAutoButton.addEventListener("click", () => void planAutoGroup());
   const planCentreButton = mapElement("button", "plan-tool plan-centre", "Centre the tree");
   planCentreButton.type = "button";
   planCentreButton.title = "Move the board so that the root card stands in the middle";
@@ -15847,6 +15858,7 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
     label,
     planCountEl,
     planFlowButton,
+    planAutoButton,
     toolButton("Collapse all", "Collapse every comment and group into its stacked card", true),
     toolButton("Expand all", "Open every group: its tickets show in the tree inside a box", false),
     planCentreButton,
@@ -16190,7 +16202,7 @@ function planAddGroup(collapsed: boolean): void {
   const groups = planGroupsOf(ref);
   const tickets = planSelectedTickets(groups);
   if (tickets.length === 0) return;
-  const group: PlanGroup = { id: `g-${Date.now().toString(36)}`, title: collapsed ? "Group" : "Comment", color: 0, collapsed, tickets };
+  const group: PlanGroup = { id: `g-${Date.now().toString(36)}`, title: collapsed ? "Group" : "Comment", color: 0, collapsed, tickets, auto: false, description: "" };
   planSelected = new Set();
   planSelectedArrow = null;
   planSelectedGroup = group.id;
@@ -16477,6 +16489,40 @@ async function loadPlanGroups(ref: ProjectRef): Promise<boolean> {
   return JSON.stringify([groups, error]) !== before;
 }
 
+/**
+ * Auto group: Claude sorts the tickets without a topic group into topic groups (user decision 1:
+ * existing groups and titles stay; decision 3: only this click starts it). The host saves the groups.
+ */
+async function planAutoGroup(): Promise<void> {
+  const ref = planProject();
+  if (!ref) return;
+  const key = refKey(ref);
+  if (planAutoBusy.has(key)) return;
+  if (planGroupsBroken.has(key)) {
+    planConfirmNote = "Auto group cannot save: the file of comments and groups could not be read.";
+    renderPlan();
+    return;
+  }
+  planAutoBusy.add(key);
+  planConfirmNote = "Auto group: Claude sorts the tickets…";
+  renderPlan();
+  const before = new Set((planGroups.get(key) ?? []).map((group) => group.id));
+  try {
+    const groups = parsePlanGroups(await call<unknown>(ref.host, "plan_groups_auto", { cwd: ref.root }));
+    planGroups.set(key, groups);
+    planGroupsError.delete(key);
+    const made = groups.filter((group) => group.auto && !before.has(group.id)).length;
+    const grouped = new Set(groups.filter((group) => group.auto).flatMap((group) => group.tickets));
+    planConfirmNote = autoGroupNote(made, planBoardTickets(key).filter((ticket) => !grouped.has(ticket.id)).length);
+  } catch (error) {
+    planConfirmNote = `Auto group failed: ${String(error)}`;
+  }
+  // A read of the file that began before the reply is old.
+  planGroupsSavedAt.set(key, Date.now());
+  planAutoBusy.delete(key);
+  renderPlan();
+}
+
 /** What a card of the Plan view shows of a ticket: the state word, the detail, and the colour of its dot. */
 interface PlanCardState {
   word: string;
@@ -16542,6 +16588,8 @@ function renderPlan(): void {
   if (ref) planSelectEl.value = refKey(ref);
   planSelectEl.disabled = refs.length === 0;
   planNoteEl.textContent = planConfirmNote;
+  planAutoButton.disabled = !ref || planAutoBusy.has(refKey(ref));
+  planAutoButton.textContent = ref && planAutoBusy.has(refKey(ref)) ? "Grouping…" : "Auto group";
   if (!ref) {
     planCountEl.textContent = "";
     planFlowButton.disabled = true;
@@ -16589,10 +16637,21 @@ function renderPlan(): void {
   // holds (ticket plan-mode-is-unusable-on-wide-screen). A card of the tree is not on the shelf.
   const boardSize = { width: planBoardEl.clientWidth, height: planBoardEl.clientHeight };
   const inTree = new Set(treeLayout.cards.map((card) => card.id));
-  const looseIds = notInFlow(flow).flatMap((one) => (byId.has(one.id) && !inTree.has(one.id) ? [one.id] : []));
+  // The topic groups stand as blocks between the tree and the shelf (ticket
+  // i-need-an-autogrouping-function-in-the); a ticket of a block is not on the shelf.
+  const topics = topicBlocks(tickets, groups, new Set([...inTree, ...tree.hidden.keys()]));
+  const inBlock = new Set(topics.flatMap((block) => block.members));
+  const looseIds = notInFlow(flow).flatMap((one) => (byId.has(one.id) && !inTree.has(one.id) && !inBlock.has(one.id) ? [one.id] : []));
   const perRow = boardSize.width > 0 ? Math.floor((boardSize.width - 2 * PLAN_PAD) / PLAN_COLUMN_STEP) : 4;
-  const shelf = planShelf(looseIds, treeLayout, perRow);
+  const blockPlaces = planBlocks(
+    topics.map((block) => ({ id: block.id, shown: block.shown, badge: topicFoldText(block.fold) !== "" })),
+    treeLayout,
+    perRow,
+  );
+  const shelf = planShelf(looseIds, blockPlaces.layout, perRow);
   const layout = shelf.layout;
+  // A wide shelf moves the tree right; the blocks move with it.
+  const blockShift = layout.root.x - blockPlaces.layout.root.x;
   planPlaces = layout.cards;
   const badges = planBadges(flow);
   const ticketArrows = planArrows(flow);
@@ -16649,7 +16708,7 @@ function renderPlan(): void {
   }
 
   // The selection keeps only what the tree still shows.
-  const shown = new Set([...layout.cards, ...shelf.cards].map((card) => card.id));
+  const shown = new Set([...layout.cards, ...shelf.cards, ...blockPlaces.blocks.flatMap((block) => block.cards)].map((card) => card.id));
   planSelected = new Set([...planSelected].filter((id) => shown.has(id)));
   if (planSelectedGroup !== null && !groups.some((group) => group.id === planSelectedGroup)) planSelectedGroup = null;
   // A selected arrow is an arrow of the tickets whose line in the tree is not merged.
@@ -16752,7 +16811,7 @@ function renderPlan(): void {
   canvas.append(root);
   // The open comments and groups: a box around their cards, behind them, with a title bar above.
   for (const group of groups) {
-    if (group.collapsed) continue;
+    if (group.collapsed || group.auto) continue;
     const box = groupBox(layout.cards, group.tickets, tree.hidden);
     if (!box) continue;
     const el = mapElement("div", `plan-group-box plan-color-${group.color}${planSelectedGroup === group.id ? " selected" : ""}`);
@@ -16871,6 +16930,82 @@ function renderPlan(): void {
     if (draft) el.append(plusButton(ticket.id));
     canvas.append(el);
   }
+  // A card of the shelf or of a topic block: a ticket that is not in the tree.
+  const looseCard = (ticket: Ticket, card: { x: number; y: number }): HTMLElement => {
+    const state = planCardState(ticket, queueIds, record);
+    const el = mapElement("div", `plan-card plan-ticket ${ticket.status}${planSelected.has(ticket.id) ? " selected" : ""}`);
+    el.dataset.ticket = ticket.id;
+    el.style.left = `${card.x}px`;
+    el.style.top = `${card.y}px`;
+    el.title = draft && !picking ? `${ticket.title}\nClick to place it: then click the ticket that it comes after` : ticket.title;
+    const top = mapElement("div", "plan-card-top");
+    const dot = mapElement("span", `plan-dot ${state.dot}`);
+    dot.setAttribute("aria-hidden", "true");
+    top.append(dot, mapElement("span", "plan-name", ticket.id));
+    const folderTag = ticket.status === "in-progress" && record ? folderLabel(projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id))) : null;
+    if (folderTag) top.append(folderTag);
+    const line = mapElement("div", "plan-state", state.word);
+    if (state.detail) {
+      line.append(" · ");
+      const detail = mapElement("span", "", state.detail);
+      if (state.since) detail.dataset.runSince = String(state.since);
+      line.append(detail);
+    }
+    el.append(top, line);
+    // While an arrow is drawn or a ticket placed, a click picks it; while planning it places it; else it selects.
+    el.addEventListener("click", (event) => {
+      if (picking) planPickCard(ticket.id);
+      else if (draft) planPlace(ticket.id);
+      else planSelect(toggleSelection(planSelected, ticket.id, event.shiftKey || event.ctrlKey || event.metaKey));
+    });
+    return el;
+  };
+  // The topic blocks (ticket i-need-an-autogrouping-function-in-the): a box with a title bar, the
+  // cards of its Scheduled and Working tickets, and one count badge for the rest (user decision 2: a
+  // click on the badge opens the group in the side panel).
+  const topicOf = new Map(topics.map((block) => [block.id, block]));
+  for (const place of blockPlaces.blocks) {
+    const group = groups.find((one) => one.id === place.id);
+    const block = topicOf.get(place.id);
+    if (!group || !block) continue;
+    const el = mapElement("div", `plan-group-box plan-topic plan-color-${group.color}${planSelectedGroup === group.id ? " selected" : ""}`);
+    el.dataset.group = group.id;
+    el.style.left = `${place.box.x + blockShift}px`;
+    el.style.top = `${place.box.y}px`;
+    el.style.width = `${place.box.width}px`;
+    el.style.height = `${place.box.height}px`;
+    const bar = mapElement("div", "plan-group-title");
+    bar.style.height = `${PLAN_BOX_TITLE}px`;
+    bar.title = group.description || "Select this topic group";
+    bar.append(mapElement("span", "plan-group-name", group.title || "Untitled"), mapElement("span", "plan-group-count", plural(block.members.length, "ticket")));
+    const toggle = mapElement("button", "plan-group-toggle", group.collapsed ? "▾" : "▴");
+    toggle.type = "button";
+    toggle.title = group.collapsed ? "Expand: show its scheduled and working tickets as cards" : "Collapse: show only the title and the count";
+    toggle.setAttribute("aria-label", group.collapsed ? "Expand" : "Collapse");
+    toggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      planChangeGroup(group.id, { collapsed: !group.collapsed });
+    });
+    bar.append(toggle);
+    bar.addEventListener("click", () => planSelect([], null, group.id));
+    el.append(bar);
+    canvas.append(el);
+    for (const card of place.cards) {
+      const ticket = byId.get(card.id);
+      if (ticket) canvas.append(looseCard(ticket, { x: card.x + blockShift, y: card.y }));
+    }
+    const foldText = topicFoldText(block.fold);
+    if (place.badge && foldText) {
+      const badge = mapElement("button", `plan-fold plan-color-${group.color}`, foldText);
+      badge.type = "button";
+      badge.title = `${foldText}\nShow all tickets of this group in the side panel`;
+      badge.style.left = `${place.badge.x + blockShift}px`;
+      badge.style.maxWidth = `${place.box.width - 2 * PLAN_BOX_PAD}px`;
+      badge.style.top = `${place.badge.y}px`;
+      badge.addEventListener("click", () => planSelect([], null, group.id));
+      canvas.append(badge);
+    }
+  }
   // Not in the flow (ticket plan-mode-is-unusable-on-wide-screen): a card per open ticket without an
   // arrow on the shelf. The selection box and the comment boxes take only the cards of the tree.
   if (shelf.title) {
@@ -16881,34 +17016,7 @@ function renderPlan(): void {
     shelfEl.append(heading);
     for (const card of shelf.cards) {
       const ticket = byId.get(card.id);
-      if (!ticket) continue;
-      const state = planCardState(ticket, queueIds, record);
-      const el = mapElement("div", `plan-card plan-ticket ${ticket.status}${planSelected.has(ticket.id) ? " selected" : ""}`);
-      el.dataset.ticket = ticket.id;
-      el.style.left = `${card.x}px`;
-      el.style.top = `${card.y}px`;
-      el.title = draft && !picking ? `${ticket.title}\nClick to place it: then click the ticket that it comes after` : ticket.title;
-      const top = mapElement("div", "plan-card-top");
-      const dot = mapElement("span", `plan-dot ${state.dot}`);
-      dot.setAttribute("aria-hidden", "true");
-      top.append(dot, mapElement("span", "plan-name", ticket.id));
-      const folderTag = ticket.status === "in-progress" && record ? folderLabel(projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id))) : null;
-      if (folderTag) top.append(folderTag);
-      const line = mapElement("div", "plan-state", state.word);
-      if (state.detail) {
-        line.append(" · ");
-        const detail = mapElement("span", "", state.detail);
-        if (state.since) detail.dataset.runSince = String(state.since);
-        line.append(detail);
-      }
-      el.append(top, line);
-      // While an arrow is drawn or a ticket placed, a click picks it; while planning it places it; else it selects.
-      el.addEventListener("click", (event) => {
-        if (picking) planPickCard(ticket.id);
-        else if (draft) planPlace(ticket.id);
-        else planSelect(toggleSelection(planSelected, ticket.id, event.shiftKey || event.ctrlKey || event.metaKey));
-      });
-      shelfEl.append(el);
+      if (ticket) shelfEl.append(looseCard(ticket, card));
     }
     canvas.append(shelfEl);
   }
@@ -17002,7 +17110,7 @@ function renderPlan(): void {
   if (selectedGroup) {
     // One comment or group: its title, colour, counts, Collapse or Expand, Remove and its tickets.
     const group = selectedGroup;
-    const top = head(group.collapsed ? "Group" : "Comment");
+    const top = head(group.auto ? "Topic group" : group.collapsed ? "Group" : "Comment");
     const input = mapElement("input", "plan-title-input");
     input.type = "text";
     input.value = group.title;
@@ -17024,7 +17132,14 @@ function renderPlan(): void {
       swatch.addEventListener("click", () => planChangeGroup(group.id, { color }));
       swatches.append(swatch);
     });
-    top.append(input, swatches);
+    top.append(input);
+    // A topic group: its description, what it does and what it is for.
+    if (group.auto && group.description) {
+      const about = mapElement("div", "plan-group-about");
+      for (const paragraph of group.description.split(/\n\s*\n/)) about.append(mapElement("p", "", paragraph.trim()));
+      top.append(about);
+    }
+    top.append(swatches);
     const counts = groupCounts(flow, group);
     const table = mapElement("dl", "plan-counts");
     const count = (label: string, value: number) => table.append(mapElement("dt", "", label), mapElement("dd", "", String(value)));
@@ -17037,17 +17152,32 @@ function renderPlan(): void {
     count("Arrows in", counts.arrowsIn);
     count("Arrows out", counts.arrowsOut);
     const actions = mapElement("div", "plan-side-actions");
+    const [expandTip, collapseTip] = group.auto
+      ? ["Show its scheduled and working tickets as cards", "Show only the title and the count"]
+      : ["Show its tickets in the tree inside a box", "One stacked card stands for its tickets"];
     actions.append(
       group.collapsed
-        ? sideButton("Expand", "Show its tickets in the tree inside a box", () => planChangeGroup(group.id, { collapsed: false }))
-        : sideButton("Collapse", "One stacked card stands for its tickets", () => planChangeGroup(group.id, { collapsed: true })),
+        ? sideButton("Expand", expandTip, () => planChangeGroup(group.id, { collapsed: false }))
+        : sideButton("Collapse", collapseTip, () => planChangeGroup(group.id, { collapsed: true })),
       sideButton("Remove", "Remove this comment or group; its tickets and arrows stay (X or Del)", () => {
         planSelect([], null, group.id);
         planRemoveSelectedGroups();
       }),
     );
     top.append(table, actions);
-    parts.push(top, list("Its tickets", groupMembers(tickets, group), "None of its tickets is on the board.", true));
+    if (!group.auto) {
+      parts.push(top, list("Its tickets", groupMembers(tickets, group), "None of its tickets is on the board.", true));
+    } else {
+      // User decision 2: all tickets of a topic group; a row selects only a ticket that has a card,
+      // or that gets one when the collapsed block opens.
+      const members = groupMembers(tickets, group);
+      const reachable = (ticket: Ticket) => shown.has(ticket.id) || tree.hidden.has(ticket.id) || (group.collapsed && (ticket.status === "new" || ticket.status === "in-progress"));
+      const section = mapElement("section", "plan-side-part");
+      section.append(mapElement("h3", "", `Its tickets (${members.length})`));
+      if (members.length === 0) section.append(mapElement("p", "plan-none", "None of its tickets is on the board."));
+      for (const ticket of members) section.append(ticketRow(ticket, reachable(ticket)));
+      parts.push(top, section);
+    }
   } else if (planSelectedArrow) {
     const arrow = planSelectedArrow;
     const top = head("Arrow", `${planName(arrow.to)} starts when ${planName(arrow.from)} is done`);

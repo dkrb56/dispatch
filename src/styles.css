@@ -10988,6 +10988,40 @@ svg.links {
   color: var(--text);
 }
 
+/* A topic block of Auto group: its count badge of the tickets without a card (Done, Canceled,
+   Backlog, in the tree). A click opens the group in the side panel. */
+.plan-fold {
+  position: absolute;
+  box-sizing: border-box;
+  max-width: 200px;
+  height: 28px;
+  overflow: hidden;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--plan-color) 55%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--plan-color) 12%, var(--surface));
+  color: var(--text);
+  font-size: calc(12px * var(--text-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.plan-fold:hover {
+  border-color: var(--plan-color);
+}
+
+/* The description of a topic group in the side panel. */
+.plan-group-about {
+  margin: 6px 0;
+  color: var(--muted);
+  font-size: calc(12px * var(--text-scale));
+}
+
+.plan-group-about p {
+  margin: 0 0 6px;
+}
+
 /* A collapsed group: a stack of cards in its colour. */
 .plan-group {
   gap: 2px;

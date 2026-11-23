@@ -831,6 +831,7 @@
           <li>Click a ticket to see its state, where it stands ("Next up", "Waits for …", "Started before … was done") and the lists <b>Comes after</b> and <b>Comes before</b>. Click an arrow to see "B starts when A is done".</li>
           <li><b>Comments and groups</b>: a comment is a box with a title around its tickets. A group is collapsed: one stacked card stands for its tickets, with a progress bar, the counts and a badge. Its arrows join the card; two or more arrows between the same two cards show as one thicker arrow.</li>
           <li><b>Collapse all</b> and <b>Expand all</b> in the toolbar close or open every comment and group.</li>
+          <li><b>Auto group</b> in the toolbar asks Claude to sort the tickets of the project into topic groups. Each group gets a title and a short description. A topic group stands as a box under the tree: its tickets in Scheduled or in work show as cards, and the others show as one count badge, for example "12 done · 3 in Backlog". Click the title bar or the badge to see the group and all its tickets in the side panel; there you change the title.</li>
         </ul>
         <details class="help-more">
           <summary>Details</summary>
@@ -854,6 +855,8 @@
             <li><b>Confirm</b> saves the arrows in the tickets file and sorts the queue of Scheduled by them: every ticket comes after the tickets that it waits for, and the others keep the board order. It changes the order only: no ticket changes its column and nothing starts. The new tickets go into Backlog. The toolbar then says how many tickets moved, until you select something or plan again.</li>
             <li><b>Discard</b> throws the draft away, also the tickets added while planning. When the draft has changes, a small box asks first.</li>
             <li>The cards stand on the dots of the 50 px grid, as in the Overview. Dispatch remembers the Plan view and its project at the next start.</li>
+            <li><b>Auto group</b> runs only when you click it, and each run uses some of your Claude usage. It sends the id, the column, the title and the first words of each ticket. A ticket that has a topic group already is not sent again. A second run sorts only the new tickets: it adds them to your topic groups or makes new ones, and it keeps your titles. It changes no comment, no group that you made, no arrow and no ticket. The toolbar then says how many groups it made and how many tickets have no group.</li>
+            <li>A topic group folds the tickets that are Done, Canceled or in Backlog into its count badge, and also the tickets that have a card in the tree, so the arrows stay. Collapse shows only its title and the badge. Remove takes the topic group away; its tickets stay. Dispatch keeps the topic groups with the comments and groups in <code>.dispatch/plan-groups.json</code>.</li>
           </ul>
         </details>
 

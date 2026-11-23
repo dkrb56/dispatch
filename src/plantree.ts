@@ -312,6 +312,10 @@ export interface PlanGroup {
   color: number;
   collapsed: boolean;
   tickets: string[];
+  /** A topic group of Auto group: it stands as its own block under the tree, not as a box or a group card. */
+  auto: boolean;
+  /** What a topic group does and what it is for; empty for a comment or a manual group. */
+  description: string;
 }
 
 /** The node id of a collapsed group in the tree; the prefix keeps it apart from every ticket id. */
@@ -339,7 +343,15 @@ export function parsePlanGroups(value: unknown): PlanGroup[] {
     ids.add(id);
     const color = typeof raw.color === "number" && Number.isFinite(raw.color) ? Math.min(3, Math.max(0, Math.round(raw.color))) : 0;
     const tickets = Array.isArray(raw.tickets) ? [...new Set(raw.tickets.filter((one): one is string => typeof one === "string" && one !== ""))] : [];
-    groups.push({ id, title: typeof raw.title === "string" ? raw.title : "", color, collapsed: raw.collapsed === true, tickets });
+    groups.push({
+      id,
+      title: typeof raw.title === "string" ? raw.title : "",
+      color,
+      collapsed: raw.collapsed === true,
+      tickets,
+      auto: raw.auto === true,
+      description: typeof raw.description === "string" ? raw.description : "",
+    });
   }
   return groups;
 }
@@ -363,13 +375,13 @@ export interface CollapsedTree {
  * The nodes of the tree with the collapsed groups. A ticket in two collapsed groups goes into the
  * first of the list. The node of a group stands where its first ticket stands in the list; it takes
  * the arrows of its tickets, and an arrow between two of its tickets goes. An open group (a comment)
- * changes nothing.
+ * changes nothing. A topic group (`auto`) changes nothing either: it has its own block.
  */
 export function collapsedTree(tickets: readonly PlanTicket[], groups: readonly PlanGroup[]): CollapsedTree {
   const known = new Set(tickets.map((ticket) => ticket.id));
   const hidden = new Map<string, string>();
   for (const group of groups) {
-    if (!group.collapsed) continue;
+    if (!group.collapsed || group.auto) continue;
     for (const id of group.tickets) if (known.has(id) && !hidden.has(id)) hidden.set(id, groupNodeId(group.id));
   }
   const node = (id: string) => hidden.get(id) ?? id;
@@ -484,6 +496,183 @@ export function groupBadge(tickets: readonly PlanTicket[], group: PlanGroup): { 
   const counts = groupCounts(tickets, group);
   const badge = counts.nextUp > 0 ? "next" : counts.early > 0 ? "early" : null;
   return { badge, done: counts.done, inWork: counts.inWork, total: counts.tickets };
+}
+
+// Topic groups (ticket i-need-an-autogrouping-function-in-the): Auto group sorts the tickets of the
+// project into groups by topic. Most tickets have no arrow, so a topic group is not a box around
+// cards of the tree: it is its own block under the tree and above the shelf. A block shows as cards
+// its Scheduled and Working tickets; the other tickets fold into one count badge.
+
+/** The tickets of a topic block that show as no card of the block. */
+export interface TopicFold {
+  /** Scheduled and Working: they fold only when the block is collapsed. */
+  scheduled: number;
+  working: number;
+  done: number;
+  canceled: number;
+  backlog: number;
+  /** The tickets with a card in the tree: they keep that card, so the arrows stay. */
+  inTree: number;
+}
+
+/** One topic block: the ids of its cards in the board order, and the counts of its badge. */
+export interface TopicBlock {
+  id: string;
+  shown: string[];
+  fold: TopicFold;
+  /** The tickets of the group that the board has. */
+  members: string[];
+}
+
+/**
+ * The blocks of the topic groups, in the order of the groups. A ticket in two topic groups counts in
+ * the first only. A group without a ticket on the board gives no block. A collapsed block shows no
+ * card: its Scheduled and Working tickets fold into the badge too.
+ */
+export function topicBlocks(tickets: readonly PlanTicket[], groups: readonly PlanGroup[], inTree: ReadonlySet<string>): TopicBlock[] {
+  const byId = new Map(tickets.map((ticket, at) => [ticket.id, { ticket, at }]));
+  const taken = new Set<string>();
+  const blocks: TopicBlock[] = [];
+  for (const group of groups) {
+    if (!group.auto) continue;
+    const fold: TopicFold = { scheduled: 0, working: 0, done: 0, canceled: 0, backlog: 0, inTree: 0 };
+    const shown: { id: string; at: number }[] = [];
+    const members: string[] = [];
+    for (const id of group.tickets) {
+      const found = byId.get(id);
+      if (!found || taken.has(id)) continue;
+      taken.add(id);
+      members.push(id);
+      const status = found.ticket.status;
+      if (inTree.has(id)) fold.inTree += 1;
+      else if (status === "done") fold.done += 1;
+      else if (status === "canceled") fold.canceled += 1;
+      else if (status === "backlog") fold.backlog += 1;
+      else if (!group.collapsed) shown.push({ id, at: found.at });
+      else if (status === "new") fold.scheduled += 1;
+      else fold.working += 1;
+    }
+    if (members.length === 0) continue;
+    blocks.push({ id: group.id, shown: shown.sort((a, b) => a.at - b.at).map((one) => one.id), fold, members });
+  }
+  return blocks;
+}
+
+/** The text of the count badge of a block, for example "12 done · 3 in Backlog"; a zero part is left out. Empty: no badge. */
+export function topicFoldText(fold: TopicFold): string {
+  const parts: [number, string][] = [
+    [fold.scheduled, "scheduled"],
+    [fold.working, "in work"],
+    [fold.done, "done"],
+    [fold.canceled, "canceled"],
+    [fold.backlog, "in Backlog"],
+    [fold.inTree, "in the tree"],
+  ];
+  return parts
+    .filter(([count]) => count > 0)
+    .map(([count, word]) => `${count} ${word}`)
+    .join(" · ");
+}
+
+/** The note of the toolbar after Auto group. */
+export function autoGroupNote(made: number, left: number): string {
+  const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+  if (made === 0 && left === 0) return "Auto group: every ticket has a topic group.";
+  const head = `Auto group made ${plural(made, "new group")}`;
+  return left > 0 ? `${head}, ${plural(left, "ticket")} left without a group` : head;
+}
+
+/** The height of the count badge of a block. */
+export const PLAN_FOLD_HEIGHT = 28;
+
+/** The place of one block on the canvas. */
+export interface PlanBlockPlace {
+  id: string;
+  /** The box with its title bar, the top `PLAN_BOX_TITLE` px. */
+  box: PlanRect;
+  /** The places of its cards; `row` is the row inside the block. */
+  cards: PlanPlace[];
+  /** The top left corner of the count badge; null without a badge. */
+  badge: { x: number; y: number } | null;
+}
+
+/** The blocks under the tree. */
+export interface PlanBlocks {
+  /** The layout of the tree, moved right when a block would start left of the free space; with the new canvas size. */
+  layout: PlanLayout;
+  blocks: PlanBlockPlace[];
+}
+
+/**
+ * The places of the topic blocks under the tree. The blocks go left to right in lines of at most
+ * `perRow` card columns, each line centred under the root; a block is at least one card wide and as
+ * wide as its cards in rows of the line width. Every card corner and every line top stands on the
+ * 50 px grid. Give the result layout to `planShelf`, so the shelf stands under the blocks.
+ */
+export function planBlocks(blocks: readonly { id: string; shown: readonly string[]; badge: boolean }[], layout: PlanLayout, perRow = 4): PlanBlocks {
+  if (blocks.length === 0) return { layout, blocks: [] };
+  const across = Math.max(1, Math.floor(perRow));
+  const sized = blocks.map((block) => {
+    const columns = Math.max(1, Math.min(across, block.shown.length));
+    const rows = Math.ceil(block.shown.length / columns);
+    return { ...block, columns, rows };
+  });
+  // The lines: as many blocks as fit side by side.
+  const lines: (typeof sized)[] = [];
+  for (const block of sized) {
+    const line = lines[lines.length - 1];
+    const used = line ? line.reduce((sum, one) => sum + one.columns, 0) : across;
+    if (line && used + block.columns <= across) line.push(block);
+    else lines.push([block]);
+  }
+  const placed: PlanBlockPlace[] = [];
+  let top = Math.ceil((layout.height - PLAN_PAD + PLAN_GRID) / PLAN_GRID) * PLAN_GRID;
+  for (const line of lines) {
+    const width = line.reduce((sum, one) => sum + one.columns, 0);
+    let left = snap(layout.root.x - ((width - 1) / 2) * PLAN_COLUMN_STEP);
+    let bottom = top;
+    for (const block of line) {
+      const firstY = top + PLAN_GRID;
+      const cards: PlanPlace[] = block.shown.map((id, at) => ({
+        id,
+        row: Math.floor(at / block.columns),
+        x: left + (at % block.columns) * PLAN_COLUMN_STEP,
+        y: firstY + Math.floor(at / block.columns) * PLAN_SHELF_ROW_STEP,
+      }));
+      const badge = block.badge ? { x: left, y: firstY + block.rows * PLAN_SHELF_ROW_STEP } : null;
+      const content = Math.max(cards.length > 0 ? firstY + (block.rows - 1) * PLAN_SHELF_ROW_STEP + PLAN_CARD_HEIGHT : firstY, badge ? badge.y + PLAN_FOLD_HEIGHT : firstY);
+      const boxTop = firstY - PLAN_BOX_PAD - PLAN_BOX_TITLE;
+      const boxBottom = content + PLAN_BOX_PAD;
+      placed.push({
+        id: block.id,
+        box: { x: left - PLAN_BOX_PAD, y: boxTop, width: (block.columns - 1) * PLAN_COLUMN_STEP + PLAN_CARD_WIDTH + 2 * PLAN_BOX_PAD, height: boxBottom - boxTop },
+        cards,
+        badge,
+      });
+      bottom = Math.max(bottom, boxBottom);
+      left += block.columns * PLAN_COLUMN_STEP;
+    }
+    top = Math.ceil((bottom + PLAN_GRID) / PLAN_GRID) * PLAN_GRID;
+  }
+  const shift = Math.max(0, PLAN_PAD - Math.min(...placed.map((block) => block.box.x + PLAN_BOX_PAD)));
+  const moved = placed.map((block) => ({
+    ...block,
+    box: { ...block.box, x: block.box.x + shift },
+    cards: block.cards.map((card) => ({ ...card, x: card.x + shift })),
+    badge: block.badge ? { x: block.badge.x + shift, y: block.badge.y } : null,
+  }));
+  const right = Math.max(...moved.map((block) => block.box.x + block.box.width)) + PLAN_PAD;
+  const bottom = Math.max(...moved.map((block) => block.box.y + block.box.height)) + PLAN_PAD;
+  return {
+    layout: {
+      ...layout,
+      root: { x: layout.root.x + shift, y: layout.root.y },
+      cards: layout.cards.map((card) => ({ ...card, x: card.x + shift })),
+      width: Math.max(layout.width + shift, right),
+      height: Math.max(layout.height, bottom),
+    },
+    blocks: moved,
+  };
 }
 
 /** The ids that a ticket comes after, by the arrows of the list. */

@@ -29,6 +29,7 @@ import {
   PLAN_BOX_PAD,
   PLAN_BOX_TITLE,
   PLAN_CARD_HEIGHT,
+  PLAN_FOLD_HEIGHT,
   PLAN_CARD_WIDTH,
   PLAN_COLUMN_STEP,
   PLAN_GRID,
@@ -38,6 +39,7 @@ import {
   PLAN_SHELF_ROW_STEP,
   planArrows,
   planBadges,
+  planBlocks,
   planCentre,
   planLayout,
   planRows,
@@ -49,7 +51,10 @@ import {
   standLine,
   startsEarly,
   takenOut,
+  autoGroupNote,
   toggleSelection,
+  topicBlocks,
+  topicFoldText,
   turnedArrow,
   withArrow,
   withoutArrow,
@@ -207,7 +212,7 @@ test("the page has the Plan button, its canvas and its Help, and main.ts draws i
   assert.ok(/#plan \.plan-board \{[^}]*\}/.exec(css)?.[0].includes("overflow: hidden"), "the Plan board does not scroll");
 });
 
-const g = (id: string, tickets: string[], collapsed = true, title = "Group"): PlanGroup => ({ id, title, color: 0, collapsed, tickets });
+const g = (id: string, tickets: string[], collapsed = true, title = "Group"): PlanGroup => ({ id, title, color: 0, collapsed, tickets, auto: false, description: "" });
 
 test("the host reply of the groups is read safely", () => {
   assert.deepEqual(parsePlanGroups(null), []);
@@ -216,8 +221,13 @@ test("the host reply of the groups is read safely", () => {
     groups: [{ id: "g-1", title: "Login", color: 7, collapsed: true, tickets: ["a", "a", 3, "b"] }, { id: "" }, { id: "g-1" }, "x", { id: "g-2", color: -1 }],
   });
   assert.deepEqual(groups, [
-    { id: "g-1", title: "Login", color: 3, collapsed: true, tickets: ["a", "b"] },
-    { id: "g-2", title: "", color: 0, collapsed: false, tickets: [] },
+    { id: "g-1", title: "Login", color: 3, collapsed: true, tickets: ["a", "b"], auto: false, description: "" },
+    { id: "g-2", title: "", color: 0, collapsed: false, tickets: [], auto: false, description: "" },
+  ]);
+  // Ticket i-need-an-autogrouping-function-in-the: a topic group keeps its flag and description.
+  assert.deepEqual(parsePlanGroups({ groups: [{ id: "auto-1", title: "Login", auto: true, description: "What it does.", tickets: ["a"] }, { id: "g", auto: "yes", description: 3 }] }), [
+    { id: "auto-1", title: "Login", color: 0, collapsed: false, tickets: ["a"], auto: true, description: "What it does." },
+    { id: "g", title: "", color: 0, collapsed: false, tickets: [], auto: false, description: "" },
   ]);
 });
 
@@ -546,4 +556,121 @@ test("a pan keeps part of the canvas inside the board", () => {
   assert.deepEqual(clampOffset({ x: -5000, y: -5000 }, board, canvas), { x: PLAN_PAN_KEEP - canvas.width, y: PLAN_PAN_KEEP - canvas.height });
   // A canvas smaller than the keep stays whole inside the board.
   assert.deepEqual(clampOffset({ x: -50, y: 900 }, board, { width: 60, height: 40 }), { x: 0, y: 560 });
+});
+
+// Ticket i-need-an-autogrouping-function-in-the: the topic groups of Auto group, their blocks under
+// the tree, the count badge and the note of the toolbar.
+
+const topic = (id: string, tickets: string[], collapsed = false): PlanGroup => ({ ...g(id, tickets, collapsed, id), auto: true, description: `About ${id}` });
+
+test("a topic block shows its scheduled and working tickets and folds the others into counts", () => {
+  const board = [t("a", "done", []), t("x", "new"), t("y", "in-progress"), t("z", "done"), t("w", "canceled"), t("v", "backlog"), t("q", "new")];
+  const groups = [g("manual", ["x", "y"]), topic("one", ["z", "y", "a", "w", "v", "x", "gone"]), topic("two", ["x", "q"]), topic("empty", ["gone"])];
+  const blocks = topicBlocks(board, groups, new Set(["a"]));
+  assert.deepEqual(
+    blocks.map((block) => block.id),
+    ["one", "two"],
+    "a manual group and a group without a ticket on the board give no block",
+  );
+  assert.deepEqual(blocks[0].shown, ["x", "y"], "the cards in the board order");
+  assert.deepEqual(blocks[0].fold, { scheduled: 0, working: 0, done: 1, canceled: 1, backlog: 1, inTree: 1 });
+  assert.deepEqual(blocks[0].members, ["z", "y", "a", "w", "v", "x"]);
+  assert.deepEqual(blocks[1].members, ["q"], "a ticket in two topic groups counts in the first");
+  assert.deepEqual(blocks[1].shown, ["q"]);
+  // A collapsed block shows no card: its scheduled and working tickets fold too.
+  const closed = topicBlocks(board, [topic("one", ["x", "y", "z"], true)], new Set());
+  assert.deepEqual(closed[0].shown, []);
+  assert.deepEqual(closed[0].fold, { scheduled: 1, working: 1, done: 1, canceled: 0, backlog: 0, inTree: 0 });
+});
+
+test("the count badge leaves out a zero part, and the toolbar note counts groups and tickets", () => {
+  assert.equal(topicFoldText({ scheduled: 0, working: 0, done: 12, canceled: 2, backlog: 3, inTree: 1 }), "12 done · 2 canceled · 3 in Backlog · 1 in the tree");
+  assert.equal(topicFoldText({ scheduled: 2, working: 1, done: 0, canceled: 0, backlog: 0, inTree: 0 }), "2 scheduled · 1 in work");
+  assert.equal(topicFoldText({ scheduled: 0, working: 0, done: 0, canceled: 0, backlog: 0, inTree: 0 }), "");
+  assert.equal(autoGroupNote(6, 3), "Auto group made 6 new groups, 3 tickets left without a group");
+  assert.equal(autoGroupNote(1, 0), "Auto group made 1 new group");
+  assert.equal(autoGroupNote(0, 1), "Auto group made 0 new groups, 1 ticket left without a group");
+  assert.equal(autoGroupNote(0, 0), "Auto group: every ticket has a topic group.");
+});
+
+test("a topic group does not change the tree, even when collapsed", () => {
+  const tree = collapsedTree(TREE, [topic("t", ["b", "c"], true)]);
+  assert.deepEqual(
+    tree.nodes.map((node) => node.id),
+    TREE.map((ticket) => ticket.id),
+  );
+  assert.equal(tree.hidden.size, 0);
+});
+
+test("the topic blocks stand under the tree in lines, on the 50 px grid, and the shelf under them", () => {
+  const layout = planLayout(TREE);
+  assert.deepEqual(planBlocks([], layout), { layout, blocks: [] }, "no topic group: no block");
+  const treeBottom = Math.max(...layout.cards.map((card) => card.y)) + PLAN_CARD_HEIGHT;
+  const result = planBlocks(
+    [
+      { id: "big", shown: ["a", "b", "c", "d", "e"], badge: true },
+      { id: "fold", shown: [], badge: true },
+      { id: "small", shown: ["f"], badge: false },
+    ],
+    layout,
+    4,
+  );
+  const [big, fold, small] = result.blocks;
+  assert.deepEqual(
+    big.cards.map((card) => card.row),
+    [0, 0, 0, 0, 1],
+    "at most four cards in a row",
+  );
+  for (const block of result.blocks) {
+    assert.ok(block.box.y > treeBottom, `${block.id} below the tree`);
+    for (const card of block.cards) {
+      assert.equal(card.x % PLAN_GRID, 0, `${card.id} x on the grid`);
+      assert.equal(card.y % PLAN_GRID, 0, `${card.id} y on the grid`);
+      assert.ok(card.x >= block.box.x + PLAN_BOX_PAD && card.x + PLAN_CARD_WIDTH <= block.box.x + block.box.width - PLAN_BOX_PAD, `${card.id} inside ${block.id}`);
+      assert.ok(card.y >= block.box.y + PLAN_BOX_TITLE + PLAN_BOX_PAD && card.y + PLAN_CARD_HEIGHT <= block.box.y + block.box.height, `${card.id} under the title bar of ${block.id}`);
+    }
+  }
+  assert.equal(big.cards[1].x - big.cards[0].x, PLAN_COLUMN_STEP);
+  assert.equal(big.cards[4].y - big.cards[0].y, PLAN_SHELF_ROW_STEP);
+  // The badge stands under the cards, inside the box.
+  assert.ok(big.badge !== null && big.badge.y > big.cards[4].y + PLAN_CARD_HEIGHT);
+  assert.ok(big.badge.y + PLAN_FOLD_HEIGHT <= big.box.y + big.box.height);
+  assert.ok(fold.badge !== null && fold.cards.length === 0, "a block without cards has its badge");
+  assert.equal(small.badge, null);
+  // A full line: the next blocks stand in the next line, side by side.
+  assert.ok(fold.box.y > big.box.y + big.box.height);
+  assert.equal(small.box.y, fold.box.y);
+  assert.ok(small.box.x >= fold.box.x + fold.box.width, "side by side without overlap");
+  // The canvas grows; the shelf stands under the blocks.
+  const bottom = Math.max(...result.blocks.map((block) => block.box.y + block.box.height));
+  assert.equal(result.layout.height, bottom + PLAN_PAD);
+  const shelf = planShelf(["s"], result.layout);
+  assert.ok(shelf.title !== null && shelf.title.y > bottom);
+});
+
+test("a line of blocks wider than the free space moves the tree and the blocks right together", () => {
+  const lone = planLayout([t("x", "new")]);
+  const result = planBlocks([{ id: "wide", shown: ["a", "b", "c", "d", "e", "f"], badge: false }], lone, 6);
+  const shift = result.layout.root.x - lone.root.x;
+  assert.ok(shift > 0 && shift % PLAN_GRID === 0);
+  assert.equal(Math.min(...result.blocks[0].cards.map((card) => card.x)), PLAN_PAD);
+  assert.deepEqual(
+    result.layout.cards.map((card) => card.x - shift),
+    lone.cards.map((card) => card.x),
+  );
+  assert.equal(result.layout.width, result.blocks[0].box.x + result.blocks[0].box.width + PLAN_PAD);
+});
+
+test("the page has Auto group, its host command, its blocks and its Help", () => {
+  const html = read("../index.html");
+  const main = read("../src/main.ts");
+  const css = read("../src/styles.css");
+  assert.match(main, /"plan-tool plan-auto-group", "Auto group"/);
+  assert.match(main, /"plan_groups_auto"/);
+  assert.match(main, /if \(group\.collapsed \|\| group\.auto\) continue;/, "the open boxes skip the topic groups");
+  assert.match(main, /"Topic group"/);
+  assert.match(css, /\.plan-fold \{/);
+  assert.match(css, /\.plan-group-about \{/);
+  assert.match(html, /<b>Auto group<\/b> in the toolbar asks Claude/);
+  assert.match(html, /keeps your titles/);
 });
