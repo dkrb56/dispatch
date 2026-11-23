@@ -6,9 +6,11 @@
 //! An auto group (ticket i-need-an-autogrouping-function-in-the) is a topic group that Claude made
 //! from the titles and words of the tickets: it has a description and stands as its own block.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -167,14 +169,23 @@ pub fn plan_groups_auto(cwd: String) -> Result<PlanGroups, String> {
         .map(|t| AutoTicket { id: t.id, status: t.status, title: t.title, summary: t.summary })
         .collect();
     let root = project.root.clone();
-    auto_with(&project, &tickets, &|prompt| crate::core::rules_check::ask(&root, prompt, AUTO_MODEL.0, AUTO_MODEL.1, AUTO_MODEL.2))
+    auto_with(&project, &tickets, None, &|prompt| crate::core::rules_check::ask(&root, prompt, AUTO_MODEL.0, AUTO_MODEL.1, AUTO_MODEL.2))
 }
 
-/// `plan_groups_auto` with the tickets and the model as arguments; a test gives a fake.
-pub(crate) fn auto_with(project: &Project, tickets: &[AutoTicket], ask: &dyn Fn(&str) -> Result<String, String>) -> Result<PlanGroups, String> {
+/// `plan_groups_auto` with the tickets and the model as arguments; a test gives a fake. With `only`
+/// (the sort of new tickets, ticket when-i-create-new-ticket-it-should-be), it sends only those ids,
+/// and only those that no group holds (a ticket that the user put into a group stays there); a
+/// project without a topic group is not sorted and asks nothing (user decision 1).
+pub(crate) fn auto_with(project: &Project, tickets: &[AutoTicket], only: Option<&HashSet<String>>, ask: &dyn Fn(&str) -> Result<String, String>) -> Result<PlanGroups, String> {
     let before = load(project)?;
-    let grouped = auto_ids(&before.groups);
-    let open: Vec<&AutoTicket> = tickets.iter().filter(|t| !grouped.contains(&t.id)).collect();
+    if only.is_some() && !before.groups.iter().any(|g| g.auto) {
+        return Ok(before);
+    }
+    let grouped: HashSet<String> = match only {
+        Some(_) => before.groups.iter().flat_map(|g| g.tickets.iter().cloned()).collect(),
+        None => auto_ids(&before.groups),
+    };
+    let open: Vec<&AutoTicket> = tickets.iter().filter(|t| !grouped.contains(&t.id) && only.is_none_or(|ids| ids.contains(&t.id))).collect();
     if open.is_empty() {
         return Ok(before);
     }
@@ -185,6 +196,121 @@ pub(crate) fn auto_with(project: &Project, tickets: &[AutoTicket], ask: &dyn Fn(
     // The Claude call takes minutes: read the file again, so a save of another window stays.
     let now = load(project)?;
     save(project, merge(now.groups, proposals, &stamp()))
+}
+
+/// The new tickets of each project (by its folder) that wait for their sort, and whether a sort of
+/// that project runs: one Claude call at a time per project, and a ticket added during a call waits
+/// for the next one.
+static NEW_SORT: Mutex<Option<HashMap<PathBuf, NewSort>>> = Mutex::new(None);
+
+#[derive(Default)]
+struct NewSort {
+    ids: Vec<String>,
+    running: bool,
+}
+
+/// The wait before the sort of new tickets starts: a group that the user chose in the New ticket
+/// window is saved by then, and tickets added at once go in one call.
+const NEW_SORT_WAIT: Duration = Duration::from_secs(3);
+
+/// Sorts new tickets into topic groups in the background (ticket when-i-create-new-ticket-it-should-be):
+/// the New ticket window, the phone, the ticket lists of the chats and Plan the flow call it after
+/// they opened tickets. Nothing happens in a project without a topic group (user decision 1). Claude
+/// may put a ticket into an existing topic group or make a new one (user decision 2). A failure is
+/// logged; the ticket then stays without a group, and Auto group can sort it later.
+pub(crate) fn sort_new_tickets(project: &Project, ids: &[String]) {
+    if ids.is_empty() || !load(project).is_ok_and(|file| file.groups.iter().any(|g| g.auto)) {
+        return;
+    }
+    let key = project.root.clone();
+    // A test only fills the queue: it makes no Claude call.
+    if !queue_new(&key, ids) || cfg!(test) {
+        return;
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(NEW_SORT_WAIT);
+        let cwd = key.to_string_lossy().into_owned();
+        match Project::find(&cwd) {
+            Ok(project) => {
+                let root = project.root.clone();
+                drain_new(&project, &key, &|prompt| crate::core::rules_check::ask(&root, prompt, AUTO_MODEL.0, AUTO_MODEL.1, AUTO_MODEL.2));
+            }
+            Err(error) => {
+                eprintln!("new tickets not sorted into topic groups: {error}");
+                while !take_new(&key).is_empty() {}
+            }
+        }
+    });
+}
+
+/// Puts the ids into the queue of the project; true when no sort runs, so the caller starts one.
+fn queue_new(key: &Path, ids: &[String]) -> bool {
+    let mut all = NEW_SORT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = all.get_or_insert_with(HashMap::new).entry(key.to_path_buf()).or_default();
+    for id in ids {
+        if !entry.ids.contains(id) {
+            entry.ids.push(id.clone());
+        }
+    }
+    let start = !entry.running;
+    entry.running = true;
+    start
+}
+
+/// The waiting ids of the project, and the queue empty; an empty list ends the sort of the project.
+fn take_new(key: &Path) -> Vec<String> {
+    let mut all = NEW_SORT.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let map = all.get_or_insert_with(HashMap::new);
+    let ids = map.get_mut(key).map(|entry| std::mem::take(&mut entry.ids)).unwrap_or_default();
+    if ids.is_empty() {
+        map.remove(key);
+    }
+    ids
+}
+
+/// The waiting ids of a project, for the tests of the callers; the queue is then empty.
+#[cfg(test)]
+pub(crate) fn queued_new(project: &Project) -> Vec<String> {
+    take_new(&project.root)
+}
+
+/// Sorts the queue of the project until it is empty, one call per round; a test gives a fake model.
+fn drain_new(project: &Project, key: &Path, ask: &dyn Fn(&str) -> Result<String, String>) {
+    loop {
+        let ids: HashSet<String> = take_new(key).into_iter().collect();
+        if ids.is_empty() {
+            return;
+        }
+        let tickets: Vec<AutoTicket> = crate::core::tickets::list(project)
+            .into_iter()
+            .map(|t| AutoTicket { id: t.id, status: t.status, title: t.title, summary: t.summary })
+            .collect();
+        if let Err(error) = auto_with(project, &tickets, Some(&ids), ask) {
+            eprintln!("new tickets not sorted into topic groups: {error}");
+        }
+    }
+}
+
+/// Puts new parts into the topic group of their parent (ticket when-i-create-new-ticket-it-should-be,
+/// user decision 3), without Claude: the first topic group that holds the parent takes each part that
+/// has no topic group. Writes nothing when no topic group holds the parent.
+pub(crate) fn join_parent_group(project: &Project, parent: &str, ids: &[String]) -> Result<(), String> {
+    let mut groups = load(project)?.groups;
+    let grouped = auto_ids(&groups);
+    let Some(group) = groups.iter_mut().find(|g| g.auto && g.tickets.iter().any(|t| t == parent)) else {
+        return Ok(());
+    };
+    let mut changed = false;
+    for id in ids {
+        if !grouped.contains(id) && !group.tickets.contains(id) {
+            group.tickets.push(id.clone());
+            changed = true;
+        }
+    }
+    if changed {
+        save(project, groups)?;
+    }
+    Ok(())
 }
 
 /// The ids of the tickets that an auto group holds.
@@ -409,7 +535,7 @@ mod tests {
         let (project, base) = scratch("auto");
         let asked = std::cell::RefCell::new(String::new());
         let answer = r#"[{"group":"","title":"Login","description":"Signs the user in.\n\nKeeps the account safe.","tickets":["a","b"]},{"group":"","title":"Looks","description":"The colours.","tickets":["c","d"]}]"#;
-        let saved = auto_with(&project, &board(), &|prompt| {
+        let saved = auto_with(&project, &board(), None, &|prompt| {
             *asked.borrow_mut() = prompt.to_string();
             Ok(answer.to_string())
         })
@@ -434,7 +560,7 @@ mod tests {
     fn auto_group_drops_unknown_and_double_ids_and_empty_groups() {
         let (project, base) = scratch("auto-doubles");
         let answer = r#"[{"title":"One","tickets":["a","zzz","a"]},{"title":"Two","tickets":["a","b"]},{"title":"Empty","tickets":["nope"]}]"#;
-        let saved = auto_with(&project, &board(), &|_| Ok(answer.to_string())).unwrap().groups;
+        let saved = auto_with(&project, &board(), None, &|_| Ok(answer.to_string())).unwrap().groups;
         assert_eq!(saved.len(), 2, "{saved:?}");
         assert_eq!(saved[0].tickets, vec!["a".to_string()]);
         assert_eq!(saved[1].tickets, vec!["b".to_string()]);
@@ -446,7 +572,7 @@ mod tests {
         let (project, base) = scratch("auto-fence");
         let long = "x".repeat(2000);
         let answer = format!("Here:\n```json\n[{{\"title\":\" Login \",\"description\":\"One.\\n\\nTwo.\\n\\nThree.\",\"tickets\":[\"a\"]}},{{\"title\":\"\",\"description\":\"{long}\",\"tickets\":[\"b\"]}}]\n```");
-        let saved = auto_with(&project, &board(), &|_| Ok(answer.clone())).unwrap().groups;
+        let saved = auto_with(&project, &board(), None, &|_| Ok(answer.clone())).unwrap().groups;
         assert_eq!(saved[0].title, "Login");
         assert_eq!(saved[0].description, "One.\n\nTwo.", "two paragraphs at most");
         assert_eq!(saved[1].title, "Topic 2", "an empty title gets a name");
@@ -457,11 +583,11 @@ mod tests {
     #[test]
     fn auto_group_refuses_an_answer_without_json() {
         let (project, base) = scratch("auto-bad");
-        let error = auto_with(&project, &board(), &|_| Ok("I cannot do that.".to_string())).unwrap_err();
+        let error = auto_with(&project, &board(), None, &|_| Ok("I cannot do that.".to_string())).unwrap_err();
         assert!(error.contains("did not answer with a list of groups"), "{error}");
-        let error = auto_with(&project, &board(), &|_| Ok("[{ not json ]".to_string())).unwrap_err();
+        let error = auto_with(&project, &board(), None, &|_| Ok("[{ not json ]".to_string())).unwrap_err();
         assert!(error.contains("did not answer with a list of groups"), "{error}");
-        let error = auto_with(&project, &board(), &|_| Err("Claude Code gave an empty answer.".to_string())).unwrap_err();
+        let error = auto_with(&project, &board(), None, &|_| Err("Claude Code gave an empty answer.".to_string())).unwrap_err();
         assert_eq!(error, "Claude Code gave an empty answer.");
         assert_eq!(load(&project).unwrap(), PlanGroups::default(), "nothing saved");
         let _ = fs::remove_dir_all(base);
@@ -475,7 +601,7 @@ mod tests {
         save(&project, vec![manual.clone(), topic.clone()]).unwrap();
         let asked = std::cell::RefCell::new(String::new());
         let answer = r#"[{"group":"auto-x-1","title":"Other title","description":"Other.","tickets":["b","a"]},{"group":"","title":"Looks","tickets":["c","d"]}]"#;
-        let saved = auto_with(&project, &board(), &|prompt| {
+        let saved = auto_with(&project, &board(), None, &|prompt| {
             *asked.borrow_mut() = prompt.to_string();
             Ok(answer.to_string())
         })
@@ -502,7 +628,7 @@ mod tests {
         let (project, base) = scratch("auto-none");
         let topic = PlanGroup { id: "auto-x-1".into(), auto: true, tickets: vec!["a".into(), "b".into(), "c".into(), "d".into()], ..PlanGroup::default() };
         save(&project, vec![topic]).unwrap();
-        let saved = auto_with(&project, &board(), &|_| panic!("no call")).unwrap();
+        let saved = auto_with(&project, &board(), None, &|_| panic!("no call")).unwrap();
         assert_eq!(saved.groups.len(), 1);
         let _ = fs::remove_dir_all(base);
     }
@@ -511,7 +637,7 @@ mod tests {
     fn auto_group_keeps_a_save_made_during_the_call() {
         let (project, base) = scratch("auto-race");
         let answer = r#"[{"title":"Login","tickets":["a","b"]}]"#;
-        let saved = auto_with(&project, &board(), &|_| {
+        let saved = auto_with(&project, &board(), None, &|_| {
             save(&project, vec![group("g-9", &["d"])]).unwrap();
             Ok(answer.to_string())
         })
@@ -574,6 +700,93 @@ mod tests {
         // The file of an older version has no size: it reads as None.
         write_file(&project.reports.join(FILE), "{\"groups\":[{\"id\":\"g-1\",\"auto\":true,\"tickets\":[\"a\"]}]}").unwrap();
         assert_eq!(load(&project).unwrap().groups[0].size, None);
+        let _ = fs::remove_dir_all(base);
+    }
+    #[test]
+    fn a_new_ticket_sort_asks_nothing_without_a_topic_group() {
+        let (project, base) = scratch("new-none");
+        let only: HashSet<String> = ["b".to_string()].into();
+        let saved = auto_with(&project, &board(), Some(&only), &|_| panic!("no call")).unwrap();
+        assert_eq!(saved, PlanGroups::default(), "no file: nothing is sorted");
+        save(&project, vec![group("g-1", &["a"])]).unwrap();
+        let saved = auto_with(&project, &board(), Some(&only), &|_| panic!("no call")).unwrap();
+        assert_eq!(saved.groups.len(), 1, "only a manual group: nothing is sorted");
+        sort_new_tickets(&project, &["b".to_string()]);
+        assert!(queued_new(&project).is_empty(), "a project without a topic group queues nothing");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_new_ticket_sort_sends_only_the_named_tickets_without_a_group() {
+        let (project, base) = scratch("new-only");
+        let topic = PlanGroup { id: "auto-x-1".into(), title: "Login".into(), auto: true, tickets: vec!["a".into()], ..PlanGroup::default() };
+        save(&project, vec![topic, group("g-1", &["c"])]).unwrap();
+        let asked = std::cell::RefCell::new(String::new());
+        let only: HashSet<String> = ["b".to_string(), "c".to_string()].into();
+        let answer = r#"[{"group":"auto-x-1","tickets":["b"]}]"#;
+        let saved = auto_with(&project, &board(), Some(&only), &|prompt| {
+            *asked.borrow_mut() = prompt.to_string();
+            Ok(answer.to_string())
+        })
+        .unwrap()
+        .groups;
+        let prompt = asked.borrow().clone();
+        assert!(prompt.contains("\"id\": \"b\""), "the new ticket is sent: {prompt}");
+        assert!(prompt.contains("auto-x-1"), "the prompt names the topic group: {prompt}");
+        for other in ["a", "c", "d"] {
+            assert!(!prompt.contains(&format!("\"id\": \"{other}\"")), "{other} is not sent: {prompt}");
+        }
+        assert_eq!(saved.len(), 2, "no new group: {saved:?}");
+        assert_eq!(saved[0].tickets, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(saved[1], group("g-1", &["c"]), "the manual group does not change");
+        assert!(!saved.iter().any(|g| g.tickets.contains(&"d".to_string())), "another loose ticket stays loose");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn the_queue_of_new_tickets_sorts_each_ticket_once() {
+        let (project, base) = scratch("new-queue");
+        fs::create_dir_all(&project.reports).unwrap();
+        let cwd = project.root.to_string_lossy().into_owned();
+        let one = crate::core::tickets::ticket_add(cwd.clone(), "Login with a key".into(), None, None, None).unwrap().id;
+        let two = crate::core::tickets::ticket_add(cwd.clone(), "Dark theme for the board".into(), None, None, None).unwrap().id;
+        let old = crate::core::tickets::ticket_add(cwd, "An old loose ticket".into(), None, None, None).unwrap().id;
+        assert!(queued_new(&project).is_empty(), "no topic group yet: nothing queued");
+        save(&project, vec![PlanGroup { id: "auto-x-1".into(), title: "Login".into(), auto: true, tickets: vec!["z".into()], ..PlanGroup::default() }]).unwrap();
+        sort_new_tickets(&project, std::slice::from_ref(&one));
+        assert!(!queue_new(&project.root, &[two.clone(), one.clone()]), "a sort runs: the second call starts none");
+        let calls = std::cell::RefCell::new(Vec::new());
+        drain_new(&project, &project.root, &|prompt| {
+            calls.borrow_mut().push(prompt.to_string());
+            Ok(format!(r#"[{{"group":"auto-x-1","tickets":["{one}"]}},{{"group":"","title":"Looks","tickets":["{two}"]}}]"#))
+        });
+        let calls = calls.into_inner();
+        assert_eq!(calls.len(), 1, "one call for both tickets");
+        assert!(calls[0].contains(&one) && calls[0].contains(&two) && !calls[0].contains(&old), "{}", calls[0]);
+        let groups = load(&project).unwrap().groups;
+        assert_eq!(groups[0].tickets, vec!["z".to_string(), one.clone()]);
+        assert_eq!((groups[1].title.as_str(), groups[1].tickets.clone()), ("Looks", vec![two.clone()]), "Claude made a new group");
+        assert!(queue_new(&project.root, &[old]), "the sort ended: the next ticket starts a new one");
+        let _ = take_new(&project.root);
+        assert!(take_new(&project.root).is_empty());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_part_joins_the_topic_group_of_its_parent() {
+        let (project, base) = scratch("parts");
+        join_parent_group(&project, "p", &["p-1".to_string()]).unwrap();
+        assert!(!project.reports.join(FILE).exists(), "no file: nothing is written");
+        let topic = PlanGroup { id: "auto-x-1".into(), auto: true, tickets: vec!["p".into()], ..PlanGroup::default() };
+        let other = PlanGroup { id: "auto-x-2".into(), auto: true, tickets: vec!["p-2".into()], ..PlanGroup::default() };
+        save(&project, vec![group("g-1", &["p"]), topic, other]).unwrap();
+        join_parent_group(&project, "p", &["p-1".to_string(), "p-2".to_string()]).unwrap();
+        let groups = load(&project).unwrap().groups;
+        assert_eq!(groups[0].tickets, vec!["p".to_string()], "a manual group takes no part");
+        assert_eq!(groups[1].tickets, vec!["p".to_string(), "p-1".to_string()], "the part joins the group of its parent");
+        assert_eq!(groups[2].tickets, vec!["p-2".to_string()], "a part with a topic group stays there");
+        join_parent_group(&project, "q", &["q-1".to_string()]).unwrap();
+        assert_eq!(load(&project).unwrap().groups, groups, "a parent without a topic group changes nothing");
         let _ = fs::remove_dir_all(base);
     }
 }

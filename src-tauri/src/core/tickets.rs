@@ -714,6 +714,7 @@ fn take_new_tickets(project: &Project) -> Result<usize, String> {
             return Err(error);
         }
         count += made.len();
+        crate::core::plangroups::sort_new_tickets(project, &made.iter().map(|ticket| ticket.id.clone()).collect::<Vec<_>>());
         fs::remove_file(&taking).map_err(|e| format!("{}: {e}", taking.display()))?;
     }
     // A folder that still holds another file stays.
@@ -1100,6 +1101,8 @@ pub fn ticket_add_in(
         };
     }
     append(&project, &[open_event(&ticket)])?;
+    // A new ticket goes into a topic group by itself (ticket when-i-create-new-ticket-it-should-be).
+    crate::core::plangroups::sort_new_tickets(&project, std::slice::from_ref(&ticket.id));
     Ok(ticket)
 }
 
@@ -1471,6 +1474,7 @@ pub fn plan_confirm(cwd: String, arrows: Vec<PlanAfter>, queue: Vec<String>, add
         events.push(event("update", &ticket.id, at, fields));
     }
     append(&project, &events)?;
+    crate::core::plangroups::sort_new_tickets(&project, &made.iter().map(|place| tickets[*place].id.clone()).collect::<Vec<_>>());
     Ok(read(&project))
 }
 
@@ -1541,6 +1545,8 @@ pub(crate) fn open_parts(project: &Project, parent_id: &str, parts: &[crate::cor
         made.push(ticket);
     }
     append(project, &made.iter().map(open_event).collect::<Vec<_>>())?;
+    // The parts join the topic group of their parent (user decision 3); a broken groups file stops no part.
+    let _ = crate::core::plangroups::join_parent_group(project, &parent.id, &made.iter().map(|ticket| ticket.id.clone()).collect::<Vec<_>>());
     Ok(made)
 }
 
@@ -1579,6 +1585,7 @@ pub fn ticket_add_part(
     let kind = kind.unwrap_or_else(|| kind_of(text));
     let ticket = new_part(&project, &tickets, &owner.id, part, &title, text, kind, level, &fields.unwrap_or_default(), now());
     append(&project, &[open_event(&ticket)])?;
+    let _ = crate::core::plangroups::join_parent_group(&project, &owner.id, std::slice::from_ref(&ticket.id));
     Ok(ticket)
 }
 
@@ -2976,6 +2983,46 @@ mod tests {
         append(&project, &[event("update", &a, now(), Map::from_iter([("after".to_string(), json!([b.clone()]))])), event("update", &b, now(), Map::from_iter([("after".to_string(), json!([a.clone()]))]))]).unwrap();
         let after = plan_confirm(cwd(&project), vec![PlanAfter { id: b.clone(), after: vec![] }], vec![], vec![]).unwrap();
         assert!(after.iter().all(|ticket| ticket.id != b || ticket.after.is_empty()));
+        let _ = fs::remove_dir_all(base);
+    }
+    /// Saves one topic group of the given tickets (ticket when-i-create-new-ticket-it-should-be).
+    fn topic_group(project: &Project, tickets: &[&str]) {
+        let group = crate::core::plangroups::PlanGroup { id: "auto-x-1".into(), auto: true, tickets: tickets.iter().map(|t| t.to_string()).collect(), ..Default::default() };
+        crate::core::plangroups::plan_groups_save(cwd(project), vec![group]).unwrap();
+    }
+
+    #[test]
+    fn new_parts_join_the_topic_group_of_their_parent() {
+        let (project, base) = scratch("parts-group");
+        let parent = ticket_add(cwd(&project), "Build the big thing".into(), None, None, None).unwrap();
+        topic_group(&project, &[&parent.id]);
+        let made = open_parts(&project, &parent.id, &[plan_part("First piece", "", "", "Do one"), plan_part("Second piece", "", "", "Do two")]).unwrap();
+        let added = ticket_add_part(cwd(&project), parent.id.clone(), "Do three".into(), Some("Third piece".into()), None, None, None).unwrap();
+        let groups = crate::core::plangroups::plan_groups_load(cwd(&project)).unwrap().groups;
+        assert_eq!(groups[0].tickets, vec![parent.id.clone(), made[0].id.clone(), made[1].id.clone(), added.id.clone()], "Approve and + Part both join the group");
+        assert!(crate::core::plangroups::queued_new(&project).is_empty(), "a part asks no Claude sort");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn each_way_of_adding_tickets_queues_them_for_the_topic_sort() {
+        let (project, base) = scratch("new-sort");
+        let first = ticket_add(cwd(&project), "Before any group".into(), None, None, None).unwrap();
+        assert!(crate::core::plangroups::queued_new(&project).is_empty(), "no topic group: nothing queued");
+        topic_group(&project, &[&first.id]);
+        let window = ticket_add_in(cwd(&project), "From the window or the phone".into(), None, None, None, Some("backlog".into())).unwrap();
+        assert_eq!(crate::core::plangroups::queued_new(&project), vec![window.id.clone()]);
+        write_file(&project.new_tickets_dir().join("a.md"), "1. Chat one
+- Goal: One.
+
+2. Chat two
+- Goal: Two.
+").unwrap();
+        let _ = list(&project);
+        assert_eq!(crate::core::plangroups::queued_new(&project), vec!["chat-one".to_string(), "chat-two".to_string()], "the ticket list of a chat");
+        let added = vec![PlanAdded { key: "new-1".into(), text: "From Plan the flow".into(), after: vec![] }];
+        plan_confirm(cwd(&project), vec![], vec![], added).unwrap();
+        assert_eq!(crate::core::plangroups::queued_new(&project), vec!["from-plan-the-flow".to_string()], "Plan the flow");
         let _ = fs::remove_dir_all(base);
     }
 }

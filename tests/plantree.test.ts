@@ -939,6 +939,15 @@ test("the page has Auto group, its host command, its blocks and its Help", () =>
   assert.match(html, /keeps your titles/);
 });
 
+test("the Help says that a new ticket and a new part go into a topic group by themselves", () => {
+  const html = read("../index.html");
+  assert.match(html, /a new ticket goes into a topic group by itself: from the New ticket window, the phone, a ticket list of a chat or Plan the flow/);
+  assert.match(html, /A new part goes into the group of its parent ticket\./);
+  assert.match(html, /A new ticket is sorted alone a few seconds after it is added/);
+  assert.match(html, /A project without a topic group sorts no new ticket\./);
+  assert.doesNotMatch(html, /<b>Auto group<\/b> runs only when you click it/);
+});
+
 test("a new ticket joins a group once, at its end; an unknown group changes nothing", () => {
   const group = (id: string, tickets: string[]): PlanGroup => ({ id, title: id, color: 0, collapsed: true, tickets, auto: false, description: "" });
   const groups = [group("a", ["t1"]), group("b", ["t2"])];
