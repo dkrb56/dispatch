@@ -8,6 +8,7 @@ import {
   arrowDiff,
   arrowRefusal,
   boxHits,
+  clampCardSize,
   clampOffset,
   clampZoom,
   collapsedTree,
@@ -26,8 +27,12 @@ import {
   moveWarning,
   notInFlow,
   openBefore,
+  parseCardSize,
   parsePlanGroups,
   PLAN_BOX_PAD,
+  PLAN_CARD_DEFAULT,
+  PLAN_CARD_MAX,
+  PLAN_CARD_MIN,
   PLAN_ABOUT_HEIGHT,
   PLAN_BOX_TITLE,
   PLAN_CARD_HEIGHT,
@@ -51,6 +56,7 @@ import {
   planShelf,
   planSort,
   planStateWord,
+  planSteps,
   queueMarks,
   runningAfter,
   standLine,
@@ -68,6 +74,7 @@ import {
   zoomAround,
   PLAN_ZOOM_MAX,
   PLAN_ZOOM_MIN,
+  type PlanCardSize,
   type PlanGroup,
   type PlanTicket,
 } from "../src/plantree.ts";
@@ -820,7 +827,7 @@ test("a topic group moves by a drag of its title bar, and the menu puts it back"
   const main = read("../src/main.ts");
   const css = read("../src/styles.css");
   assert.match(main, /let planGroupDragging = false;/);
-  assert.match(main, /if \(!planOn \|\| planBoxDragging \|\| planGroupDragging\) return;/, "a render waits while a group is dragged");
+  assert.match(main, /if \(!planOn \|\| planBoxDragging \|\| planGroupDragging \|\| planCardResizing\) return;/, "a render waits while a group is dragged or a card resized");
   assert.match(main, /placeTopicBlocks\(/);
   assert.match(main, /snapBlockPlace\(/);
   assert.match(main, /"Put back in its place"/);
@@ -863,4 +870,120 @@ test("the right-click menu of a group adds a new ticket to it", () => {
   assert.match(main, /openAddTicket\(project, column, group\.id\)/);
   assert.match(main, /withTicketInGroup\(old, groupTarget\.id, addedId\)/);
   assert.match(html, /New ticket in this group/);
+});
+
+// Card size (ticket resize-the-ticket-cards-of-the-plan-view).
+
+test("the steps between the cards follow the card size, on the 50 px grid", () => {
+  assert.deepEqual(planSteps(PLAN_CARD_DEFAULT), { column: PLAN_COLUMN_STEP, row: PLAN_ROW_STEP, shelfRow: PLAN_SHELF_ROW_STEP });
+  assert.deepEqual(planSteps(PLAN_CARD_DEFAULT), { column: 250, row: 150, shelfRow: 100 });
+  assert.deepEqual(planSteps({ width: 300, height: 144 }), { column: 350, row: 250, shelfRow: 200 });
+  assert.deepEqual(planSteps({ width: 120, height: 60 }), { column: 200, row: 150, shelfRow: 100 });
+});
+
+test("the card size stays between its limits, and a saved value is read safely", () => {
+  assert.deepEqual(clampCardSize({ width: 300.4, height: 143.6 }), { width: 300, height: 144 });
+  assert.deepEqual(clampCardSize({ width: 1, height: 1 }), PLAN_CARD_MIN);
+  assert.deepEqual(clampCardSize({ width: 5000, height: 5000 }), PLAN_CARD_MAX);
+  assert.deepEqual(clampCardSize({ width: Number.NaN, height: 100 }), PLAN_CARD_DEFAULT);
+  assert.deepEqual(parseCardSize({ width: 300, height: 144 }), { width: 300, height: 144 });
+  assert.deepEqual(parseCardSize({ width: 9000, height: 10 }), { width: PLAN_CARD_MAX.width, height: PLAN_CARD_MIN.height });
+  assert.equal(parseCardSize(null), null);
+  assert.equal(parseCardSize("300x144"), null);
+  assert.equal(parseCardSize({ width: "300", height: 144 }), null);
+  assert.equal(parseCardSize({ width: 300 }), null);
+  assert.equal(parseCardSize({ width: Number.POSITIVE_INFINITY, height: 144 }), null);
+});
+
+test("a bigger card size spreads the tree, the blocks and the shelf, with no overlap and on the grid", () => {
+  const size: PlanCardSize = { width: 300, height: 144 };
+  const overlap = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    a.x < b.x + size.width && b.x < a.x + size.width && a.y < b.y + size.height && b.y < a.y + size.height;
+  const tree = planLayout(TREE, size);
+  const blocks = planBlocks(
+    [
+      { id: "big", shown: ["a", "b", "c", "d", "e"], badge: true },
+      { id: "small", shown: ["f"], badge: false },
+    ],
+    tree,
+    3,
+    size,
+  );
+  const shelf = planShelf(["s1", "s2", "s3", "s4"], blocks.layout, 3, size);
+  const cards = [
+    { id: "root", ...shelf.layout.root },
+    ...shelf.layout.cards,
+    ...blocks.blocks.flatMap((block) => block.cards.map((card) => ({ ...card, id: `${block.id}:${card.id}` }))),
+    ...shelf.cards.map((card) => ({ ...card, id: `shelf:${card.id}` })),
+  ];
+  for (const card of cards) {
+    assert.equal(card.x % PLAN_GRID, 0, `${card.id} x on the grid`);
+    assert.equal(card.y % PLAN_GRID, 0, `${card.id} y on the grid`);
+    assert.ok(card.x >= PLAN_PAD, `${card.id} inside the canvas at the left`);
+  }
+  for (const [at, a] of cards.entries()) {
+    for (const b of cards.slice(at + 1)) assert.ok(!overlap(a, b), `${a.id} and ${b.id} do not overlap`);
+  }
+  for (const card of shelf.layout.cards) {
+    assert.ok(card.x + size.width + PLAN_PAD <= shelf.layout.width, `${card.id} inside the canvas at the right`);
+    assert.ok(card.y + size.height + PLAN_PAD <= shelf.layout.height, `${card.id} inside the canvas at the bottom`);
+  }
+  // The tree rows and the root follow the size.
+  const rows = new Map(tree.cards.map((card) => [card.id, card]));
+  for (const card of tree.cards) assert.equal(card.y - tree.root.y, card.row * planSteps(size).row, `${card.id} row`);
+  assert.equal(tree.height, PLAN_PAD + Math.max(...tree.cards.map((card) => card.row)) * planSteps(size).row + size.height + PLAN_PAD);
+  assert.equal(rows.get("a")!.x, tree.root.x, "one card in a row stands under the root");
+  // Each block holds its cards; the cards of a block stand one column apart.
+  for (const block of blocks.blocks) {
+    for (const card of block.cards) {
+      assert.ok(card.x + size.width <= block.box.x + block.box.width - PLAN_BOX_PAD, `${card.id} inside ${block.id}`);
+      assert.ok(card.y + size.height <= block.box.y + block.box.height, `${card.id} above the bottom of ${block.id}`);
+    }
+  }
+  const big = blocks.blocks[0];
+  assert.equal(big.cards[1].x - big.cards[0].x, 350);
+  assert.equal(big.cards[3].y - big.cards[0].y, 200);
+  assert.ok(big.badge !== null && big.badge.y >= big.cards[3].y + size.height);
+  // The centre and the root line take the width.
+  assert.deepEqual(planCentre({ width: 1000, height: 600 }, { root: { x: 100, y: 50 } }, size), { x: 250, y: 0 });
+});
+
+test("the group box and the selection box measure with the card size", () => {
+  const size: PlanCardSize = { width: 300, height: 144 };
+  const places = [
+    { id: "a", x: 100, y: 100 },
+    { id: "b", x: 500, y: 100 },
+  ];
+  assert.deepEqual(groupBox(places, ["a"], new Map(), size), {
+    x: 100 - PLAN_BOX_PAD,
+    y: 100 - PLAN_BOX_PAD - PLAN_BOX_TITLE,
+    width: 300 + 2 * PLAN_BOX_PAD,
+    height: 144 + 2 * PLAN_BOX_PAD + PLAN_BOX_TITLE,
+  });
+  const rect = { x: 350, y: 230, width: 20, height: 10 };
+  assert.deepEqual(boxHits(places, rect), [], "the normal size does not reach the box");
+  assert.deepEqual(boxHits(places, rect, size), ["a"], "the bigger card reaches it");
+});
+
+test("a drag of the corner of a card sizes every card of the project, and the menu gives the normal size back", () => {
+  const html = read("../index.html");
+  const main = read("../src/main.ts");
+  const css = read("../src/styles.css");
+  assert.match(main, /let planCardResizing = false;/);
+  assert.match(main, /`plan-card-size:\$\{key\}`/, "the size is kept per project in localStorage");
+  assert.match(main, /"--plan-card-width"/);
+  assert.match(main, /"--plan-card-height"/);
+  assert.match(main, /"--plan-card-lines"/);
+  assert.match(main, /mapElement\("span", "plan-card-grip"\)/);
+  assert.match(main, /"Cards back to normal size"/);
+  assert.match(main, /planLayout\(tree\.nodes, size\)/);
+  assert.match(main, /planShelf\(looseIds, blockPlaces\.layout, perRow, size\)/);
+  assert.match(main, /boxHits\(planPlaces, [^\n]*planCardSize\(begin\.key\)\)/);
+  assert.match(css, /width: var\(--plan-card-width, 200px\);/);
+  assert.match(css, /height: var\(--plan-card-height, 84px\);/);
+  assert.match(css, /-webkit-line-clamp: var\(--plan-card-lines, 2\);/);
+  assert.match(css, /repeat\(auto-fill, var\(--plan-card-width, 200px\)\)/);
+  assert.match(css, /\.plan-card-grip \{[^}]*cursor: nwse-resize;/);
+  assert.match(html, /<b>Card size<\/b>: drag the small handle in the bottom right corner of any card/);
+  assert.match(html, /<b>Cards back to normal size<\/b>/);
 });

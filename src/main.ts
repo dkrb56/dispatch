@@ -58,10 +58,12 @@ import {
   parsePlanGroups,
   PLAN_BOX_PAD,
   PLAN_BOX_TITLE,
-  PLAN_CARD_HEIGHT,
-  PLAN_CARD_WIDTH,
-  PLAN_COLUMN_STEP,
+  PLAN_CARD_DEFAULT,
   PLAN_GRID,
+  clampCardSize,
+  parseCardSize,
+  planSteps,
+  type PlanCardSize,
   PLAN_PAD,
   earlyText,
   moveWarning,
@@ -16071,6 +16073,8 @@ const planGroupsSavedAt = new Map<string, number>();
 let planBoxDragging = false;
 /** A topic group is dragged by its title bar: a render waits, so the moved block stays (ticket drag-topic-groups-on-the-plan-board). */
 let planGroupDragging = false;
+/** The corner of a card is dragged: a render waits, so the cards keep the size of the drag (ticket resize-the-ticket-cards-of-the-plan-view). */
+let planCardResizing = false;
 /**
  * The open ticket window of the Plan view (ticket a-plan-view-ticket-opens-in-a-window): the project
  * key, the ticket id, and folded or not. A render rebuilds the canvas, so the window lives here and
@@ -16113,6 +16117,108 @@ const planZooms = new Map<string, number>();
 /** The zoom of the canvas of a project: 1 when the wheel never changed it. */
 function planZoom(key: string): number {
   return planZooms.get(key) ?? 1;
+}
+/**
+ * The size of every card of each project, by project key (ticket resize-the-ticket-cards-of-the-plan-view,
+ * user decision 1: on this computer, one size per project); localStorage keeps it over a restart.
+ */
+const planCardSizes = new Map<string, PlanCardSize>();
+/** The localStorage key of the card size of a project. */
+function planCardSizeStorage(key: string): string {
+  return `plan-card-size:${key}`;
+}
+/** The card size of a project: the saved one, else the normal size. */
+function planCardSize(key: string): PlanCardSize {
+  const known = planCardSizes.get(key);
+  if (known) return known;
+  let size = PLAN_CARD_DEFAULT;
+  try {
+    size = parseCardSize(JSON.parse(localStorage.getItem(planCardSizeStorage(key)) ?? "null")) ?? PLAN_CARD_DEFAULT;
+  } catch {
+    // Not readable: the normal size.
+  }
+  planCardSizes.set(key, size);
+  return size;
+}
+/** The project has a saved card size: the board menu offers the normal size again (user decision 4). */
+function planHasCardSize(key: string): boolean {
+  try {
+    if (localStorage.getItem(planCardSizeStorage(key)) !== null) return true;
+  } catch {
+    // Not readable: the size of this session decides.
+  }
+  const size = planCardSize(key);
+  return size.width !== PLAN_CARD_DEFAULT.width || size.height !== PLAN_CARD_DEFAULT.height;
+}
+/** Keeps the card size of a project, or takes it away (null: the normal size). */
+function planSaveCardSize(key: string, size: PlanCardSize | null): void {
+  if (size) planCardSizes.set(key, size);
+  else planCardSizes.delete(key);
+  try {
+    if (size) localStorage.setItem(planCardSizeStorage(key), JSON.stringify(size));
+    else localStorage.removeItem(planCardSizeStorage(key));
+  } catch {
+    // The size then applies until the app closes.
+  }
+}
+/**
+ * The card size as CSS variables on the board: the cards of the canvas and of the list window take it.
+ * The letters keep their size; a taller card shows more lines of the title (user decision 2).
+ */
+function planApplyCardSize(size: PlanCardSize): void {
+  planBoardEl.style.setProperty("--plan-card-width", `${size.width}px`);
+  planBoardEl.style.setProperty("--plan-card-height", `${size.height}px`);
+  planBoardEl.style.setProperty("--plan-card-lines", String(Math.max(1, 2 + Math.round((size.height - PLAN_CARD_DEFAULT.height) / 16))));
+}
+/**
+ * The handle in the bottom right corner of a card: a drag makes every card of the project bigger or
+ * smaller, live through the CSS variables; the drop saves the size and lays the board out again.
+ */
+function planCardGrip(key: string): HTMLElement {
+  const grip = mapElement("span", "plan-card-grip");
+  grip.setAttribute("aria-hidden", "true");
+  grip.title = "Drag to make all cards bigger or smaller";
+  grip.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    // The board would start a pan or a box, and the card would take the press.
+    event.stopPropagation();
+    event.preventDefault();
+    const from = planCardSize(key);
+    const begin = { pointer: event.pointerId, x: event.clientX, y: event.clientY, zoom: planZoom(key) };
+    let size = from;
+    planCardResizing = true;
+    planBoardEl.classList.add("plan-card-resizing");
+    grip.setPointerCapture(event.pointerId);
+    const move = (next: PointerEvent) => {
+      if (next.pointerId !== begin.pointer) return;
+      size = clampCardSize({ width: from.width + (next.clientX - begin.x) / begin.zoom, height: from.height + (next.clientY - begin.y) / begin.zoom });
+      planApplyCardSize(size);
+    };
+    const finish = (last: PointerEvent, cancel: boolean) => {
+      if (last.pointerId !== begin.pointer) return;
+      grip.removeEventListener("pointermove", move);
+      grip.removeEventListener("pointerup", up);
+      grip.removeEventListener("pointercancel", stop);
+      planBoardEl.classList.remove("plan-card-resizing");
+      if (!cancel && (size.width !== from.width || size.height !== from.height)) planSaveCardSize(key, size);
+      // The click of this drop comes next and is swallowed on the handle; then the board is laid out again.
+      window.setTimeout(() => {
+        planCardResizing = false;
+        renderPlan();
+      }, 0);
+    };
+    const up = (last: PointerEvent) => finish(last, false);
+    const stop = (last: PointerEvent) => finish(last, true);
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", up);
+    grip.addEventListener("pointercancel", stop);
+  });
+  // The card does not open its window or pick an arrow.
+  grip.addEventListener("click", (event) => {
+    event.stopPropagation();
+    event.preventDefault();
+  });
+  return grip;
 }
 /** The size of the canvas of the last render: a pan keeps part of it inside the board. */
 let planCanvasSize = { width: 0, height: 0 };
@@ -16317,7 +16423,7 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
       return;
     }
     const now = at(event);
-    const hits = boxHits(planPlaces, { x: begin.x, y: begin.y, width: now.x - begin.x, height: now.y - begin.y });
+    const hits = boxHits(planPlaces, { x: begin.x, y: begin.y, width: now.x - begin.x, height: now.y - begin.y }, planCardSize(begin.key));
     planSelected = begin.extend ? new Set([...planSelected, ...hits]) : new Set(hits);
     planSelectedArrow = null;
     planSelectedGroup = null;
@@ -16851,6 +16957,14 @@ function planBoardItems(ref: ProjectRef): HTMLButtonElement[] {
     item("Plan the flow", "Edit the arrows in a draft; nothing is saved until you click Confirm", planStartFlow, planDrafts.has(key) || !projectTasks.has(key)),
     item("Centre the tree", "Move the board so that the root card stands in the middle", planCentreTree),
   );
+  if (planHasCardSize(key)) {
+    items.push(
+      item("Cards back to normal size", "Give every card of this project its normal size again", () => {
+        planSaveCardSize(key, null);
+        renderPlan();
+      }),
+    );
+  }
   if (planSelected.size > 0) {
     items.push(
       item("Add comment (C)", "Draw an open box with a title around the selected tickets", () => planAddGroup(false)),
@@ -17283,7 +17397,7 @@ function planGroupName(group: PlanGroup): HTMLElement {
 /** Draws the toolbar, the tree and the side panel of the project of the view. */
 function renderPlan(): void {
   // A render would take away the selection box that the user draws.
-  if (!planOn || planBoxDragging || planGroupDragging) return;
+  if (!planOn || planBoxDragging || planGroupDragging || planCardResizing) return;
   // A render would take away the title or description box that the user types in; the blur renders.
   const editing = document.activeElement;
   if ((editing instanceof HTMLInputElement || editing instanceof HTMLTextAreaElement) && planBoardEl.contains(editing)) return;
@@ -17348,7 +17462,10 @@ function renderPlan(): void {
   const planName = (id: string) => addedOf(id)?.text ?? id;
   // The collapsed groups stand for their tickets; the layout takes the nodes unchanged.
   const tree = collapsedTree(layoutList, groups);
-  const treeLayout = planLayout(tree.nodes);
+  // One card size for every card of the project (ticket resize-the-ticket-cards-of-the-plan-view).
+  const size = planCardSize(key);
+  planApplyCardSize(size);
+  const treeLayout = planLayout(tree.nodes, size);
   // The open tickets without an arrow stand on a shelf under the tree, as many in a row as the board
   // holds (ticket plan-mode-is-unusable-on-wide-screen). A card of the tree is not on the shelf.
   const boardSize = { width: planBoardEl.clientWidth, height: planBoardEl.clientHeight };
@@ -17358,13 +17475,14 @@ function renderPlan(): void {
   const topics = topicBlocks(tickets, groups, new Set([...inTree, ...tree.hidden.keys()]));
   const inBlock = new Set(topics.flatMap((block) => block.members));
   const looseIds = notInFlow(flow).flatMap((one) => (byId.has(one.id) && !inTree.has(one.id) && !inBlock.has(one.id) ? [one.id] : []));
-  const perRow = boardSize.width > 0 ? Math.floor((boardSize.width - 2 * PLAN_PAD) / PLAN_COLUMN_STEP) : 4;
+  const perRow = boardSize.width > 0 ? Math.floor((boardSize.width - 2 * PLAN_PAD) / planSteps(size).column) : 4;
   const blockPlaces = planBlocks(
     topics.map((block) => ({ id: block.id, shown: block.shown, badge: topicFoldText(block.fold) !== "" })),
     treeLayout,
     perRow,
+    size,
   );
-  const shelf = planShelf(looseIds, blockPlaces.layout, perRow);
+  const shelf = planShelf(looseIds, blockPlaces.layout, perRow, size);
   // A wide shelf moves the tree right; the blocks move with it. A block that the user dragged stands
   // at its saved place, and the canvas grows to hold it (ticket drag-topic-groups-on-the-plan-board).
   const blockShift = shelf.layout.root.x - blockPlaces.layout.root.x;
@@ -17444,7 +17562,7 @@ function renderPlan(): void {
   canvas.style.height = `${layout.height}px`;
   // The first render of a project puts the root card in the middle of the board; then a drag moves it.
   planCanvasSize = { width: layout.width, height: layout.height };
-  planPlaceCanvas(key, planOffsets.get(key) ?? (boardSize.width > 0 ? planCentre(boardSize, layout) : { x: 0, y: 0 }), canvas);
+  planPlaceCanvas(key, planOffsets.get(key) ?? (boardSize.width > 0 ? planCentre(boardSize, layout, size) : { x: 0, y: 0 }), canvas);
   const svg = planSvg("svg", { class: "plan-wires", width: layout.width, height: layout.height, "aria-hidden": "true" });
   const marker = planSvg("marker", { id: "plan-head", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 8, markerHeight: 8, orient: "auto-start-reverse" });
   marker.append(planSvg("path", { d: "M 0 1 L 9 5 L 0 9 z", class: "plan-head" }));
@@ -17456,17 +17574,17 @@ function renderPlan(): void {
   defs.append(marker, markerSelected, markerAdded);
   svg.append(defs);
   const place = new Map(layout.cards.map((card) => [card.id, card]));
-  const half = PLAN_CARD_WIDTH / 2;
+  const half = size.width / 2;
   for (const id of layout.rootLines) {
     const card = place.get(id);
-    if (card) svg.append(planSvg("path", { class: "plan-root-line", d: planCurve(layout.root.x + half, layout.root.y + PLAN_CARD_HEIGHT, card.x + half, card.y) }));
+    if (card) svg.append(planSvg("path", { class: "plan-root-line", d: planCurve(layout.root.x + half, layout.root.y + size.height, card.x + half, card.y) }));
   }
   const nodeName = (id: string) => groupOfNode.get(id)?.title || planName(id);
   for (const line of tree.arrows) {
     const from = place.get(line.from);
     const to = place.get(line.to);
     if (!from || !to) continue;
-    const d = planCurve(from.x + half, from.y + PLAN_CARD_HEIGHT, to.x + half, to.y - 2);
+    const d = planCurve(from.x + half, from.y + size.height, to.x + half, to.y - 2);
     const merged = line.count > 1;
     const selected = line === selectedLine;
     // A line of one arrow names the tickets; a merged line stands for several and takes no click.
@@ -17531,12 +17649,12 @@ function renderPlan(): void {
   root.style.left = `${layout.root.x}px`;
   root.style.top = `${layout.root.y}px`;
   root.title = ref.root;
-  root.append(mapElement("span", "plan-root-name", projectName(ref)), mapElement("span", "plan-state", plural(tickets.length, "ticket")));
+  root.append(mapElement("span", "plan-root-name", projectName(ref)), mapElement("span", "plan-state", plural(tickets.length, "ticket")), planCardGrip(key));
   canvas.append(root);
   // The open comments and groups: a box around their cards, behind them, with a title bar above.
   for (const group of groups) {
     if (group.collapsed || group.auto) continue;
-    const box = groupBox(layout.cards, group.tickets, tree.hidden);
+    const box = groupBox(layout.cards, group.tickets, tree.hidden, size);
     if (!box) continue;
     const el = mapElement("div", `plan-group-box plan-color-${group.color}${planSelectedGroup === group.id ? " selected" : ""}`);
     el.dataset.group = group.id;
@@ -17592,7 +17710,7 @@ function renderPlan(): void {
       const work = mapElement("span", "plan-progress-work");
       work.style.width = share(progress.inWork);
       bar.append(done, work);
-      el.append(top, bar, mapElement("div", "plan-state", countLine));
+      el.append(top, bar, mapElement("div", "plan-state", countLine), planCardGrip(key));
       if (progress.badge) el.append(mapElement("span", `plan-badge ${progress.badge}`, PLAN_BADGE_TEXT[progress.badge]));
       el.addEventListener("click", (event) => {
         // A collapsed group takes no arrow (the brief).
@@ -17621,7 +17739,7 @@ function renderPlan(): void {
       top.append(dot, mapElement("span", "plan-name", added.text));
       const line = mapElement("div", "plan-state", "Backlog · ");
       line.append(mapElement("span", "plan-mark new", "new"));
-      el.append(top, line, plusButton(card.id));
+      el.append(top, line, plusButton(card.id), planCardGrip(key));
       canvas.append(el);
       continue;
     }
@@ -17652,6 +17770,7 @@ function renderPlan(): void {
     el.append(top, mapElement("div", "plan-card-title", ticket.title), line);
     if (badge === "next" || badge === "early") el.append(mapElement("span", `plan-badge ${badge}`, PLAN_BADGE_TEXT[badge]));
     if (draft) el.append(plusButton(ticket.id));
+    el.append(planCardGrip(key));
     canvas.append(el);
   }
   // A card of the shelf or of a topic block: a ticket that is not in the tree. No place (null): a card
@@ -17679,6 +17798,8 @@ function renderPlan(): void {
       line.append(detail);
     }
     el.append(top, mapElement("div", "plan-card-title", ticket.title), line);
+    // A card of the list window has no handle.
+    if (card) el.append(planCardGrip(key));
     // While an arrow is drawn or a ticket placed, a click picks it; while planning it places it; else it selects.
     el.addEventListener("click", (event) => {
       if (!card) planOpenWindow(key, ticket.id);
@@ -17845,8 +17966,8 @@ function renderPlan(): void {
   if (flowTickets(flow).length === 0) {
     // The note stands under the root card, above the shelf.
     const note = mapElement("p", "map-muted plan-empty", draft ? "No arrow yet: click a ticket of Not in the flow to place it." : "No ticket of this project has an arrow yet.");
-    note.style.left = `${layout.root.x + PLAN_CARD_WIDTH / 2}px`;
-    note.style.top = `${layout.root.y + PLAN_CARD_HEIGHT + 12}px`;
+    note.style.left = `${layout.root.x + size.width / 2}px`;
+    note.style.top = `${layout.root.y + size.height + 12}px`;
     canvas.append(note);
   }
   planBoardEl.replaceChildren(canvas);

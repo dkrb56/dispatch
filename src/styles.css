@@ -10714,7 +10714,8 @@ svg.links {
   stroke-dasharray: 5 5;
 }
 
-/* 200 x 84 px: PLAN_CARD_WIDTH and PLAN_CARD_HEIGHT of plantree.ts. */
+/* The card size of the project (ticket resize-the-ticket-cards-of-the-plan-view): main.ts sets the
+   variables on the board; without them 200 x 84 px, PLAN_CARD_WIDTH and PLAN_CARD_HEIGHT of plantree.ts. */
 .plan-card {
   display: flex;
   position: absolute;
@@ -10722,8 +10723,8 @@ svg.links {
   flex-direction: column;
   justify-content: center;
   gap: 3px;
-  width: 200px;
-  height: 84px;
+  width: var(--plan-card-width, 200px);
+  height: var(--plan-card-height, 84px);
   padding: 6px 10px;
   border: 1px solid var(--hairline);
   border-radius: 10px;
@@ -10734,7 +10735,7 @@ svg.links {
   border-color: var(--work-line);
 }
 
-/* The title of the ticket on its card: at most 2 lines. */
+/* The title of the ticket on its card: 2 lines, more on a taller card (--plan-card-lines). */
 .plan-card-title {
   display: -webkit-box;
   overflow: hidden;
@@ -10742,7 +10743,7 @@ svg.links {
   font-size: calc(12px * var(--text-scale));
   line-height: 1.3;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: var(--plan-card-lines, 2);
 }
 
 .plan-ticket.new {
@@ -11044,7 +11045,7 @@ svg.links {
 
 .plan-list-body {
   display: grid;
-  grid-template-columns: repeat(auto-fill, 200px);
+  grid-template-columns: repeat(auto-fill, var(--plan-card-width, 200px));
   gap: 8px;
   align-content: start;
 }
@@ -11125,6 +11126,33 @@ svg.links {
 .plan-group-dragging,
 .plan-group-dragging * {
   cursor: grabbing;
+}
+
+/* The handle in the bottom right corner of a card: a drag sizes every card of the project. */
+.plan-card-grip {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  z-index: 1;
+  width: 12px;
+  height: 12px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  border-bottom-right-radius: 8px;
+  box-sizing: border-box;
+  opacity: 0.25;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.plan-card:hover .plan-card-grip,
+.plan-card-resizing .plan-card-grip {
+  opacity: 0.9;
+}
+
+.plan-card-resizing,
+.plan-card-resizing * {
+  cursor: nwse-resize;
 }
 
 .plan-group-title .plan-group-name:hover {

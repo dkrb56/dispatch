@@ -29,6 +29,45 @@ export const PLAN_GRID = 50;
 /** The free space around the tree, one slot of the grid. */
 export const PLAN_PAD = 50;
 
+// Card size (ticket resize-the-ticket-cards-of-the-plan-view): the user drags the corner of a card and
+// every card of the project takes that size; the layout functions take the size as their last argument.
+
+/** The size of every card of a project in px. */
+export interface PlanCardSize {
+  width: number;
+  height: number;
+}
+
+/** The normal size of a card, and the smallest and the largest size that a drag gives. */
+export const PLAN_CARD_DEFAULT: PlanCardSize = { width: PLAN_CARD_WIDTH, height: PLAN_CARD_HEIGHT };
+export const PLAN_CARD_MIN: PlanCardSize = { width: 120, height: 60 };
+export const PLAN_CARD_MAX: PlanCardSize = { width: 600, height: 400 };
+
+/** The size rounded to whole px and kept between the limits; the normal size for a value that is not two finite numbers. */
+export function clampCardSize(size: { width: number; height: number }): PlanCardSize {
+  if (!Number.isFinite(size.width) || !Number.isFinite(size.height)) return { ...PLAN_CARD_DEFAULT };
+  const keep = (value: number, low: number, high: number) => Math.min(high, Math.max(low, Math.round(value)));
+  return { width: keep(size.width, PLAN_CARD_MIN.width, PLAN_CARD_MAX.width), height: keep(size.height, PLAN_CARD_MIN.height, PLAN_CARD_MAX.height) };
+}
+
+/** The size from a saved value (the parsed JSON); null when it is not an object with two numbers. */
+export function parseCardSize(value: unknown): PlanCardSize | null {
+  if (typeof value !== "object" || value === null) return null;
+  const { width, height } = value as { width?: unknown; height?: unknown };
+  if (typeof width !== "number" || typeof height !== "number" || !Number.isFinite(width) || !Number.isFinite(height)) return null;
+  return clampCardSize({ width, height });
+}
+
+/**
+ * The steps between the cards for a card size, each a whole number of grid slots: `column` the card
+ * width and one slot, `shelfRow` the card height and 16 px, `row` (a row of the tree) one slot more.
+ */
+export function planSteps(size: PlanCardSize): { column: number; row: number; shelfRow: number } {
+  const up = (value: number) => Math.ceil(value / PLAN_GRID) * PLAN_GRID;
+  const shelfRow = up(size.height + 16);
+  return { column: up(size.width + PLAN_GRID), row: shelfRow + PLAN_GRID, shelfRow };
+}
+
 /** The columns of a ticket that is not finished. */
 const OPEN = ["backlog", "new", "in-progress"];
 
@@ -125,7 +164,8 @@ export interface PlanLayout {
  * come after (the root for none), ties by the order of the list (the board order); then each row is
  * centred under the root. Every corner stands on the 50 px grid.
  */
-export function planLayout(tickets: readonly PlanTicket[]): PlanLayout {
+export function planLayout(tickets: readonly PlanTicket[], size: PlanCardSize = PLAN_CARD_DEFAULT): PlanLayout {
+  const steps = planSteps(size);
   const arrows = planArrows(tickets);
   const flow = flowTickets(tickets);
   const rows = planRows(tickets);
@@ -133,7 +173,7 @@ export function planLayout(tickets: readonly PlanTicket[]): PlanLayout {
   const last = Math.max(0, ...rows.values());
   // The centres first, around the axis x = 0 of the root.
   const centre = new Map<string, number>();
-  const rootLeft = -PLAN_CARD_WIDTH / 2;
+  const rootLeft = snap(-size.width / 2);
   for (let row = 1; row <= last; row += 1) {
     const mean = (id: string) => {
       const xs = before(arrows, id).flatMap((from) => {
@@ -147,26 +187,26 @@ export function planLayout(tickets: readonly PlanTicket[]): PlanLayout {
       .map((ticket) => ({ id: ticket.id, key: mean(ticket.id) }))
       .sort((a, b) => a.key - b.key || (index.get(a.id) ?? 0) - (index.get(b.id) ?? 0));
     inRow.forEach((card, at) => {
-      const left = (at - (inRow.length - 1) / 2) * PLAN_COLUMN_STEP - PLAN_CARD_WIDTH / 2;
+      const left = (at - (inRow.length - 1) / 2) * steps.column - size.width / 2;
       // All the cards of a row move by the same amount: the step is a whole number of slots.
-      centre.set(card.id, snap(left) + PLAN_CARD_WIDTH / 2);
+      centre.set(card.id, snap(left) + size.width / 2);
     });
   }
-  const lefts = [rootLeft, ...[...centre.values()].map((x) => x - PLAN_CARD_WIDTH / 2)];
+  const lefts = [rootLeft, ...[...centre.values()].map((x) => x - size.width / 2)];
   const shift = PLAN_PAD - Math.min(...lefts);
   const cards: PlanPlace[] = flow.map((ticket) => {
     const row = rows.get(ticket.id) ?? 1;
-    return { id: ticket.id, row, x: (centre.get(ticket.id) ?? 0) - PLAN_CARD_WIDTH / 2 + shift, y: PLAN_PAD + row * PLAN_ROW_STEP };
+    return { id: ticket.id, row, x: (centre.get(ticket.id) ?? 0) - size.width / 2 + shift, y: PLAN_PAD + row * steps.row };
   });
   const root = { x: rootLeft + shift, y: PLAN_PAD };
-  const right = Math.max(root.x, ...cards.map((card) => card.x)) + PLAN_CARD_WIDTH;
+  const right = Math.max(root.x, ...cards.map((card) => card.x)) + size.width;
   return {
     root,
     cards,
     rootLines: flow.filter((ticket) => before(arrows, ticket.id).length === 0).map((ticket) => ticket.id),
     arrows,
     width: right + PLAN_PAD,
-    height: PLAN_PAD + last * PLAN_ROW_STEP + PLAN_CARD_HEIGHT + PLAN_PAD,
+    height: PLAN_PAD + last * steps.row + size.height + PLAN_PAD,
   };
 }
 
@@ -199,22 +239,23 @@ export interface PlanShelf {
  * under the root, every corner on the 50 px grid. The heading stands one slot above the first row.
  * When a row would start left of the free space, the tree and the shelf move right together.
  */
-export function planShelf(ids: readonly string[], layout: PlanLayout, perRow = 4): PlanShelf {
+export function planShelf(ids: readonly string[], layout: PlanLayout, perRow = 4, size: PlanCardSize = PLAN_CARD_DEFAULT): PlanShelf {
   if (ids.length === 0) return { layout, cards: [], title: null };
   const across = Math.max(1, Math.floor(perRow));
   const treeBottom = layout.height - PLAN_PAD;
   const titleY = Math.ceil((treeBottom + PLAN_GRID) / PLAN_GRID) * PLAN_GRID;
   const firstY = titleY + PLAN_GRID;
+  const steps = planSteps(size);
   const cards: PlanPlace[] = ids.map((id, at) => {
     const row = Math.floor(at / across);
     const inRow = Math.min(across, ids.length - row * across);
-    const left = snap(layout.root.x - ((inRow - 1) / 2) * PLAN_COLUMN_STEP);
-    return { id, row, x: left + (at % across) * PLAN_COLUMN_STEP, y: firstY + row * PLAN_SHELF_ROW_STEP };
+    const left = snap(layout.root.x - ((inRow - 1) / 2) * steps.column);
+    return { id, row, x: left + (at % across) * steps.column, y: firstY + row * steps.shelfRow };
   });
   const shift = Math.max(0, PLAN_PAD - Math.min(...cards.map((card) => card.x)));
   const moved = cards.map((card) => ({ ...card, x: card.x + shift }));
-  const right = Math.max(...moved.map((card) => card.x)) + PLAN_CARD_WIDTH + PLAN_PAD;
-  const bottom = Math.max(...moved.map((card) => card.y)) + PLAN_CARD_HEIGHT + PLAN_PAD;
+  const right = Math.max(...moved.map((card) => card.x)) + size.width + PLAN_PAD;
+  const bottom = Math.max(...moved.map((card) => card.y)) + size.height + PLAN_PAD;
   return {
     layout: {
       ...layout,
@@ -241,8 +282,8 @@ export interface PlanOffset {
 }
 
 /** The offset that puts the centre of the root card at the middle of the board, the top of the canvas at the top of the board. */
-export function planCentre(board: PlanSize, layout: Pick<PlanLayout, "root">): PlanOffset {
-  return { x: Math.round(board.width / 2 - (layout.root.x + PLAN_CARD_WIDTH / 2)), y: 0 };
+export function planCentre(board: PlanSize, layout: Pick<PlanLayout, "root">, size: PlanCardSize = PLAN_CARD_DEFAULT): PlanOffset {
+  return { x: Math.round(board.width / 2 - (layout.root.x + size.width / 2)), y: 0 };
 }
 
 /** The offset kept so that at least `PLAN_PAN_KEEP` px of the canvas (all of a smaller canvas) stays inside the board on each axis. */
@@ -483,6 +524,7 @@ export function groupBox(
   places: readonly { id: string; x: number; y: number }[],
   ids: readonly string[],
   hidden: ReadonlyMap<string, string> = new Map(),
+  size: PlanCardSize = PLAN_CARD_DEFAULT,
 ): PlanRect | null {
   const at = new Map(places.map((place) => [place.id, place]));
   const cards = [...new Set(ids.map((id) => hidden.get(id) ?? id))].flatMap((id) => {
@@ -492,8 +534,8 @@ export function groupBox(
   if (cards.length === 0) return null;
   const left = Math.min(...cards.map((card) => card.x)) - PLAN_BOX_PAD;
   const top = Math.min(...cards.map((card) => card.y)) - PLAN_BOX_PAD - PLAN_BOX_TITLE;
-  const right = Math.max(...cards.map((card) => card.x)) + PLAN_CARD_WIDTH + PLAN_BOX_PAD;
-  const bottom = Math.max(...cards.map((card) => card.y)) + PLAN_CARD_HEIGHT + PLAN_BOX_PAD;
+  const right = Math.max(...cards.map((card) => card.x)) + size.width + PLAN_BOX_PAD;
+  const bottom = Math.max(...cards.map((card) => card.y)) + size.height + PLAN_BOX_PAD;
   return { x: left, y: top, width: right - left, height: bottom - top };
 }
 
@@ -664,8 +706,9 @@ export interface PlanBlocks {
  * wide as its cards in rows of the line width. Every card corner and every line top stands on the
  * 50 px grid. Give the result layout to `planShelf`, so the shelf stands under the blocks.
  */
-export function planBlocks(blocks: readonly { id: string; shown: readonly string[]; badge: boolean }[], layout: PlanLayout, perRow = 4): PlanBlocks {
+export function planBlocks(blocks: readonly { id: string; shown: readonly string[]; badge: boolean }[], layout: PlanLayout, perRow = 4, size: PlanCardSize = PLAN_CARD_DEFAULT): PlanBlocks {
   if (blocks.length === 0) return { layout, blocks: [] };
+  const steps = planSteps(size);
   const across = Math.max(1, Math.floor(perRow));
   const sized = blocks.map((block) => {
     const columns = Math.max(1, Math.min(across, block.shown.length));
@@ -684,21 +727,21 @@ export function planBlocks(blocks: readonly { id: string; shown: readonly string
   let top = Math.ceil((layout.height - PLAN_PAD + PLAN_GRID) / PLAN_GRID) * PLAN_GRID;
   for (const line of lines) {
     const width = line.reduce((sum, one) => sum + one.columns, 0);
-    let left = snap(layout.root.x - ((width - 1) / 2) * PLAN_COLUMN_STEP);
+    let left = snap(layout.root.x - ((width - 1) / 2) * steps.column);
     let bottom = top;
     for (const block of line) {
       const firstY = top + PLAN_GRID + PLAN_ABOUT_HEIGHT;
       const cards: PlanPlace[] = block.shown.map((id, at) => ({
         id,
         row: Math.floor(at / block.columns),
-        x: left + (at % block.columns) * PLAN_COLUMN_STEP,
-        y: firstY + Math.floor(at / block.columns) * PLAN_SHELF_ROW_STEP,
+        x: left + (at % block.columns) * steps.column,
+        y: firstY + Math.floor(at / block.columns) * steps.shelfRow,
       }));
-      const badge = block.badge ? { x: left, y: firstY + block.rows * PLAN_SHELF_ROW_STEP } : null;
-      const content = Math.max(cards.length > 0 ? firstY + (block.rows - 1) * PLAN_SHELF_ROW_STEP + PLAN_CARD_HEIGHT : firstY, badge ? badge.y + PLAN_FOLD_HEIGHT : firstY);
+      const badge = block.badge ? { x: left, y: firstY + block.rows * steps.shelfRow } : null;
+      const content = Math.max(cards.length > 0 ? firstY + (block.rows - 1) * steps.shelfRow + size.height : firstY, badge ? badge.y + PLAN_FOLD_HEIGHT : firstY);
       const boxTop = firstY - PLAN_ABOUT_HEIGHT - PLAN_BOX_PAD - PLAN_BOX_TITLE;
       const boxBottom = content + PLAN_BOX_PAD;
-      const boxWidth = (block.columns - 1) * PLAN_COLUMN_STEP + PLAN_CARD_WIDTH + 2 * PLAN_BOX_PAD;
+      const boxWidth = (block.columns - 1) * steps.column + size.width + 2 * PLAN_BOX_PAD;
       const aboutY = boxTop + PLAN_BOX_TITLE + 4;
       placed.push({
         id: block.id,
@@ -708,7 +751,7 @@ export function planBlocks(blocks: readonly { id: string; shown: readonly string
         badge,
       });
       bottom = Math.max(bottom, boxBottom);
-      left += block.columns * PLAN_COLUMN_STEP;
+      left += block.columns * steps.column;
     }
     top = Math.ceil((bottom + PLAN_GRID) / PLAN_GRID) * PLAN_GRID;
   }
@@ -815,13 +858,13 @@ export function toggleSelection(selected: ReadonlySet<string>, id: string, exten
 }
 
 /** The ids whose card touches the selection box; the box may be drawn in any direction. */
-export function boxHits(places: readonly { id: string; x: number; y: number }[], rect: PlanRect): string[] {
+export function boxHits(places: readonly { id: string; x: number; y: number }[], rect: PlanRect, size: PlanCardSize = PLAN_CARD_DEFAULT): string[] {
   const left = Math.min(rect.x, rect.x + rect.width);
   const right = Math.max(rect.x, rect.x + rect.width);
   const top = Math.min(rect.y, rect.y + rect.height);
   const bottom = Math.max(rect.y, rect.y + rect.height);
   return places
-    .filter((place) => place.x <= right && place.x + PLAN_CARD_WIDTH >= left && place.y <= bottom && place.y + PLAN_CARD_HEIGHT >= top)
+    .filter((place) => place.x <= right && place.x + size.width >= left && place.y <= bottom && place.y + size.height >= top)
     .map((place) => place.id);
 }
 
