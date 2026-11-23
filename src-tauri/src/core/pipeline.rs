@@ -1960,12 +1960,28 @@ function Measure-Limit { Command-Limit 'measure-commands.txt' 600 }
 function Lock-Path { Join-Path $Reports 'measure\lock' }
 function Merge-Lock { Join-Path $Reports 'merge\lock' }
 
+# The process $ProcessId runs and is the one that wrote a file at the time $Since. Windows gives the
+# id of an ended process to a new process, so a process that started after $Since (1 s for a time
+# without fractions) is another one. A time that does not parse leaves the id alone to decide; a
+# start time that cannot be read (a process of another user) is another process.
+function Owner-Runs([string]$ProcessId, [string]$Since) {
+  $other = 0
+  if (-not [int]::TryParse($ProcessId, [ref]$other)) { return $false }
+  $process = Get-Process -Id $other -ErrorAction SilentlyContinue
+  if ($null -eq $process) { return $false }
+  $time = [DateTimeOffset]::MinValue
+  if (-not [DateTimeOffset]::TryParse("$Since", [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeLocal, [ref]$time)) { return $true }
+  $started = $null
+  try { $started = $process.StartTime } catch { }
+  if ($null -eq $started) { return $false }
+  $started.ToUniversalTime() -le $time.UtcDateTime.AddSeconds(1)
+}
+
 # The ticket of a lock whose process still runs, else $null.
 function Lock-Holder([string]$Lock) {
   if (-not (Test-Path -LiteralPath $Lock)) { return $null }
   $holder = "$(Get-Content -LiteralPath $Lock -Raw -ErrorAction SilentlyContinue)".Trim() -split "`t"
-  $other = 0
-  if ([int]::TryParse($holder[0], [ref]$other) -and $null -ne (Get-Process -Id $other -ErrorAction SilentlyContinue)) {
+  if (Owner-Runs $holder[0] $(if ($holder.Count -gt 2) { $holder[2] } else { '' })) {
     if ($holder.Count -gt 1) { return $holder[1] }
     return 'another task'
   }
@@ -2272,12 +2288,12 @@ function Listed-Workers {
 
 # The ticket that holds a work folder: the script of the record still runs, or the use is work and
 # the work run of that ticket still runs or waits at a prompt. Else $null: a stale record is
-# overwritten by the next user. No file time and no reflog decides.
+# overwritten by the next user. No file time and no reflog decides; the time of the record only
+# tells the script of the record from a later process with the same id (Owner-Runs).
 function Record-Holder([int]$N = $script:FolderNo) {
   $record = Read-Record $N
   if ($null -eq $record -or -not $record.ticket) { return $null }
-  $other = 0
-  if ([int]::TryParse($record.pid, [ref]$other) -and $other -ne $PID -and $null -ne (Get-Process -Id $other -ErrorAction SilentlyContinue)) { return $record.ticket }
+  if ($record.pid -ne "$PID" -and (Owner-Runs $record.pid $record.since)) { return $record.ticket }
   if ($record.use -eq 'work') {
     $state = Worker-State (Find-Worker (Listed-Workers) $record.ticket 'work')
     if ($state -eq 'working' -or $state -eq 'blocked') { return $record.ticket }
@@ -10912,7 +10928,7 @@ if (args[0] === 'agents') {
 
         // A lock of a process that runs: refused after the limit, with the name of the other task.
         write_file(&project.measure_commands_file(), "# limit 2\nping -n 30 127.0.0.1\ncmd /c echo second\n").unwrap();
-        write_file(&lock, &format!("{}\tt-other\t2026-11-12T22:00:00\n", std::process::id())).unwrap();
+        write_file(&lock, &format!("{}\tt-other\t{}\n", std::process::id(), now_iso())).unwrap();
         let start = std::time::Instant::now();
         let (code, out) = run_script(&project, &fake, "done", &["measure", "t-1", "2"]);
         assert_eq!(code, 2, "{out}");
@@ -10925,6 +10941,12 @@ if (args[0] === 'agents') {
         let mut gone = Command::new("cmd").args(["/c", "exit"]).spawn().unwrap();
         gone.wait().unwrap();
         write_file(&lock, &format!("{}\tt-gone\t2026-11-12T22:00:00\n", gone.id())).unwrap();
+        let (code, out) = run_script(&project, &fake, "done", &["measure", "t-1", "2"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("second") && !lock.exists(), "{out}");
+
+        // A lock whose id came back: the process runs but started after the time of the lock. It is removed too.
+        write_file(&lock, &format!("{}\tt-reused\t2000-01-01T00:00:00.000Z\n", std::process::id())).unwrap();
         let (code, out) = run_script(&project, &fake, "done", &["measure", "t-1", "2"]);
         assert_eq!(code, 0, "{out}");
         assert!(out.contains("second") && !lock.exists(), "{out}");
@@ -14075,7 +14097,24 @@ if (args[0] === 'agents') {
 
         /// A record of a work folder whose script `pid` is given: the test process lives, `NO_PROCESS` does not.
         fn write_folder_record(project: &Project, n: u8, ticket: &str, using: &str, pid: u32) {
-            write_file(&project.folder_record(n), &format!("ticket: {ticket}\nuse: {using}\npid: {pid}\njob: -\nsince: 2026-11-22T10:00:00\n")).unwrap();
+            write_file(&project.folder_record(n), &format!("ticket: {ticket}\nuse: {using}\npid: {pid}\njob: -\nsince: {}\n", now_iso())).unwrap();
+        }
+
+        /// Windows gives the id of an ended script to a new process: a record whose process started
+        /// after the time of the record holds no folder, and the next Approve takes that folder.
+        #[test]
+        fn a_record_whose_process_id_came_back_holds_no_folder() {
+            let (project, fake, _base) = work_project("work-reused-pid");
+            set_work_folder_count(&project, 2);
+            let one = project.work_folder_at(1);
+            plan_and_approve(&project, &fake, "t-1");
+            write_report(&project, "t-1");
+            // The test process runs, but it started after this time: its id here is a reused one.
+            write_file(&project.folder_record(1), &format!("ticket: t-1\nuse: work\npid: {}\njob: -\nsince: 2000-01-01T00:00:00\n", std::process::id())).unwrap();
+            plan_and_approve(&project, &fake, "t-2");
+            assert_eq!(folder_branch(&one), "task/t-2");
+            assert!(read(&project.folder_record(1)).starts_with("ticket: t-2\nuse: work\n"));
+            clean(&project);
         }
 
         /// The branch that a work folder has checked out.
@@ -15133,6 +15172,12 @@ if (args[0] === 'agents') {
 
     /// A process id that never runs on Windows: process ids there are multiples of 4.
     const NO_PROCESS: u32 = 4_000_000_001;
+
+    /// The time now as the script reads it in a record or a lock: a lock or record with the id of
+    /// the test process and this time belongs to a process that runs.
+    fn now_iso() -> String {
+        crate::core::tickets::iso(SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64)
+    }
 
     /// A branch project whose task t-1 waits for Merge, and a merge of its branch that git keeps
     /// open, as a merge script leaves it before its gate. Gives the project, the base, and the full
