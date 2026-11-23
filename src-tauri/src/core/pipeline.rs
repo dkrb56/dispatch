@@ -8977,7 +8977,7 @@ pub(crate) mod tests {
         let git = |args: &[&str]| run_git(&root, args).unwrap();
         // A global ignore file can hide `.claude/settings.local.json` (on the machine of the user
         // it does). The repository names a file that does not exist in its place.
-        init_repo(&root);
+        git_init(&project);
         project.set_repo();
         // A file of the user that the commit must leave alone.
         write_file(&root.join("notes.txt"), "mine\n").unwrap();
@@ -10733,9 +10733,10 @@ if (args[0] === 'agents') {
         plan(project).unwrap().steps.iter().filter(|step| !step.done).map(|step| step.title).collect()
     }
 
-    /// Makes the root of a proof project a git repository with a local identity, as `git_scratch`.
+    /// Makes the root of a proof project a git repository with a local identity, as `git_scratch`:
+    /// a copy of the ready project "git", which holds only `.git`.
     fn git_init(project: &Project) {
-        init_repo(&project.root);
+        traced("git_init", || copy_tree(&ready_project("git"), &project.root));
     }
 
     #[test]
@@ -11563,11 +11564,15 @@ if (args[0] === 'agents') {
 
     /// A git scratch project after Apply, with the fake `claude` next to it (ticket
     /// project-actions): the tests of actions.rs start their plan runs through the script with it.
+    /// The project is a copy of the ready project "applied".
     pub(crate) fn action_scratch(name: &str) -> (Project, PathBuf) {
-        let project = git_scratch(name);
-        apply(&project, &[]).unwrap();
-        let fake = fake_claude(project.root.parent().unwrap());
-        (project, fake)
+        traced("action_scratch", || {
+            let mut project = scratch(name);
+            copy_tree(&ready_project("applied"), &project.root);
+            project.set_repo();
+            let fake = fake_claude(project.root.parent().unwrap());
+            (project, fake)
+        })
     }
 
     /// Runs the script with the fake `claude` as `run_script` of the module does: exit code 0 gives
@@ -11577,12 +11582,16 @@ if (args[0] === 'agents') {
         if code == 0 { Ok(text) } else { Err(text) }
     }
 
-    /// Makes a git repository of a scratch project, with an identity and no global ignore file.
+    /// Makes a git repository of a scratch project, with an identity and no global ignore file: a
+    /// copy of the ready project "git" of the run, with no git start (ticket
+    /// the-tests-get-a-ready-git-project-as-a).
     pub(crate) fn git_scratch(name: &str) -> Project {
-        let mut project = scratch(name);
-        init_repo(&project.root);
-        project.set_repo();
-        project
+        traced("git_scratch", || {
+            let mut project = scratch(name);
+            copy_tree(&ready_project("git"), &project.root);
+            project.set_repo();
+            project
+        })
     }
 
     /// Makes `root` a git repository with a local identity, no signing and no global ignore file
@@ -11596,6 +11605,201 @@ if (args[0] === 'agents') {
         let mut text = fs::read_to_string(&config).unwrap();
         text.push_str("[user]\n\tname = Dispatch test\n\temail = test@example.invalid\n[commit]\n\tgpgsign = false\n[core]\n\texcludesFile = no-such-ignore-file\n");
         fs::write(&config, text).unwrap();
+    }
+
+    /// The folder of the ready projects of this test run (ticket
+    /// the-tests-get-a-ready-git-project-as-a): `%TEMP%\dispatch-ready-<run>`. Under nextest each
+    /// test is a process of its own, and all of them share `NEXTEST_RUN_ID`; `cargo test` is one
+    /// process, named by its pid and its start time (Windows reuses pids).
+    fn ready_dir() -> &'static Path {
+        static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        DIR.get_or_init(|| {
+            let run = std::env::var("NEXTEST_RUN_ID").ok().filter(|id| !id.is_empty()).unwrap_or_else(|| {
+                let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+                format!("pid-{}-{nanos}", std::process::id())
+            });
+            let dir = std::env::temp_dir().join(format!("dispatch-ready-{run}"));
+            fs::create_dir_all(&dir).unwrap();
+            dir
+        })
+    }
+
+    /// The root of the ready project of a kind, built on its first use in this test run: "git" is
+    /// the state after `git_scratch`, "applied" after `git_scratch` and `apply(&[])`, "branch" the
+    /// project of `branch_project` before its fake `claude`. A test copies it with `copy_tree`.
+    fn ready_project(kind: &'static str) -> PathBuf {
+        use std::sync::OnceLock;
+        static GIT: OnceLock<PathBuf> = OnceLock::new();
+        static APPLIED: OnceLock<PathBuf> = OnceLock::new();
+        static BRANCH: OnceLock<PathBuf> = OnceLock::new();
+        let cell = match kind {
+            "git" => &GIT,
+            "applied" => &APPLIED,
+            "branch" => &BRANCH,
+            _ => panic!("no ready project of the kind {kind}"),
+        };
+        cell.get_or_init(|| ready_build(kind)).clone()
+    }
+
+    /// The lock of the build of a ready project. Its drop removes the lock and the half-built folder,
+    /// also after a panic of the build, so that a waiting process takes the lock and builds itself.
+    struct BuildLock {
+        lock: PathBuf,
+        building: PathBuf,
+    }
+
+    impl Drop for BuildLock {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.building);
+            let _ = fs::remove_file(&self.lock);
+        }
+    }
+
+    /// Builds the ready project of a kind once for all the processes of the run: the process that
+    /// creates `<kind>.lock` builds into `<kind>.building` and renames it to `<kind>`; the others wait
+    /// for `<kind>`, 10 minutes at most. The root of the project is `<kind>\proj`, the name of the
+    /// root of `scratch`.
+    fn ready_build(kind: &str) -> PathBuf {
+        let dir = ready_dir();
+        let done = dir.join(kind);
+        let lock = dir.join(format!("{kind}.lock"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+        loop {
+            if done.exists() {
+                return done.join("proj");
+            }
+            match fs::OpenOptions::new().write(true).create_new(true).open(&lock) {
+                Ok(_) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    assert!(std::time::Instant::now() < deadline, "the ready project {kind} is not built after 10 minutes; the lock: {}", lock.display());
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(error) => panic!("the lock {}: {error}", lock.display()),
+            }
+        }
+        let building = dir.join(format!("{kind}.building"));
+        let _lock = BuildLock { lock, building: building.clone() };
+        // Another process finished between the look and the lock.
+        if done.exists() {
+            return done.join("proj");
+        }
+        remove_old_ready(dir);
+        let _ = fs::remove_dir_all(&building);
+        let root = building.join("proj");
+        fs::create_dir_all(&root).unwrap();
+        let before = gitfiles::STARTS.with(|starts| starts.get().0);
+        let mut project = Project { reports: root.join(TASKS_DIR), root, in_git: false, repo: None };
+        init_repo(&project.root);
+        project.set_repo();
+        match kind {
+            "applied" => apply(&project, &[]).unwrap(),
+            "branch" => {
+                write_file(&project.root.join("README.md"), "scratch project\n").unwrap();
+                apply(&project, &[0]).unwrap();
+                set_branches(&project, true);
+                apply(&project, &[]).unwrap();
+                assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
+                git_out(&project, &["add", "--all"]);
+                git_out(&project, &["commit", "-q", "-m", "scratch setup"]);
+            }
+            _ => {}
+        }
+        let starts = gitfiles::STARTS.with(|starts| starts.get().0) - before;
+        SETUP_BUILDS.with(|builds| builds.set(builds.get() + starts));
+        trace_setup(&format!("build {kind}"), starts);
+        // A virus scanner can hold a file of the new folder for a moment.
+        let mut tries = 0;
+        while let Err(error) = fs::rename(&building, &done) {
+            tries += 1;
+            assert!(tries < 50, "the rename of {} to {}: {error}", building.display(), done.display());
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        done.join("proj")
+    }
+
+    /// Removes the ready projects of earlier test runs that are older than one day (user decision 1
+    /// of ticket the-tests-get-a-ready-git-project-as-a). Each test works on its own copy, so a
+    /// removed folder takes no file of a running test.
+    fn remove_old_ready(current: &Path) {
+        let day = std::time::Duration::from_secs(24 * 60 * 60);
+        let Ok(entries) = fs::read_dir(std::env::temp_dir()) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path == current || !entry.file_name().to_string_lossy().starts_with("dispatch-ready-") {
+                continue;
+            }
+            let age = entry.metadata().and_then(|meta| meta.modified()).ok().and_then(|time| time.elapsed().ok());
+            if age.is_some_and(|age| age > day) {
+                let _ = fs::remove_dir_all(&path);
+            }
+        }
+    }
+
+    /// Copies the files and folders of `from` into `to`, with the modified time and, on Windows, the
+    /// created time of each file. Git compares both with the stat data of its index (Git for Windows
+    /// takes the created time as ctime): a copy with new times would rehash its files and write its
+    /// index at its first `git status`.
+    fn copy_tree(from: &Path, to: &Path) {
+        fs::create_dir_all(to).unwrap();
+        for entry in fs::read_dir(from).unwrap() {
+            let entry = entry.unwrap();
+            let (source, target) = (entry.path(), to.join(entry.file_name()));
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&source, &target);
+                continue;
+            }
+            fs::copy(&source, &target).unwrap();
+            let meta = fs::metadata(&source).unwrap();
+            let times = fs::FileTimes::new().set_modified(meta.modified().unwrap());
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::{FileTimesExt, OpenOptionsExt};
+                // FILE_WRITE_ATTRIBUTES: it opens a read-only file too (the objects of git).
+                let file = fs::OpenOptions::new().access_mode(0x100).open(&target).unwrap();
+                file.set_times(times.set_created(meta.created().unwrap())).unwrap();
+            }
+            #[cfg(not(windows))]
+            if let Ok(file) = fs::OpenOptions::new().write(true).open(&target) {
+                file.set_times(times).unwrap();
+            }
+        }
+    }
+
+    thread_local! {
+        /// The depth of the set-up helpers on this thread: only the outer one writes its trace line.
+        static SETUP_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        /// The git starts of the builds of ready projects on this thread; the trace line of a helper
+        /// leaves them out, because the build writes its own line.
+        static SETUP_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// Runs the body of a set-up helper. With `DISPATCH_TRACE_SETUP` set, the outer helper of this
+    /// thread appends one line `<helper>\t<git starts>` to the file it names (ticket
+    /// the-tests-get-a-ready-git-project-as-a). The starts are the difference of `gitfiles::STARTS`,
+    /// with no reset (a caller may be inside `git_starts`), less those of a build of a ready project.
+    fn traced<T>(helper: &str, body: impl FnOnce() -> T) -> T {
+        let before = gitfiles::STARTS.with(|starts| starts.get().0);
+        let builds = SETUP_BUILDS.with(|builds| builds.get());
+        SETUP_DEPTH.with(|depth| depth.set(depth.get() + 1));
+        let value = body();
+        let outer = SETUP_DEPTH.with(|depth| {
+            depth.set(depth.get() - 1);
+            depth.get() == 0
+        });
+        if outer {
+            let built = SETUP_BUILDS.with(|builds| builds.get()) - builds;
+            trace_setup(helper, gitfiles::STARTS.with(|starts| starts.get().0) - before - built);
+        }
+        value
+    }
+
+    /// Appends one line `<helper>\t<starts>` to the file of `DISPATCH_TRACE_SETUP`, with one write
+    /// in append mode, so the lines of parallel test processes do not mix.
+    fn trace_setup(helper: &str, starts: usize) {
+        use std::io::Write;
+        let Some(path) = std::env::var_os("DISPATCH_TRACE_SETUP") else { return };
+        let mut file = fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+        file.write_all(format!("{helper}\t{starts}\n").as_bytes()).unwrap();
     }
 
     /// The git starts of one call on this thread: all of them, and those of `info::git`
@@ -11650,6 +11854,114 @@ if (args[0] === 'agents') {
         assert_eq!(list.tasks[0].branch.as_ref().map(|branch| branch.base_head.clone()), Some(branch.base_head.clone()));
         assert!(all <= 4, "{all} git starts in an idle look with a task branch, {reads} of them reads");
         clean(&project);
+    }
+
+    /// The files under a folder, each with its path from the folder and its bytes, in path order.
+    fn tree_files(root: &Path) -> Vec<(String, Vec<u8>)> {
+        fn walk(root: &Path, dir: &Path, files: &mut Vec<(String, Vec<u8>)>) {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(root, &path, files);
+                } else {
+                    let name = path.strip_prefix(root).unwrap().to_string_lossy().replace('\\', "/");
+                    files.push((name, fs::read(&path).unwrap()));
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(root, root, &mut files);
+        files.sort();
+        files
+    }
+
+    /// Ticket the-tests-get-a-ready-git-project-as-a: two copies of a ready project share no file. A
+    /// change of each file of one copy leaves the other copy and the ready project as they were. The
+    /// ready project holds no path or name of the folder of the user outside the packed objects.
+    #[test]
+    fn two_copies_of_a_ready_project_share_no_file() {
+        let mut names: Vec<String> = Vec::new();
+        for path in [ready_dir().to_path_buf(), std::env::var_os("USERPROFILE").map(PathBuf::from).unwrap_or_default()] {
+            let text = path.to_string_lossy().to_lowercase();
+            if !text.is_empty() {
+                names.push(text.replace('/', "\\"));
+                names.push(text.replace('\\', "/"));
+                names.push(text.replace('\\', "\\\\"));
+            }
+        }
+        if let Some(user) = std::env::var_os("USERNAME").map(|name| name.to_string_lossy().to_lowercase()).filter(|name| name.len() >= 3) {
+            names.push(user);
+        }
+        for kind in ["git", "applied", "branch"] {
+            let ready = ready_project(kind);
+            let source = tree_files(&ready);
+            assert!(source.iter().any(|(name, _)| name == ".git/config"), "{kind}: {:?}", source.iter().map(|(name, _)| name).collect::<Vec<_>>());
+            // Apply writes the folders of `extra_directories` into `.claude/settings.local.json`. It
+            // takes them from the environment of the test, not from the folder of the project, so each
+            // project of the run held the same lines before the ready projects; they stay.
+            let product = Project::scratch(ready.clone(), ready.join(TASKS_DIR)).extra_directories();
+            let product: Vec<String> = product.iter().map(|dir| serde_json::to_string(dir).unwrap().to_lowercase()).collect();
+            for (name, bytes) in source.iter().filter(|(name, _)| !name.starts_with(".git/objects/")) {
+                let mut text = String::from_utf8_lossy(bytes).to_lowercase();
+                if name == ".claude/settings.local.json" {
+                    for dir in &product {
+                        text = text.replace(dir.as_str(), "\"\"");
+                    }
+                }
+                for found in names.iter().filter(|word| text.contains(word.as_str())) {
+                    panic!("{kind}: {name} holds {found}");
+                }
+            }
+            let first = scratch(&format!("copy-one-{kind}"));
+            let second = scratch(&format!("copy-two-{kind}"));
+            copy_tree(&ready, &first.root);
+            copy_tree(&ready, &second.root);
+            assert_ne!(first.root, second.root);
+            assert_eq!(tree_files(&first.root), source, "{kind}: the first copy");
+            assert_eq!(tree_files(&second.root), source, "{kind}: the second copy");
+            for (name, _) in &source {
+                let path = first.root.join(name);
+                let mut permissions = fs::metadata(&path).unwrap().permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                permissions.set_readonly(false);
+                fs::set_permissions(&path, permissions).unwrap();
+                fs::write(&path, format!("changed in the first copy of {kind}")).unwrap();
+            }
+            assert_eq!(tree_files(&second.root), source, "{kind}: the second copy after the change of the first");
+            assert_eq!(tree_files(&ready), source, "{kind}: the ready project after the change of the first copy");
+            clean(&first);
+            clean(&second);
+        }
+    }
+
+    /// Ticket the-tests-get-a-ready-git-project-as-a: once the ready projects of the run are built,
+    /// the set-up helpers start git 0 times; each test still gets a folder of its own.
+    #[test]
+    fn the_set_up_of_a_test_starts_git_at_most_once() {
+        // The first calls build the ready projects of this run, or find them built.
+        let warm = [git_scratch("setup-warm-git"), action_scratch("setup-warm-applied").0, branch_project("setup-warm-branch").0];
+        let (project, all, _) = git_starts(|| git_scratch("setup-git"));
+        assert_eq!(all, 0, "git_scratch");
+        assert!(project.in_git && project.root.join(".git").join("config").is_file());
+        assert!(warm.iter().all(|other| other.root != project.root));
+        clean(&project);
+        let bare = scratch("setup-init");
+        write_file(&bare.root.join("notes.txt"), "mine\n").unwrap();
+        let ((), all, _) = git_starts(|| git_init(&bare));
+        assert_eq!(all, 0, "git_init");
+        assert!(bare.root.join(".git").join("config").is_file() && bare.root.join("notes.txt").is_file());
+        clean(&bare);
+        let ((project, fake), all, _) = git_starts(|| action_scratch("setup-applied"));
+        assert_eq!(all, 0, "action_scratch");
+        assert!(project.in_git && project.script().is_file() && fake.join("claude.cmd").is_file());
+        clean(&project);
+        let ((project, fake, base), all, _) = git_starts(|| branch_project("setup-branch"));
+        assert_eq!(all, 0, "branch_project");
+        assert!(project.in_git && project.options().task_branches && !base.is_empty() && fake.join("work.txt").is_file());
+        clean(&project);
+        for project in &warm {
+            clean(project);
+        }
     }
 
     /// Ticket dispatch-starts-the-git-program-for-each: a project found from its work folder (a git
@@ -12266,20 +12578,18 @@ if (args[0] === 'agents') {
     }
 
     /// A git scratch project with "Task branches" on, its setup committed, a fake worker that commits
-    /// a file in its work run, and the name of the base branch.
+    /// a file in its work run, and the name of the base branch. The project is a copy of the ready
+    /// project "branch"; the fake worker is new for each call.
     fn branch_project(name: &str) -> (Project, PathBuf, String) {
-        let project = git_scratch(name);
-        write_file(&project.root.join("README.md"), "scratch project\n").unwrap();
-        apply(&project, &[0]).unwrap();
-        set_branches(&project, true);
-        apply(&project, &[]).unwrap();
-        assert!(open_steps(&project).is_empty(), "{:?}", open_steps(&project));
-        git_out(&project, &["add", "--all"]);
-        git_out(&project, &["commit", "-q", "-m", "scratch setup"]);
-        let fake = fake_claude(project.root.parent().unwrap());
-        write_file(&fake.join("work.txt"), "the work of the task\n").unwrap();
-        let base = current_branch(&project).unwrap();
-        (project, fake, base)
+        traced("branch_project", || {
+            let mut project = scratch(name);
+            copy_tree(&ready_project("branch"), &project.root);
+            project.set_repo();
+            let fake = fake_claude(project.root.parent().unwrap());
+            write_file(&fake.join("work.txt"), "the work of the task\n").unwrap();
+            let base = current_branch(&project).unwrap();
+            (project, fake, base)
+        })
     }
 
     /// The plan run and the work run of a scratch ticket through the script, with the fake worker.
