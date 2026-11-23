@@ -49,6 +49,7 @@ The work moves into a new headless program, the **host** (working name `dispatch
 | The notification, the chime, the taskbar blink, the window title | They reach the person at that window. |
 | The window-state plugin, the opener for `http` and `mailto` links | Unchanged. |
 | The update check and install (`update_check`, `update_install`, `update_installer_open`) | Each PC updates its own Dispatch. |
+| The natural voice of the voice alert (`voice_speech`, folder `voice-cache`) | The voice sounds at the window; each window keeps its own cache of phrases. |
 | The clipboard | A pasted image travels to the host as bytes; pasted text travels as terminal input. |
 
 ## The transport

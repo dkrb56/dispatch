@@ -21,6 +21,7 @@ use crate::core::rules_check::{self, RulesCheck};
 use crate::core::status::{self, StatusInfo, UsageInfo};
 use crate::core::tokens::{self, TokenReport, UsageHistory};
 use crate::core::update::{self, Update};
+use crate::core::voice;
 use crate::core::hostrun::{self, HostRun};
 use crate::core::plangroups::{self, PlanGroup, PlanGroups};
 use crate::core::{pty, store, Core};
@@ -593,6 +594,13 @@ pub fn build_clean(cwd: String) -> Result<CleanResult, String> {
 #[tauri::command(async)]
 pub fn update_check(core: State<Core>) -> Update {
     update::update_check(&core)
+}
+
+/// The MP3 of one phrase of the voice alert in a natural voice (cache first, else the service).
+/// The page plays the bytes; on an error it falls back to the voice of the system.
+#[tauri::command]
+pub async fn voice_speech(core: State<'_, Core>, voice: String, text: String) -> Result<Response, String> {
+    voice::speech(&core, &voice, &text).await.map(Response::new)
 }
 
 #[tauri::command(async)]

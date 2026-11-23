@@ -43,6 +43,8 @@ const LOCAL_COMMANDS = new Set([
   "update_check",
   "update_install",
   "update_installer_open",
+  // The voice alert (ticket the-voice-alert-uses-the-microsoft) sounds at this window.
+  "voice_speech",
   // "Run the host on this PC" (ticket remote-host-install) acts on the PC of the window.
   "host_run_status",
   "host_run_start",

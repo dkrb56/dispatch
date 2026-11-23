@@ -1,7 +1,7 @@
 // The Options screen (ticket alerts-options): the three switches of the alerts when a task waits for
 // the user, the switch of the triage compaction after a task (ticket triage-compact-after-task), and
 // the colour theme cards and the text size buttons (main.ts wires those two, as before).
-import { ALERT_OPTIONS_KEY, type AlertOptions, parseAlertOptions } from "./alerts";
+import { ALERT_OPTIONS_KEY, type AlertOptions, parseAlertOptions, parseVoice, VOICE_KEY, VOICES } from "./alerts";
 import { parsePulse, PULSE_KEY } from "./attention";
 import { COMPACT_KEY, parseCompact } from "./compact";
 import { cleanAddress, DEFAULT_PORT, type HostEntry, hostSettings, setHostSettings, windowCall } from "./backend";
@@ -382,6 +382,14 @@ export function alertOptions(): AlertOptions {
   return options;
 }
 
+/** The natural voice of the voice alert (ticket the-voice-alert-uses-the-microsoft): the default until the user picks one. */
+let voice = parseVoice(null);
+
+/** The id of the chosen natural voice. */
+export function voiceName(): string {
+  return voice;
+}
+
 /** The switch Pulse (ticket card-attention): a card that waits for the user pulses. On until the user turns it off. */
 let pulse = parsePulse(null);
 
@@ -443,6 +451,24 @@ export function initOptions(onClose: () => void, onHostChange: () => unknown): v
     input.addEventListener("change", () => {
       options = { ...options, [name]: input.checked };
       save();
+    });
+  }
+  try {
+    voice = parseVoice(localStorage.getItem(VOICE_KEY));
+  } catch {
+    // Without the storage, the default voice speaks.
+  }
+  const voicePick = dialog.querySelector<HTMLSelectElement>("select[data-voice]");
+  if (voicePick) {
+    voicePick.replaceChildren(...VOICES.map((entry) => new Option(entry.label, entry.id)));
+    voicePick.value = voice;
+    voicePick.addEventListener("change", () => {
+      voice = parseVoice(voicePick.value);
+      try {
+        localStorage.setItem(VOICE_KEY, voice);
+      } catch {
+        // The voice stays for this run of the app.
+      }
     });
   }
   try {

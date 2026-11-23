@@ -208,6 +208,39 @@ export function speechLines(notices: Notice[]): string[] {
   });
 }
 
+/** The localStorage key of the natural voice of the voice alert. */
+export const VOICE_KEY = "alert-voice";
+
+/** One natural voice of the Edge "Read aloud" service: its id and the name in the Options screen. */
+export interface Voice {
+  id: string;
+  label: string;
+}
+
+/** The voice that speaks until the user picks another one. */
+export const DEFAULT_VOICE = "en-US-AvaMultilingualNeural";
+
+/**
+ * The voices of the list in Options (user decision: six English voices). A multilingual voice
+ * also says the words of other languages in a ticket title well.
+ */
+export const VOICES: Voice[] = [
+  { id: "en-US-AvaMultilingualNeural", label: "Ava, multilingual (United States)" },
+  { id: "en-US-AndrewMultilingualNeural", label: "Andrew, multilingual (United States)" },
+  { id: "en-US-EmmaMultilingualNeural", label: "Emma, multilingual (United States)" },
+  { id: "en-US-BrianMultilingualNeural", label: "Brian, multilingual (United States)" },
+  { id: "en-GB-SoniaNeural", label: "Sonia (United Kingdom)" },
+  { id: "en-GB-RyanNeural", label: "Ryan (United Kingdom)" },
+];
+
+/** The stored voice when it is in the list, else the default. */
+export function parseVoice(stored: string | null): string {
+  return VOICES.some((voice) => voice.id === stored) ? (stored as string) : DEFAULT_VOICE;
+}
+
+/** The line that the Listen button of Options says. */
+export const VOICE_SAMPLE = "Dispatch in this project. The plan is ready.";
+
 /** One note of the chime: its pitch in hertz, its start and its length in seconds. */
 export interface ChimeNote {
   frequency: number;

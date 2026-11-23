@@ -38,13 +38,16 @@ portable-pty = "0.9"
 base64 = "0.22"
 # The host only: the WebSocket service, the folders without Tauri, the key, the stop with Ctrl+C.
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "io-util"] }
-tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+# The voice alert (`core/voice.rs`) also connects to a `wss://` service: connect and native-tls (schannel on Windows).
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake", "connect", "native-tls"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 dirs = "7"
 getrandom = "0.3"
 # The salted, slow hash of the phone PIN (`core/phonepin.rs`); the salt comes from getrandom.
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
 ctrlc = "3"
+# The token and the cache key of the voice alert (`core/voice.rs`).
+sha2 = "0.10"
 
 # Windows only: the registry (saved variables) and the process tools (ToolHelp, TerminateProcess).
 [target.'cfg(windows)'.dependencies]

@@ -26,6 +26,7 @@ pub mod testfind;
 pub mod tickets;
 pub mod tokens;
 pub mod update;
+pub mod voice;
 
 use std::fs;
 use std::path::PathBuf;

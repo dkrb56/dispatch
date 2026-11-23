@@ -134,6 +134,7 @@ pub fn run() {
             commands::build_folders,
             commands::build_clean,
             commands::update_check,
+            commands::voice_speech,
             commands::update_install,
             commands::update_installer_open,
             commands::host_run_status,

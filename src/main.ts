@@ -168,9 +168,9 @@ import { initPipeline, openSetup, setupNeeded, setupTodo, showSetup } from "./pi
 import { setupDue, setupLook, setupStamp, setupTitle } from "./setupmark";
 import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersion } from "./help";
 import { lastRunVersion, newEntries } from "./changelog";
-import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, speechLines, ticketTitle, type Wait, waitNotice, type WorkerEnd } from "./alerts";
+import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, speechLines, ticketTitle, VOICE_SAMPLE, type Wait, waitNotice, type WorkerEnd } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
-import { alertOptions, compactOn, initOptions, openOptions, ownHostRuns, phoneTabWanted, pulseOn, stopOwnHost, useOwnHost } from "./options";
+import { alertOptions, compactOn, initOptions, openOptions, ownHostRuns, phoneTabWanted, pulseOn, stopOwnHost, useOwnHost, voiceName } from "./options";
 import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
 import { GIT_STATE_SIZE_KEY, ageText, commitFilesLabel, commitHeadText, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "./gitstate";
@@ -11877,23 +11877,72 @@ function playChime(): void {
   }
 }
 
-/** Says the text with the system voice. False when there is no voice or no key or click came yet; on a speech error the chime plays. */
+/** The lines of the voice alert wait here and play one after the other. */
+let voiceQueue: Promise<void> = Promise.resolve();
+/** The longest time one line may hold the queue: a voice that never ends lets the next line go. */
+const VOICE_LINE_CAP_MS = 60_000;
+
+/**
+ * Says the text in the natural voice of Options (ticket the-voice-alert-uses-the-microsoft); when
+ * the service or the network fails, the system voice says it, and when there is no system voice,
+ * the chime plays. False only when no key or click came yet.
+ */
 function speak(text: string): boolean {
-  if (!userActivated || typeof window === "undefined" || !("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") return false;
+  if (!userActivated) return false;
+  voiceQueue = voiceQueue
+    .then(() => Promise.race([sayLine(text), new Promise<void>((done) => setTimeout(done, VOICE_LINE_CAP_MS))]))
+    .catch((error) => console.error("voice alert failed", error));
+  return true;
+}
+
+/** One line: the natural voice, else the system voice, else the chime. */
+async function sayLine(text: string): Promise<void> {
   try {
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.addEventListener("error", () => {
-      try {
-        playChime();
-      } catch (error) {
-        console.error("chime after a speech error failed", error);
-      }
-    });
-    window.speechSynthesis.speak(utterance);
-    return true;
+    const bytes = await windowCall<ArrayBuffer>("voice_speech", { voice: voiceName(), text });
+    await playAudio(bytes);
+    return;
   } catch (error) {
-    console.warn("no voice for the alert", error);
-    return false;
+    console.warn("no natural voice for the alert; the system voice speaks", error);
+  }
+  if (!(await speakSystem(text))) chimeAfterVoice();
+}
+
+/** Plays MP3 bytes; ends when the sound ended, fails when the window cannot play them. */
+function playAudio(bytes: ArrayBuffer): Promise<void> {
+  const url = URL.createObjectURL(new Blob([bytes], { type: "audio/mpeg" }));
+  return new Promise<void>((done, fail) => {
+    const audio = new Audio(url);
+    audio.addEventListener("ended", () => done());
+    audio.addEventListener("error", () => fail(new Error("the window cannot play the voice audio")));
+    audio.play().catch(fail);
+  }).finally(() => URL.revokeObjectURL(url));
+}
+
+/** Says the text with the system voice. False when there is no voice; on a speech error the chime plays. */
+function speakSystem(text: string): Promise<boolean> {
+  if (typeof window === "undefined" || !("speechSynthesis" in window) || typeof SpeechSynthesisUtterance === "undefined") return Promise.resolve(false);
+  return new Promise<boolean>((done) => {
+    try {
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.addEventListener("end", () => done(true));
+      utterance.addEventListener("error", () => {
+        chimeAfterVoice();
+        done(true);
+      });
+      window.speechSynthesis.speak(utterance);
+    } catch (error) {
+      console.warn("no voice for the alert", error);
+      done(false);
+    }
+  });
+}
+
+/** The chime in place of a voice that failed. */
+function chimeAfterVoice(): void {
+  try {
+    playChime();
+  } catch (error) {
+    console.error("chime after a speech error failed", error);
   }
 }
 
@@ -17893,6 +17942,11 @@ async function start(): Promise<void> {
   }
   void pollTriage();
   void pollChatViews();
+  // The Listen button of Options says one sample line in the chosen voice; its click allows the sound.
+  document.getElementById("voice-listen")?.addEventListener("click", () => {
+    startChimeAudio();
+    speak(VOICE_SAMPLE);
+  });
   updateAlertEl.addEventListener("click", () => void installUpdate());
   updateCheckEl.addEventListener("click", () => {
     // After a check that found a new version, the button installs it, as the one in the bar does.

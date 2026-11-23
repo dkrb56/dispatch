@@ -11,14 +11,19 @@ import {
   CHIME,
   chimeLength,
   DEFAULT_ALERT_OPTIONS,
+  DEFAULT_VOICE,
   endNotices,
   newWaits,
   notificationText,
   parseAlertOptions,
+  parseVoice,
   SPOKEN,
   speechLines,
   ticketTitle,
   type AlertEvent,
+  VOICE_KEY,
+  VOICE_SAMPLE,
+  VOICES,
   type Wait,
   type WaitKind,
   waitNotice,
@@ -175,6 +180,8 @@ test("the Options dialog holds the three switches and both lists; the top bar ho
   assert.ok(start >= 0, "index.html has the Options dialog");
   const dialog = HTML.slice(start, HTML.indexOf("</dialog>", start));
   for (const name of ["notify", "chime", "blink", "voice"]) assert.match(dialog, new RegExp(`type="checkbox" data-alert="${name}"`), name);
+  assert.match(dialog, /<select id="voice-pick" data-voice /, "the voice list is in the dialog");
+  assert.match(dialog, /<button type="button" id="voice-listen"/, "the Listen button is in the dialog");
   assert.ok(dialog.includes('id="theme"') && dialog.includes('id="text-size"'), "both pickers are in the dialog");
 });
 
@@ -199,6 +206,7 @@ test("the Help says where the theme and the text size are and what the alerts do
   assert.match(section, /notification/);
   assert.match(section, /chime/);
   assert.match(section, /voice/);
+  assert.match(section, /natural Microsoft voice that you pick in Options/);
   assert.match(section, /blinks/);
 });
 
@@ -317,6 +325,11 @@ test("the Options dialog has five tabs, one panel each, and every switch and lis
     assert.ok(inside(needle), needle);
   }
   assert.ok(!inside('id="options-close"'), "the close button stays outside the panels");
+  const alerts = panels.find((panel) => panel.name === "alerts")!;
+  for (const needle of ["select id=\"voice-pick\" data-voice", "id=\"voice-listen\""]) {
+    const at = dialog.indexOf(needle);
+    assert.ok(at > alerts.start && at < alerts.end, `${needle} lies in the Alerts panel`);
+  }
 });
 
 test("pickTab: the wanted tab when the list has it, else the first", () => {
@@ -371,4 +384,26 @@ test("no triage: night mode and a project without the switch give no end alert",
   assert.equal(notices.length, 2);
   assert.deepEqual(notificationText([notices[0]]), { title: "Dispatch", body: "t-1 (app): the task is done" });
   assert.deepEqual(notificationText(notices), { title: "Dispatch", body: "2 tasks wait for you: t-1, t-2" });
+});
+
+// ---- The natural voice of the voice alert (ticket the-voice-alert-uses-the-microsoft) ------------
+
+test("the voice list has six voices with unique ids and holds the default", () => {
+  assert.equal(VOICES.length, 6);
+  assert.equal(new Set(VOICES.map((voice) => voice.id)).size, 6, "unique ids");
+  assert.ok(VOICES.some((voice) => voice.id === DEFAULT_VOICE), "the default is in the list");
+  assert.equal(DEFAULT_VOICE, "en-US-AvaMultilingualNeural");
+  for (const voice of VOICES) {
+    assert.match(voice.id, /^[a-z]{2}-[A-Z]{2}-[A-Za-z]+Neural$/, voice.id);
+    assert.ok(voice.label.trim().length > 0, `${voice.id} has a label`);
+  }
+  assert.equal(VOICE_KEY, "alert-voice");
+  assert.ok(VOICE_SAMPLE.length > 0 && VOICE_SAMPLE.length <= 500, "the sample fits the limit of the service call");
+});
+
+test("parseVoice: a listed id stays, anything else gives the default", () => {
+  assert.equal(parseVoice("en-GB-RyanNeural"), "en-GB-RyanNeural");
+  assert.equal(parseVoice(null), DEFAULT_VOICE);
+  assert.equal(parseVoice(""), DEFAULT_VOICE);
+  assert.equal(parseVoice("en-US-NobodyNeural"), DEFAULT_VOICE);
 });
