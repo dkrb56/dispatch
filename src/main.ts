@@ -103,7 +103,7 @@ import {
   type PlanTicket,
   type TopicBlock,
 } from "./plantree";
-import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, type LostWorker, movedPlaces, newestWorker, type OverviewPlaces, type OverviewRect, type OverviewTask, PLAN_ERROR_TEXT, planLost as planLostRule, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode, WORK_ERROR_TEXT, WORK_LOST_TEXT, workLost } from "./overview";
+import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, idleRun, inWork, listedTasks, type LostWorker, movedPlaces, newestWorker, type OverviewPlaces, type OverviewRect, type OverviewTask, PLAN_ERROR_TEXT, planLost as planLostRule, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode, WORK_ERROR_TEXT, WORK_LOST_TEXT, workLost } from "./overview";
 import {
   allowanceLine,
   bars,
@@ -384,6 +384,12 @@ interface Worker {
   endedAt: string | null;
   /** `working`, `blocked`, `done`, `failed` or `stopped`. */
   state: string | null;
+  /**
+   * For a `working` run of the pipeline whose session is idle, without its plan or report and with
+   * nothing in flight: true. Its turn ended; Continue goes on (ticket
+   * a-worker-that-waits-with-no-turn-does). Absent from an older host.
+   */
+  idle?: boolean;
   /** Why a blocked worker waits for the user. */
   waitingFor: string | null;
   /**
@@ -5157,11 +5163,14 @@ function workerRow(worker: Worker, run: "plan" | "work" | undefined, models: Mod
   state.className = "when";
   // The state is a chip. The cause of a wait, how long the worker took and its agents come after it.
   // A session that Dispatch ended after its run finished shows "ended", not red "stopped" (ticket ended-session-label).
+  // An idle run with no turn shows the chip idle (ticket a-worker-that-waits-with-no-turn-does).
+  if (worker.state === "working" && worker.idle) chip = runChip("idle", false, false);
   const chipEl = document.createElement("span");
   chipEl.className = `chip ${chip.cls}`;
   chipEl.textContent = chip.text;
   const details = document.createElement("span");
-  const running = worker.state === "working" || worker.state === "blocked";
+  // An idle run has no turn: no timer ticks for it (ticket a-worker-that-waits-with-no-turn-does).
+  const running = (worker.state === "working" && !worker.idle) || worker.state === "blocked";
   const took = runTime(worker.startedAt, worker.endedAt, running, Date.now());
   // The duration is its own element: the ticker moves it on while the worker runs, without a draw.
   // Without a known end the row shows the start time, as before.
@@ -8508,7 +8517,7 @@ function resumeRow(task: Task): HTMLElement | null {
 
 /** The workers of a task as the rules `workLost` and `planLost` of src/overview.ts see them. */
 function lostWorkers(task: Task): LostWorker[] {
-  return task.workers.map((worker) => ({ run: workerRun(task, worker), state: worker.state, result: worker.result, finished: worker.finished, startedAt: worker.startedAt, error: worker.error, reapedAt: worker.reapedAt }));
+  return task.workers.map((worker) => ({ run: workerRun(task, worker), state: worker.state, result: worker.result, finished: worker.finished, startedAt: worker.startedAt, error: worker.error, reapedAt: worker.reapedAt, idle: worker.idle }));
 }
 
 /**
@@ -8589,6 +8598,8 @@ function continueParts(task: Task, run: "plan" | "work"): HTMLElement[] {
   const parts: HTMLElement[] = [];
   const worker = run === "plan" ? newestWorker(task.workers) : newestWorkWorker(task);
   const failed = worker?.state === "failed";
+  // A run that is idle with no turn (ticket a-worker-that-waits-with-no-turn-does).
+  const idle = worker?.state === "working" && worker.idle === true;
   const message = worker?.error ?? worker?.reason;
   if (message) {
     const said = document.createElement("div");
@@ -8604,12 +8615,14 @@ function continueParts(task: Task, run: "plan" | "work"): HTMLElement[] {
   }
   const button = document.createElement("button");
   button.textContent = "Continue";
-  button.title = `Tell the ${run} run of ${task.name} to go on where it ${failed ? "failed" : worker?.error ? "stopped" : "ended"}`;
+  button.title = idle
+    ? `Tell the ${run} run of ${task.name} to go on; its turn ended without a ${run === "plan" ? "plan" : "report"}`
+    : `Tell the ${run} run of ${task.name} to go on where it ${failed ? "failed" : worker?.error ? "stopped" : "ended"}`;
   button.disabled = busyTasks.has(task.name);
   button.addEventListener("click", () => {
     if (replySendingOf(task) || queuedReplyOf(task) || busyTasks.has(task.name)) return;
     button.disabled = true;
-    const how = failed ? "failed" : worker?.error ? "stopped at an error" : "ended without a report";
+    const how = idle ? "went idle with no turn" : failed ? "failed" : worker?.error ? "stopped at an error" : "ended without a report";
     const line = `Task ${task.name}: the user sent Continue in Dispatch after its ${run} run ${how}.`;
     void replyOrQueue(task, answeredRecord(task.info?.report?.modified ?? 0, [], new Map(), "Continue"), "Continue", line).then((result) => {
       if (result) renderChats();
@@ -8636,6 +8649,21 @@ function continueRow(task: Task): HTMLElement | null {
   return row;
 }
 
+/**
+ * The Continue row of a task whose run is idle with no turn, or null (ticket
+ * a-worker-that-waits-with-no-turn-does). A reply that goes out or waits in the queue hides the row.
+ */
+function idleRow(task: Task): HTMLElement | null {
+  const idle = idleRun(lostWorkers(task));
+  if (!idle || replySendingOf(task) || queuedReplyOf(task)) return null;
+  const row = document.createElement("div");
+  row.className = "task-stop";
+  row.append(...continueParts(task, idle.run === "plan" ? "plan" : "work"));
+  const error = actionError(task);
+  if (error) row.append(error);
+  return row;
+}
+
 /** The tasks that the user opened or closed, by `<project key>|<task>`, until the app closes. */
 const taskOpenChoice = new Map<string, boolean>();
 
@@ -8653,6 +8681,9 @@ function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"
   // A wait for other tasks waits for nobody here; a wait that cannot end waits for the user (ticket a-task-that-waits-for-the-merge-of).
   const mergeWait = mergeWaitOf(task);
   if (mergeWait) return { kind: mergeWait.kind === "problem" ? "waits" : "done", text: mergeWaitShort(mergeWait) };
+  // A run whose turn ended without its result waits for Continue (ticket a-worker-that-waits-with-no-turn-does).
+  const idle = idleRun(lostWorkers(task));
+  if (idle) return { kind: "waits", text: `${idle.run === "plan" ? "Plan run" : idle.run === "work" ? "Work run" : "Worker"} idle, no turn` };
   const live = task.workers.find((worker) => worker.state === "working" || worker.state === "blocked");
   if (live) {
     const run = workerRun(task, live);
@@ -11790,6 +11821,9 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     // A work run that ended without a report has no Stop or Resume row either; Continue stands there.
     const goOn = continueRow(task);
     if (goOn) body.append(goOn);
+    // A run that is idle with no turn: Continue stands under its Stop row.
+    const wake = idleRow(task);
+    if (wake) body.append(wake);
     if (body.childElementCount > 0) made.append(body);
   }
   // A run at a permission prompt shows the prompt and its countdown (ticket a-worker-that-waits-at-a-permission).
@@ -17565,7 +17599,8 @@ function planCardState(ticket: Ticket, queueIds: string[], record: ProjectTasks)
   const word = planStateWord(ticket.status, taskPhase(task));
   const live = task.workers.find((worker) => LIVE_STATES.includes(worker.state ?? ""));
   const dot = status.kind === "waits" ? "waits" : status.kind === "failed" ? "failed" : "in-progress";
-  if (live && live.state === "working") {
+  // An idle run shows its status text, not a timer (ticket a-worker-that-waits-with-no-turn-does).
+  if (live && live.state === "working" && !live.idle) {
     const time = nodeTime(live);
     if (time.took) return { word, detail: time.took, since: time.since, dot };
   }

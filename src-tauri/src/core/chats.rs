@@ -190,6 +190,12 @@ pub struct Worker {
     /// that end: the report exists.
     #[serde(skip_deserializing)]
     superseded: bool,
+    /// For a run of the pipeline that the list keeps at `working` with `status: idle`, without its
+    /// plan or report from this run, and whose job has nothing in flight: true (ticket
+    /// a-worker-that-waits-with-no-turn-does). The turn ended and nothing goes on by itself; a
+    /// follow-up continues the run. The state stays `working`, so the run still holds its task.
+    #[serde(skip_deserializing)]
+    idle: bool,
 }
 
 /// The permission prompt of a worker, read from the screen of its session (ticket
@@ -245,6 +251,14 @@ impl Worker {
         if self.state.as_deref() == Some("working") && self.status.as_deref() == Some("idle") && (result_written || later_result) {
             self.state = Some("done".to_string());
         }
+    }
+
+    /// A run that `settle_turn_end` left at `working` while its session is `idle` has no turn: it
+    /// waits for a follow-up (ticket a-worker-that-waits-with-no-turn-does). `in_flight_done` is
+    /// `job_finished` of its job: `Some(false)` means background work can still go on by itself,
+    /// so the run still works. None (no file or fields) counts as nothing in flight.
+    fn settle_idle(&mut self, in_flight_done: Option<bool>) {
+        self.idle = self.state.as_deref() == Some("working") && self.status.as_deref() == Some("idle") && in_flight_done != Some(false);
     }
 }
 
@@ -633,6 +647,12 @@ pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
                 worker.agents_active = 0;
             }
         }
+        // A run of the pipeline that is still `working` and idle has no turn, unless its job still
+        // has background work in flight.
+        if worker.state.as_deref() == Some("working") && worker.status.as_deref() == Some("idle") && worker.name.as_deref().and_then(run_of).is_some() {
+            let text = claude.as_deref().and_then(|claude| job_state(claude, &worker.id));
+            worker.settle_idle(text.as_deref().and_then(job_finished));
+        }
         worker.result = run_result(worker.state.as_deref(), worker.name.as_deref(), worker.started_at, next_start, &mut modified);
         if worker.result == Some(false) {
             // One read of the state file gives both facts.
@@ -945,6 +965,35 @@ mod worker_tests {
         }
         // A permission prompt stays blocked.
         assert_eq!(ended("blocked", Some("waiting"), true).0.as_deref(), Some("blocked"));
+    }
+
+    #[test]
+    fn an_idle_working_run_without_its_result_has_no_turn() {
+        let idle = |state: &str, status: Option<&str>, in_flight_done: Option<bool>| {
+            let mut worker = worker(state, status, None);
+            worker.settle_turn_end(false, false);
+            worker.settle_idle(in_flight_done);
+            (worker.state, worker.idle)
+        };
+        let working = Some("working".to_string());
+        // Jobs 00f0f6fe and fbaaa9b2: working, idle, nothing in flight, no plan. Idle, and the state
+        // stays working.
+        assert_eq!(idle("working", Some("idle"), None), (working.clone(), true));
+        assert_eq!(idle("working", Some("idle"), Some(true)), (working.clone(), true));
+        // Background work in flight can go on by itself: still working.
+        assert_eq!(idle("working", Some("idle"), Some(false)), (working.clone(), false));
+        // A session that still runs, or runs a background command, is not idle.
+        for status in [Some("busy"), Some("shell"), None] {
+            assert_eq!(idle("working", status, None), (working.clone(), false), "{status:?}");
+        }
+        // A prompt or an ended run is not idle.
+        assert!(!idle("blocked", Some("waiting"), None).1);
+        assert!(!idle("done", Some("idle"), None).1);
+        // A run whose result exists is done, not idle.
+        let mut done = worker("working", Some("idle"), None);
+        done.settle_turn_end(true, false);
+        done.settle_idle(None);
+        assert_eq!((done.state.as_deref(), done.idle), (Some("done"), false));
     }
 
     #[test]

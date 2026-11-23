@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { cardLayout, chatPlacer, doneTasks, freePlace, inWork, listedTasks, type LostFacts, type LostWorker, movedPlaces, OVERVIEW_CARD_WIDTH, OVERVIEW_DONE_SHOWN, OVERVIEW_EXTENDED_DONE, OVERVIEW_EXTENDED_WIDTH, OVERVIEW_GRID, type OverviewTask, PLAN_ERROR_TEXT, planLost, type PlanLostFacts, parsePlaces, parseSizes, type RunFacts, runStarting, savedView, sizeOf, snapPlace, toggledSize, WORK_ERROR_TEXT, WORK_LOST_TEXT, workLost } from "../src/overview.ts";
+import { cardLayout, chatPlacer, doneTasks, freePlace, idleRun, inWork, listedTasks, type LostFacts, type LostWorker, movedPlaces, OVERVIEW_CARD_WIDTH, OVERVIEW_DONE_SHOWN, OVERVIEW_EXTENDED_DONE, OVERVIEW_EXTENDED_WIDTH, OVERVIEW_GRID, type OverviewTask, PLAN_ERROR_TEXT, planLost, type PlanLostFacts, parsePlaces, parseSizes, type RunFacts, runStarting, savedView, sizeOf, snapPlace, toggledSize, WORK_ERROR_TEXT, WORK_LOST_TEXT, workLost } from "../src/overview.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const CSS = read("../src/styles.css");
@@ -239,6 +239,29 @@ test("a failed work run that the daemon found dead is lost, but not beside a rep
   assert.equal(workLost(lost({ hasReport: true }, [{ state: "failed", result: null, reapedAt: reaped }])), false);
   assert.equal(workLost(lost({ state: "stopped" }, [{ state: "failed", result: null, reapedAt: reaped }])), false);
   assert.equal(workLost(lost({}, [{ state: "failed", result: null, startedAt: 2000 }, { run: "plan", state: "done", result: true, startedAt: 3000 }])), false);
+});
+
+// ---- A run that is idle with no turn (a-worker-that-waits-with-no-turn-does) ---------------------
+
+test("a working run that is idle with no turn is given; a run that works or waits is not", () => {
+  const plan: LostWorker = { run: "plan", state: "working", idle: true, result: null, finished: null, startedAt: 1000 };
+  assert.equal(idleRun([plan]), plan);
+  // The newest idle worker of the task.
+  const newer: LostWorker = { ...plan, startedAt: 2000 };
+  assert.equal(idleRun([plan, newer]), newer);
+  // An ended older run beside it does not matter.
+  assert.equal(idleRun([{ ...plan, state: "done", idle: false, result: true }, newer]), newer);
+  // A busy run (Continue started a new job) wins over an older idle one.
+  assert.equal(idleRun([plan, { ...plan, idle: false, startedAt: 2000 }]), null);
+  // A run at a permission prompt wins too.
+  assert.equal(idleRun([plan, { ...plan, state: "blocked", idle: false, startedAt: 2000 }]), null);
+  // Without the flag (a busy run, or an older host) no run is idle.
+  assert.equal(idleRun([{ ...plan, idle: false }]), null);
+  assert.equal(idleRun([{ ...plan, idle: undefined }]), null);
+  assert.equal(idleRun([{ ...plan, idle: null }]), null);
+  // Only a working run is idle.
+  assert.equal(idleRun([{ ...plan, state: "done" }]), null);
+  assert.equal(idleRun([]), null);
 });
 
 // ---- A run that stopped at an error of Claude Code (a-run-that-stopped-at-a-login-or-limit) ------

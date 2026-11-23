@@ -63,6 +63,12 @@ export interface LostWorker {
    * a-failed-plan-run-or-work-run-gives-a). Null or absent without one.
    */
   reapedAt?: string | null;
+  /**
+   * For a run of the pipeline that Claude Code keeps at `working` with `status: idle`, without its
+   * result and with nothing in flight: true (ticket a-worker-that-waits-with-no-turn-does). Its turn
+   * ended; a follow-up continues it. Absent from an older host.
+   */
+  idle?: boolean | null;
 }
 
 /** The facts of a task that say whether its work run ended without a report. */
@@ -135,6 +141,17 @@ export function planLost(facts: PlanLostFacts): boolean {
   if (facts.workers.some((worker) => worker.state === "working" || worker.state === "blocked")) return false;
   const newest = newestWorker(facts.workers);
   return !!newest && newest.run === "plan" && endedWithoutResult(newest);
+}
+
+/**
+ * The worker of a task that is idle with no turn (ticket a-worker-that-waits-with-no-turn-does): the
+ * newest worker that is `working` with `idle`, while no other worker of the task works without
+ * `idle` or waits at a prompt. An older idle job of the same name can stay listed after Continue
+ * started a new job; the new job wins. Null else.
+ */
+export function idleRun<T extends LostWorker>(workers: readonly T[]): T | null {
+  if (workers.some((worker) => (worker.state === "working" && !worker.idle) || worker.state === "blocked")) return null;
+  return newestWorker(workers.filter((worker) => worker.state === "working" && worker.idle === true));
 }
 
 /**

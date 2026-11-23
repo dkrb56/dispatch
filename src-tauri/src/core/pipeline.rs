@@ -1790,7 +1790,9 @@ function Get-Workers {
 # permission prompt. Only the prompt waits (status waiting); the question is in the report, and
 # the session is done: a resume of it is no copy. Claude Code can also keep a session at working
 # after its turn ended (status idle). A run "<ticket> [plan]" or "<ticket> [work]" that is idle and
-# wrote its plan or report at or after its start is done. Busy and shell still run.
+# wrote its plan or report at or after its start is done. Without that file it is idle: the turn
+# ended with no result and waits for a follow-up, unless its job still has background work in flight
+# (ticket a-worker-that-waits-with-no-turn-does). Busy and shell still run.
 function Worker-State($Worker) {
   if ($null -eq $Worker) { return '' }
   $state = "$($Worker.state)"
@@ -1802,8 +1804,22 @@ function Worker-State($Worker) {
       $written = [DateTimeOffset]::new((Get-Item -LiteralPath $file).LastWriteTimeUtc).ToUnixTimeMilliseconds()
       if ($Worker.startedAt -and $written -ge [int64]$Worker.startedAt) { return 'done' }
     }
+    if (-not (Job-InFlight $Worker)) { return 'idle' }
   }
   $state
+}
+
+# True when ~\.claude\jobs\<id>\state.json of the worker says inFlight.tasks or inFlight.queued above 0:
+# background work can still go on by itself. A missing or bad file counts as nothing in flight.
+function Job-InFlight($Worker) {
+  $jobId = "$($Worker.id)"
+  if ($jobId -notmatch '^[A-Za-z0-9-]+$' -or -not $env:USERPROFILE) { return $false }
+  $file = Join-Path $env:USERPROFILE ".claude\jobs\$jobId\state.json"
+  if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { return $false }
+  try { $job = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json } catch { return $false }
+  $flight = $job.inFlight
+  if ($null -eq $flight) { return $false }
+  try { ([int64]"0$($flight.tasks)" -gt 0) -or ([int64]"0$($flight.queued)" -gt 0) } catch { $false }
 }
 
 # The session names of a ticket: the plan run is "<ticket> [plan]", the work run "<ticket> [work]",
@@ -2290,7 +2306,8 @@ function Listed-Workers {
 }
 
 # The ticket that holds a work folder: the script of the record still runs, or the use is work and
-# the work run of that ticket still runs or waits at a prompt. Else $null: a stale record is
+# the work run of that ticket still runs, waits at a prompt or is idle with no turn (a follow-up
+# continues it in that folder). Else $null: a stale record is
 # overwritten by the next user. No file time and no reflog decides; the time of the record only
 # tells the script of the record from a later process with the same id (Owner-Runs).
 function Record-Holder([int]$N = $script:FolderNo) {
@@ -2299,7 +2316,7 @@ function Record-Holder([int]$N = $script:FolderNo) {
   if ($record.pid -ne "$PID" -and (Owner-Runs $record.pid $record.since)) { return $record.ticket }
   if ($record.use -eq 'work') {
     $state = Worker-State (Find-Worker (Listed-Workers) $record.ticket 'work')
-    if ($state -eq 'working' -or $state -eq 'blocked') { return $record.ticket }
+    if ($state -eq 'working' -or $state -eq 'blocked' -or $state -eq 'idle') { return $record.ticket }
   }
   $null
 }
@@ -11515,14 +11532,15 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
         assert!(code == 0 && out.contains("t-1\tworking\tdone"), "{out}");
         // Claude Code can keep a run at working after its turn ended (ticket
         // title-task-card-shows-working-after-the): idle with the report of this run is done, idle
-        // without a report still works. The fake run starts at 1 ms, so any report is newer.
+        // without a report has no turn: idle, so a follow-up can continue it (ticket
+        // a-worker-that-waits-with-no-turn-does). The fake run starts at 1 ms, so any report is newer.
         let report = project.reports.join("t-1.md");
         let kept = fs::read_to_string(&report).ok();
         if kept.is_some() {
             fs::remove_file(&report).unwrap();
         }
         let (code, out) = run_script(&project, &fake, "working/idle", &["status"]);
-        assert!(code == 0 && out.contains("t-1\tworking\tworking"), "{out}");
+        assert!(code == 0 && out.contains("t-1\tworking\tidle"), "{out}");
         write_file(&report, "state: done\n").unwrap();
         let (code, out) = run_script(&project, &fake, "working/idle", &["status"]);
         assert!(code == 0 && out.contains("t-1\tworking\tdone"), "{out}");
