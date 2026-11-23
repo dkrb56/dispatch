@@ -1814,9 +1814,12 @@ function Run-Name([string]$Run) { "$Id [$Run]" }
 # when one exists, else the newest of any name (a worker of an older script has the bare id). The
 # plan run and the work run are two sessions (ticket work-fresh-session), and a follow-up of the work
 # run must resume the work session, never the plan session.
+# The list of claude agents has the sessions of every project, so only a worker of this project counts
+# (Own-Worker): a ticket id of another project with the same name is never stopped or resumed here
+# (ticket stop-on-a-task-stops-only-the-worker-of).
 function Find-Worker($Workers, [string]$Ticket, [string]$Run) {
   $names = @($Ticket, "$Ticket [plan]", "$Ticket [work]")
-  $mine = @($Workers | Where-Object { $names -contains $_.name } | Sort-Object { $_.startedAt })
+  $mine = @($Workers | Where-Object { $names -contains $_.name -and (Own-Worker $_) } | Sort-Object { $_.startedAt })
   if ($Run) {
     $named = @($mine | Where-Object { $_.name -eq "$Ticket [$Run]" })
     if ($named.Count -gt 0) { $mine = $named }
@@ -1902,7 +1905,7 @@ function Save-Session([string]$Run, [string[]]$Printed) {
   } catch { }
   $worker = @($workers | Where-Object { $_.id -and $words -contains "$($_.id)" }) | Select-Object -First 1
   if ($null -eq $worker) {
-    $named = @($workers | Where-Object { $_.name -eq (Run-Name $Run) } | Sort-Object { $_.startedAt })
+    $named = @($workers | Where-Object { $_.name -eq (Run-Name $Run) -and (Own-Worker $_) } | Sort-Object { $_.startedAt })
     if ($named.Count -gt 0) { $worker = $named[$named.Count - 1] }
   }
   if ($null -eq $worker -or -not $worker.sessionId) {
@@ -2310,6 +2313,19 @@ function Folder-Number([string]$Path) {
   $work = [IO.Path]::GetFullPath((Join-Path $Reports 'work')).TrimEnd('\')
   if ($path -match ('^' + [regex]::Escape($work) + '\\([1-4])\\?$')) { return [int]$Matches[1] }
   0
+}
+
+# True when the worker $Worker is a worker of this project (ticket stop-on-a-task-stops-only-the-worker-of):
+# its cwd is the project folder or a work folder of it, compared as in Folder-Number. The list of claude
+# agents has the sessions of every project. A worker without cwd (an older Claude Code) counts as own.
+function Own-Worker($Worker) {
+  $cwd = "$($Worker.cwd)"
+  if (-not $cwd) { return $true }
+  if ((Folder-Number $cwd) -gt 0) { return $true }
+  $path = $cwd -replace '/', '\'
+  if ($path.StartsWith('\\?\')) { $path = $path.Substring(4) }
+  try { $path = [IO.Path]::GetFullPath($path).TrimEnd('\') } catch { return $false }
+  $path -eq [IO.Path]::GetFullPath($Project).TrimEnd('\')
 }
 
 # The work folder where the session of the work run of the task runs: the number in the cwd of its
@@ -10660,6 +10676,8 @@ Blockers: none
     /// Node: about half of the calls then start no Node (ticket the-tests-take-19-minutes-when-workers).
     /// One difference: a FAKE_STATE set to the empty text counts as not set (cmd cannot tell them
     /// apart); no test sets it empty.
+    /// With a file `agents.json` next to it, `agents --json --all` prints that file instead of the
+    /// one worker of the variables (ticket stop-on-a-task-stops-only-the-worker-of: two workers of one name).
     fn fake_claude(base: &Path) -> PathBuf {
         let dir = base.join("fake-bin");
         let batch = r#"@echo off
@@ -10668,6 +10686,8 @@ if not "%~2"=="--json" goto node
 if not "%~3"=="--all" goto node
 if not "%~4"=="" goto node
 >>"%~dp0args.txt" echo ["agents","--json","--all"]
+if exist "%~dp0agents.json" type "%~dp0agents.json"
+if exist "%~dp0agents.json" exit /b 0
 setlocal EnableDelayedExpansion
 set "N=t-1"
 if not "!FAKE_NAME!"=="" set "N=!FAKE_NAME!"
@@ -10699,7 +10719,9 @@ const args = process.argv.slice(2);
 fs.appendFileSync(__dirname + '/args.txt', JSON.stringify(args) + '\\n');
 // The folder of a run; the script lists the workers from the folder of its caller.
 if (args[0] !== 'agents') fs.writeFileSync(__dirname + '/cwd.txt', process.cwd());
-if (args[0] === 'agents') {
+if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
+  process.stdout.write(fs.readFileSync(__dirname + '/agents.json', 'utf8'));
+} else if (args[0] === 'agents') {
   const copy = __dirname + '/copy.txt';
   const worker = { id: 'bg-1', name: process.env.FAKE_NAME || 't-1', sessionId: fs.existsSync(copy) ? fs.readFileSync(copy, 'utf8') : 'sess-1', startedAt: 1, state: process.env.FAKE_STATE };
   if (process.env.FAKE_STATUS) worker.status = process.env.FAKE_STATUS;
@@ -11210,6 +11232,57 @@ if (args[0] === 'agents') {
         let call = plan_call();
         let allowed = &call[call.iter().position(|arg| arg == "--allowedTools").unwrap() + 1];
         assert!(allowed.contains(",WebFetch,Edit(//x/abs/**),Edit(~/home/**),Edit(//"), "{allowed}");
+    }
+
+    /// The agents list has the sessions of every project (ticket stop-on-a-task-stops-only-the-worker-of):
+    /// stop and status take the worker of the ticket whose folder is the project folder or one of its
+    /// work folders, never a newer worker of the same name in another project.
+    #[test]
+    fn stop_takes_the_worker_of_its_own_project() {
+        let project = scratch("own-worker");
+        apply(&project, &[]).unwrap();
+        let fake = fake_claude(project.root.parent().unwrap());
+        let other = project.root.parent().unwrap().join("other");
+        let list = |own_cwd: Option<&Path>, own_state: &str| {
+            let mut workers = vec![serde_json::json!({ "id": "bg-other", "name": "t-1 [work]", "sessionId": "sess-other", "startedAt": 2, "state": "working", "cwd": other.to_string_lossy() })];
+            if let Some(cwd) = own_cwd {
+                workers.push(serde_json::json!({ "id": "bg-own", "name": "t-1 [work]", "sessionId": "sess-own", "startedAt": 1, "state": own_state, "cwd": cwd.to_string_lossy() }));
+            }
+            write_file(&fake.join("agents.json"), &serde_json::Value::Array(workers).to_string()).unwrap();
+        };
+        let state = project.reports.join("t-1.state");
+
+        // 1. The own worker in the project folder, a newer one of the same name in another project.
+        list(Some(&project.root), "working");
+        write_file(&state, "working\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "working", &["stop", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(last_call(&fake), ["stop", "bg-own"]);
+        assert_eq!(read(&state), "stopped\n");
+
+        // 2. The own worker in a work folder of the project still counts as its own.
+        list(Some(&project.reports.join("work").join("2")), "working");
+        write_file(&state, "working\n").unwrap();
+        let (code, out) = run_script(&project, &fake, "working", &["stop", "t-1"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(last_call(&fake), ["stop", "bg-own"]);
+
+        // 3. Only the worker of the other project: no worker here, and no stop call.
+        list(None, "");
+        write_file(&state, "working\n").unwrap();
+        let calls_before = read(&fake.join("args.txt"));
+        let (code, out) = run_script(&project, &fake, "working", &["stop", "t-1"]);
+        assert_eq!(code, 2, "{out}");
+        assert!(out.contains("no worker named t-1"), "{out}");
+        let calls = read(&fake.join("args.txt"));
+        assert!(!calls[calls_before.len()..].contains("\"stop\""), "{calls}");
+        assert_eq!(read(&state), "working\n");
+
+        // 4. status gives the state of the own worker, not of the newer worker of the other project.
+        list(Some(&project.root), "done");
+        let (code, out) = run_script(&project, &fake, "working", &["status"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.lines().any(|line| line.trim_end() == "t-1\tworking\tdone"), "{out}");
     }
 
     #[test]
