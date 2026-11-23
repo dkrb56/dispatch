@@ -1830,7 +1830,7 @@ function Find-Worker($Workers, [string]$Ticket, [string]$Run) {
 # Without a worker of the ticket in the list (an ended or cleaned plan session) approve goes on.
 function Approve-Check {
   if ((Get-State) -eq 'stopped') { Refuse "the task $Id was stopped; start a new task" }
-  $worker = Find-Worker (Get-Workers) $Id
+  $worker = Find-Worker (Listed-Workers) $Id
   if ($null -eq $worker) { return }
   $state = Worker-State $worker
   if ($state -eq 'working' -or $state -eq 'blocked') {
@@ -1843,7 +1843,7 @@ function Approve-Check {
 # $Run picks the session of that run.
 function Resume-Target([string]$Run) {
   if ((Get-State) -eq 'stopped') { Refuse "the task $Id was stopped; start a new task" }
-  $worker = Find-Worker (Get-Workers) $Id $Run
+  $worker = Find-Worker (Listed-Workers) $Id $Run
   if ($null -eq $worker) { Refuse "no worker named $Id on this computer. A run that started on another computer cannot be resumed here: start the task again, or answer on the computer where it ran" }
   $state = Worker-State $worker
   if ($state -eq 'working' -or $state -eq 'blocked') {
@@ -1889,9 +1889,16 @@ function Session-Path { Join-Path $Reports "$Id.session" }
 function Save-Session([string]$Run, [string[]]$Printed) {
   $words = @($Printed | ForEach-Object { "$_" -split '\s+' } | Where-Object { $_ })
   $workers = @()
+  # The list after the start replaces the one before it (ticket the-worker-script-asks-git-each-fact):
+  # Work-Job reads it; a failed list leaves none, and Work-Job lists again.
+  $script:ListedOk = $false
   try {
     $text = (& claude agents --json --all) -join "`n"
-    if ($LASTEXITCODE -eq 0) { $workers = @($text | ConvertFrom-Json | ForEach-Object { $_ }) }
+    if ($LASTEXITCODE -eq 0) {
+      $workers = @($text | ConvertFrom-Json | ForEach-Object { $_ })
+      $script:Listed = $workers
+      $script:ListedOk = $true
+    }
   } catch { }
   $worker = @($workers | Where-Object { $_.id -and $words -contains "$($_.id)" }) | Select-Object -First 1
   if ($null -eq $worker) {
@@ -2018,6 +2025,19 @@ function Git-Writes([string[]]$A) {
     break
   }
   if ($script:GitReads -contains $sub) { return $false }
+  # update-ref moves a ref and no file (ticket the-worker-script-asks-git-each-fact): only HEAD, the
+  # branch of the project folder, or a form it cannot tell (no full ref name) changes what status says.
+  if ($sub -eq 'update-ref') {
+    $ref = ''
+    for ($j = $i + 1; $j -lt $A.Count; $j++) {
+      if ($A[$j].StartsWith('-')) { continue }
+      $ref = $A[$j]
+      break
+    }
+    if (-not $ref.StartsWith('refs/')) { return $true }
+    $on = Head-Branch $Project
+    return (-not $on -or $ref -eq "refs/heads/$on")
+  }
   if (($sub -eq 'read-tree' -or $sub -eq 'rm') -and $env:GIT_INDEX_FILE) { return $false }
   $true
 }
@@ -2280,7 +2300,7 @@ function Folder-Number([string]$Path) {
 # newest worker "<ticket> [work]" ($Worker, or the listed one), or 0: a session in the project folder,
 # a worker without cwd (an older Claude Code), or none.
 function Session-Folder($Worker) {
-  if ($null -eq $Worker) { $Worker = Find-Worker (Get-Workers) $Id 'work' }
+  if ($null -eq $Worker) { $Worker = Find-Worker (Listed-Workers) $Id 'work' }
   if ($null -eq $Worker) { return 0 }
   Folder-Number "$($Worker.cwd)"
 }
@@ -2290,7 +2310,6 @@ function Session-Folder($Worker) {
 # One object per folder: N, Holder (the ticket, or $null when the folder is free) and Made (the
 # worktree exists).
 function Folder-Holders([int]$Count) {
-  $script:ListedOk = $false
   for ($n = 1; $n -le 4; $n++) {
     $made = Test-Path -LiteralPath (Join-Path (Work-Folder $n) '.git')
     if ($n -gt $Count -and -not $made -and -not (Test-Path -LiteralPath (Work-Record $n))) { continue }
@@ -2341,10 +2360,13 @@ function Same-Files([string]$Ticket) {
 # The job id of the newest worker named "<ticket> [work]", or - (for the record).
 function Work-Job {
   $workers = @()
-  try {
-    $text = (& claude agents --json --all) -join "`n"
-    if ($LASTEXITCODE -eq 0) { $workers = @($text | ConvertFrom-Json | ForEach-Object { $_ }) }
-  } catch { }
+  if ($script:ListedOk) { $workers = @($script:Listed) }
+  else {
+    try {
+      $text = (& claude agents --json --all) -join "`n"
+      if ($LASTEXITCODE -eq 0) { $workers = @($text | ConvertFrom-Json | ForEach-Object { $_ }) }
+    } catch { }
+  }
   $worker = Find-Worker $workers $Id 'work'
   if ($null -eq $worker -or "$($worker.name)" -ne (Run-Name 'work') -or -not $worker.id) { return '-' }
   "$($worker.id)"
@@ -2383,6 +2405,8 @@ function Enter-WorkFolder([string]$Use, $Worker) {
       $deadline = (Get-Date).AddSeconds($wait)
       while ($number -eq 0 -and (Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 2
+        # A new poll looks at the sessions again.
+        $script:ListedOk = $false
         $holders = @(Folder-Holders $count)
         $number = Pick-Folder $holders $count
       }
@@ -2459,7 +2483,10 @@ function Enter-WorkFolder([string]$Use, $Worker) {
     $out = Invoke-GitAt $folder @('checkout', '-q', '-f', '--detach', $baseTip)
     if ($out.Code -ne 0) { Refuse "git could not check out $($info.base) in the work folder: $($out.Text)" }
   } elseif (Ref-Hash $Project "refs/heads/$($info.branch)") {
-    if ($Use -eq 'work') {
+    # A branch that holds its base, with the folder on it already, stays as it is (ticket
+    # the-worker-script-asks-git-each-fact): the detach, the sync and the checkout would change nothing.
+    $sync = $Use -eq 'work' -and (Sync-Needed)
+    if ($sync) {
       # The branch takes the newer commits of the base before its checkout (ticket moving-a-project):
       # Sync-Base takes .dispatch of the base (rule 4), so task files that a branch of the old path
       # committed make no conflict. It moves the ref only, so the work folder lets go of the branch first.
@@ -2471,8 +2498,10 @@ function Enter-WorkFolder([string]$Use, $Worker) {
         $note = " Dispatch could not bring the newer commits of $($info.base) into this branch: $why."
       }
     }
-    $out = Invoke-GitAt $folder @('checkout', '-q', $info.branch)
-    if ($out.Code -ne 0) { Refuse "git could not check out $($info.branch) in the work folder: $($out.Text)" }
+    if ($sync -or (Head-Branch $folder) -ne $info.branch) {
+      $out = Invoke-GitAt $folder @('checkout', '-q', $info.branch)
+      if ($out.Code -ne 0) { Refuse "git could not check out $($info.branch) in the work folder: $($out.Text)" }
+    }
   } else {
     $out = Invoke-GitAt $folder @('checkout', '-q', '-b', $info.branch, $info.base)
     if ($out.Code -ne 0) { Refuse "git could not make $($info.branch) in the work folder: $($out.Text)" }
@@ -2809,17 +2838,29 @@ function Gate-InWorkFolder([string]$Merge, [string]$Gate, [int]$Limit) {
 # files outside .dispatch as $Merge, the gated commit is taken as it is when it has the same first
 # parent, else its commit on top is picked onto $Merge in the work folder. '' when no gate passed on
 # this code.
-function Gated-Target([string]$Merge, [string]$BranchTip) {
+function Gated-Target([string]$Merge, [string]$BranchTip, [string]$MergeParent) {
   $file = Join-Path $Reports "merge\$Id.gated"
   if (-not (Test-Path -LiteralPath $file)) { return '' }
   $fields = @("$(Get-Content -LiteralPath $file -Raw -ErrorAction SilentlyContinue)".Trim() -split "`t")
   if ($fields.Count -lt 3 -or $fields[2] -ne $BranchTip) { return '' }
   $old = $fields[0]
   $top = if ($fields[1] -eq '-') { '' } else { $fields[1] }
-  if ((Invoke-Git @('cat-file', '-e', "${old}^{commit}")).Code -ne 0) { return '' }
-  if ($top -and (Invoke-Git @('cat-file', '-e', "${top}^{commit}")).Code -ne 0) { return '' }
+  # One cat-file --batch-check through stdin (ticket the-worker-script-asks-git-each-fact): the gated
+  # commit, its commit on top, and the first parent of the gated commit; a line "<name> missing" means
+  # the object is gone. $MergeParent is the base tip that Build-Merge took as the first parent of $Merge.
+  $asked = @("${old}^{commit}")
+  if ($top) { $asked += "${top}^{commit}" }
+  $asked += "${old}^1"
+  $ErrorActionPreference = 'Continue'
+  $found = @($asked | & git -C $Project cat-file --batch-check 2>&1 | ForEach-Object { "$_" })
+  $ErrorActionPreference = 'Stop'
+  if ($found.Count -ne $asked.Count) { return '' }
+  for ($i = 0; $i -lt $asked.Count - 1; $i++) {
+    if ($found[$i] -notmatch '^[0-9a-f]+ commit \d+$') { return '' }
+  }
+  $oldParent = if ($found[$found.Count - 1] -match '^([0-9a-f]+) commit \d+$') { $Matches[1] } else { '' }
   if ((Invoke-Git @('diff', '--quiet', $old, $Merge, '--', '.', ':(exclude).dispatch')).Code -ne 0) { return '' }
-  if ((Invoke-Git @('rev-parse', "${old}^1")).Text -eq (Invoke-Git @('rev-parse', "${Merge}^1")).Text) {
+  if ($oldParent -eq $MergeParent) {
     if ($top) { return $top }
     return $old
   }
@@ -2871,7 +2912,7 @@ function Merge-InWorkFolder($Info, [string]$Gate, [int]$Limit) {
         return ''
       }
       $from = $now
-      $target = Gated-Target $built.Commit $branchTip
+      $target = Gated-Target $built.Commit $branchTip $now
       if (-not $target) {
         $why = Gate-InWorkFolder $built.Commit $Gate $Limit
         if ($why) { return $why }
@@ -3069,10 +3110,33 @@ function Sync-Base([switch]$Before) {
   $script:Synced = @{ Base = $baseId; Tip = $(if ($why) { $tip } else { $script:SyncMade }); Why = $why }
   $why
 }
+# Whether the task branch lacks a commit of its base, with no write (ticket
+# the-worker-script-asks-git-each-fact): a branch at the hash of its base, or a pair that $script:Synced
+# holds, needs no question to git, else one merge-base. An ancestor fills $script:Synced, so Sync-Base
+# returns at once; a commit that is no ancestor goes into $script:SyncAsked, so Sync-Commit does not ask
+# again for the same pair. Both are keyed on the two hashes, and the answer for two commits never
+# changes. A missing branch file, base or branch counts as needed: Sync-Base then gives its reason.
+$script:SyncAsked = @{ Base = ''; Tip = '' }
+function Sync-Needed {
+  $info = Read-BranchFile $Id
+  if ($null -eq $info -or -not $info.branch -or -not $info.base -or $info.merge) { return $true }
+  $baseId = Ref-Hash $Project "refs/heads/$($info.base)"
+  $tip = Ref-Hash $Project "refs/heads/$($info.branch)"
+  if (-not $baseId -or -not $tip) { return $true }
+  if ($baseId -eq $tip) { return $false }
+  if ($script:Synced.Base -eq $baseId -and $script:Synced.Tip -eq $tip) { return [bool]$script:Synced.Why }
+  if ((Invoke-Git @('merge-base', '--is-ancestor', $baseId, $info.branch)).Code -eq 0) {
+    $script:Synced = @{ Base = $baseId; Tip = $tip; Why = '' }
+    return $false
+  }
+  $script:SyncAsked = @{ Base = $baseId; Tip = $tip }
+  $true
+}
 # The sync itself: the merge commit of the branch tip $Tip and the base commit $BaseId, and the move of
 # the branch; $script:SyncMade is the new tip after a success. Gives the reason, or ''.
 function Sync-Commit($info, [string]$baseId, [string]$tip, [bool]$on) {
-  if ((Invoke-Git @('merge-base', '--is-ancestor', $baseId, $info.branch)).Code -eq 0) { return '' }
+  $asked = $script:SyncAsked.Base -eq $baseId -and $script:SyncAsked.Tip -eq $tip
+  if (-not $asked -and (Invoke-Git @('merge-base', '--is-ancestor', $baseId, $info.branch)).Code -eq 0) { return '' }
   $merge = Invoke-Git @('merge-tree', '--write-tree', '--name-only', '--no-messages', $info.branch, $baseId)
   $lines = @($merge.Lines | Where-Object { $_ })
   if (($merge.Code -ne 0 -and $merge.Code -ne 1) -or $lines.Count -eq 0) { return "git merge-tree failed: $($merge.Text)" }
@@ -15976,6 +16040,90 @@ process.exit(result.status === null ? 1 : result.status);
         assert_eq!(code, 0, "{out}");
         let calls = take_git_calls(&count);
         assert!(calls.len() <= 1, "the reply on the branch started git {} times: {calls:#?}", calls.len());
+        clean(&project);
+    }
+
+    /// The `agents` lists that the fake recorded since the last take; clears its record.
+    fn take_agent_lists(fake: &Path) -> usize {
+        let file = fake.join("args.txt");
+        let count = fs::read_to_string(&file).unwrap_or_default().lines().filter(|line| line.trim() == r#"["agents","--json","--all"]"#).count();
+        let _ = fs::remove_file(&file);
+        count
+    }
+
+    /// Ticket the-worker-script-asks-git-each-fact: a reply and a check in the work folder, with the
+    /// folder on the branch and the branch at its base, start git at most 3 and 2 times and list the
+    /// sessions once before and once after the start; a reply from the base after a new commit on the
+    /// base looks at the uncommitted changes once.
+    #[test]
+    fn the_work_folder_runs_start_git_at_most_three_times() {
+        let (project, fake, _base) = work_project("work-count");
+        fs::remove_file(fake.join("work.txt")).unwrap();
+        git_out(&project, &["config", "core.autocrlf", "false"]);
+        let cwd = project.root.to_string_lossy().into_owned();
+        let folder = project.work_folder();
+        let count = count_git(project.root.parent().unwrap());
+        let path = format!("{};{};{}", count.display(), fake.display(), std::env::var("PATH").unwrap_or_default());
+        let env = [("PATH", path.as_str())];
+        write_file(&project.briefs().join("t-1.md"), "# t-1: a scratch task\n").unwrap();
+        let (code, out) = run_script_env(&project, &fake, "done", &["plan", "t-1"], &env);
+        assert_eq!(code, 0, "{out}");
+        let (code, out) = run_script_env(&project, &fake, "done", &["approve", "t-1"], &env);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(run_git(&folder, &["symbolic-ref", "--short", "HEAD"]).unwrap().trim(), "task/t-1");
+        take_git_calls(&count);
+        take_agent_lists(&fake);
+
+        // The reply with the folder on the branch: the status, the settings question, no checkout.
+        let (code, out) = run_script_env(&project, &fake, "done", &["reply", "t-1", "go on"], &env);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(run_git(&folder, &["symbolic-ref", "--short", "HEAD"]).unwrap().trim(), "task/t-1");
+        let calls = take_git_calls(&count);
+        assert!(calls.len() <= 3, "the reply in the work folder started git {} times: {calls:#?}", calls.len());
+        assert_eq!(take_agent_lists(&fake), 2, "the reply in the work folder");
+
+        // The check run there: the status and the settings question.
+        set_pick(&project, true);
+        set_checks(cwd.clone(), "where | cd\n".to_string()).unwrap();
+        task_pick_choice(cwd, "t-1".into(), vec!["where".into()]).unwrap();
+        ignore_line(&project, CHECKS_IGNORE).unwrap();
+        take_git_calls(&count);
+        take_agent_lists(&fake);
+        let (code, out) = run_script_env(&project, &fake, "done", &["check", "t-1"], &env);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("where: exit 0"), "{out}");
+        let calls = take_git_calls(&count);
+        assert!(calls.len() <= 2, "the check in the work folder started git {} times: {calls:#?}", calls.len());
+        assert_eq!(take_agent_lists(&fake), 1, "the check in the work folder");
+        clean(&project);
+
+        // Task branches only: a reply from the base after a new commit on the base. The sync moves the
+        // branch by its ref, which leaves the look at the uncommitted changes as it was.
+        let (project, fake, base) = branch_project("count-sync");
+        fs::remove_file(fake.join("work.txt")).unwrap();
+        git_out(&project, &["config", "core.autocrlf", "false"]);
+        let count = count_git(project.root.parent().unwrap());
+        let path = format!("{};{};{}", count.display(), fake.display(), std::env::var("PATH").unwrap_or_default());
+        let env = [("PATH", path.as_str())];
+        write_file(&project.briefs().join("t-1.md"), "# t-1: a scratch task\n").unwrap();
+        let (code, out) = run_script_env(&project, &fake, "done", &["plan", "t-1"], &env);
+        assert_eq!(code, 0, "{out}");
+        let (code, out) = run_script_env(&project, &fake, "done", &["approve", "t-1"], &env);
+        assert_eq!(code, 0, "{out}");
+        write_file(&project.reports.join("t-1.md"), GATE_QUESTION).unwrap();
+        git_out(&project, &["checkout", "-q", &base]);
+        write_file(&project.root.join("base.txt"), "a newer commit of the base\n").unwrap();
+        git_out(&project, &["add", "--", "base.txt"]);
+        git_out(&project, &["commit", "-q", "-m", "a newer commit of the base"]);
+        take_git_calls(&count);
+        let (code, out) = run_script_env(&project, &fake, "done", &["reply", "t-1", "Answer to question 1: Run the gate now"], &env);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        assert!(project.root.join("base.txt").exists(), "the branch did not take the newer commit of the base");
+        let calls = take_git_calls(&count);
+        let looks = calls.iter().filter(|call| call.split(' ').any(|word| word == "status")).count();
+        assert_eq!(looks, 1, "the reply from the base looked at the uncommitted changes {looks} times: {calls:#?}");
+        assert!(calls.len() <= 15, "the reply from the base after a new base commit started git {} times: {calls:#?}", calls.len());
         clean(&project);
     }
 
