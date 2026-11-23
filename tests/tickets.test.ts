@@ -38,6 +38,7 @@ import {
   LEVELS,
   levelLabel,
   levelOf,
+  linkedTickets,
   movedIds,
   movedTickets,
   nextLevel,
@@ -1103,6 +1104,19 @@ test("parent groups: the board wraps a family in a frame in its colour", () => {
   assert.match(CSS, /\.ticket-group \{[^}]*var\(--group-colour\)/);
   assert.match(MAIN, /ticket-group/);
   assert.match(MAIN, /ticketGroups\(/);
+});
+
+test("linked cards: the hovered family stays, the rest dims", () => {
+  const list = [ticket("P", "backlog", null, 1), part("p-1", "P", 1), part("p-2", "P", 2, "in-progress"), ticket("S", "backlog", null, 2)];
+  const family = ["P", "p-1", "p-2"];
+  assert.deepEqual([...linkedTickets("P", list)].sort(), [...family].sort(), "the parent gives its parts");
+  assert.deepEqual([...linkedTickets("p-2", list)].sort(), [...family].sort(), "a part gives the same family");
+  assert.equal(linkedTickets("S", list).size, 0, "a plain ticket gives none");
+  const closed = [ticket("C", "done", null, 1), part("c-1", "C", 1, "done")];
+  assert.equal(linkedTickets("c-1", closed).size, 0, "a closed family gives none");
+  assert.match(MAIN, /markLinked\(/);
+  assert.match(MAIN, /dataset\.family/);
+  assert.match(CSS, /\.linking [^{]*\{[^}]*opacity/);
 });
 
 test("subtickets: the parent counts its parts and shows where the chain stopped", () => {

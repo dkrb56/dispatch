@@ -2518,6 +2518,18 @@ button.task-head:hover {
   border-radius: 12px;
 }
 
+/* Ticket when-i-hover-over-one-of-the-tasks-which: the pointer on a card of a family fades every other card. */
+.ticket-card,
+.ticket-group {
+  transition: opacity 120ms;
+}
+
+.linking .ticket-card:not(.linked),
+.linking .ticket-group:not(.linked),
+.linking .tickets-list > .task.pending {
+  opacity: 0.35;
+}
+
 /* Ticket tasks-column-on-the-left-is-redundant: the task card inside an In progress card has no frame
    of its own; the frame of the ticket shows waits, working, approved and parts. `[class]` outranks the
    state rules of `.task`. */

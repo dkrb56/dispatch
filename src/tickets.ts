@@ -671,6 +671,19 @@ export function ticketGroups(
   return groups;
 }
 
+/** The ids of the family of a ticket as `ticketGroups` gives it: the parent and its parts; empty without a family. */
+export function linkedTickets(
+  id: string,
+  tickets: readonly Pick<Ticket, "id" | "parent" | "part" | "created" | "status">[],
+): Set<string> {
+  const groups = ticketGroups(tickets);
+  const family = groups.get(id)?.parent;
+  const ids = new Set<string>();
+  if (family === undefined) return ids;
+  for (const [member, group] of groups) if (group.parent === family) ids.add(member);
+  return ids;
+}
+
 /**
  * The count of the parts of a parent (ticket subtickets): the done parts, all parts without those that
  * the user canceled, and the place of the first part that failed or stopped (0: none).

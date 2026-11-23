@@ -10930,6 +10930,9 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
       ticketEls.splice(at, 0, ...loose.map(pendingElement));
       elGroups.splice(at, 0, ...loose.map(() => undefined));
     }
+    elGroups.forEach((group, at) => {
+      if (group) ticketEls[at].dataset.family = group.parent;
+    });
     list.append(...groupFrames(ticketEls, elGroups));
     if (hidden > 0) {
       const more = ticketButton(
@@ -10974,6 +10977,40 @@ function fillTicketColumns(container: HTMLElement, key: string, search: string):
     const list = column.querySelector(".tickets-list");
     if (list) list.scrollTop = scrolls.get(column.dataset.status ?? "") ?? 0;
   }
+  wireLinked(container);
+  markLinked(container, ticketDragging ? "" : (hoverFamily.get(container) ?? ""));
+}
+
+/** The family under the pointer, per board container, and the containers that have the hover listeners. */
+const hoverFamily = new WeakMap<HTMLElement, string>();
+const linkWired = new WeakSet<HTMLElement>();
+
+/**
+ * Dims every card outside one family: the container gets `linking`, the cards and the frame of the family
+ * get `linked`; an empty family clears all three (ticket when-i-hover-over-one-of-the-tasks-which).
+ */
+function markLinked(container: HTMLElement, family: string): void {
+  container.classList.toggle("linking", family !== "");
+  for (const el of container.querySelectorAll<HTMLElement>(".ticket-card[data-family], .ticket-group[data-group]")) {
+    el.classList.toggle("linked", family !== "" && (el.dataset.family === family || el.dataset.group === family));
+  }
+}
+
+/** Wires the hover of a board container once: the pointer on a card of a family dims the rest. */
+function wireLinked(container: HTMLElement): void {
+  if (linkWired.has(container)) return;
+  linkWired.add(container);
+  const set = (family: string) => {
+    if (ticketDragging) family = "";
+    if ((hoverFamily.get(container) ?? "") === family && container.classList.contains("linking") === (family !== "")) return;
+    hoverFamily.set(container, family);
+    markLinked(container, family);
+  };
+  container.addEventListener("pointerover", (event) => {
+    const card = event.target instanceof Element ? event.target.closest<HTMLElement>(".ticket-card[data-family]") : null;
+    set(card?.dataset.family ?? "");
+  });
+  container.addEventListener("pointerleave", () => set(""));
 }
 
 /** The open right-click menu of a board and the listeners that close it. */
