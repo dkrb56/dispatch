@@ -1,7 +1,7 @@
 // The Options screen (ticket alerts-options): the three switches of the alerts when a task waits for
 // the user, the switch of the triage compaction after a task (ticket triage-compact-after-task), and
 // the colour theme cards and the text size buttons (main.ts wires those two, as before).
-import { ALERT_OPTIONS_KEY, type AlertOptions, parseAlertOptions, parseVoice, VOICE_KEY, VOICES } from "./alerts";
+import { ALERT_OPTIONS_KEY, type AlertOptions, parseAlertOptions, parseVoice, parseVolume, VOICE_KEY, VOICES, VOLUME_KEY } from "./alerts";
 import { parsePulse, PULSE_KEY } from "./attention";
 import { COMPACT_KEY, parseCompact } from "./compact";
 import { cleanAddress, DEFAULT_PORT, type HostEntry, hostSettings, setHostSettings, windowCall } from "./backend";
@@ -390,6 +390,14 @@ export function voiceName(): string {
   return voice;
 }
 
+/** The volume of the spoken alert, in percent. */
+let volume = parseVolume(null);
+
+/** The volume of the spoken alert from 0 to 1. */
+export function voiceVolume(): number {
+  return volume / 100;
+}
+
 /** The switch Pulse (ticket card-attention): a card that waits for the user pulses. On until the user turns it off. */
 let pulse = parsePulse(null);
 
@@ -468,6 +476,29 @@ export function initOptions(onClose: () => void, onHostChange: () => unknown): v
         localStorage.setItem(VOICE_KEY, voice);
       } catch {
         // The voice stays for this run of the app.
+      }
+    });
+  }
+  try {
+    volume = parseVolume(localStorage.getItem(VOLUME_KEY));
+  } catch {
+    // Without the storage, the voice speaks at full volume.
+  }
+  const volumeInput = dialog.querySelector<HTMLInputElement>("input[data-volume]");
+  const volumeText = dialog.querySelector<HTMLElement>("[data-volume-text]");
+  if (volumeInput) {
+    const show = () => {
+      if (volumeText) volumeText.textContent = `${volume}%`;
+    };
+    volumeInput.value = String(volume);
+    show();
+    volumeInput.addEventListener("input", () => {
+      volume = parseVolume(volumeInput.value);
+      show();
+      try {
+        localStorage.setItem(VOLUME_KEY, String(volume));
+      } catch {
+        // The volume stays for this run of the app.
       }
     });
   }

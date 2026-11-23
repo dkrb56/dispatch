@@ -221,7 +221,7 @@ export interface Voice {
 export const DEFAULT_VOICE = "en-US-AvaMultilingualNeural";
 
 /**
- * The voices of the list in Options (user decision: six English voices). A multilingual voice
+ * The voices of the list in Options (user decision: twenty English voices). A multilingual voice
  * also says the words of other languages in a ticket title well.
  */
 export const VOICES: Voice[] = [
@@ -231,6 +231,20 @@ export const VOICES: Voice[] = [
   { id: "en-US-BrianMultilingualNeural", label: "Brian, multilingual (United States)" },
   { id: "en-GB-SoniaNeural", label: "Sonia (United Kingdom)" },
   { id: "en-GB-RyanNeural", label: "Ryan (United Kingdom)" },
+  { id: "en-US-JennyNeural", label: "Jenny (United States)" },
+  { id: "en-US-AriaNeural", label: "Aria (United States)" },
+  { id: "en-US-GuyNeural", label: "Guy (United States)" },
+  { id: "en-US-ChristopherNeural", label: "Christopher (United States)" },
+  { id: "en-US-MichelleNeural", label: "Michelle (United States)" },
+  { id: "en-GB-LibbyNeural", label: "Libby (United Kingdom)" },
+  { id: "en-GB-ThomasNeural", label: "Thomas (United Kingdom)" },
+  { id: "en-AU-NatashaNeural", label: "Natasha (Australia)" },
+  { id: "en-CA-ClaraNeural", label: "Clara (Canada)" },
+  { id: "en-CA-LiamNeural", label: "Liam (Canada)" },
+  { id: "en-IE-EmilyNeural", label: "Emily (Ireland)" },
+  { id: "en-IE-ConnorNeural", label: "Connor (Ireland)" },
+  { id: "en-IN-NeerjaNeural", label: "Neerja (India)" },
+  { id: "en-NZ-MollyNeural", label: "Molly (New Zealand)" },
 ];
 
 /** The stored voice when it is in the list, else the default. */
@@ -240,6 +254,19 @@ export function parseVoice(stored: string | null): string {
 
 /** The line that the Listen button of Options says. */
 export const VOICE_SAMPLE = "Dispatch in this project. The plan is ready.";
+
+/** The localStorage key of the voice volume. */
+export const VOLUME_KEY = "alert-volume";
+
+/** The voice volume in percent until the user sets one. */
+export const DEFAULT_VOLUME = 100;
+
+/** The stored volume as a whole number from 0 to 100; anything else gives the default. */
+export function parseVolume(stored: string | null): number {
+  if (stored === null || !/^\d+$/.test(stored.trim())) return DEFAULT_VOLUME;
+  const value = Number(stored);
+  return value >= 0 && value <= 100 ? value : DEFAULT_VOLUME;
+}
 
 /** One note of the chime: its pitch in hertz, its start and its length in seconds. */
 export interface ChimeNote {

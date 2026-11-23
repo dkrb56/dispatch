@@ -175,7 +175,7 @@ import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersio
 import { lastRunVersion, newEntries } from "./changelog";
 import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, speechLines, ticketTitle, VOICE_SAMPLE, type Wait, waitNotice, type WorkerEnd } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
-import { alertOptions, compactOn, initOptions, openOptions, ownHostRuns, phoneTabWanted, pulseOn, stopOwnHost, useOwnHost, voiceName } from "./options";
+import { alertOptions, compactOn, initOptions, openOptions, ownHostRuns, phoneTabWanted, pulseOn, stopOwnHost, useOwnHost, voiceName, voiceVolume } from "./options";
 import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
 import { GIT_STATE_SIZE_KEY, ageText, commitFilesLabel, commitHeadText, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "./gitstate";
@@ -11944,6 +11944,7 @@ function playAudio(bytes: ArrayBuffer): Promise<void> {
     const audio = new Audio(url);
     audio.addEventListener("ended", () => done());
     audio.addEventListener("error", () => fail(new Error("the window cannot play the voice audio")));
+    audio.volume = voiceVolume();
     audio.play().catch(fail);
   }).finally(() => URL.revokeObjectURL(url));
 }
@@ -11954,6 +11955,7 @@ function speakSystem(text: string): Promise<boolean> {
   return new Promise<boolean>((done) => {
     try {
       const utterance = new SpeechSynthesisUtterance(text);
+      utterance.volume = voiceVolume();
       utterance.addEventListener("end", () => done(true));
       utterance.addEventListener("error", () => {
         chimeAfterVoice();

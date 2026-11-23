@@ -1075,7 +1075,7 @@
           <li><b>Rules</b> shows all the rules that Claude Code gets in the project. <b>Analyse rules</b> finds old or bad rules.</li>
           <li><b>Update to …</b> shows when a new version is ready. Click it to install the update.</li>
           <li><b>Options</b> (the wrench) holds the mode, the alerts, the colour theme and the size of the text.</li>
-          <li><b>Alerts.</b> Dispatch tells you when a task waits: a <b>notification</b>, a <b>chime</b> or a spoken <b>voice</b> (a natural Microsoft voice that you pick in Options) that says each alert, one by one, with the ticket title, the project and what happened, and a taskbar button that <b>blinks</b>.</li>
+          <li><b>Alerts.</b> Dispatch tells you when a task waits: a <b>notification</b>, a <b>chime</b> or a spoken <b>voice</b> (a natural Microsoft voice that you pick in Options, with its volume) that says each alert, one by one, with the ticket title, the project and what happened, and a taskbar button that <b>blinks</b>.</li>
           <li><b>The bar at the bottom</b> shows your Claude account, its weekly usage and the versions.</li>
           <li><b>What's new</b> next to Check for update lists what each version brought.</li>
           <li><b>?</b> opens this help.</li>
@@ -1267,6 +1267,11 @@
                 <div class="field-row">
                   <select id="voice-pick" data-voice aria-label="Voice" title="The natural Microsoft voice that says the alerts"></select>
                   <button type="button" id="voice-listen" title="Say one sample line with the chosen voice">Listen</button>
+                </div>
+                <label for="voice-volume">Volume</label>
+                <div class="field-row">
+                  <input type="range" id="voice-volume" data-volume min="0" max="100" step="5" aria-label="Voice volume" title="How loud the voice says the alerts" />
+                  <span data-volume-text>100%</span>
                 </div>
                 <small>The natural Microsoft voice needs the network. Without it, a line said before plays again, and a new line uses the Windows voice.</small>
               </div>

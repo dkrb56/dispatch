@@ -17,12 +17,15 @@ import {
   notificationText,
   parseAlertOptions,
   parseVoice,
+  parseVolume,
   SPOKEN,
   speechLines,
   ticketTitle,
   type AlertEvent,
   VOICE_KEY,
   VOICE_SAMPLE,
+  VOLUME_KEY,
+  DEFAULT_VOLUME,
   VOICES,
   type Wait,
   type WaitKind,
@@ -388,9 +391,9 @@ test("no triage: night mode and a project without the switch give no end alert",
 
 // ---- The natural voice of the voice alert (ticket the-voice-alert-uses-the-microsoft) ------------
 
-test("the voice list has six voices with unique ids and holds the default", () => {
-  assert.equal(VOICES.length, 6);
-  assert.equal(new Set(VOICES.map((voice) => voice.id)).size, 6, "unique ids");
+test("the voice list has twenty voices with unique ids and holds the default", () => {
+  assert.equal(VOICES.length, 20);
+  assert.equal(new Set(VOICES.map((voice) => voice.id)).size, 20, "unique ids");
   assert.ok(VOICES.some((voice) => voice.id === DEFAULT_VOICE), "the default is in the list");
   assert.equal(DEFAULT_VOICE, "en-US-AvaMultilingualNeural");
   for (const voice of VOICES) {
@@ -399,6 +402,15 @@ test("the voice list has six voices with unique ids and holds the default", () =
   }
   assert.equal(VOICE_KEY, "alert-voice");
   assert.ok(VOICE_SAMPLE.length > 0 && VOICE_SAMPLE.length <= 500, "the sample fits the limit of the service call");
+});
+
+test("parseVolume: a whole number 0 to 100 stays, anything else gives 100", () => {
+  assert.equal(VOLUME_KEY, "alert-volume");
+  assert.equal(parseVolume("40"), 40);
+  assert.equal(parseVolume("0"), 0);
+  assert.equal(parseVolume("100"), 100);
+  for (const bad of [null, "", "abc", "-5", "150", "37.5"]) assert.equal(parseVolume(bad), DEFAULT_VOLUME, String(bad));
+  assert.equal(DEFAULT_VOLUME, 100);
 });
 
 test("parseVoice: a listed id stays, anything else gives the default", () => {
