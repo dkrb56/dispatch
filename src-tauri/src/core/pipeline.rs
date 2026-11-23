@@ -6761,6 +6761,38 @@ impl Drop for SwitchLock {
     }
 }
 
+/// The process `pid` runs and is the one that wrote a lock at the time `since` (as `Owner-Runs` of
+/// the worker script): Windows gives the id of an ended process to a new process, so a process that
+/// started after `since` (+1 s) is another one. A time that does not parse, or a system without
+/// start times here, leaves the id alone to decide; a start time that cannot be read is another process.
+fn lock_owner_runs(pid: u32, since: &str) -> bool {
+    if !crate::core::info::parent_pids().contains_key(&pid) {
+        return false;
+    }
+    match lock_time_ms(since.trim()) {
+        Some(since) if cfg!(windows) => crate::core::info::process_started_ms(pid).is_some_and(|started| started <= since + 1000),
+        _ => true,
+    }
+}
+
+/// The milliseconds since 1970 of a lock time: `YYYY-MM-DDTHH:MM:SS[.fraction]` with `Z` (Dispatch)
+/// or an offset `+HH:MM` / `-HH:MM` (the script); none without a zone or for another text.
+fn lock_time_ms(text: &str) -> Option<u64> {
+    let rest = text.get(19..)?;
+    let zone = rest.strip_prefix('.').map_or(rest, |fraction| fraction.trim_start_matches(|c: char| c.is_ascii_digit()));
+    let offset_ms = match zone.as_bytes() {
+        [b'Z'] => 0,
+        [sign @ (b'+' | b'-'), h1, h2, b':', m1, m2] => {
+            let number = |pair: &[u8]| std::str::from_utf8(pair).ok()?.parse::<i64>().ok();
+            let minutes = number(&[*h1, *h2])? * 60 + number(&[*m1, *m2])?;
+            if *sign == b'+' { minutes * 60_000 } else { -minutes * 60_000 }
+        }
+        _ => return None,
+    };
+    let wall = crate::core::tickets::parse_ts(Some(&Value::String(text.to_string())))?;
+    u64::try_from(i64::try_from(wall).ok()? - offset_ms).ok()
+}
+
 /// Takes the merge lock for the switch back of a ticket, or none while another process that still
 /// runs holds it. A lock of a process that ended goes first.
 fn switch_lock(project: &Project, ticket: &str) -> Option<SwitchLock> {
@@ -6778,10 +6810,11 @@ fn switch_lock(project: &Project, ticket: &str) -> Option<SwitchLock> {
             }
             Err(_) => {
                 let holder = fs::read_to_string(&lock).unwrap_or_default();
-                let pid = holder.split('\t').next().and_then(|pid| pid.trim().parse::<u32>().ok());
+                let mut fields = holder.split('\t');
+                let pid = fields.next().and_then(|pid| pid.trim().parse::<u32>().ok());
                 // A lock without a process id may be in the middle of its write: it goes only after a minute.
                 let stale = match pid {
-                    Some(pid) => !crate::core::info::parent_pids().contains_key(&pid),
+                    Some(pid) => !lock_owner_runs(pid, fields.nth(1).unwrap_or("")),
                     None => fs::metadata(&lock).and_then(|meta| meta.modified()).ok().and_then(|time| time.elapsed().ok()).is_some_and(|age| age.as_secs() > 60),
                 };
                 if !stale {
@@ -16114,6 +16147,18 @@ if (args[0] === 'agents') {
         // A lock of a process that ended goes at the next try.
         write_file(&project.merge_dir().join("lock"), "4294967295\tt-7\t2026-11-19T04:58:23Z\n").unwrap();
         assert!(switch_lock(&project, "t-2").is_some(), "the lock of an ended process held the switch");
+        // A lock whose id came back: the test process runs, but it started after the time of the lock
+        // (as Dispatch writes it, and as the script writes it with an offset). It goes too.
+        let pid = std::process::id();
+        for since in ["2000-01-01T00:00:00.000Z", "2000-01-01T00:00:00.0000000+01:00"] {
+            write_file(&project.merge_dir().join("lock"), &format!("{pid}\tt-7\t{since}\n")).unwrap();
+            assert!(switch_lock(&project, "t-2").is_some(), "the lock of a reused id {since} held the switch");
+        }
+        // The same live id with a later time, or with a time that does not parse, still holds it.
+        for since in ["2999-01-01T00:00:00.0000000-05:00", "now"] {
+            write_file(&project.merge_dir().join("lock"), &format!("{pid}\tt-7\t{since}\n")).unwrap();
+            assert!(switch_lock(&project, "t-2").is_none(), "the lock of the running process {since} was taken");
+        }
         clean(&project);
     }
 

@@ -190,7 +190,7 @@ pub(crate) fn iso(millis: u64) -> String {
 }
 
 /// The milliseconds of a `ts` value: a number, or a text `YYYY-MM-DDTHH:MM:SS[.fff]Z`; else none.
-fn parse_ts(value: Option<&Value>) -> Option<u64> {
+pub(crate) fn parse_ts(value: Option<&Value>) -> Option<u64> {
     let value = value?;
     if let Some(number) = value.as_u64() {
         return Some(number);

@@ -539,6 +539,37 @@ pub(crate) fn parent_pids() -> HashMap<u32, u32> {
     parents
 }
 
+/// The start time of a process: not read on other systems, where process ids do not come back soon.
+#[cfg(not(windows))]
+pub(crate) fn process_started_ms(_pid: u32) -> Option<u64> {
+    None
+}
+
+/// The start time of a process in milliseconds since 1970, or none when it does not run or its
+/// times cannot be read (a process of another user).
+#[cfg(windows)]
+pub(crate) fn process_started_ms(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    // SAFETY: the four FILETIME values live for the call, and the process handle is closed.
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let mut times: [FILETIME; 4] = std::mem::zeroed();
+        let [created, exited, kernel, user] = &mut times;
+        let read = GetProcessTimes(process, created, exited, kernel, user);
+        CloseHandle(process);
+        if read == 0 {
+            return None;
+        }
+        // 100 ns steps since 1601-01-01; 11,644,473,600 s lie between 1601 and 1970.
+        let ticks = (u64::from(times[0].dwHighDateTime) << 32) | u64::from(times[0].dwLowDateTime);
+        (ticks / 10_000).checked_sub(11_644_473_600_000)
+    }
+}
+
 /// Ends the console hosts (`conhost.exe`) that this process started: the hosts of its pseudo
 /// consoles that are still there at the exit. Gives how many it ended. A pseudo terminal on other
 /// systems has no host process, so there it ends nothing.
