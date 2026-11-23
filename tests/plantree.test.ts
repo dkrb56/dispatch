@@ -63,6 +63,8 @@ import {
   startsEarly,
   takenOut,
   autoGroupNote,
+  describeNote,
+  parsePlanDescriptions,
   toggleSelection,
   topicBlocks,
   topicFoldText,
@@ -986,4 +988,39 @@ test("a drag of the corner of a card sizes every card of the project, and the me
   assert.match(css, /\.plan-card-grip \{[^}]*cursor: nwse-resize;/);
   assert.match(html, /<b>Card size<\/b>: drag the small handle in the bottom right corner of any card/);
   assert.match(html, /<b>Cards back to normal size<\/b>/);
+});
+
+test("the short lines read safely, and the Describe note counts new lines and tickets without one", () => {
+  const lines = parsePlanDescriptions({ a: { text: " Signs the user in. ", title: "Login page" }, b: { text: 5, title: "x" }, c: { text: "  " }, d: { text: "No title." }, e: "plain" });
+  assert.deepEqual([...lines], [
+    ["a", { text: "Signs the user in.", title: "Login page" }],
+    ["d", { text: "No title.", title: "" }],
+  ]);
+  assert.equal(parsePlanDescriptions(null).size, 0);
+  assert.equal(parsePlanDescriptions([{ text: "x" }]).size, 0);
+  assert.equal(parsePlanDescriptions("text").size, 0);
+  const before = new Map([["a", { text: "Old.", title: "A" }]]);
+  const after = new Map([
+    ["a", { text: "New.", title: "A2" }],
+    ["b", { text: "B.", title: "B" }],
+  ]);
+  assert.equal(describeNote(before, after, ["a", "b", "c"]), "Describe wrote 2 short lines, 1 ticket still without one");
+  assert.equal(describeNote(after, after, ["a", "b"]), "Describe: every ticket has a short line.");
+  assert.equal(describeNote(new Map(), new Map([["a", { text: "A.", title: "A" }]]), ["a"]), "Describe wrote 1 short line");
+  assert.equal(describeNote(after, after, ["a", "b", "c", "d"]), "Describe wrote 0 short lines, 2 tickets still without one");
+});
+
+test("the page has Describe, its host commands, the short line on the cards and its Help", () => {
+  const html = read("../index.html");
+  const main = read("../src/main.ts");
+  const css = read("../src/styles.css");
+  assert.match(main, /"plan-tool plan-describe", "Describe"/);
+  assert.match(main, /"plan_describe"/);
+  assert.match(main, /"plan_descriptions_load"/);
+  assert.match(main, /mapElement\("div", "plan-card-about", /);
+  assert.match(main, /"--plan-card-about-lines"/);
+  assert.match(css, /\.plan-card-about \{/);
+  assert.match(css, /-webkit-line-clamp: var\(--plan-card-about-lines, 1\);/);
+  assert.match(css, /\.plan-card\.described \.plan-card-title \{/);
+  assert.match(html, /<b>Describe<\/b> in the toolbar asks Claude/);
 });

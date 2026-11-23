@@ -45,6 +45,7 @@ import {
   flowTickets,
   GROUP_PREFIX,
   autoGroupNote,
+  describeNote,
   groupBadge,
   groupBox,
   groupCounts,
@@ -56,6 +57,7 @@ import {
   movedArrow,
   notInFlow,
   parsePlanGroups,
+  parsePlanDescriptions,
   PLAN_BOX_PAD,
   PLAN_BOX_TITLE,
   PLAN_CARD_DEFAULT,
@@ -91,6 +93,7 @@ import {
   withTicketAfter,
   zoomAround,
   type PlanArrow,
+  type PlanDescription,
   type PlanDraft,
   type PlanGroup,
   type PlanOffset,
@@ -15138,8 +15141,16 @@ async function refreshFocusTasks(onlyWhenChanged = false): Promise<void> {
         if (groupsChanged) changed = true;
       })
     : undefined;
+  // The short lines of the Plan cards, beside the groups (ticket show-a-short-description-on-each-ticket).
+  const descriptionsRead =
+    planned && (!onlyWhenChanged || readIsDue(planned.host, `plan-descriptions:${refKey(planned)}`))
+    ? loadPlanDescriptions(planned).then((linesChanged) => {
+        if (linesChanged) changed = true;
+      })
+    : undefined;
   await Promise.all([
     groupsRead,
+    descriptionsRead,
     ...[...roots.values()].map(async ({ host, root }) => {
       // The time the read began (ticket one-work-run-race).
       const readAt = Date.now();
@@ -16168,7 +16179,24 @@ function planSaveCardSize(key: string, size: PlanCardSize | null): void {
 function planApplyCardSize(size: PlanCardSize): void {
   planBoardEl.style.setProperty("--plan-card-width", `${size.width}px`);
   planBoardEl.style.setProperty("--plan-card-height", `${size.height}px`);
-  planBoardEl.style.setProperty("--plan-card-lines", String(Math.max(1, 2 + Math.round((size.height - PLAN_CARD_DEFAULT.height) / 16))));
+  const lines = Math.max(1, 2 + Math.round((size.height - PLAN_CARD_DEFAULT.height) / 16));
+  planBoardEl.style.setProperty("--plan-card-lines", String(lines));
+  // A card with a short line keeps its title on one line; the short line takes the rest (user decision 2
+  // of ticket show-a-short-description-on-each-ticket). Whole numbers: a calc() in the clamp is not safe in WebView2.
+  planBoardEl.style.setProperty("--plan-card-about-lines", String(Math.max(1, lines - 1)));
+}
+/**
+ * The title of a Plan card and, when Describe wrote one, the short line under it (ticket
+ * show-a-short-description-on-each-ticket). A card with a line gets the class `described` and the
+ * line in its tooltip after the title; a card without one stays as it was.
+ */
+function planCardText(key: string, ticket: Ticket, el: HTMLElement): HTMLElement[] {
+  const title = mapElement("div", "plan-card-title", ticket.title);
+  const about = planDescriptions.get(key)?.get(ticket.id)?.text;
+  if (!about) return [title];
+  el.classList.add("described");
+  el.title = el.title.startsWith(ticket.title) ? `${ticket.title}\n${about}${el.title.slice(ticket.title.length)}` : `${el.title}\n${about}`;
+  return [title, mapElement("div", "plan-card-about", about)];
 }
 /**
  * The handle in the bottom right corner of a card: a drag makes every card of the project bigger or
@@ -16257,6 +16285,11 @@ const planFlowButton = mapElement("button", "plan-tool plan-flow-start", "Plan t
 /** Auto group (ticket i-need-an-autogrouping-function-in-the): the projects whose call to Claude runs. */
 const planAutoBusy = new Set<string>();
 const planAutoButton = mapElement("button", "plan-tool plan-auto-group", "Auto group");
+/** The short line of each ticket of each project, by project key and ticket id (ticket show-a-short-description-on-each-ticket). */
+const planDescriptions = new Map<string, Map<string, PlanDescription>>();
+/** Describe: the projects whose call to Claude runs. */
+const planDescribeBusy = new Set<string>();
+const planDescribeButton = mapElement("button", "plan-tool plan-describe", "Describe");
 const planNoteEl = mapElement("span", "plan-note");
 const planFlowBarEl = mapElement("div", "plan-flow-bar");
 
@@ -16277,6 +16310,9 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
   planAutoButton.type = "button";
   planAutoButton.title = "Claude sorts the tickets without a topic group into groups by topic, with a title and a description; your groups and titles stay";
   planAutoButton.addEventListener("click", () => void planAutoGroup());
+  planDescribeButton.type = "button";
+  planDescribeButton.title = "Claude writes one short line for each ticket without one, or whose title changed; the cards show it under the title";
+  planDescribeButton.addEventListener("click", () => void planDescribe());
   const planCentreButton = mapElement("button", "plan-tool plan-centre", "Centre the tree");
   planCentreButton.type = "button";
   planCentreButton.title = "Move the board so that the root card stands in the middle";
@@ -16286,6 +16322,7 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
     planCountEl,
     planFlowButton,
     planAutoButton,
+    planDescribeButton,
     toolButton("Collapse all", "Collapse every comment and group into its stacked card", true),
     toolButton("Expand all", "Open every group: its tickets show in the tree inside a box", false),
     planCentreButton,
@@ -17306,6 +17343,47 @@ async function planAutoGroup(): Promise<void> {
   renderPlan();
 }
 
+/** Reads the short lines of the tickets of a project; true when they changed. A failed read keeps the lines that show. */
+async function loadPlanDescriptions(ref: ProjectRef): Promise<boolean> {
+  const key = refKey(ref);
+  let lines: Map<string, PlanDescription>;
+  try {
+    lines = parsePlanDescriptions(await call<unknown>(ref.host, "plan_descriptions_load", { cwd: ref.root }));
+  } catch {
+    return false;
+  }
+  const before = JSON.stringify([...(planDescriptions.get(key) ?? [])]);
+  planDescriptions.set(key, lines);
+  return JSON.stringify([...lines]) !== before;
+}
+
+/**
+ * Describe: Claude writes one short line for each ticket without one or whose title changed, done
+ * and canceled tickets too (user decision 1; decision 6 of plan-mode-updates: only this click
+ * starts it). The host saves the lines after each batch of tickets.
+ */
+async function planDescribe(): Promise<void> {
+  const ref = planProject();
+  if (!ref) return;
+  const key = refKey(ref);
+  if (planDescribeBusy.has(key)) return;
+  planDescribeBusy.add(key);
+  planConfirmNote = "Describe: Claude writes the lines…";
+  renderPlan();
+  const before = planDescriptions.get(key) ?? new Map<string, PlanDescription>();
+  try {
+    const lines = parsePlanDescriptions(await call<unknown>(ref.host, "plan_describe", { cwd: ref.root }));
+    planDescriptions.set(key, lines);
+    planConfirmNote = describeNote(before, lines, planBoardTickets(key).map((ticket) => ticket.id));
+  } catch (error) {
+    planConfirmNote = `Describe failed: ${String(error)}`;
+    // A later batch failed: the lines of the earlier batches are saved.
+    await loadPlanDescriptions(ref);
+  }
+  planDescribeBusy.delete(key);
+  renderPlan();
+}
+
 /** What a card of the Plan view shows of a ticket: the state word, the detail, and the colour of its dot. */
 interface PlanCardState {
   word: string;
@@ -17420,6 +17498,8 @@ function renderPlan(): void {
   planNoteEl.textContent = planConfirmNote;
   planAutoButton.disabled = !ref || planAutoBusy.has(refKey(ref));
   planAutoButton.textContent = ref && planAutoBusy.has(refKey(ref)) ? "Grouping…" : "Auto group";
+  planDescribeButton.disabled = !ref || planDescribeBusy.has(refKey(ref));
+  planDescribeButton.textContent = ref && planDescribeBusy.has(refKey(ref)) ? "Describing…" : "Describe";
   if (!ref) {
     planCountEl.textContent = "";
     planFlowButton.disabled = true;
@@ -17767,7 +17847,7 @@ function renderPlan(): void {
       line.append(detail);
     }
     if (badge === "waits") line.append(mapElement("span", "plan-waits", " · waits"));
-    el.append(top, mapElement("div", "plan-card-title", ticket.title), line);
+    el.append(top, ...planCardText(key, ticket, el), line);
     if (badge === "next" || badge === "early") el.append(mapElement("span", `plan-badge ${badge}`, PLAN_BADGE_TEXT[badge]));
     if (draft) el.append(plusButton(ticket.id));
     el.append(planCardGrip(key));
@@ -17797,7 +17877,7 @@ function renderPlan(): void {
       if (state.since) detail.dataset.runSince = String(state.since);
       line.append(detail);
     }
-    el.append(top, mapElement("div", "plan-card-title", ticket.title), line);
+    el.append(top, ...planCardText(key, ticket, el), line);
     // A card of the list window has no handle.
     if (card) el.append(planCardGrip(key));
     // While an arrow is drawn or a ticket placed, a click picks it; while planning it places it; else it selects.

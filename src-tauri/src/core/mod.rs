@@ -15,6 +15,7 @@ pub mod hostrun;
 pub mod phonepin;
 pub mod info;
 pub mod pipeline;
+pub mod plandescriptions;
 pub mod plangroups;
 pub mod power;
 pub mod pty;

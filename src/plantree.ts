@@ -427,6 +427,25 @@ export function parsePlanGroups(value: unknown): PlanGroup[] {
   return groups;
 }
 
+/** The short line of a ticket that Describe wrote, and the title of the ticket at that time (ticket show-a-short-description-on-each-ticket). */
+export interface PlanDescription {
+  text: string;
+  title: string;
+}
+
+/** A safe read of the reply of `plan_descriptions_load` or `plan_describe`: an unknown shape gives no lines; an item without a text is skipped. */
+export function parsePlanDescriptions(value: unknown): Map<string, PlanDescription> {
+  const lines = new Map<string, PlanDescription>();
+  if (!value || typeof value !== "object" || Array.isArray(value)) return lines;
+  for (const [id, item] of Object.entries(value as Record<string, unknown>)) {
+    if (!item || typeof item !== "object") continue;
+    const raw = item as Record<string, unknown>;
+    if (typeof raw.text !== "string" || raw.text.trim() === "") continue;
+    lines.set(id, { text: raw.text.trim(), title: typeof raw.title === "string" ? raw.title : "" });
+  }
+  return lines;
+}
+
 /** An arrow of the collapsed tree; `count` is the number of arrows of the tickets that it stands for. */
 export interface PlanNodeArrow extends PlanArrow {
   count: number;
@@ -675,6 +694,16 @@ export function autoGroupNote(made: number, left: number): string {
   if (made === 0 && left === 0) return "Auto group: every ticket has a topic group.";
   const head = `Auto group made ${plural(made, "new group")}`;
   return left > 0 ? `${head}, ${plural(left, "ticket")} left without a group` : head;
+}
+
+/** The note of the toolbar after Describe: the lines that are new or changed, and the tickets of `ids` still without a line. */
+export function describeNote(before: ReadonlyMap<string, PlanDescription>, after: ReadonlyMap<string, PlanDescription>, ids: readonly string[]): string {
+  const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+  const written = [...after].filter(([id, line]) => before.get(id)?.text !== line.text || before.get(id)?.title !== line.title).length;
+  const left = ids.filter((id) => !after.has(id)).length;
+  if (written === 0 && left === 0) return "Describe: every ticket has a short line.";
+  const head = `Describe wrote ${plural(written, "short line")}`;
+  return left > 0 ? `${head}, ${plural(left, "ticket")} still without one` : head;
 }
 
 /** The height of the count badge of a block. */

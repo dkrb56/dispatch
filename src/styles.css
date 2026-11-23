@@ -10746,6 +10746,22 @@ svg.links {
   -webkit-line-clamp: var(--plan-card-lines, 2);
 }
 
+/* A card with a short line of Describe (ticket show-a-short-description-on-each-ticket): the title
+   stays on one line, the short line under it takes the extra lines of a taller card (user decision 2). */
+.plan-card.described .plan-card-title {
+  -webkit-line-clamp: 1;
+}
+
+.plan-card-about {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  line-height: 1.3;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--plan-card-about-lines, 1);
+}
+
 .plan-ticket.new {
   border-color: var(--wait-line);
 }

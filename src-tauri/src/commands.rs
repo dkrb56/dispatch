@@ -23,6 +23,7 @@ use crate::core::tokens::{self, TokenReport, UsageHistory};
 use crate::core::update::{self, Update};
 use crate::core::voice;
 use crate::core::hostrun::{self, HostRun};
+use crate::core::plandescriptions::{self, PlanDescriptions};
 use crate::core::plangroups::{self, PlanGroup, PlanGroups};
 use crate::core::{pty, store, Core};
 
@@ -401,6 +402,18 @@ pub fn plan_groups_save(cwd: String, groups: Vec<PlanGroup>) -> Result<PlanGroup
 #[tauri::command(async)]
 pub fn plan_groups_auto(cwd: String) -> Result<PlanGroups, String> {
     plangroups::plan_groups_auto(cwd)
+}
+
+/// The short lines of the tickets of the Plan view (ticket show-a-short-description-on-each-ticket).
+#[tauri::command(async)]
+pub fn plan_descriptions_load(cwd: String) -> Result<PlanDescriptions, String> {
+    plandescriptions::plan_descriptions_load(cwd)
+}
+
+/// Asks Claude for a short line for each ticket without one or with a changed title (Describe of the Plan view).
+#[tauri::command(async)]
+pub fn plan_describe(cwd: String) -> Result<PlanDescriptions, String> {
+    plandescriptions::plan_describe(cwd)
 }
 
 /// Confirm of "Plan the flow": writes the arrows, the added tickets and the order of New at once.

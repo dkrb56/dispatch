@@ -100,6 +100,8 @@ pub fn run() {
             commands::plan_groups_load,
             commands::plan_groups_save,
             commands::plan_groups_auto,
+            commands::plan_descriptions_load,
+            commands::plan_describe,
             commands::plan_confirm,
             commands::task_decide,
             commands::task_checks,
