@@ -37,6 +37,10 @@ pub struct PlanGroup {
     /// (ticket drag-topic-groups-on-the-plan-board). None keeps the automatic place.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub place: Option<PlanSpot>,
+    /// The size of the box of a topic block that the user resized by its corner, in canvas px
+    /// (ticket issue-ticket-panel-is-only-resizable). None keeps the automatic size.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<PlanSize>,
 }
 
 /// A place on the Plan board in canvas px.
@@ -45,6 +49,14 @@ pub struct PlanGroup {
 pub struct PlanSpot {
     pub x: f64,
     pub y: f64,
+}
+
+/// A size on the Plan board in canvas px.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PlanSize {
+    pub width: f64,
+    pub height: f64,
 }
 
 /// The reply of both commands, and the shape of the file.
@@ -111,6 +123,8 @@ fn normalize(groups: Vec<PlanGroup>) -> Vec<PlanGroup> {
                 auto: group.auto,
                 description: group.description.trim().to_string(),
                 place: group.place.map(|p| PlanSpot { x: if p.x.is_finite() { p.x.max(0.0) } else { 0.0 }, y: if p.y.is_finite() { p.y.max(0.0) } else { 0.0 } }),
+                // A size that is not finite or not positive is dropped: the box keeps its automatic size.
+                size: group.size.filter(|s| s.width.is_finite() && s.height.is_finite() && s.width > 0.0 && s.height > 0.0),
             })
         })
         .collect()
@@ -277,6 +291,7 @@ fn merge(mut groups: Vec<PlanGroup>, proposals: Vec<Proposal>, stamp: &str) -> V
             auto: true,
             description: proposal.description,
             place: None,
+            size: None,
         });
         colour += 1;
     }
@@ -456,7 +471,7 @@ mod tests {
     fn a_second_run_keeps_titles_and_manual_groups() {
         let (project, base) = scratch("auto-again");
         let manual = PlanGroup { tickets: vec!["c".into()], ..group("g-1", &["c"]) };
-        let topic = PlanGroup { id: "auto-x-1".into(), title: "My login".into(), description: "Mine.".into(), auto: true, color: 2, collapsed: true, tickets: vec!["a".into()], place: Some(PlanSpot { x: 300.0, y: 450.0 }) };
+        let topic = PlanGroup { id: "auto-x-1".into(), title: "My login".into(), description: "Mine.".into(), auto: true, color: 2, collapsed: true, tickets: vec!["a".into()], place: Some(PlanSpot { x: 300.0, y: 450.0 }), size: Some(PlanSize { width: 600.0, height: 400.0 }) };
         save(&project, vec![manual.clone(), topic.clone()]).unwrap();
         let asked = std::cell::RefCell::new(String::new());
         let answer = r#"[{"group":"auto-x-1","title":"Other title","description":"Other.","tickets":["b","a"]},{"group":"","title":"Looks","tickets":["c","d"]}]"#;
@@ -474,6 +489,7 @@ mod tests {
         assert_eq!(saved[1].description, "Mine.");
         assert!(saved[1].collapsed);
         assert_eq!(saved[1].place, Some(PlanSpot { x: 300.0, y: 450.0 }), "the auto run keeps the dragged place");
+        assert_eq!(saved[1].size, Some(PlanSize { width: 600.0, height: 400.0 }), "the auto run keeps the size of the box");
         assert_eq!(saved[1].tickets, vec!["a".to_string(), "b".to_string()]);
         assert_eq!(saved[2].title, "Looks");
         assert_eq!(saved[2].tickets, vec!["c".to_string(), "d".to_string()], "a ticket of a manual group can join a topic group");
@@ -534,6 +550,30 @@ mod tests {
         assert_eq!(load(&project).unwrap().groups, saved);
         let text = fs::read_to_string(project.reports.join(FILE)).unwrap();
         assert!(text.contains("\"place\""), "{text}");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_resized_box_reads_back_the_same() {
+        let (project, base) = scratch("size");
+        let groups = vec![
+            PlanGroup { auto: true, size: Some(PlanSize { width: 724.0, height: 418.5 }), ..group("auto-x-1", &["a"]) },
+            PlanGroup { auto: true, size: Some(PlanSize { width: 0.0, height: 300.0 }), ..group("auto-x-2", &["b"]) },
+            PlanGroup { auto: true, size: Some(PlanSize { width: 300.0, height: -5.0 }), ..group("auto-x-3", &["c"]) },
+            PlanGroup { auto: true, size: Some(PlanSize { width: f64::INFINITY, height: 300.0 }), ..group("auto-x-4", &["d"]) },
+        ];
+        let saved = save(&project, groups).unwrap().groups;
+        assert_eq!(saved[0].size, Some(PlanSize { width: 724.0, height: 418.5 }));
+        for dropped in &saved[1..] {
+            assert_eq!(dropped.size, None, "{} drops a size that is not finite or not positive", dropped.id);
+        }
+        assert_eq!(load(&project).unwrap().groups, saved);
+        let text = fs::read_to_string(project.reports.join(FILE)).unwrap();
+        assert!(text.contains("\"size\"") && text.contains("\"width\": 724.0"), "{text}");
+        assert_eq!(text.matches("\"size\"").count(), 1, "a group without a size writes no size: {text}");
+        // The file of an older version has no size: it reads as None.
+        write_file(&project.reports.join(FILE), "{\"groups\":[{\"id\":\"g-1\",\"auto\":true,\"tickets\":[\"a\"]}]}").unwrap();
+        assert_eq!(load(&project).unwrap().groups[0].size, None);
         let _ = fs::remove_dir_all(base);
     }
 }

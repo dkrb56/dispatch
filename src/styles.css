@@ -11054,6 +11054,15 @@ svg.links {
   resize: none;
 }
 
+/* The ticket window on the canvas (ticket issue-ticket-panel-is-only-resizable, user decision 1): the pan
+   and the zoom move and scale it like a card. The canvas is no limit for its size, and its text can be
+   selected; the canvas itself selects no text. */
+.plan-canvas > .plan-window {
+  max-width: none;
+  max-height: 80vh;
+  user-select: text;
+}
+
 /* The list window of a count badge: the Plan cards of the counted tickets in a grid that scrolls. */
 .plan-list-window {
   width: 444px;
@@ -11066,8 +11075,9 @@ svg.links {
   align-content: start;
 }
 
+/* Relative: the handle of the card stands in its corner (ticket issue-ticket-panel-is-only-resizable). */
 .plan-list-window .plan-card {
-  position: static;
+  position: relative;
 }
 
 .plan-window .ticket-card {
@@ -11171,6 +11181,34 @@ svg.links {
   cursor: nwse-resize;
 }
 
+/* The handle in the bottom right corner of a topic group box (ticket issue-ticket-panel-is-only-resizable):
+   a drag makes the box wider or taller. The box takes no pointer; the handle does. */
+.plan-group-grip {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  width: 12px;
+  height: 12px;
+  border-right: 2px solid var(--plan-color, var(--muted));
+  border-bottom: 2px solid var(--plan-color, var(--muted));
+  border-bottom-right-radius: 12px;
+  box-sizing: border-box;
+  opacity: 0.35;
+  pointer-events: auto;
+  cursor: nwse-resize;
+  touch-action: none;
+}
+
+.plan-group-grip:hover,
+.plan-group-resizing .plan-group-grip {
+  opacity: 0.9;
+}
+
+.plan-group-resizing,
+.plan-group-resizing * {
+  cursor: nwse-resize;
+}
+
 .plan-group-title .plan-group-name:hover {
   text-decoration: underline;
 }
@@ -11241,7 +11279,8 @@ svg.links {
   border-color: var(--plan-color);
 }
 
-/* The description of a topic group under its title bar: at most 3 lines; a click edits it. */
+/* The description of a topic group under its title bar: the whole text, the row grows to hold it
+   (ticket issue-ticket-panel-is-only-resizable); a click edits it. */
 .plan-block-about {
   position: absolute;
   box-sizing: border-box;
@@ -11255,10 +11294,16 @@ svg.links {
 }
 
 div.plan-block-about {
-  display: -webkit-box;
   overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+}
+
+/* The hidden element of main.ts that measures a description at a width; the same font and padding. */
+div.plan-about-meter {
+  top: 0;
+  left: -100000px;
+  height: auto;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 div.plan-block-about:hover {

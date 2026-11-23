@@ -242,7 +242,9 @@ test("the page has the Plan button, its canvas and its Help, and main.ts draws i
   assert.doesNotMatch(main.slice(main.indexOf("function planCloseWindow("), main.indexOf("function planCloseWindow(") + 300), /spot = null/, "a close keeps the place");
   assert.match(css, /\.plan-window \{[^}]*resize: both/);
   assert.match(main, /"plan-window plan-list-window"/);
-  assert.match(css, /\.plan-list-window \.plan-card \{[^}]*position: static/);
+  // Ticket issue-ticket-panel-is-only-resizable: relative, so the handle of a list window card stands in its corner.
+  assert.match(css, /\.plan-list-window \.plan-card \{[^}]*position: relative/);
+  assert.match(main, /el\.append\(planCardGrip\(key, card !== null\)\);/, "a card of the list window has the handle, not scaled by the zoom");
   assert.match(main, /planList = \{ key, group: group\.id, min: false \};/, "the badge opens the list window");
   assert.match(html, /The mouse wheel zooms the board in and out/);
   assert.match(html, /The window opens again at the same place and size, also after a restart/);
@@ -289,6 +291,18 @@ test("the host reply of the groups is read safely", () => {
   });
   assert.deepEqual(placed[0].place, { x: 250, y: 1200 });
   for (const group of placed.slice(1)) assert.ok(!("place" in group), `${group.id} has no place key`);
+  // Ticket issue-ticket-panel-is-only-resizable: the size of a resized box is read; a bad one gives no key.
+  const sized = parsePlanGroups({
+    groups: [
+      { id: "s", auto: true, size: { width: 724, height: 418.5 } },
+      { id: "t", size: "big" },
+      { id: "u", size: { width: 0, height: 300 } },
+      { id: "v", size: { width: 300, height: Number.POSITIVE_INFINITY } },
+      { id: "w", size: { width: 300 } },
+    ],
+  });
+  assert.deepEqual(sized[0].size, { width: 724, height: 418.5 });
+  for (const group of sized.slice(1)) assert.ok(!("size" in group), `${group.id} has no size key`);
 });
 
 test("a collapsed group stands for its tickets, takes their arrows and merges a pair", () => {
@@ -761,6 +775,78 @@ test("a line of blocks wider than the free space moves the tree and the blocks r
     lone.cards.map((card) => card.x),
   );
   assert.equal(result.layout.width, result.blocks[0].box.x + result.blocks[0].box.width + PLAN_PAD);
+});
+
+test("a resized topic block keeps its cards, gets its saved size, and the description gets the rows it needs", () => {
+  // Ticket issue-ticket-panel-is-only-resizable, user decision 2: a wider box does not move its cards.
+  const layout = planLayout(TREE);
+  const input = [
+    { id: "wide", shown: ["a", "b"], badge: true },
+    { id: "next", shown: ["c"], badge: false },
+  ];
+  const auto = planBlocks(input, layout, 6);
+  const [autoWide, autoNext] = auto.blocks;
+  assert.equal(autoNext.box.y, autoWide.box.y, "without a size both blocks stand in one line");
+  // The saved width: two more card columns. The saved height: 200 px more than the automatic box.
+  const width = autoWide.box.width + 2 * PLAN_COLUMN_STEP;
+  const height = autoWide.box.height + 200;
+  const sized = planBlocks([{ ...input[0], size: { width, height } }, input[1]], layout, 6);
+  const [wide, next] = sized.blocks;
+  assert.equal(wide.box.width, width, "the box takes the saved width");
+  assert.equal(wide.box.height, height, "the box takes the saved height");
+  assert.equal(wide.about.width, width - 2 * PLAN_BOX_PAD, "the description takes the width of the box");
+  assert.deepEqual(
+    wide.cards.map((card) => [card.x - wide.box.x, card.y - wide.box.y, card.row]),
+    autoWide.cards.map((card) => [card.x - autoWide.box.x, card.y - autoWide.box.y, card.row]),
+    "the cards stay in their columns and rows inside the box",
+  );
+  assert.equal(next.box.y, wide.box.y, "the next block stays in the line");
+  assert.ok(next.box.x >= wide.box.x + wide.box.width, "the next block starts right of the wider box");
+  for (const card of next.cards) assert.ok(card.x % PLAN_GRID === 0 && card.y % PLAN_GRID === 0, `${card.id} on the grid`);
+  // A saved size smaller than the cards gives the automatic size: the cards stay inside.
+  const small = planBlocks([{ ...input[0], size: { width: 40, height: 40 } }, input[1]], layout, 6).blocks[0];
+  assert.deepEqual(small.box, autoWide.box);
+  // A box wider than the line stands alone in its line; the next block goes to the next line.
+  const alone = planBlocks([{ ...input[0], size: { width: 5 * PLAN_COLUMN_STEP, height: 10 } }, input[1]], layout, 4).blocks;
+  assert.ok(alone[1].box.y >= alone[0].box.y + alone[0].box.height, "the next block stands in the next line");
+  // The description: a text of 130 px needs 3 grid rows; the cards move down by the 2 extra rows.
+  const asked: [string, number][] = [];
+  const tall = planBlocks(input, layout, 6, undefined, (id, at) => {
+    asked.push([id, at]);
+    return id === "wide" ? 130 : 20;
+  });
+  assert.deepEqual(asked, [
+    ["wide", autoWide.about.width],
+    ["next", autoNext.about.width],
+  ]);
+  const [tallWide, tallNext] = tall.blocks;
+  assert.equal(tallWide.about.height, 3 * PLAN_GRID, "the description row holds the whole text");
+  assert.equal(tallWide.box.y, autoWide.box.y, "the box starts where it started");
+  assert.equal(tallWide.box.height, autoWide.box.height + 2 * PLAN_GRID, "the box grows by the extra rows");
+  for (const [at, card] of tallWide.cards.entries()) {
+    assert.equal(card.y, autoWide.cards[at].y + 2 * PLAN_GRID, `${card.id} moves down by the extra rows`);
+    assert.ok(card.y % PLAN_GRID === 0, `${card.id} on the grid`);
+    assert.ok(card.y >= tallWide.about.y + tallWide.about.height, `${card.id} under the description`);
+  }
+  assert.equal(tallWide.badge?.y, (autoWide.badge?.y ?? 0) + 2 * PLAN_GRID);
+  assert.deepEqual(tallNext.about, autoNext.about, "a short description keeps one row");
+  // A wider box keeps the rows of the description at the automatic width, so its cards stay; the text takes the box width.
+  const narrowing = (id: string, at: number) => (id === "wide" ? (at > autoWide.about.width ? 20 : 130) : 20);
+  const tallWider = planBlocks([{ ...input[0], size: { width, height: 10 } }, input[1]], layout, 6, undefined, narrowing).blocks[0];
+  assert.equal(tallWider.about.width, width - 2 * PLAN_BOX_PAD);
+  assert.equal(tallWider.about.height, tallWide.about.height, "the description keeps its rows");
+  assert.deepEqual(
+    tallWider.cards.map((card) => [card.x - tallWider.box.x, card.y - tallWider.box.y]),
+    tallWide.cards.map((card) => [card.x - tallWide.box.x, card.y - tallWide.box.y]),
+    "the cards stay where they are in the wider box",
+  );
+  // A snapped drop keeps the cards of the tall block on the grid: the offset changes by whole rows.
+  const place = snapBlockPlace({ x: tallWide.box.x + 333, y: tallWide.box.y + 777 });
+  const moved = placeTopicBlocks(tall.blocks, new Map([["wide", place]]), 0, tall.layout).blocks[0];
+  for (const card of moved.cards) assert.ok(card.x % PLAN_GRID === 0 && card.y % PLAN_GRID === 0, `${card.id} on the grid after the drop`);
+  // No text, a bad number or no function: one row.
+  assert.deepEqual(planBlocks(input, layout, 6, undefined, () => Number.NaN), auto);
+  assert.deepEqual(planBlocks(input, layout, 6, undefined, () => 0), auto);
 });
 
 test("a dropped topic block snaps so that its cards stand on the grid, never left of or above 0", () => {

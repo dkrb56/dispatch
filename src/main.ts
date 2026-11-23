@@ -61,6 +61,7 @@ import {
   PLAN_BOX_PAD,
   PLAN_BOX_TITLE,
   PLAN_CARD_DEFAULT,
+  PLAN_FOLD_HEIGHT,
   PLAN_GRID,
   clampCardSize,
   parseCardSize,
@@ -93,6 +94,7 @@ import {
   withTicketAfter,
   zoomAround,
   type PlanArrow,
+  type PlanBlockPlace,
   type PlanDescription,
   type PlanDraft,
   type PlanGroup,
@@ -16082,7 +16084,10 @@ const planGroupsBroken = new Set<string>();
 const planGroupsSavedAt = new Map<string, number>();
 /** A selection box is drawn: a render waits, so the box stays. */
 let planBoxDragging = false;
-/** A topic group is dragged by its title bar: a render waits, so the moved block stays (ticket drag-topic-groups-on-the-plan-board). */
+/**
+ * A topic group is dragged by its title bar, or its box by its corner: a render waits, so the moved
+ * block or the new size stays (tickets drag-topic-groups-on-the-plan-board and issue-ticket-panel-is-only-resizable).
+ */
 let planGroupDragging = false;
 /** The corner of a card is dragged: a render waits, so the cards keep the size of the drag (ticket resize-the-ticket-cards-of-the-plan-view). */
 let planCardResizing = false;
@@ -16201,8 +16206,10 @@ function planCardText(key: string, ticket: Ticket, el: HTMLElement): HTMLElement
 /**
  * The handle in the bottom right corner of a card: a drag makes every card of the project bigger or
  * smaller, live through the CSS variables; the drop saves the size and lays the board out again.
+ * `scaled` false: the card stands outside the canvas (the list window of a count badge), so the zoom
+ * does not scale the move (ticket issue-ticket-panel-is-only-resizable).
  */
-function planCardGrip(key: string): HTMLElement {
+function planCardGrip(key: string, scaled = true): HTMLElement {
   const grip = mapElement("span", "plan-card-grip");
   grip.setAttribute("aria-hidden", "true");
   grip.title = "Drag to make all cards bigger or smaller";
@@ -16212,7 +16219,7 @@ function planCardGrip(key: string): HTMLElement {
     event.stopPropagation();
     event.preventDefault();
     const from = planCardSize(key);
-    const begin = { pointer: event.pointerId, x: event.clientX, y: event.clientY, zoom: planZoom(key) };
+    const begin = { pointer: event.pointerId, x: event.clientX, y: event.clientY, zoom: scaled ? planZoom(key) : 1 };
     let size = from;
     planCardResizing = true;
     planBoardEl.classList.add("plan-card-resizing");
@@ -16247,6 +16254,91 @@ function planCardGrip(key: string): HTMLElement {
     event.preventDefault();
   });
   return grip;
+}
+/**
+ * The handle in the bottom right corner of the box of a topic group (ticket
+ * issue-ticket-panel-is-only-resizable): a drag makes the box wider or taller, live; the cards stay where
+ * they are (user decision 2). The box never gets smaller than its cards, its badge and its description.
+ * The drop saves the size in the group. The window follows the pointer from the press, as the title bar
+ * drag does: a fast first move leaves the small handle at once.
+ */
+function planGroupGrip(key: string, groupId: string, box: HTMLElement, place: PlanBlockPlace, size: PlanCardSize): HTMLElement {
+  const grip = mapElement("span", "plan-group-grip");
+  grip.setAttribute("aria-hidden", "true");
+  grip.title = "Drag to make this topic group wider or taller";
+  // The smallest box: the automatic size, as planBlocks makes it without a saved size.
+  const fitWidth = Math.max(size.width + 2 * PLAN_BOX_PAD, ...place.cards.map((card) => card.x + size.width + PLAN_BOX_PAD - place.box.x));
+  const content = Math.max(place.about.y + place.about.height + 8, ...place.cards.map((card) => card.y + size.height), place.badge ? place.badge.y + PLAN_FOLD_HEIGHT : 0);
+  const fitHeight = content + PLAN_BOX_PAD - place.box.y;
+  grip.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    // The board would start a pan, and the title bar a move.
+    event.stopPropagation();
+    event.preventDefault();
+    const begin = { pointer: event.pointerId, x: event.clientX, y: event.clientY, zoom: planZoom(key) };
+    const about = box.parentElement?.querySelector<HTMLElement>(`div.plan-block-about[data-group="${CSS.escape(groupId)}"], .plan-about-input[data-group="${CSS.escape(groupId)}"]`) ?? null;
+    let now = { width: place.box.width, height: place.box.height };
+    planGroupDragging = true;
+    planBoardEl.classList.add("plan-group-resizing");
+    const move = (next: PointerEvent) => {
+      if (next.pointerId !== begin.pointer) return;
+      now = {
+        width: Math.round(Math.max(fitWidth, place.box.width + (next.clientX - begin.x) / begin.zoom)),
+        height: Math.round(Math.max(fitHeight, place.box.height + (next.clientY - begin.y) / begin.zoom)),
+      };
+      box.style.width = `${now.width}px`;
+      box.style.height = `${now.height}px`;
+      if (about) about.style.width = `${now.width - 2 * PLAN_BOX_PAD}px`;
+    };
+    const finish = (last: PointerEvent, cancel: boolean) => {
+      if (last.pointerId !== begin.pointer) return;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", stop);
+      planBoardEl.classList.remove("plan-group-resizing");
+      const changed = !cancel && (now.width !== place.box.width || now.height !== place.box.height);
+      // The click of this drop comes next and is swallowed on the handle; then the save draws the box at its size.
+      window.setTimeout(() => {
+        planGroupDragging = false;
+        if (changed) planChangeGroup(groupId, { size: now });
+        else renderPlan();
+      }, 0);
+    };
+    const up = (last: PointerEvent) => finish(last, false);
+    const stop = (last: PointerEvent) => finish(last, true);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", stop);
+  });
+  grip.addEventListener("click", (event) => {
+    event.stopPropagation();
+    event.preventDefault();
+  });
+  return grip;
+}
+/** The hidden element that measures the description of a topic group; made once. */
+const planAboutMeter = mapElement("div", "plan-block-about plan-about-meter");
+planAboutMeter.setAttribute("aria-hidden", "true");
+/** The measured heights of the descriptions, by text, width and text size: a render runs every few seconds. */
+const planAboutHeights = new Map<string, number>();
+/**
+ * The height in px of the description of a topic group at a width, as the board shows it (ticket
+ * issue-ticket-panel-is-only-resizable): the whole text, no cut. An empty description or a hidden board gives 0.
+ */
+function planAboutHeight(text: string, width: number): number {
+  if (text === "" || width <= 0 || planBoardEl.clientWidth <= 0) return 0;
+  const scale = document.documentElement.style.getPropertyValue("--text-scale");
+  const cacheKey = `${width}\n${scale}\n${text}`;
+  const known = planAboutHeights.get(cacheKey);
+  if (known !== undefined) return known;
+  // The meter stands in the board, outside the scaled canvas, so its height is in canvas px.
+  if (planAboutMeter.parentElement !== planBoardEl) planBoardEl.append(planAboutMeter);
+  planAboutMeter.style.width = `${width}px`;
+  planAboutMeter.textContent = text;
+  const height = planAboutMeter.scrollHeight;
+  if (planAboutHeights.size > 500) planAboutHeights.clear();
+  planAboutHeights.set(cacheKey, height);
+  return height;
 }
 /** The size of the canvas of the last render: a pan keeps part of it inside the board. */
 let planCanvasSize = { width: 0, height: 0 };
@@ -16602,11 +16694,41 @@ function planSaveSpot(frame: PlanFrame): void {
   }
 }
 
-/** Keeps a place of a window inside the board; a hidden board keeps it as it is. */
+/**
+ * The canvas that holds a window of the Plan view, or null: the window stands on the board. The ticket
+ * window stands on the canvas, so the pan and the zoom move and scale it like a card (ticket
+ * issue-ticket-panel-is-only-resizable, user decision 1); the list window of a count badge stays on the board.
+ */
+function planWindowCanvas(el: Element): HTMLElement | null {
+  const parent = el.parentElement;
+  return parent?.classList.contains("plan-canvas") ? parent : null;
+}
+
+/** The scale of a window on the screen: the zoom of the canvas that holds it, else 1. */
+function planWindowScale(el: Element): number {
+  if (!planWindowCanvas(el)) return 1;
+  const ref = planProject();
+  return ref ? planZoom(refKey(ref)) : 1;
+}
+
+/** The part of a window on the canvas that stays on the canvas, so a pan always reaches its title bar. */
+const PLAN_WINDOW_KEEP = 80;
+
+/**
+ * Keeps a place of a window inside the board, in board px; a hidden board keeps it as it is. A window
+ * on the canvas keeps its title bar on the canvas, in canvas px.
+ */
 function planWindowPlace(el: HTMLElement, at: { x: number; y: number }): { x: number; y: number } {
   const width = planBoardEl.clientWidth;
   const height = planBoardEl.clientHeight;
   if (width <= 0) return at;
+  if (planWindowCanvas(el)) {
+    const keep = Math.min(PLAN_WINDOW_KEEP, el.offsetWidth);
+    return {
+      x: Math.max(keep - el.offsetWidth, Math.min(at.x, planCanvasSize.width - keep)),
+      y: Math.max(0, Math.min(at.y, planCanvasSize.height - PLAN_WINDOW_KEEP / 2)),
+    };
+  }
   return {
     x: Math.max(0, Math.min(at.x, width - el.offsetWidth)),
     y: Math.max(0, Math.min(at.y, height - el.offsetHeight)),
@@ -16658,10 +16780,11 @@ function planFrameHead(frame: PlanFrame, name: string, min: boolean, fold: () =>
     if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button"))) return;
     event.preventDefault();
     const el = frame.el;
-    const from = { x: el.offsetLeft, y: el.offsetTop, clientX: event.clientX, clientY: event.clientY };
+    // On the canvas the zoom scales the window: the move is the mouse distance divided by the zoom.
+    const from = { x: el.offsetLeft, y: el.offsetTop, clientX: event.clientX, clientY: event.clientY, scale: planWindowScale(el) };
     head.setPointerCapture(event.pointerId);
     const move = (moved: PointerEvent) => {
-      const at = planWindowPlace(el, { x: from.x + moved.clientX - from.clientX, y: from.y + moved.clientY - from.clientY });
+      const at = planWindowPlace(el, { x: from.x + (moved.clientX - from.clientX) / from.scale, y: from.y + (moved.clientY - from.clientY) / from.scale });
       frame.spot = { ...frame.spot, ...at };
       el.style.left = `${at.x}px`;
       el.style.top = `${at.y}px`;
@@ -16681,8 +16804,9 @@ function planFrameHead(frame: PlanFrame, name: string, min: boolean, fold: () =>
 }
 
 /**
- * Puts a window on the board at its remembered place and size; without them at `fallback` (a
- * negative x: that far from the right border). A folded window keeps its width and drops its height.
+ * Puts a window on the board at its remembered place and size; without them at `fallback` (board px of
+ * the visible board; a negative x: that far from the right border). A window on the canvas has its place
+ * in canvas px; its fallback is turned into canvas px. A folded window keeps its width and drops its height.
  */
 function planFramePlace(frame: PlanFrame, min: boolean, fallback: { x: number; y: number }): void {
   const el = frame.el;
@@ -16692,7 +16816,10 @@ function planFramePlace(frame: PlanFrame, min: boolean, fallback: { x: number; y
   el.style.height = spot?.height && !min ? `${spot.height}px` : "";
   const width = planBoardEl.clientWidth;
   if (width <= 0) return;
-  const at = spot ?? { x: fallback.x < 0 ? width - el.offsetWidth + fallback.x : fallback.x, y: fallback.y };
+  const canvas = planWindowCanvas(el);
+  const scale = planWindowScale(el);
+  const board = { x: fallback.x < 0 ? width - el.offsetWidth * scale + fallback.x : fallback.x, y: fallback.y };
+  const at = spot ?? (canvas ? { x: (board.x - canvas.offsetLeft) / scale, y: (board.y - canvas.offsetTop) / scale } : board);
   const kept = planWindowPlace(el, at);
   el.style.left = `${kept.x}px`;
   el.style.top = `${kept.y}px`;
@@ -16719,6 +16846,13 @@ function renderPlanWindow(): void {
     renderSkipped = true;
     return;
   }
+  // The window stands on the canvas (user decision 1); without a canvas it waits for the next render.
+  const canvas = planBoardEl.querySelector<HTMLElement>(".plan-canvas");
+  if (!canvas) {
+    planWindowEl.remove();
+    planWireEl.remove();
+    return;
+  }
   const open = planWindow;
   const scroll = planWindowEl.querySelector(".plan-window-body")?.scrollTop ?? 0;
   const head = planFrameHead(
@@ -16735,11 +16869,11 @@ function renderPlanWindow(): void {
   body.append(ticketCard(planWindow.key, ticket, queueOrder(record.tickets).map((one) => one.id), record, true));
   planWindowEl.replaceChildren(head, body);
   planWindowEl.setAttribute("aria-label", `Ticket ${ticket.id}`);
-  // The line stands above the canvas and under the window.
-  if (!planWireEl.isConnected || planWireEl.parentElement !== planBoardEl) planBoardEl.append(planWireEl);
-  if (!planWindowEl.isConnected || planWindowEl.parentElement !== planBoardEl) planBoardEl.append(planWindowEl);
+  // The line stands above the cards and under the window, both on the canvas: the pan and the zoom move them.
+  if (planWireEl.parentElement !== canvas) canvas.append(planWireEl);
+  if (planWindowEl.parentElement !== canvas) canvas.append(planWindowEl);
   body.scrollTop = scroll;
-  // Without a remembered place: the top right corner.
+  // Without a remembered place: the top right corner of the visible board.
   planFramePlace(planWindowFrame, open.min, { x: -16, y: 16 });
   focusTicketBox(planWindowEl);
   planDrawWire();
@@ -16790,12 +16924,16 @@ function planDrawWire(): void {
   if (!planWindow || !planWindowEl.isConnected) return;
   const card = planBoardEl.querySelector<HTMLElement>(`.plan-canvas .plan-ticket[data-ticket="${CSS.escape(planWindow.ticket)}"]`);
   if (!card) return;
-  const board = planBoardEl.getBoundingClientRect();
-  planWireEl.setAttribute("width", String(planBoardEl.clientWidth));
-  planWireEl.setAttribute("height", String(planBoardEl.clientHeight));
+  // The line stands on the canvas with the window: canvas px, the screen rects divided by the zoom.
+  const canvas = planWindowCanvas(planWireEl);
+  const scale = planWindowScale(planWireEl);
+  const origin = (canvas ?? planBoardEl).getBoundingClientRect();
+  const inset = canvas ? { x: 0, y: 0 } : { x: planBoardEl.clientLeft, y: planBoardEl.clientTop };
+  planWireEl.setAttribute("width", String(canvas ? planCanvasSize.width : planBoardEl.clientWidth));
+  planWireEl.setAttribute("height", String(canvas ? planCanvasSize.height : planBoardEl.clientHeight));
   const rectOf = (el: Element) => {
     const rect = el.getBoundingClientRect();
-    return { x: rect.left - board.left - planBoardEl.clientLeft, y: rect.top - board.top - planBoardEl.clientTop, width: rect.width, height: rect.height };
+    return { x: (rect.left - origin.left - inset.x) / scale, y: (rect.top - origin.top - inset.y) / scale, width: rect.width / scale, height: rect.height / scale };
   };
   const join = planJoin(rectOf(card), rectOf(planWindowEl));
   planWireEl.append(planSvg("line", join));
@@ -16958,6 +17096,27 @@ function planGroupMenu(event: MouseEvent, ref: ProjectRef, group: PlanGroup): vo
     const backLine = mapElement("div", "plan-menu-line");
     backLine.setAttribute("role", "separator");
     menu.append(back, backLine);
+  }
+  // A resized topic group gets its automatic size again and keeps its place (ticket issue-ticket-panel-is-only-resizable, user decision 3).
+  if (group.auto && group.size) {
+    const auto = mapElement("button", "", "Back to automatic size");
+    auto.type = "button";
+    auto.title = "Forget the size of this topic group; it fits its cards again and keeps its place";
+    auto.setAttribute("role", "menuitem");
+    auto.addEventListener("click", () => {
+      closeBoardMenu();
+      void planSetGroups(
+        ref,
+        planGroupsOf(ref).map((one) => {
+          if (one.id !== group.id) return one;
+          const { size: _size, ...rest } = one;
+          return rest;
+        }),
+      );
+    });
+    const autoLine = mapElement("div", "plan-menu-line");
+    autoLine.setAttribute("role", "separator");
+    menu.append(auto, autoLine);
   }
   menu.append(...planBoardItems(ref));
   showMenu(menu, event, null);
@@ -17556,11 +17715,15 @@ function renderPlan(): void {
   const inBlock = new Set(topics.flatMap((block) => block.members));
   const looseIds = notInFlow(flow).flatMap((one) => (byId.has(one.id) && !inTree.has(one.id) && !inBlock.has(one.id) ? [one.id] : []));
   const perRow = boardSize.width > 0 ? Math.floor((boardSize.width - 2 * PLAN_PAD) / planSteps(size).column) : 4;
+  // A resized box keeps its saved size, and the description row holds the whole text (ticket
+  // issue-ticket-panel-is-only-resizable).
+  const aboutOf = new Map(groups.map((group) => [group.id, group.description]));
   const blockPlaces = planBlocks(
-    topics.map((block) => ({ id: block.id, shown: block.shown, badge: topicFoldText(block.fold) !== "" })),
+    topics.map((block) => ({ id: block.id, shown: block.shown, badge: topicFoldText(block.fold) !== "", size: groups.find((group) => group.id === block.id)?.size })),
     treeLayout,
     perRow,
     size,
+    (id, width) => planAboutHeight(aboutOf.get(id) ?? "", width),
   );
   const shelf = planShelf(looseIds, blockPlaces.layout, perRow, size);
   // A wide shelf moves the tree right; the blocks move with it. A block that the user dragged stands
@@ -17878,8 +18041,8 @@ function renderPlan(): void {
       line.append(detail);
     }
     el.append(top, ...planCardText(key, ticket, el), line);
-    // A card of the list window has no handle.
-    if (card) el.append(planCardGrip(key));
+    // A card of the list window has the handle too (ticket issue-ticket-panel-is-only-resizable); the zoom does not scale it.
+    el.append(planCardGrip(key, card !== null));
     // While an arrow is drawn or a ticket placed, a click picks it; while planning it places it; else it selects.
     el.addEventListener("click", (event) => {
       if (!card) planOpenWindow(key, ticket.id);
@@ -17921,7 +18084,7 @@ function renderPlan(): void {
     });
     bar.append(toggle);
     bar.addEventListener("click", () => planSelect([], null, group.id));
-    el.append(bar);
+    el.append(bar, planGroupGrip(key, group.id, el, place, size));
     canvas.append(el);
     // The description under the title bar (user decision 1: only here); a click edits it in place.
     let about: HTMLElement;
@@ -18051,8 +18214,8 @@ function renderPlan(): void {
     canvas.append(note);
   }
   planBoardEl.replaceChildren(canvas);
-  // The replace took the list window, the ticket window and its line out of the board; this puts them
-  // back, the ticket window on top.
+  // The replace took the list window out of the board, and the ticket window and its line with the old
+  // canvas; this puts the list window back on the board and the ticket window on the new canvas.
   renderPlanList(key, groups, topics, byId, (ticket) => looseCard(ticket, null));
   renderPlanWindow();
   if (planFocusEdit) {

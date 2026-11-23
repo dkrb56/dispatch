@@ -381,6 +381,11 @@ export interface PlanGroup {
    * drag-topic-groups-on-the-plan-board); no key: the automatic place.
    */
   place?: { x: number; y: number };
+  /**
+   * The size of the box of a topic block that the user resized by its corner, in canvas px (ticket
+   * issue-ticket-panel-is-only-resizable); no key: the automatic size.
+   */
+  size?: { width: number; height: number };
 }
 
 /** The node id of a collapsed group in the tree; the prefix keeps it apart from every ticket id. */
@@ -393,7 +398,7 @@ export function groupNodeId(id: string): string {
 /** The padding of an open box around its cards, and the height of its title bar. */
 export const PLAN_BOX_PAD = 12;
 export const PLAN_BOX_TITLE = 22;
-/** The height of the description row of a topic block, under its title bar: one grid step, 3 lines of text. */
+/** The height of one row of the description of a topic block, under its title bar: one grid step, 3 lines of text; a longer text takes more rows. */
 export const PLAN_ABOUT_HEIGHT = PLAN_GRID;
 
 /** A safe read of the reply of `plan_groups_load` or `plan_groups_save`: an unknown shape gives no groups. */
@@ -422,6 +427,10 @@ export function parsePlanGroups(value: unknown): PlanGroup[] {
     // The key only for a place with two finite numbers, so a group without one has no key.
     const place = raw.place && typeof raw.place === "object" ? (raw.place as Record<string, unknown>) : null;
     if (place && typeof place.x === "number" && Number.isFinite(place.x) && typeof place.y === "number" && Number.isFinite(place.y)) group.place = { x: place.x, y: place.y };
+    // The key only for a size with two finite numbers above 0, as the host keeps it.
+    const box = raw.size && typeof raw.size === "object" ? (raw.size as Record<string, unknown>) : null;
+    const positive = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value > 0;
+    if (box && positive(box.width) && positive(box.height)) group.size = { width: box.width, height: box.height };
     groups.push(group);
   }
   return groups;
@@ -734,32 +743,55 @@ export interface PlanBlocks {
  * `perRow` card columns, each line centred under the root; a block is at least one card wide and as
  * wide as its cards in rows of the line width. Every card corner and every line top stands on the
  * 50 px grid. Give the result layout to `planShelf`, so the shelf stands under the blocks.
+ *
+ * Ticket issue-ticket-panel-is-only-resizable: a block with a saved `size` (the corner of its box) has
+ * a box at least that wide and that tall; its cards stay where they are (user decision 2), and the line
+ * counts the card columns that the wider box covers, so no two boxes overlap. `aboutHeight` gives the
+ * height in px of the description of a block at a width; the description row is then as many grid
+ * rows as the text needs at the automatic width (at least 1), and the cards move down by the extra
+ * rows. The description is as wide as the box. Without them each box has its automatic size and the
+ * description one grid row.
  */
-export function planBlocks(blocks: readonly { id: string; shown: readonly string[]; badge: boolean }[], layout: PlanLayout, perRow = 4, size: PlanCardSize = PLAN_CARD_DEFAULT): PlanBlocks {
+export function planBlocks(
+  blocks: readonly { id: string; shown: readonly string[]; badge: boolean; size?: { width: number; height: number } }[],
+  layout: PlanLayout,
+  perRow = 4,
+  size: PlanCardSize = PLAN_CARD_DEFAULT,
+  aboutHeight?: (id: string, width: number) => number,
+): PlanBlocks {
   if (blocks.length === 0) return { layout, blocks: [] };
   const steps = planSteps(size);
   const across = Math.max(1, Math.floor(perRow));
   const sized = blocks.map((block) => {
     const columns = Math.max(1, Math.min(across, block.shown.length));
     const rows = Math.ceil(block.shown.length / columns);
-    return { ...block, columns, rows };
+    const autoWidth = (columns - 1) * steps.column + size.width + 2 * PLAN_BOX_PAD;
+    const boxWidth = Math.max(autoWidth, block.size?.width ?? 0);
+    // The card columns that the box covers: the next block of the line starts after them.
+    const span = Math.max(columns, Math.ceil((boxWidth - 2 * PLAN_BOX_PAD - size.width) / steps.column) + 1);
+    return { ...block, columns, rows, autoWidth, boxWidth, span };
   });
   // The lines: as many blocks as fit side by side.
   const lines: (typeof sized)[] = [];
   for (const block of sized) {
     const line = lines[lines.length - 1];
-    const used = line ? line.reduce((sum, one) => sum + one.columns, 0) : across;
-    if (line && used + block.columns <= across) line.push(block);
+    const used = line ? line.reduce((sum, one) => sum + one.span, 0) : across;
+    if (line && used + block.span <= across) line.push(block);
     else lines.push([block]);
   }
   const placed: PlanBlockPlace[] = [];
   let top = Math.ceil((layout.height - PLAN_PAD + PLAN_GRID) / PLAN_GRID) * PLAN_GRID;
   for (const line of lines) {
-    const width = line.reduce((sum, one) => sum + one.columns, 0);
+    const width = line.reduce((sum, one) => sum + one.span, 0);
     let left = snap(layout.root.x - ((width - 1) / 2) * steps.column);
     let bottom = top;
     for (const block of line) {
-      const firstY = top + PLAN_GRID + PLAN_ABOUT_HEIGHT;
+      const aboutWidth = block.boxWidth - 2 * PLAN_BOX_PAD;
+      // The rows of the description at the automatic width: a wider box keeps them, so its cards stay
+      // where they are (user decision 2); the text at the wider width needs no more rows.
+      const text = aboutHeight ? aboutHeight(block.id, block.autoWidth - 2 * PLAN_BOX_PAD) : 0;
+      const aboutRow = Math.max(1, Math.ceil((Number.isFinite(text) ? text : 0) / PLAN_GRID)) * PLAN_ABOUT_HEIGHT;
+      const firstY = top + PLAN_GRID + aboutRow;
       const cards: PlanPlace[] = block.shown.map((id, at) => ({
         id,
         row: Math.floor(at / block.columns),
@@ -768,19 +800,18 @@ export function planBlocks(blocks: readonly { id: string; shown: readonly string
       }));
       const badge = block.badge ? { x: left, y: firstY + block.rows * steps.shelfRow } : null;
       const content = Math.max(cards.length > 0 ? firstY + (block.rows - 1) * steps.shelfRow + size.height : firstY, badge ? badge.y + PLAN_FOLD_HEIGHT : firstY);
-      const boxTop = firstY - PLAN_ABOUT_HEIGHT - PLAN_BOX_PAD - PLAN_BOX_TITLE;
-      const boxBottom = content + PLAN_BOX_PAD;
-      const boxWidth = (block.columns - 1) * steps.column + size.width + 2 * PLAN_BOX_PAD;
+      const boxTop = firstY - aboutRow - PLAN_BOX_PAD - PLAN_BOX_TITLE;
+      const boxBottom = Math.max(content + PLAN_BOX_PAD, boxTop + (block.size?.height ?? 0));
       const aboutY = boxTop + PLAN_BOX_TITLE + 4;
       placed.push({
         id: block.id,
-        box: { x: left - PLAN_BOX_PAD, y: boxTop, width: boxWidth, height: boxBottom - boxTop },
-        about: { x: left, y: aboutY, width: boxWidth - 2 * PLAN_BOX_PAD, height: Math.min(PLAN_ABOUT_HEIGHT, firstY - 6 - aboutY) },
+        box: { x: left - PLAN_BOX_PAD, y: boxTop, width: block.boxWidth, height: boxBottom - boxTop },
+        about: { x: left, y: aboutY, width: aboutWidth, height: Math.min(aboutRow, firstY - 6 - aboutY) },
         cards,
         badge,
       });
       bottom = Math.max(bottom, boxBottom);
-      left += block.columns * steps.column;
+      left += block.span * steps.column;
     }
     top = Math.ceil((bottom + PLAN_GRID) / PLAN_GRID) * PLAN_GRID;
   }
