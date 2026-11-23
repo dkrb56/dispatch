@@ -10700,7 +10700,7 @@ svg.links {
   stroke-dasharray: 5 5;
 }
 
-/* 200 x 56 px: PLAN_CARD_WIDTH and PLAN_CARD_HEIGHT of plantree.ts. */
+/* 200 x 84 px: PLAN_CARD_WIDTH and PLAN_CARD_HEIGHT of plantree.ts. */
 .plan-card {
   display: flex;
   position: absolute;
@@ -10709,7 +10709,7 @@ svg.links {
   justify-content: center;
   gap: 3px;
   width: 200px;
-  height: 56px;
+  height: 84px;
   padding: 6px 10px;
   border: 1px solid var(--hairline);
   border-radius: 10px;
@@ -10718,6 +10718,17 @@ svg.links {
 
 .plan-ticket.in-progress {
   border-color: var(--work-line);
+}
+
+/* The title of the ticket on its card: at most 2 lines. */
+.plan-card-title {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: calc(12px * var(--text-scale));
+  line-height: 1.3;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .plan-ticket.new {
@@ -10968,6 +10979,37 @@ svg.links {
   white-space: nowrap;
 }
 
+.plan-group-title .plan-group-name {
+  cursor: text;
+}
+
+.plan-group-title .plan-group-name:hover {
+  text-decoration: underline;
+}
+
+/* The edit boxes of the title and the description of a group on the board. */
+.plan-group-name-input,
+.plan-about-input {
+  box-sizing: border-box;
+  min-width: 0;
+  padding: 1px 6px;
+  font: inherit;
+  pointer-events: auto;
+}
+
+.plan-group-name-input {
+  flex: 1;
+  height: 18px;
+  font-weight: 600;
+}
+
+.plan-about-input {
+  position: absolute;
+  resize: none;
+  font-size: calc(12px * var(--text-scale));
+  line-height: 1.3;
+}
+
 .plan-group-count {
   flex: none;
   color: var(--muted);
@@ -11011,15 +11053,51 @@ svg.links {
   border-color: var(--plan-color);
 }
 
-/* The description of a topic group in the side panel. */
-.plan-group-about {
-  margin: 6px 0;
+/* The description of a topic group under its title bar: at most 3 lines; a click edits it. */
+.plan-block-about {
+  position: absolute;
+  box-sizing: border-box;
+  padding: 0 4px;
+  border-radius: 6px;
   color: var(--muted);
   font-size: calc(12px * var(--text-scale));
+  line-height: 1.3;
+  pointer-events: auto;
+  cursor: text;
 }
 
-.plan-group-about p {
-  margin: 0 0 6px;
+div.plan-block-about {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+div.plan-block-about:hover {
+  background: color-mix(in srgb, var(--plan-color, var(--text)) 10%, transparent);
+}
+
+.plan-block-about.empty {
+  font-style: italic;
+  opacity: 0.7;
+}
+
+/* The colours of the right-click menu of a group. */
+.plan-group-menu .plan-color-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plan-group-menu .plan-color-item[aria-checked="true"] {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.plan-menu-line {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line);
 }
 
 /* A collapsed group: a stack of cards in its colour. */

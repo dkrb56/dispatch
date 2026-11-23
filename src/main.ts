@@ -16006,6 +16006,12 @@ const planOffsets = new Map<string, PlanOffset>();
 let planCanvasSize = { width: 0, height: 0 };
 /** The next render gives the keyboard to the title box of the selected group (user decision 2). */
 let planFocusTitle = false;
+/** The comment or group whose title is edited in the title bar of its box; null: none. */
+let planEditTitle: string | null = null;
+/** The topic group whose description is edited in its box; null: none. */
+let planEditAbout: string | null = null;
+/** The next render gives the keyboard to the edit box on the board. */
+let planFocusEdit = false;
 /** The names of the four colours of a comment or group: the colours of the app (user decision 1). */
 const PLAN_COLOR_NAMES = ["Blue", "Green", "Amber", "Red"];
 
@@ -16223,8 +16229,20 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
   planBoardEl.addEventListener("contextmenu", (event) => {
     const ref = planProject();
     if (!ref || !canvasOf()) return;
+    // A right click in an edit box keeps the menu of the browser.
+    if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
     event.preventDefault();
     closeBoardMenu();
+    // A comment or group (its title bar, description, badge or collapsed card): its colours first.
+    const owner = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-group]") : null;
+    const group = owner?.dataset.group ? planGroupsOf(ref).find((one) => one.id === owner.dataset.group) : undefined;
+    if (owner && group) {
+      if (owner.classList.contains("plan-group")) {
+        if (!planSelected.has(groupNodeId(group.id))) planSelect([groupNodeId(group.id)]);
+      } else if (planSelectedGroup !== group.id) planSelect([], null, group.id);
+      planGroupMenu(event, ref, group);
+      return;
+    }
     const card = event.target instanceof Element ? event.target.closest<HTMLElement>(".plan-ticket, .plan-group") : null;
     const id = card?.dataset.ticket ?? (card?.dataset.group ? groupNodeId(card.dataset.group) : undefined);
     if (id && !planSelected.has(id)) planSelect([id]);
@@ -16361,12 +16379,42 @@ function planSelectionMenu(event: MouseEvent): void {
   showMenu(menu, event, null);
 }
 
+/** The right-click menu of a comment or group: its colours, then the items of the board menu. */
+function planGroupMenu(event: MouseEvent, ref: ProjectRef, group: PlanGroup): void {
+  const menu = mapElement("div", "ticket-menu plan-board-menu plan-group-menu");
+  menu.setAttribute("role", "menu");
+  PLAN_COLOR_NAMES.forEach((name, color) => {
+    const button = mapElement("button", "plan-color-item");
+    button.type = "button";
+    button.title = `Show this ${group.auto ? "topic group" : group.collapsed ? "group" : "comment"} in ${name.toLowerCase()}`;
+    button.setAttribute("role", "menuitemradio");
+    button.setAttribute("aria-checked", String(group.color === color));
+    button.append(mapElement("span", `plan-swatch-mark plan-color-${color}`), mapElement("span", "", name));
+    button.addEventListener("click", () => {
+      closeBoardMenu();
+      planChangeGroup(group.id, { color });
+    });
+    menu.append(button);
+  });
+  const line = mapElement("div", "plan-menu-line");
+  line.setAttribute("role", "separator");
+  menu.append(line, ...planBoardItems(ref));
+  showMenu(menu, event, null);
+}
+
 /** The right-click menu of the board: a new ticket, Plan the flow, Centre the tree, and comment and group for the selected cards. */
 function planBoardMenu(event: MouseEvent, ref: ProjectRef): void {
-  const project: ProjectRef = { host: ref.host, root: ref.root };
-  const key = refKey(ref);
   const menu = mapElement("div", "ticket-menu plan-board-menu");
   menu.setAttribute("role", "menu");
+  menu.append(...planBoardItems(ref));
+  showMenu(menu, event, null);
+}
+
+/** The items of the right-click menu of the board. */
+function planBoardItems(ref: ProjectRef): HTMLButtonElement[] {
+  const project: ProjectRef = { host: ref.host, root: ref.root };
+  const key = refKey(ref);
+  const items: HTMLButtonElement[] = [];
   const item = (label: string, title: string, act: () => void, off = false): HTMLButtonElement => {
     const button = mapElement("button", "", label);
     button.type = "button";
@@ -16379,19 +16427,19 @@ function planBoardMenu(event: MouseEvent, ref: ProjectRef): void {
     });
     return button;
   };
-  menu.append(
+  items.push(
     item("New ticket in Scheduled", "Open the New ticket window; the ticket goes to the end of Scheduled", () => openAddTicket(project, "new")),
     item("New ticket in Backlog", "Open the New ticket window; the ticket waits in Backlog", () => openAddTicket(project, "backlog")),
     item("Plan the flow", "Edit the arrows in a draft; nothing is saved until you click Confirm", planStartFlow, planDrafts.has(key) || !projectTasks.has(key)),
     item("Centre the tree", "Move the board so that the root card stands in the middle", planCentreTree),
   );
   if (planSelected.size > 0) {
-    menu.append(
+    items.push(
       item("Add comment (C)", "Draw an open box with a title around the selected tickets", () => planAddGroup(false)),
       item("Group and collapse (G)", "Put the selected tickets into a group that stands as one card in the tree", () => planAddGroup(true)),
     );
   }
-  showMenu(menu, event, null);
+  return items;
 }
 
 /**
@@ -16770,10 +16818,57 @@ function planCurve(x1: number, y1: number, x2: number, y2: number): string {
 
 const PLAN_BADGE_TEXT: Record<"next" | "early", string> = { next: "Next up", early: "Started early" };
 
+/** An edit box on the board for the title or the description of a group: Enter or the blur saves a changed value, Esc cancels. */
+function planEditBox(group: PlanGroup, field: "title" | "description"): HTMLInputElement | HTMLTextAreaElement {
+  const box = field === "description" ? mapElement("textarea", "plan-about-input") : mapElement("input", "plan-group-name-input");
+  if (box instanceof HTMLInputElement) box.type = "text";
+  box.value = group[field];
+  box.placeholder = field === "description" ? "Description" : "Title";
+  box.setAttribute("aria-label", field === "description" ? "Description" : "Title");
+  let cancel = false;
+  box.addEventListener("click", (event) => event.stopPropagation());
+  (box as HTMLElement).addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancel = true;
+      box.blur();
+    } else if (event.key === "Enter" && !(field === "description" && event.shiftKey)) {
+      event.preventDefault();
+      box.blur();
+    }
+  });
+  box.addEventListener("blur", () => {
+    if (field === "title") planEditTitle = null;
+    else planEditAbout = null;
+    const value = box.value.trim();
+    if (!cancel && value !== group[field].trim()) planChangeGroup(group.id, { [field]: value });
+    else renderPlan();
+  });
+  return box;
+}
+
+/** The title in the title bar of a box: a click edits it in place (user decisions 3 and 4). */
+function planGroupName(group: PlanGroup): HTMLElement {
+  if (planEditTitle === group.id) return planEditBox(group, "title");
+  const name = mapElement("span", "plan-group-name", group.title || "Untitled");
+  name.title = "Click to change the title";
+  name.addEventListener("click", (event) => {
+    event.stopPropagation();
+    planEditTitle = group.id;
+    planEditAbout = null;
+    planFocusEdit = true;
+    planSelect([], null, group.id);
+  });
+  return name;
+}
+
 /** Draws the toolbar, the tree and the side panel of the project of the view. */
 function renderPlan(): void {
   // A render would take away the selection box that the user draws.
   if (!planOn || planBoxDragging) return;
+  // A render would take away the title or description box that the user types in; the blur renders.
+  const editing = document.activeElement;
+  if ((editing instanceof HTMLInputElement || editing instanceof HTMLTextAreaElement) && planBoardEl.contains(editing)) return;
   const refs = planProjects();
   const ref = planProject();
   // The select changes only when the projects change, so an open select stays open.
@@ -17026,7 +17121,7 @@ function renderPlan(): void {
     const bar = mapElement("div", "plan-group-title");
     bar.style.height = `${PLAN_BOX_TITLE}px`;
     bar.title = "Select this comment or group";
-    bar.append(mapElement("span", "plan-group-name", group.title || "Untitled"), mapElement("span", "plan-group-count", plural(groupMembers(tickets, group).length, "ticket")));
+    bar.append(planGroupName(group), mapElement("span", "plan-group-count", plural(groupMembers(tickets, group).length, "ticket")));
     const collapse = mapElement("button", "plan-group-toggle", "▴");
     collapse.type = "button";
     collapse.title = "Collapse: one stacked card stands for these tickets";
@@ -17128,7 +17223,7 @@ function renderPlan(): void {
       line.append(detail);
     }
     if (badge === "waits") line.append(mapElement("span", "plan-waits", " · waits"));
-    el.append(top, line);
+    el.append(top, mapElement("div", "plan-card-title", ticket.title), line);
     if (badge === "next" || badge === "early") el.append(mapElement("span", `plan-badge ${badge}`, PLAN_BADGE_TEXT[badge]));
     if (draft) el.append(plusButton(ticket.id));
     canvas.append(el);
@@ -17154,7 +17249,7 @@ function renderPlan(): void {
       if (state.since) detail.dataset.runSince = String(state.since);
       line.append(detail);
     }
-    el.append(top, line);
+    el.append(top, mapElement("div", "plan-card-title", ticket.title), line);
     // While an arrow is drawn or a ticket placed, a click picks it; while planning it places it; else it selects.
     el.addEventListener("click", (event) => {
       if (picking) planPickCard(ticket.id);
@@ -17180,7 +17275,7 @@ function renderPlan(): void {
     const bar = mapElement("div", "plan-group-title");
     bar.style.height = `${PLAN_BOX_TITLE}px`;
     bar.title = group.description || "Select this topic group";
-    bar.append(mapElement("span", "plan-group-name", group.title || "Untitled"), mapElement("span", "plan-group-count", plural(block.members.length, "ticket")));
+    bar.append(planGroupName(group), mapElement("span", "plan-group-count", plural(block.members.length, "ticket")));
     const toggle = mapElement("button", "plan-group-toggle", group.collapsed ? "▾" : "▴");
     toggle.type = "button";
     toggle.title = group.collapsed ? "Expand: show its scheduled and working tickets as cards" : "Collapse: show only the title and the count";
@@ -17193,6 +17288,27 @@ function renderPlan(): void {
     bar.addEventListener("click", () => planSelect([], null, group.id));
     el.append(bar);
     canvas.append(el);
+    // The description under the title bar (user decision 1: only here); a click edits it in place.
+    let about: HTMLElement;
+    if (planEditAbout === group.id) about = planEditBox(group, "description");
+    else {
+      about = mapElement("div", `plan-block-about${group.description ? "" : " empty"}`, group.description || "Add a description");
+      about.title = group.description ? `${group.description}\n\nClick to change the description` : "Click to add a description";
+      about.addEventListener("click", (event) => {
+        event.stopPropagation();
+        planEditAbout = group.id;
+        planEditTitle = null;
+        planFocusEdit = true;
+        renderPlan();
+      });
+    }
+    about.classList.add("plan-block-about", `plan-color-${group.color}`);
+    about.dataset.group = group.id;
+    about.style.left = `${place.about.x + blockShift}px`;
+    about.style.top = `${place.about.y}px`;
+    about.style.width = `${place.about.width}px`;
+    about.style.height = `${place.about.height}px`;
+    canvas.append(about);
     for (const card of place.cards) {
       const ticket = byId.get(card.id);
       if (ticket) canvas.append(looseCard(ticket, { x: card.x + blockShift, y: card.y }));
@@ -17202,6 +17318,7 @@ function renderPlan(): void {
       const badge = mapElement("button", `plan-fold plan-color-${group.color}`, foldText);
       badge.type = "button";
       badge.title = `${foldText}\nShow all tickets of this group in the side panel`;
+      badge.dataset.group = group.id;
       badge.style.left = `${place.badge.x + blockShift}px`;
       badge.style.maxWidth = `${place.box.width - 2 * PLAN_BOX_PAD}px`;
       badge.style.top = `${place.badge.y}px`;
@@ -17231,6 +17348,12 @@ function renderPlan(): void {
     canvas.append(note);
   }
   planBoardEl.replaceChildren(canvas);
+  if (planFocusEdit) {
+    planFocusEdit = false;
+    const box = planBoardEl.querySelector<HTMLInputElement | HTMLTextAreaElement>(".plan-group-name-input, .plan-about-input");
+    box?.focus();
+    box?.select();
+  }
 
   // The side panel waits while the user types a title or the words of a new ticket, or picks in a
   // select; the next render after the blur draws it.
@@ -17335,14 +17458,7 @@ function renderPlan(): void {
       swatch.addEventListener("click", () => planChangeGroup(group.id, { color }));
       swatches.append(swatch);
     });
-    top.append(input);
-    // A topic group: its description, what it does and what it is for.
-    if (group.auto && group.description) {
-      const about = mapElement("div", "plan-group-about");
-      for (const paragraph of group.description.split(/\n\s*\n/)) about.append(mapElement("p", "", paragraph.trim()));
-      top.append(about);
-    }
-    top.append(swatches);
+    top.append(input, swatches);
     const counts = groupCounts(flow, group);
     const table = mapElement("dl", "plan-counts");
     const count = (label: string, value: number) => table.append(mapElement("dt", "", label), mapElement("dd", "", String(value)));

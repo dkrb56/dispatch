@@ -27,6 +27,7 @@ import {
   openBefore,
   parsePlanGroups,
   PLAN_BOX_PAD,
+  PLAN_ABOUT_HEIGHT,
   PLAN_BOX_TITLE,
   PLAN_CARD_HEIGHT,
   PLAN_FOLD_HEIGHT,
@@ -648,6 +649,28 @@ test("the topic blocks stand under the tree in lines, on the 50 px grid, and the
   assert.ok(shelf.title !== null && shelf.title.y > bottom);
 });
 
+test("a topic block has its description row under the title bar and above its cards", () => {
+  const layout = planLayout(TREE);
+  const result = planBlocks(
+    [
+      { id: "cards", shown: ["a", "b"], badge: true },
+      { id: "empty", shown: [], badge: true },
+    ],
+    layout,
+    4,
+  );
+  const [cards, empty] = result.blocks;
+  for (const block of result.blocks) {
+    const { box, about } = block;
+    assert.ok(about.y >= box.y + PLAN_BOX_TITLE, `${block.id} description under the title bar`);
+    assert.ok(about.x >= box.x && about.x + about.width <= box.x + box.width, `${block.id} description inside the box`);
+    assert.ok(about.height > 0 && about.height <= PLAN_ABOUT_HEIGHT, `${block.id} description fits its row`);
+  }
+  for (const card of cards.cards) assert.ok(card.y >= cards.about.y + cards.about.height, `${card.id} under the description`);
+  assert.ok(cards.cards[0].y % PLAN_GRID === 0, "the cards stay on the grid");
+  assert.ok(empty.badge !== null && empty.badge.y >= empty.about.y + empty.about.height, "the badge of a block without cards under the description");
+});
+
 test("a line of blocks wider than the free space moves the tree and the blocks right together", () => {
   const lone = planLayout([t("x", "new")]);
   const result = planBlocks([{ id: "wide", shown: ["a", "b", "c", "d", "e", "f"], badge: false }], lone, 6);
@@ -670,7 +693,7 @@ test("the page has Auto group, its host command, its blocks and its Help", () =>
   assert.match(main, /if \(group\.collapsed \|\| group\.auto\) continue;/, "the open boxes skip the topic groups");
   assert.match(main, /"Topic group"/);
   assert.match(css, /\.plan-fold \{/);
-  assert.match(css, /\.plan-group-about \{/);
+  assert.match(css, /\.plan-block-about \{/);
   assert.match(html, /<b>Auto group<\/b> in the toolbar asks Claude/);
   assert.match(html, /keeps your titles/);
 });

@@ -22,7 +22,7 @@ export interface PlanArrow {
 
 /** The size of a card and the steps between the cards; the 50 px grid of the dots of the Overview. */
 export const PLAN_CARD_WIDTH = 200;
-export const PLAN_CARD_HEIGHT = 56;
+export const PLAN_CARD_HEIGHT = 84;
 export const PLAN_COLUMN_STEP = 250;
 export const PLAN_ROW_STEP = 150;
 export const PLAN_GRID = 50;
@@ -328,6 +328,8 @@ export function groupNodeId(id: string): string {
 /** The padding of an open box around its cards, and the height of its title bar. */
 export const PLAN_BOX_PAD = 12;
 export const PLAN_BOX_TITLE = 22;
+/** The height of the description row of a topic block, under its title bar: one grid step, 3 lines of text. */
+export const PLAN_ABOUT_HEIGHT = PLAN_GRID;
 
 /** A safe read of the reply of `plan_groups_load` or `plan_groups_save`: an unknown shape gives no groups. */
 export function parsePlanGroups(value: unknown): PlanGroup[] {
@@ -590,6 +592,8 @@ export interface PlanBlockPlace {
   id: string;
   /** The box with its title bar, the top `PLAN_BOX_TITLE` px. */
   box: PlanRect;
+  /** The description under the title bar, inside the box and above the first card row. */
+  about: PlanRect;
   /** The places of its cards; `row` is the row inside the block. */
   cards: PlanPlace[];
   /** The top left corner of the count badge; null without a badge. */
@@ -632,7 +636,7 @@ export function planBlocks(blocks: readonly { id: string; shown: readonly string
     let left = snap(layout.root.x - ((width - 1) / 2) * PLAN_COLUMN_STEP);
     let bottom = top;
     for (const block of line) {
-      const firstY = top + PLAN_GRID;
+      const firstY = top + PLAN_GRID + PLAN_ABOUT_HEIGHT;
       const cards: PlanPlace[] = block.shown.map((id, at) => ({
         id,
         row: Math.floor(at / block.columns),
@@ -641,11 +645,14 @@ export function planBlocks(blocks: readonly { id: string; shown: readonly string
       }));
       const badge = block.badge ? { x: left, y: firstY + block.rows * PLAN_SHELF_ROW_STEP } : null;
       const content = Math.max(cards.length > 0 ? firstY + (block.rows - 1) * PLAN_SHELF_ROW_STEP + PLAN_CARD_HEIGHT : firstY, badge ? badge.y + PLAN_FOLD_HEIGHT : firstY);
-      const boxTop = firstY - PLAN_BOX_PAD - PLAN_BOX_TITLE;
+      const boxTop = firstY - PLAN_ABOUT_HEIGHT - PLAN_BOX_PAD - PLAN_BOX_TITLE;
       const boxBottom = content + PLAN_BOX_PAD;
+      const boxWidth = (block.columns - 1) * PLAN_COLUMN_STEP + PLAN_CARD_WIDTH + 2 * PLAN_BOX_PAD;
+      const aboutY = boxTop + PLAN_BOX_TITLE + 4;
       placed.push({
         id: block.id,
-        box: { x: left - PLAN_BOX_PAD, y: boxTop, width: (block.columns - 1) * PLAN_COLUMN_STEP + PLAN_CARD_WIDTH + 2 * PLAN_BOX_PAD, height: boxBottom - boxTop },
+        box: { x: left - PLAN_BOX_PAD, y: boxTop, width: boxWidth, height: boxBottom - boxTop },
+        about: { x: left, y: aboutY, width: boxWidth - 2 * PLAN_BOX_PAD, height: Math.min(PLAN_ABOUT_HEIGHT, firstY - 6 - aboutY) },
         cards,
         badge,
       });
@@ -658,6 +665,7 @@ export function planBlocks(blocks: readonly { id: string; shown: readonly string
   const moved = placed.map((block) => ({
     ...block,
     box: { ...block.box, x: block.box.x + shift },
+    about: { ...block.about, x: block.about.x + shift },
     cards: block.cards.map((card) => ({ ...card, x: card.x + shift })),
     badge: block.badge ? { x: block.badge.x + shift, y: block.badge.y } : null,
   }));
