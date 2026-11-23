@@ -168,7 +168,7 @@ import { initPipeline, openSetup, setupNeeded, setupTodo, showSetup } from "./pi
 import { setupDue, setupLook, setupStamp, setupTitle } from "./setupmark";
 import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersion } from "./help";
 import { lastRunVersion, newEntries } from "./changelog";
-import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, speechText, type Wait, type WorkerEnd } from "./alerts";
+import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, speechLines, ticketTitle, type Wait, waitNotice, type WorkerEnd } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
 import { alertOptions, compactOn, initOptions, openOptions, ownHostRuns, phoneTabWanted, pulseOn, stopOwnHost, useOwnHost } from "./options";
 import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
@@ -5087,6 +5087,7 @@ function announceWorkerChanges(workers: Worker[]): void {
       project: projectName({ host: worker.host, root: worker.cwd ?? "" }),
       noTriage: projectNoTriage(projectFor(worker.host, worker.cwd)),
       reason: worker.reason ?? "",
+      title: ticketTitle(projectTickets(projectFor(worker.host, worker.cwd)), workerTask(worker)),
     }));
   fireAlerts(endNotices(ends, nightAny()));
   // An ended session leaves the quiet set once Claude Code reports it stopped or lists it no more.
@@ -11920,7 +11921,7 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
     scopes.push(scope);
     for (const task of projectTaskList(project)) {
       const info = task.info;
-      const base = { key: `${key}|${task.name}`, scope, name: task.name, project: projectName({ host: project.host, root: project.cwd }), text: taskStatus(task).text };
+      const base = { key: `${key}|${task.name}`, scope, name: task.name, title: ticketTitle(project.tickets, task.name), project: projectName({ host: project.host, root: project.cwd }), text: taskStatus(task).text };
       if (planReady(task) && !approvalQueued(task) && info?.plan && !nightPlanOf(task)?.approves) {
         // A part without the night box waits for the click of the user at night (ticket subtickets).
         const holds = info.hold || (!!info.nightHold && nightOf(project.host, project.cwd));
@@ -11957,6 +11958,7 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
       stamp: `${worker.id}#${promptCounts.get(id) ?? 1}`,
       scope: "workers",
       name,
+      title: ticketTitle(projectTickets(projectFor(worker.host, worker.cwd)), workerTask(worker)),
       project: projectName({ host: worker.host, root: worker.cwd ?? "" }),
       text: `waits at a prompt${worker.waitingFor ? `: ${worker.waitingFor}` : ""}`,
     });
@@ -11976,7 +11978,7 @@ function updateAlerts(): void {
   const opens = questionWaitToOpen(found, document.querySelector("dialog[open]") !== null);
   const asked = opens === null ? undefined : questionWaitTasks.get(opens);
   if (asked) openQuestionWindow(asked);
-  fireAlerts(found);
+  fireAlerts(found.map(waitNotice));
 }
 
 /** The notification, the chime and the blink for new notices, as the switches of the Options screen say. */
@@ -11984,7 +11986,7 @@ function fireAlerts(found: Notice[]): void {
   const act = alertActions(alertOptions(), found.length > 0);
   const failed = (error: unknown) => console.error("alert failed", error);
   if (act.notify) notify(found).catch(failed);
-  const spoken = act.voice && speak(speechText(found));
+  const spoken = act.voice && speechLines(found).every((line) => speak(line));
   if (act.chime && !spoken) {
     try {
       playChime();

@@ -8,7 +8,7 @@ export interface AlertOptions {
   notify: boolean;
   chime: boolean;
   blink: boolean;
-  /** The system voice says which project waits, in place of the chime. */
+  /** The system voice says each task, its project and what happened, in place of the chime. */
   voice: boolean;
 }
 
@@ -39,6 +39,8 @@ export interface Wait {
   project: string;
   /** What it waits for, in the words of the task header. */
   text: string;
+  /** The ticket title, or empty. */
+  title: string;
 }
 
 /** The marks of the waits that alerted or were seeded, and the read groups seen so far. Never cleared in a run. */
@@ -106,8 +108,9 @@ export function alertActions(options: AlertOptions, anyNew: boolean): AlertOptio
   return { notify: anyNew && options.notify, chime: anyNew && options.chime, blink: anyNew && options.blink, voice: anyNew && options.voice };
 }
 
-/** What a notification names: the task or worker name, the project folder name and the text. */
-export type Notice = Pick<Wait, "name" | "project" | "text">;
+/** What an alert names: the task or worker name, the project folder name and the text (notification), the ticket title and the event (voice). */
+export type AlertEvent = WaitKind | "done" | "plan-empty" | "work-empty" | "plan-failed" | "work-failed";
+export type Notice = Pick<Wait, "name" | "project" | "text"> & { title: string; event: AlertEvent };
 
 /** One end of a worker as the announcements of a poll told it (`announceWorkerChanges`). */
 export interface WorkerEnd {
@@ -123,6 +126,8 @@ export interface WorkerEnd {
   noTriage: boolean;
   /** Why the job stopped in the words of Claude Code, or empty (ticket a-work-run-that-ended-without-a-report). */
   reason?: string;
+  /** The ticket title, or empty. */
+  title?: string;
 }
 
 /**
@@ -138,13 +143,14 @@ export function endNotices(ends: readonly WorkerEnd[], night: boolean): Notice[]
   const notices: Notice[] = [];
   for (const end of ends) {
     if (!end.noTriage) continue;
-    if (end.state === "done" && end.run === "work") notices.push({ name: end.ticket, project: end.project, text: "the task is done" });
-    else if (end.state === "done-empty" && end.run === "plan") notices.push({ name: end.ticket, project: end.project, text: "the plan run ended without a plan" });
+    const title = end.title ?? "";
+    if (end.state === "done" && end.run === "work") notices.push({ name: end.ticket, project: end.project, text: "the task is done", title, event: "done" });
+    else if (end.state === "done-empty" && end.run === "plan") notices.push({ name: end.ticket, project: end.project, text: "the plan run ended without a plan", title, event: "plan-empty" });
     else if (end.state === "done-empty" && end.run === "work") {
-      notices.push({ name: end.ticket, project: end.project, text: `the work run ended without a report${end.reason ? ` · ${end.reason}` : ""}` });
+      notices.push({ name: end.ticket, project: end.project, text: `the work run ended without a report${end.reason ? ` · ${end.reason}` : ""}`, title, event: "work-empty" });
     }
     else if (end.state === "failed" && (end.run === "plan" || end.run === "work")) {
-      notices.push({ name: end.ticket, project: end.project, text: end.run === "plan" ? "the plan run failed" : "the work run failed" });
+      notices.push({ name: end.ticket, project: end.project, text: end.run === "plan" ? "the plan run failed" : "the work run failed", title, event: end.run === "plan" ? "plan-failed" : "work-failed" });
     }
   }
   return notices;
@@ -160,16 +166,46 @@ export function notificationText(waits: Notice[]): { title: string; body: string
   return { title, body: `${waits.length} tasks wait for you: ${waits.map((wait) => wait.name).join(", ")}` };
 }
 
-/** The text the system voice says: the project names, each once, without the ` · host` part. */
-export function speechText(notices: Notice[]): string {
-  const names: string[] = [];
-  for (const notice of notices) {
-    const name = notice.project.split(" · ")[0];
-    if (!names.includes(name)) names.push(name);
-  }
-  if (names.length === 1) return `${names[0]} is waiting for you`;
-  if (names.length === 2) return `${names[0]} and ${names[1]} are waiting for you`;
-  return `${names.length} projects are waiting for you`;
+/** The spoken phrase of each kind of wait and each worker end. */
+export const SPOKEN: Record<AlertEvent, string> = {
+  plan: "The plan is ready",
+  hold: "The plan needs your decision",
+  question: "It waits for your answer",
+  permission: "It needs a permission",
+  prompt: "It waits at a permission prompt",
+  checks: "The checks wait for your click",
+  done: "The task is done",
+  "plan-empty": "The plan run ended without a plan",
+  "work-empty": "The work run ended without a report",
+  "plan-failed": "The plan run failed",
+  "work-failed": "The work run failed",
+};
+
+function withoutRunEnd(task: string): string {
+  return task.replace(/ \[(plan|work)\]$/, "");
+}
+
+/** The title of the ticket of a task or worker name: by id or by `task`, a ` [plan]`/` [work]` end removed. Empty when unknown. */
+export function ticketTitle(tickets: readonly { id: string; title: string; task?: string }[], task: string): string {
+  const name = withoutRunEnd(task);
+  const ticket = tickets.find((item) => item.id === name || item.task === name);
+  return ticket ? ticket.title.trim() : "";
+}
+
+/** The notice of a wait. */
+export function waitNotice(wait: Wait): Notice {
+  return { name: wait.name, project: wait.project, text: wait.text, title: wait.title, event: wait.kind };
+}
+
+/**
+ * The lines the system voice says, one per notice, in order: `<title or task name> in <project>. <phrase>.`
+ * The project is said without its ` · host` part.
+ */
+export function speechLines(notices: Notice[]): string[] {
+  return notices.map((notice) => {
+    const who = notice.title.trim() || withoutRunEnd(notice.name).replace(/[-_]/g, " ");
+    return `${who} in ${notice.project.split(" · ")[0]}. ${SPOKEN[notice.event]}.`;
+  });
 }
 
 /** One note of the chime: its pitch in hertz, its start and its length in seconds. */

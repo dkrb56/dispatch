@@ -15,9 +15,13 @@ import {
   newWaits,
   notificationText,
   parseAlertOptions,
-  speechText,
+  SPOKEN,
+  speechLines,
+  ticketTitle,
+  type AlertEvent,
   type Wait,
   type WaitKind,
+  waitNotice,
   waitsForUser,
   type WorkerEnd,
 } from "../src/alerts.ts";
@@ -27,7 +31,7 @@ const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").rep
 const CSS = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
 function wait(name: string, kind: WaitKind, stamp: string, scope = "tasks|d:/p"): Wait {
-  return { key: `d:/p|${name}`, kind, stamp, scope, name, project: "p", text: "plan ready · waits for you" };
+  return { key: `d:/p|${name}`, kind, stamp, scope, name, project: "p", text: "plan ready · waits for you", title: "" };
 }
 
 test("the first read of a group records its waits and alerts nothing", () => {
@@ -116,13 +120,43 @@ test("the notification names the task, its project and what it waits for", () =>
   assert.deepEqual(notificationText([wait("a", "plan", "1"), wait("b", "question", "2")]), { title: "Dispatch", body: "2 tasks wait for you: a, b" });
 });
 
-test("the voice names each project once, without the host", () => {
-  const n = (project: string) => ({ name: "t", project, text: "x" });
-  assert.equal(speechText([n("starminer")]), "starminer is waiting for you");
-  assert.equal(speechText([n("a"), n("b")]), "a and b are waiting for you");
-  assert.equal(speechText([n("a"), n("b"), n("c")]), "3 projects are waiting for you");
-  assert.equal(speechText([n("a"), n("a")]), "a is waiting for you");
-  assert.equal(speechText([n("starminer · desktop")]), "starminer is waiting for you");
+// Ticket the-voice-alert-says-the-ticket-title: one spoken line per alert, with title, project and event.
+test("the voice says the title, the project and one phrase for each event", () => {
+  const events = Object.keys(SPOKEN) as AlertEvent[];
+  assert.equal(events.length, 11);
+  assert.equal(new Set(Object.values(SPOKEN)).size, 11, "each event has its own phrase");
+  for (const event of events) {
+    assert.deepEqual(speechLines([{ name: "t", project: "starminer", text: "x", title: "Fix the login", event }]), [`Fix the login in starminer. ${SPOKEN[event]}.`]);
+  }
+  assert.deepEqual(speechLines([{ name: "t", project: "starminer", text: "x", title: "Fix the login", event: "plan" }]), ["Fix the login in starminer. The plan is ready."]);
+});
+
+test("the voice says the project without its host and the task name without a title", () => {
+  const n = (name: string, title: string) => ({ name, project: "starminer · desktop", text: "x", title, event: "done" as AlertEvent });
+  assert.deepEqual(speechLines([n("t", "Title")]), ["Title in starminer. The task is done."]);
+  assert.deepEqual(speechLines([n("fix-the_login [plan]", "")]), ["fix the login in starminer. The task is done."]);
+});
+
+test("the voice says every alert, one line each, in order, with no count", () => {
+  const lines = speechLines(["a", "b", "c", "d", "e"].map((name) => ({ name, project: "p", text: "x", title: name.toUpperCase(), event: "plan" as AlertEvent })));
+  assert.equal(lines.length, 5);
+  assert.deepEqual(lines.map((line) => line.split(" ")[0]), ["A", "B", "C", "D", "E"]);
+  assert.ok(lines.every((line) => !/\d/.test(line)));
+});
+
+test("ticketTitle finds the title by id or task and strips the run end", () => {
+  const tickets = [{ id: "t-1", title: " First " }, { id: "t-2", title: "Second", task: "other-name" }];
+  assert.equal(ticketTitle(tickets, "t-1"), "First");
+  assert.equal(ticketTitle(tickets, "other-name"), "Second");
+  assert.equal(ticketTitle(tickets, "t-1 [work]"), "First");
+  assert.equal(ticketTitle(tickets, "t-1 [plan]"), "First");
+  assert.equal(ticketTitle(tickets, "nope"), "");
+  assert.equal(ticketTitle([], "t-1"), "");
+});
+
+test("waitNotice carries the title and the kind; endNotices carries the end title", () => {
+  assert.deepEqual(waitNotice({ ...wait("a", "hold", "1"), title: "T" }), { name: "a", project: "p", text: "plan ready · waits for you", title: "T", event: "hold" });
+  assert.equal(endNotices([{ ...end("t-1", "work", "done"), title: "Done title" }], false)[0].title, "Done title");
 });
 
 test("the chime is short and quiet", () => {
@@ -298,9 +332,9 @@ test("pickTab: the wanted tab when the list has it, else the first", () => {
 const end = (ticket: string, run: string, state: string, noTriage = true): WorkerEnd => ({ ticket, run, state, project: "app", noTriage });
 
 test("no triage: a done work run and a failed run alert, a done plan run does not", () => {
-  assert.deepEqual(endNotices([end("t-1", "work", "done")], false), [{ name: "t-1", project: "app", text: "the task is done" }]);
-  assert.deepEqual(endNotices([end("t-2", "work", "failed")], false), [{ name: "t-2", project: "app", text: "the work run failed" }]);
-  assert.deepEqual(endNotices([end("t-3", "plan", "failed")], false), [{ name: "t-3", project: "app", text: "the plan run failed" }]);
+  assert.deepEqual(endNotices([end("t-1", "work", "done")], false), [{ name: "t-1", project: "app", text: "the task is done", title: "", event: "done" }]);
+  assert.deepEqual(endNotices([end("t-2", "work", "failed")], false), [{ name: "t-2", project: "app", text: "the work run failed", title: "", event: "work-failed" }]);
+  assert.deepEqual(endNotices([end("t-3", "plan", "failed")], false), [{ name: "t-3", project: "app", text: "the plan run failed", title: "", event: "plan-failed" }]);
   assert.deepEqual(endNotices([end("t-4", "plan", "done")], false), [], "a ready plan alerts as the wait plan already");
   // A run that stopped without its result is no done end (early-done-line): the announcements give it as done-early, not done.
   assert.deepEqual(endNotices([end("t-5", "work", "done-early")], false), []);
@@ -309,8 +343,8 @@ test("no triage: a done work run and a failed run alert, a done plan run does no
 
 // Ticket a-plan-run-that-ends-without-a-plan: a plan run that ended for good without its plan alerts.
 test("no triage: a plan run that ended without a plan and a work run that ended without a report alert", () => {
-  assert.deepEqual(endNotices([end("t-1", "plan", "done-empty")], false), [{ name: "t-1", project: "app", text: "the plan run ended without a plan" }]);
-  assert.deepEqual(endNotices([end("t-2", "work", "done-empty")], false), [{ name: "t-2", project: "app", text: "the work run ended without a report" }]);
+  assert.deepEqual(endNotices([end("t-1", "plan", "done-empty")], false), [{ name: "t-1", project: "app", text: "the plan run ended without a plan", title: "", event: "plan-empty" }]);
+  assert.deepEqual(endNotices([end("t-2", "work", "done-empty")], false), [{ name: "t-2", project: "app", text: "the work run ended without a report", title: "", event: "work-empty" }]);
   assert.deepEqual(endNotices([end("t-3", "", "done-empty")], false), [], "a worker of an older script names no run");
   assert.deepEqual(endNotices([end("t-4", "plan", "done-empty")], true), [], "night mode stays quiet");
   assert.deepEqual(endNotices([end("t-5", "plan", "done-empty", false)], false), [], "triage tells it");
@@ -320,11 +354,11 @@ test("no triage: a plan run that ended without a plan and a work run that ended 
 test("no triage: a work run that ended without a report alerts with the reason of Claude Code", () => {
   const login = "login required — run /login · Login reached its time limit";
   assert.deepEqual(endNotices([{ ...end("t-1", "work", "done-empty"), reason: login }], false), [
-    { name: "t-1", project: "app", text: `the work run ended without a report · ${login}` },
+    { name: "t-1", project: "app", text: `the work run ended without a report · ${login}`, title: "", event: "work-empty" },
   ]);
-  assert.deepEqual(endNotices([{ ...end("t-2", "work", "done-empty"), reason: "" }], false), [{ name: "t-2", project: "app", text: "the work run ended without a report" }]);
+  assert.deepEqual(endNotices([{ ...end("t-2", "work", "done-empty"), reason: "" }], false), [{ name: "t-2", project: "app", text: "the work run ended without a report", title: "", event: "work-empty" }]);
   // The plan text stays, also with a reason.
-  assert.deepEqual(endNotices([{ ...end("t-3", "plan", "done-empty"), reason: login }], false), [{ name: "t-3", project: "app", text: "the plan run ended without a plan" }]);
+  assert.deepEqual(endNotices([{ ...end("t-3", "plan", "done-empty"), reason: login }], false), [{ name: "t-3", project: "app", text: "the plan run ended without a plan", title: "", event: "plan-empty" }]);
   assert.deepEqual(endNotices([{ ...end("t-4", "work", "done-empty"), reason: login }], true), [], "night mode stays quiet");
   assert.deepEqual(endNotices([{ ...end("t-5", "work", "done-empty", false), reason: login }], false), [], "triage tells it");
 });
