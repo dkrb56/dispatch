@@ -23,6 +23,12 @@ export interface AnsweredReport {
   modified: number;
   questions: AnsweredQuestion[];
   reply: string;
+  /**
+   * The ids of the workers of the task when the reply went out (ticket
+   * continue-comes-back-on-the-task-card). A worker id that is not in this list is the run of the
+   * reply. A record of an older version has no list.
+   */
+  workers?: string[];
 }
 
 /** The key of the store in localStorage (decision 1 of the plan). */
@@ -74,6 +80,32 @@ export function repeatedQuestions(
     repeats.push(answered);
   }
   return repeats;
+}
+
+/** A worker of a task as the answered rule needs it: its job id and its state. */
+export interface AnswerWorker {
+  id: string;
+  state: string | null;
+}
+
+/**
+ * True when the answered record still hides the report of this time (ticket
+ * continue-comes-back-on-the-task-card): the record is for this report time and the run of the reply
+ * has not ended. The run of the reply ended when a worker id that was not there at the send is in
+ * the list and no worker of the list is working or blocked. Then the report did not change and its
+ * card comes back. A record without worker ids (an older version) stands (decision 1 of the plan).
+ */
+export function answerStands(
+  record: AnsweredReport | undefined,
+  modified: number,
+  workers: readonly AnswerWorker[],
+): boolean {
+  if (!record || record.modified !== modified) return false;
+  if (!record.workers) return true;
+  const before = new Set(record.workers);
+  const started = workers.some((worker) => !before.has(worker.id));
+  const live = workers.some((worker) => worker.state === "working" || worker.state === "blocked");
+  return !started || live;
 }
 
 /** The texts of the repeat card. */
@@ -136,7 +168,9 @@ export function parseAnswered(stored: string | null | undefined): Map<string, An
         Array.isArray(question.options) &&
         question.options.every((option: unknown) => typeof option === "string"),
     );
-    records.set(task, { modified: record.modified, questions, reply: typeof record.reply === "string" ? record.reply : "" });
+    const kept: AnsweredReport = { modified: record.modified, questions, reply: typeof record.reply === "string" ? record.reply : "" };
+    if (Array.isArray(record.workers) && record.workers.every((id: unknown) => typeof id === "string")) kept.workers = [...record.workers];
+    records.set(task, kept);
   }
   return records;
 }

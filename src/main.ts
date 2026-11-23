@@ -183,7 +183,7 @@ import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
 import { answerable, answeredLine, chosenCount, holdReason, questionWaitToOpen, replySending, replyText, SENDING_STATUS, windowChoices, windowTitle } from "./answers";
 import type { SendingReply } from "./answers";
 import { CONFIRM_PLACEHOLDER, CONFIRM_TIP, CONFIRM_TITLE, confirmChoice, confirmLine, confirmQuestion, RESULT_LABEL, RESULT_TIP } from "./confirm";
-import { ANSWERED_KEY, type AnsweredQuestion, type AnsweredReport, answeredRecord, parseAnswered, parseQueuedReplies, QUEUED_REPLIES_KEY, type QueuedReply, type RepeatAction, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered, serializeQueuedReplies } from "./repeat";
+import { ANSWERED_KEY, type AnsweredQuestion, type AnsweredReport, answeredRecord, answerStands, parseAnswered, parseQueuedReplies, QUEUED_REPLIES_KEY, type QueuedReply, type RepeatAction, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered, serializeQueuedReplies } from "./repeat";
 
 type Shell = "powershell" | "cmd";
 
@@ -3325,8 +3325,10 @@ async function sendQueuedReply(task: Task, reply: QueuedReply): Promise<void> {
   saveQueuedReplies();
   const line = isAutoContinue(reply.line) ? reply.line : `${reply.line} (Dispatch sent this reply now: the user gave it earlier, while the checkout was on the branch of another task or its work folder was in use.)`;
   sendingReplies.set(reply.key, { modified: reply.record.modified, sentAt: null });
+  // The workers before the send: a new id after it is the run of this reply (ticket continue-comes-back-on-the-task-card).
+  const workers = task.workers.map((worker) => worker.id);
   if (await taskAction(task, "task_reply", { id: task.name, text: reply.text }, line)) {
-    markAnswered(task.name, reply.record);
+    markAnswered(task.name, { ...reply.record, workers });
     questionChoices.delete(task.name);
     confirmDrafts.delete(task.name);
     sentReplies.set(reply.key, { modified: reply.record.modified, at: Date.now() });
@@ -5332,7 +5334,8 @@ function sameFilesHolder(task: Task, runs: readonly WorkRun[]): { task: string; 
 /**
  * Whether the report of a task waits for the user: it says `needs: decision` or `needs: permission`
  * (a worker also asks about a permission with questions), no worker of the task runs, and nobody
- * answered since the report changed.
+ * answered since the report changed. An answer stops to hide the report when the run of the reply
+ * ended and the report stayed the same (ticket continue-comes-back-on-the-task-card).
  */
 function reportWaits(task: Task): boolean {
   const info = task.info;
@@ -5345,7 +5348,7 @@ function reportWaits(task: Task): boolean {
   // A reply that waits in the queue for this report asks nothing more of the user (ticket an-answer-waits-in-the-queue-while).
   if (queuedReplies.get(queueKey(task))?.record.modified === info.report.modified) return false;
   if (replySendingOf(task)) return false;
-  return !live && answeredReports.get(task.name)?.modified !== info.report.modified;
+  return !live && !answerStands(answeredReports.get(task.name), info.report.modified, task.workers);
 }
 
 /**
@@ -7031,8 +7034,10 @@ async function replyOrQueue(task: Task, record: AnsweredReport, text: string, li
   }
   const sendKey = queueKey(task);
   sendingReplies.set(sendKey, { modified: record.modified, sentAt: null });
+  // The workers before the send: a new id after it is the run of this reply (ticket continue-comes-back-on-the-task-card).
+  const workers = task.workers.map((worker) => worker.id);
   if (await taskAction(task, "task_reply", { id: task.name, text }, line)) {
-    markAnswered(task.name, record);
+    markAnswered(task.name, { ...record, workers });
     sendingReplies.set(sendKey, { modified: record.modified, sentAt: Date.now() });
     return "sent";
   }
@@ -11643,7 +11648,7 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     // The report row carries the report's state, or "answered" after an answer in Dispatch until the new report (ticket report-answered-chip).
     if (info?.plan) body.append(fileRow("Plan", info.plan, null, info.state || null));
     if (info?.report) {
-      const answered = answeredReports.get(task.name)?.modified === info.report.modified;
+      const answered = answerStands(answeredReports.get(task.name), info.report.modified, task.workers);
       const live = task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
       const chip = reportChip(info.header?.state ?? null, info.header?.needs ?? null, answered, live);
       const report = fileRow("Report", info.report, chip?.text ?? null, null, chip?.title ?? "");

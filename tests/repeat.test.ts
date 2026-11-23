@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { answeredLine, replyText } from "../src/answers.ts";
-import { type AnsweredReport, answeredRecord, parseAnswered, parseQueuedReplies, type QueuedReply, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered, serializeQueuedReplies } from "../src/repeat.ts";
+import { type AnsweredReport, answeredRecord, answerStands, parseAnswered, parseQueuedReplies, type QueuedReply, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered, serializeQueuedReplies } from "../src/repeat.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -181,4 +181,60 @@ test("waiting replies survive serialize and parse word for word; a broken entry 
   assert.deepEqual(parseQueuedReplies("{not json"), []);
   assert.deepEqual(parseQueuedReplies(null), []);
   assert.deepEqual(parseQueuedReplies("{}"), []);
+});
+
+// Ticket continue-comes-back-on-the-task-card: the Continue of 09:29 on 2026-11-23 for the task
+// a-worker-that-waits-at-a-permission. The workers before the send were bf98b7c9 and b15b7e32; the
+// run of the reply was the new job fad648e8, which ended stopped without a new report.
+const PERMISSION_REPORT = 3_000;
+const BEFORE = ["bf98b7c9", "b15b7e32"];
+function continued(workers: string[] | null = BEFORE): AnsweredReport {
+  const record = answeredRecord(PERMISSION_REPORT, [], new Map(), "Continue");
+  return workers ? { ...record, workers } : record;
+}
+const OLD = [{ id: "bf98b7c9", state: "done" }, { id: "b15b7e32", state: "done" }];
+
+test("a Continue run that ended without a new report shows the wait again", () => {
+  assert.equal(answerStands(continued(), PERMISSION_REPORT, [...OLD, { id: "fad648e8", state: "stopped" }]), false);
+  assert.equal(answerStands(continued(), PERMISSION_REPORT, [...OLD, { id: "fad648e8", state: "done" }]), false);
+});
+
+test("the run of the Continue that still runs keeps the wait hidden", () => {
+  assert.equal(answerStands(continued(), PERMISSION_REPORT, [...OLD, { id: "fad648e8", state: "working" }]), true);
+  assert.equal(answerStands(continued(), PERMISSION_REPORT, [...OLD, { id: "fad648e8", state: "blocked" }]), true);
+});
+
+test("before the run of the Continue shows, the wait stays hidden", () => {
+  assert.equal(answerStands(continued(), PERMISSION_REPORT, OLD), true);
+});
+
+test("a rewritten report does not match the answered record: only the new report shows", () => {
+  assert.equal(answerStands(continued(), PERMISSION_REPORT + 1, OLD), false);
+  assert.equal(answerStands(continued(), PERMISSION_REPORT + 1, [...OLD, { id: "fad648e8", state: "working" }]), false);
+  assert.equal(answerStands(undefined, PERMISSION_REPORT, OLD), false);
+});
+
+test("a record of an older version without workers stands as before (decision 1)", () => {
+  assert.equal(answerStands(continued(null), PERMISSION_REPORT, [...OLD, { id: "fad648e8", state: "stopped" }]), true);
+});
+
+test("the questions of an answer that no longer stands show with buttons again", () => {
+  const record: AnsweredReport = { ...answered(), workers: ["a1"] };
+  assert.equal(answerStands(record, FIRST_REPORT, [{ id: "a1", state: "done" }, { id: "a2", state: "done" }]), false);
+  assert.equal(repeatedQuestions(record, FIRST_REPORT, GATE), null);
+});
+
+test("the stored record keeps its workers and drops a broken list", () => {
+  const records = new Map([["a-worker-that-waits-at-a-permission", continued()]]);
+  assert.deepEqual(parseAnswered(serializeAnswered(records)).get("a-worker-that-waits-at-a-permission")?.workers, BEFORE);
+  const broken = JSON.stringify({ t: { modified: 1, questions: [], reply: "Continue", workers: ["a", 2] } });
+  assert.equal(parseAnswered(broken).get("t")?.workers, undefined);
+  assert.equal("workers" in (parseAnswered(broken).get("t") ?? {}), false);
+});
+
+test("reportWaits and the Report row use the answered rule with the workers of the task", () => {
+  assert.ok(mainFunction("reportWaits").includes("answerStands(answeredReports.get(task.name), info.report.modified, task.workers)"));
+  assert.ok(MAIN.includes("const answered = answerStands(answeredReports.get(task.name), info.report.modified, task.workers);"));
+  assert.ok(mainFunction("replyOrQueue").includes("markAnswered(task.name, { ...record, workers });"));
+  assert.ok(mainFunction("sendQueuedReply").includes("markAnswered(task.name, { ...reply.record, workers });"));
 });
