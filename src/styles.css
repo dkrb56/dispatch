@@ -10650,6 +10650,8 @@ svg.links {
   position: absolute;
   top: 0;
   left: 0;
+  /* main.ts scales the canvas by the zoom of the wheel (ticket plan-mode-updates). */
+  transform-origin: 0 0;
 }
 
 /* Under the root card, centred on it; main.ts sets its place. */
@@ -10948,7 +10950,13 @@ svg.links {
   flex-direction: column;
   box-sizing: border-box;
   width: 360px;
+  min-width: 240px;
+  min-height: 34px;
+  max-width: 100%;
   max-height: calc(100% - 32px);
+  overflow: hidden;
+  /* The corner resizes the window; main.ts keeps the size (ticket plan-mode-updates). */
+  resize: both;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
@@ -11003,6 +11011,7 @@ svg.links {
 }
 
 .plan-window-body {
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
   padding: 8px;
@@ -11010,6 +11019,26 @@ svg.links {
 
 .plan-window.min .plan-window-body {
   display: none;
+}
+
+.plan-window.min {
+  resize: none;
+}
+
+/* The list window of a count badge: the Plan cards of the counted tickets in a grid that scrolls. */
+.plan-list-window {
+  width: 444px;
+}
+
+.plan-list-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 200px);
+  gap: 8px;
+  align-content: start;
+}
+
+.plan-list-window .plan-card {
+  position: static;
 }
 
 .plan-window .ticket-card {

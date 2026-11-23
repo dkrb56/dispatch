@@ -35,6 +35,7 @@ import {
   arrowDiff,
   boxHits,
   clampOffset,
+  clampZoom,
   collapsedTree,
   comesAfter,
   comesBefore,
@@ -84,12 +85,14 @@ import {
   withArrow,
   withoutArrow,
   withTicketAfter,
+  zoomAround,
   type PlanArrow,
   type PlanDraft,
   type PlanGroup,
   type PlanOffset,
   type PlanPlace,
   type PlanTicket,
+  type TopicBlock,
 } from "./plantree";
 import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, inWork, listedTasks, type LostWorker, movedPlaces, newestWorker, type OverviewPlaces, type OverviewRect, type OverviewTask, PLAN_ERROR_TEXT, planLost as planLostRule, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode, WORK_ERROR_TEXT, WORK_LOST_TEXT, workLost } from "./overview";
 import {
@@ -16027,17 +16030,47 @@ const planGroupsSavedAt = new Map<string, number>();
 let planBoxDragging = false;
 /**
  * The open ticket window of the Plan view (ticket a-plan-view-ticket-opens-in-a-window): the project
- * key, the ticket id, folded or not, and its place on the board (null: the top right corner). A
- * render rebuilds the canvas, so the window lives here and each render puts it back.
+ * key, the ticket id, and folded or not. A render rebuilds the canvas, so the window lives here and
+ * each render puts it back.
  */
-let planWindow: { key: string; ticket: string; min: boolean; at: { x: number; y: number } | null } | null = null;
+let planWindow: { key: string; ticket: string; min: boolean } | null = null;
 /** The window with the Tickets board card of the ticket, and the line from its Plan card to the window; made once. */
 const planWindowEl = mapElement("section", "plan-window");
 const planWireEl = planSvg("svg", { class: "plan-wire", "aria-hidden": "true" });
+/**
+ * The list window of a count badge of a topic group (ticket plan-mode-updates, user decision 4): the
+ * project key, the group id, and folded or not; it shows the cards of the tickets that the badge counts.
+ */
+let planList: { key: string; group: string; min: boolean } | null = null;
+const planListEl = mapElement("section", "plan-window plan-list-window");
+/** The place and size of a window on the board; no width or height: the size of the CSS. */
+interface PlanSpot {
+  x: number;
+  y: number;
+  width?: number;
+  height?: number;
+}
+/**
+ * A window of the Plan view and its remembered place and size (ticket plan-mode-updates, user
+ * decisions 2 and 3): a close keeps them, localStorage keeps them over a restart. Null: the default place.
+ */
+interface PlanFrame {
+  el: HTMLElement;
+  storage: string;
+  spot: PlanSpot | null;
+}
+const planWindowFrame: PlanFrame = { el: planWindowEl, storage: "plan-window-spot", spot: planLoadSpot("plan-window-spot") };
+const planListFrame: PlanFrame = { el: planListEl, storage: "plan-list-spot", spot: planLoadSpot("plan-list-spot") };
 /** The places of the cards of the last render, on the canvas; the selection box hits them. */
 let planPlaces: PlanPlace[] = [];
 /** The place of the canvas on the board of each project, by project key: a drag moves it, a render keeps it (ticket plan-mode-is-unusable-on-wide-screen). */
 const planOffsets = new Map<string, PlanOffset>();
+/** The zoom of the canvas of each project, by project key; the wheel changes it, Centre the tree takes it away (ticket plan-mode-updates). */
+const planZooms = new Map<string, number>();
+/** The zoom of the canvas of a project: 1 when the wheel never changed it. */
+function planZoom(key: string): number {
+  return planZooms.get(key) ?? 1;
+}
 /** The size of the canvas of the last render: a pan keeps part of it inside the board. */
 let planCanvasSize = { width: 0, height: 0 };
 /** The next render gives the keyboard to the title box of the selected group (user decision 2). */
@@ -16117,8 +16150,8 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
   planEl.append(planToolbarEl, planFlowBarEl, body);
   // The keys work only while the board has the focus; there is no key handler on the page.
   planBoardEl.tabIndex = 0;
-  /** The target is inside the ticket window: the board keys, pan, wheel and menu leave it alone. */
-  const inWindow = (target: EventTarget | null) => target instanceof Node && planWindowEl.contains(target);
+  /** The target is inside the ticket window or the list window: the board keys, pan, wheel and menu leave it alone. */
+  const inWindow = (target: EventTarget | null) => target instanceof Node && (planWindowEl.contains(target) || planListEl.contains(target));
   planBoardEl.addEventListener("keydown", (event) => {
     const target = event.target;
     if (inWindow(target)) return;
@@ -16154,9 +16187,12 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
   let boxEl: HTMLElement | null = null;
   let panned = false;
   const canvasOf = () => planBoardEl.querySelector<HTMLElement>(".plan-canvas");
+  // A point in canvas px: the canvas is scaled by the zoom of the project.
   const at = (event: PointerEvent) => {
     const rect = canvasOf()?.getBoundingClientRect();
-    return { x: event.clientX - (rect?.left ?? 0), y: event.clientY - (rect?.top ?? 0) };
+    const ref = planProject();
+    const zoom = ref ? planZoom(refKey(ref)) : 1;
+    return { x: (event.clientX - (rect?.left ?? 0)) / zoom, y: (event.clientY - (rect?.top ?? 0)) / zoom };
   };
   /** The target is the empty board: the board, the canvas, the shelf heading, the note or the inside of a comment box. */
   const emptyAt = (target: EventTarget | null) => target === planBoardEl || (target instanceof HTMLElement && target.matches(".plan-canvas, .plan-shelf-title, .plan-empty, .plan-group-box"));
@@ -16247,7 +16283,8 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
   };
   planBoardEl.addEventListener("pointerup", (event) => finish(event, false));
   planBoardEl.addEventListener("pointercancel", (event) => finish(event, true));
-  // The wheel moves the board up and down, with Shift left and right; the board does not scroll.
+  // The wheel zooms the board in and out around the pointer (ticket plan-mode-updates, user decision
+  // 1); a drag moves it. The board does not scroll.
   planBoardEl.addEventListener(
     "wheel",
     (event) => {
@@ -16257,12 +16294,17 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
       if (event.ctrlKey || !canvas || !ref) return;
       event.preventDefault();
       const unit = event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? planBoardEl.clientHeight : 1;
-      const sideways = event.shiftKey && event.deltaX === 0;
-      const dx = (sideways ? event.deltaY : event.deltaX) * unit;
-      const dy = (sideways ? 0 : event.deltaY) * unit;
+      const delta = (event.deltaY || (event.shiftKey ? event.deltaX : 0)) * unit;
+      if (delta === 0) return;
       const key = refKey(ref);
-      const from = offsetOf(key, canvas);
-      planPlaceCanvas(key, { x: from.x - dx, y: from.y - dy });
+      const from = planZoom(key);
+      // A notch of a mouse wheel (100 px) zooms by 10 %.
+      const to = clampZoom(from * Math.pow(1.1, -delta / 100));
+      if (to === from) return;
+      const board = planBoardEl.getBoundingClientRect();
+      const point = { x: event.clientX - board.left - planBoardEl.clientLeft, y: event.clientY - board.top - planBoardEl.clientTop };
+      planZooms.set(key, to);
+      planPlaceCanvas(key, zoomAround(offsetOf(key, canvas), point, from, to));
     },
     { passive: false },
   );
@@ -16313,40 +16355,161 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
  */
 function planPlaceCanvas(key: string, offset: PlanOffset, canvas = planBoardEl.querySelector<HTMLElement>(".plan-canvas")): void {
   const board = { width: planBoardEl.clientWidth, height: planBoardEl.clientHeight };
-  const kept = board.width > 0 ? clampOffset(offset, board, planCanvasSize) : offset;
+  const zoom = planZoom(key);
+  const scaled = { width: planCanvasSize.width * zoom, height: planCanvasSize.height * zoom };
+  const kept = board.width > 0 ? clampOffset(offset, board, scaled) : offset;
   if (board.width > 0) planOffsets.set(key, kept);
   if (canvas) {
     canvas.style.left = `${kept.x}px`;
     canvas.style.top = `${kept.y}px`;
+    canvas.style.transform = `scale(${zoom})`;
   }
-  // The dots: a dot stands at each corner of the 50 px grid of the canvas.
-  planBoardEl.style.backgroundPosition = `${kept.x - PLAN_GRID / 2}px ${kept.y - PLAN_GRID / 2}px`;
+  // The dots: a dot stands at each corner of the 50 px grid of the canvas, scaled with it.
+  const grid = PLAN_GRID * zoom;
+  planBoardEl.style.backgroundSize = `${grid}px ${grid}px`;
+  planBoardEl.style.backgroundPosition = `${kept.x - grid / 2}px ${kept.y - grid / 2}px`;
   // The line of the ticket window follows its card.
   planDrawWire();
 }
 
-/** Opens the ticket window on a ticket of a project; a window that stood somewhere keeps its place. */
+/** Opens the ticket window on a ticket of a project, at the place and size it had last (ticket plan-mode-updates). */
 function planOpenWindow(key: string, ticketId: string): void {
-  planWindow = { key, ticket: ticketId, min: false, at: planWindow?.at ?? null };
+  planWindow = { key, ticket: ticketId, min: false };
   renderPlanWindow();
 }
 
-/** Closes the ticket window and its line. */
+/** Closes the ticket window and its line; its place and size stay for the next open. */
 function planCloseWindow(): void {
   planWindow = null;
   planWindowEl.remove();
   planWireEl.remove();
 }
 
-/** Keeps a place of the window inside the board; a hidden board keeps it as it is. */
-function planWindowPlace(at: { x: number; y: number }): { x: number; y: number } {
+/** Closes the list window of a count badge; its place and size stay for the next open. */
+function planCloseList(): void {
+  planList = null;
+  planListEl.remove();
+}
+
+/** The remembered place and size of a window, from localStorage; null when none or not readable. */
+function planLoadSpot(storage: string): PlanSpot | null {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(storage) ?? "null");
+    if (!value || typeof value !== "object") return null;
+    const { x, y, width, height } = value as Record<string, unknown>;
+    if (typeof x !== "number" || typeof y !== "number" || !Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const spot: PlanSpot = { x, y };
+    if (typeof width === "number" && width > 0) spot.width = width;
+    if (typeof height === "number" && height > 0) spot.height = height;
+    return spot;
+  } catch {
+    return null;
+  }
+}
+
+/** Writes the place and size of a window to localStorage, so a restart keeps them (user decision 2). */
+function planSaveSpot(frame: PlanFrame): void {
+  try {
+    if (frame.spot) localStorage.setItem(frame.storage, JSON.stringify(frame.spot));
+  } catch {
+    // The place then applies until the app closes.
+  }
+}
+
+/** Keeps a place of a window inside the board; a hidden board keeps it as it is. */
+function planWindowPlace(el: HTMLElement, at: { x: number; y: number }): { x: number; y: number } {
   const width = planBoardEl.clientWidth;
   const height = planBoardEl.clientHeight;
   if (width <= 0) return at;
   return {
-    x: Math.max(0, Math.min(at.x, width - planWindowEl.offsetWidth)),
-    y: Math.max(0, Math.min(at.y, height - planWindowEl.offsetHeight)),
+    x: Math.max(0, Math.min(at.x, width - el.offsetWidth)),
+    y: Math.max(0, Math.min(at.y, height - el.offsetHeight)),
   };
+}
+
+/** The write of a resize waits until the corner stops: one write per resize, not one per frame. */
+const planSpotSaves = new Map<PlanFrame, number>();
+
+/**
+ * A resize by the corner of a window (user decision 3) keeps the new size in its spot. Only a size of
+ * the inline style counts: the corner sets it, the content does not. A folded window keeps the size it had.
+ */
+const planFrameSizer = new ResizeObserver((entries) => {
+  for (const entry of entries) {
+    const frame = [planWindowFrame, planListFrame].find((one) => one.el === entry.target);
+    if (!frame || !frame.el.isConnected || frame.el.classList.contains("min")) continue;
+    const width = parseFloat(frame.el.style.width);
+    const height = parseFloat(frame.el.style.height);
+    if (!(width > 0) && !(height > 0)) continue;
+    const spot: PlanSpot = frame.spot ? { ...frame.spot } : { x: frame.el.offsetLeft, y: frame.el.offsetTop };
+    if (width > 0) spot.width = Math.round(width);
+    if (height > 0) spot.height = Math.round(height);
+    if (frame.spot && spot.width === frame.spot.width && spot.height === frame.spot.height) continue;
+    frame.spot = spot;
+    window.clearTimeout(planSpotSaves.get(frame));
+    planSpotSaves.set(frame, window.setTimeout(() => planSaveSpot(frame), 300));
+  }
+});
+planFrameSizer.observe(planWindowEl);
+planFrameSizer.observe(planListEl);
+
+/** The title bar of a window of the Plan view: its name and the – and × buttons; a drag of the bar moves the window. */
+function planFrameHead(frame: PlanFrame, name: string, min: boolean, fold: () => void, close: () => void): HTMLElement {
+  const head = mapElement("header", "plan-window-head");
+  const foldButton = mapElement("button", "plan-window-button", min ? "▢" : "–");
+  foldButton.type = "button";
+  foldButton.title = min ? "Unfold the window" : "Fold the window to its title bar";
+  foldButton.setAttribute("aria-label", foldButton.title);
+  foldButton.addEventListener("click", fold);
+  const closeButton = mapElement("button", "plan-window-button", "×");
+  closeButton.type = "button";
+  closeButton.title = "Close the window";
+  closeButton.setAttribute("aria-label", closeButton.title);
+  closeButton.addEventListener("click", close);
+  head.append(mapElement("span", "plan-window-name", name), foldButton, closeButton);
+  // A drag of the title bar moves the window; the place stays over a close and a restart.
+  head.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button"))) return;
+    event.preventDefault();
+    const el = frame.el;
+    const from = { x: el.offsetLeft, y: el.offsetTop, clientX: event.clientX, clientY: event.clientY };
+    head.setPointerCapture(event.pointerId);
+    const move = (moved: PointerEvent) => {
+      const at = planWindowPlace(el, { x: from.x + moved.clientX - from.clientX, y: from.y + moved.clientY - from.clientY });
+      frame.spot = { ...frame.spot, ...at };
+      el.style.left = `${at.x}px`;
+      el.style.top = `${at.y}px`;
+      planDrawWire();
+    };
+    const end = () => {
+      head.removeEventListener("pointermove", move);
+      head.removeEventListener("pointerup", end);
+      head.removeEventListener("pointercancel", end);
+      planSaveSpot(frame);
+    };
+    head.addEventListener("pointermove", move);
+    head.addEventListener("pointerup", end);
+    head.addEventListener("pointercancel", end);
+  });
+  return head;
+}
+
+/**
+ * Puts a window on the board at its remembered place and size; without them at `fallback` (a
+ * negative x: that far from the right border). A folded window keeps its width and drops its height.
+ */
+function planFramePlace(frame: PlanFrame, min: boolean, fallback: { x: number; y: number }): void {
+  const el = frame.el;
+  el.classList.toggle("min", min);
+  const spot = frame.spot;
+  el.style.width = spot?.width ? `${spot.width}px` : "";
+  el.style.height = spot?.height && !min ? `${spot.height}px` : "";
+  const width = planBoardEl.clientWidth;
+  if (width <= 0) return;
+  const at = spot ?? { x: fallback.x < 0 ? width - el.offsetWidth + fallback.x : fallback.x, y: fallback.y };
+  const kept = planWindowPlace(el, at);
+  el.style.left = `${kept.x}px`;
+  el.style.top = `${kept.y}px`;
 }
 
 /**
@@ -16372,61 +16535,67 @@ function renderPlanWindow(): void {
   }
   const open = planWindow;
   const scroll = planWindowEl.querySelector(".plan-window-body")?.scrollTop ?? 0;
-  const head = mapElement("header", "plan-window-head");
-  const fold = mapElement("button", "plan-window-button", open.min ? "▢" : "–");
-  fold.type = "button";
-  fold.title = open.min ? "Unfold the window" : "Fold the window to its title bar";
-  fold.setAttribute("aria-label", fold.title);
-  fold.addEventListener("click", () => {
-    open.min = !open.min;
-    renderPlanWindow();
-  });
-  const close = mapElement("button", "plan-window-button", "×");
-  close.type = "button";
-  close.title = "Close the window";
-  close.setAttribute("aria-label", close.title);
-  close.addEventListener("click", () => planCloseWindow());
-  head.append(mapElement("span", "plan-window-name", ticket.id), fold, close);
-  // A drag of the title bar moves the window; the place stays until the next drag.
-  head.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0 || (event.target instanceof Element && event.target.closest("button"))) return;
-    event.preventDefault();
-    const from = { x: planWindowEl.offsetLeft, y: planWindowEl.offsetTop, clientX: event.clientX, clientY: event.clientY };
-    head.setPointerCapture(event.pointerId);
-    const move = (moved: PointerEvent) => {
-      const at = planWindowPlace({ x: from.x + moved.clientX - from.clientX, y: from.y + moved.clientY - from.clientY });
-      open.at = at;
-      planWindowEl.style.left = `${at.x}px`;
-      planWindowEl.style.top = `${at.y}px`;
-      planDrawWire();
-    };
-    const end = () => {
-      head.removeEventListener("pointermove", move);
-      head.removeEventListener("pointerup", end);
-      head.removeEventListener("pointercancel", end);
-    };
-    head.addEventListener("pointermove", move);
-    head.addEventListener("pointerup", end);
-    head.addEventListener("pointercancel", end);
-  });
+  const head = planFrameHead(
+    planWindowFrame,
+    ticket.id,
+    open.min,
+    () => {
+      open.min = !open.min;
+      renderPlanWindow();
+    },
+    () => planCloseWindow(),
+  );
   const body = mapElement("div", "plan-window-body");
   body.append(ticketCard(planWindow.key, ticket, queueOrder(record.tickets).map((one) => one.id), record, true));
   planWindowEl.replaceChildren(head, body);
-  planWindowEl.classList.toggle("min", open.min);
   planWindowEl.setAttribute("aria-label", `Ticket ${ticket.id}`);
   // The line stands above the canvas and under the window.
   if (!planWireEl.isConnected || planWireEl.parentElement !== planBoardEl) planBoardEl.append(planWireEl);
   if (!planWindowEl.isConnected || planWindowEl.parentElement !== planBoardEl) planBoardEl.append(planWindowEl);
   body.scrollTop = scroll;
-  const width = planBoardEl.clientWidth;
-  if (!open.at && width > 0) open.at = { x: width - planWindowEl.offsetWidth - 16, y: 16 };
-  if (open.at) {
-    open.at = planWindowPlace(open.at);
-    planWindowEl.style.left = `${open.at.x}px`;
-    planWindowEl.style.top = `${open.at.y}px`;
-  }
+  // Without a remembered place: the top right corner.
+  planFramePlace(planWindowFrame, open.min, { x: -16, y: 16 });
   focusTicketBox(planWindowEl);
   planDrawWire();
+}
+
+/**
+ * Draws the list window of a count badge again (ticket plan-mode-updates, user decision 4): a card per
+ * ticket that the badge counts, in a body that scrolls. `card` makes the Plan card of a ticket; a click
+ * on it opens the ticket window. A list without its project, its group or a counted ticket closes.
+ */
+function renderPlanList(key: string, groups: readonly PlanGroup[], blocks: readonly TopicBlock[], byId: ReadonlyMap<string, Ticket>, card: (ticket: Ticket) => HTMLElement): void {
+  if (!planList) {
+    planListEl.remove();
+    return;
+  }
+  const open = planList;
+  const group = groups.find((one) => one.id === open.group);
+  const block = blocks.find((one) => one.id === open.group);
+  const tickets = block ? block.members.filter((id) => !block.shown.includes(id)).flatMap((id) => byId.get(id) ?? []) : [];
+  if (open.key !== key || !group || !block || tickets.length === 0) {
+    planCloseList();
+    return;
+  }
+  const scroll = planListEl.querySelector(".plan-window-body")?.scrollTop ?? 0;
+  const head = planFrameHead(
+    planListFrame,
+    `${group.title || "Untitled"} · ${topicFoldText(block.fold)}`,
+    open.min,
+    () => {
+      open.min = !open.min;
+      renderPlan();
+    },
+    () => planCloseList(),
+  );
+  const body = mapElement("div", "plan-window-body plan-list-body");
+  body.append(...tickets.map(card));
+  planListEl.replaceChildren(head, body);
+  planListEl.setAttribute("aria-label", `Tickets of ${group.title || "the group"}`);
+  if (!planListEl.isConnected || planListEl.parentElement !== planBoardEl) planBoardEl.append(planListEl);
+  body.scrollTop = scroll;
+  // Without a remembered place: the top left corner, away from the ticket window.
+  planFramePlace(planListFrame, open.min, { x: 16, y: 16 });
 }
 
 /** The line from the Plan card of the window's ticket to the nearest border of the window; no card on the canvas gives no line. */
@@ -16446,11 +16615,12 @@ function planDrawWire(): void {
   planWireEl.append(planSvg("line", join));
 }
 
-/** Centre the tree: the next render puts the root card in the middle of the board again. */
+/** Centre the tree: the next render puts the root card in the middle of the board again, at zoom 1. */
 function planCentreTree(): void {
   const ref = planProject();
   if (!ref) return;
   planOffsets.delete(refKey(ref));
+  planZooms.delete(refKey(ref));
   renderPlan();
 }
 
@@ -17417,14 +17587,17 @@ function renderPlan(): void {
     if (draft) el.append(plusButton(ticket.id));
     canvas.append(el);
   }
-  // A card of the shelf or of a topic block: a ticket that is not in the tree.
-  const looseCard = (ticket: Ticket, card: { x: number; y: number }): HTMLElement => {
+  // A card of the shelf or of a topic block: a ticket that is not in the tree. No place (null): a card
+  // of the list window of a count badge, which only opens the ticket window (ticket plan-mode-updates).
+  const looseCard = (ticket: Ticket, card: { x: number; y: number } | null): HTMLElement => {
     const state = planCardState(ticket, queueIds, record);
-    const el = mapElement("div", `plan-card plan-ticket ${ticket.status}${planSelected.has(ticket.id) ? " selected" : ""}`);
+    const el = mapElement("div", `plan-card plan-ticket ${ticket.status}${card && planSelected.has(ticket.id) ? " selected" : ""}`);
     el.dataset.ticket = ticket.id;
-    el.style.left = `${card.x}px`;
-    el.style.top = `${card.y}px`;
-    el.title = draft && !picking ? `${ticket.title}\nClick to place it: then click the ticket that it comes after` : ticket.title;
+    if (card) {
+      el.style.left = `${card.x}px`;
+      el.style.top = `${card.y}px`;
+    }
+    el.title = card && draft && !picking ? `${ticket.title}\nClick to place it: then click the ticket that it comes after` : ticket.title;
     const top = mapElement("div", "plan-card-top");
     const dot = mapElement("span", `plan-dot ${state.dot}`);
     dot.setAttribute("aria-hidden", "true");
@@ -17441,7 +17614,8 @@ function renderPlan(): void {
     el.append(top, mapElement("div", "plan-card-title", ticket.title), line);
     // While an arrow is drawn or a ticket placed, a click picks it; while planning it places it; else it selects.
     el.addEventListener("click", (event) => {
-      if (picking) planPickCard(ticket.id);
+      if (!card) planOpenWindow(key, ticket.id);
+      else if (picking) planPickCard(ticket.id);
       else if (draft) planPlace(ticket.id);
       else {
         const extend = event.shiftKey || event.ctrlKey || event.metaKey;
@@ -17510,12 +17684,15 @@ function renderPlan(): void {
     if (place.badge && foldText) {
       const badge = mapElement("button", `plan-fold plan-color-${group.color}`, foldText);
       badge.type = "button";
-      badge.title = `${foldText}\nShow all tickets of this group in the side panel`;
+      badge.title = `${foldText}\nShow these tickets in a window, and the group in the side panel`;
       badge.dataset.group = group.id;
       badge.style.left = `${place.badge.x + blockShift}px`;
       badge.style.maxWidth = `${place.box.width - 2 * PLAN_BOX_PAD}px`;
       badge.style.top = `${place.badge.y}px`;
-      badge.addEventListener("click", () => planSelect([], null, group.id));
+      badge.addEventListener("click", () => {
+        planList = { key, group: group.id, min: false };
+        planSelect([], null, group.id);
+      });
       canvas.append(badge);
     }
   }
@@ -17541,7 +17718,9 @@ function renderPlan(): void {
     canvas.append(note);
   }
   planBoardEl.replaceChildren(canvas);
-  // The replace took the ticket window and its line out of the board; this puts them back.
+  // The replace took the list window, the ticket window and its line out of the board; this puts them
+  // back, the ticket window on top.
+  renderPlanList(key, groups, topics, byId, (ticket) => looseCard(ticket, null));
   renderPlanWindow();
   if (planFocusEdit) {
     planFocusEdit = false;

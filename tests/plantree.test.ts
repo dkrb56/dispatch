@@ -9,6 +9,7 @@ import {
   arrowRefusal,
   boxHits,
   clampOffset,
+  clampZoom,
   collapsedTree,
   comesAfter,
   comesBefore,
@@ -62,6 +63,9 @@ import {
   withoutArrow,
   withTicketAfter,
   withTicketInGroup,
+  zoomAround,
+  PLAN_ZOOM_MAX,
+  PLAN_ZOOM_MIN,
   type PlanGroup,
   type PlanTicket,
 } from "../src/plantree.ts";
@@ -218,6 +222,20 @@ test("the page has the Plan button, its canvas and its Help, and main.ts draws i
   assert.match(css, /\.plan-wire \{[^}]*pointer-events: none/);
   assert.match(main, /function renderPlanWindow\(\): void/);
   assert.match(html, /joined to the card by a line/);
+  // Ticket plan-mode-updates: the zoom, the place and size of the windows, the list window and their Help.
+  assert.match(css, /\.plan-canvas \{[^}]*transform-origin: 0 0/);
+  assert.match(main, /canvas\.style\.transform = `scale\(\$\{zoom\}\)`/);
+  assert.match(main, /planZooms\.delete\(refKey\(ref\)\)/, "Centre the tree sets the zoom back");
+  assert.match(main, /"plan-window-spot"/);
+  assert.match(main, /"plan-list-spot"/);
+  assert.doesNotMatch(main.slice(main.indexOf("function planCloseWindow("), main.indexOf("function planCloseWindow(") + 300), /spot = null/, "a close keeps the place");
+  assert.match(css, /\.plan-window \{[^}]*resize: both/);
+  assert.match(main, /"plan-window plan-list-window"/);
+  assert.match(css, /\.plan-list-window \.plan-card \{[^}]*position: static/);
+  assert.match(main, /planList = \{ key, group: group\.id, min: false \};/, "the badge opens the list window");
+  assert.match(html, /The mouse wheel zooms the board in and out/);
+  assert.match(html, /The window opens again at the same place and size, also after a restart/);
+  assert.match(html, /A click on the badge also opens a window with a card for each ticket that the badge counts/);
 });
 
 const g = (id: string, tickets: string[], collapsed = true, title = "Group"): PlanGroup => ({ id, title, color: 0, collapsed, tickets, auto: false, description: "" });
@@ -576,6 +594,26 @@ test("a pan keeps part of the canvas inside the board", () => {
   assert.deepEqual(clampOffset({ x: -5000, y: -5000 }, board, canvas), { x: PLAN_PAN_KEEP - canvas.width, y: PLAN_PAN_KEEP - canvas.height });
   // A canvas smaller than the keep stays whole inside the board.
   assert.deepEqual(clampOffset({ x: -50, y: 900 }, board, { width: 60, height: 40 }), { x: 0, y: 560 });
+});
+
+// Ticket plan-mode-updates: the wheel zooms the board around the pointer.
+test("the zoom stays between its limits", () => {
+  assert.equal(clampZoom(1), 1);
+  assert.equal(clampZoom(0.01), PLAN_ZOOM_MIN);
+  assert.equal(clampZoom(50), PLAN_ZOOM_MAX);
+  assert.equal(clampZoom(Number.NaN), 1);
+});
+
+test("a zoom keeps the canvas point under the pointer in place", () => {
+  const offset = { x: 40, y: -60 };
+  const point = { x: 300, y: 200 };
+  for (const [from, to] of [[1, 1.25], [1.25, 0.8], [0.5, 2]] as const) {
+    const next = zoomAround(offset, point, from, to);
+    const before = { x: (point.x - offset.x) / from, y: (point.y - offset.y) / from };
+    const after = { x: (point.x - next.x) / to, y: (point.y - next.y) / to };
+    assert.ok(Math.abs(before.x - after.x) < 1e-9 && Math.abs(before.y - after.y) < 1e-9, `${from} -> ${to}`);
+  }
+  assert.deepEqual(zoomAround(offset, point, 1, 1), offset, "no change: same offset");
 });
 
 // Ticket i-need-an-autogrouping-function-in-the: the topic groups of Auto group, their blocks under

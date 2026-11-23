@@ -256,6 +256,25 @@ export function clampOffset(offset: PlanOffset, board: PlanSize, canvas: PlanSiz
   return { x: axis(offset.x, board.width, canvas.width), y: axis(offset.y, board.height, canvas.height) };
 }
 
+/** The smallest and the largest zoom of the board (1 = the cards at their own size). */
+export const PLAN_ZOOM_MIN = 0.3;
+export const PLAN_ZOOM_MAX = 2;
+
+/** The zoom kept between `PLAN_ZOOM_MIN` and `PLAN_ZOOM_MAX`; 1 for a value that is not a number. */
+export function clampZoom(zoom: number): number {
+  if (!Number.isFinite(zoom)) return 1;
+  return Math.min(PLAN_ZOOM_MAX, Math.max(PLAN_ZOOM_MIN, zoom));
+}
+
+/**
+ * The new canvas offset after a zoom change from `from` to `to`, so that the canvas point under `point`
+ * (board px) stays under it.
+ */
+export function zoomAround(offset: PlanOffset, point: { x: number; y: number }, from: number, to: number): PlanOffset {
+  const ratio = to / from;
+  return { x: point.x - (point.x - offset.x) * ratio, y: point.y - (point.y - offset.y) * ratio };
+}
+
 /**
  * The badge of a card. `next`: Scheduled or Backlog, and every ticket before it is done. `early`: in work
  * (In progress) while a ticket before it is not done. `waits`: Scheduled or Backlog while a ticket before
