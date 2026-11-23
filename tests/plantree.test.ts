@@ -42,6 +42,8 @@ import {
   planArrows,
   planBadges,
   planBlocks,
+  placeTopicBlocks,
+  snapBlockPlace,
   planCentre,
   planJoin,
   planLayout,
@@ -267,6 +269,17 @@ test("the host reply of the groups is read safely", () => {
     { id: "auto-1", title: "Login", color: 0, collapsed: false, tickets: ["a"], auto: true, description: "What it does." },
     { id: "g", title: "", color: 0, collapsed: false, tickets: [], auto: false, description: "" },
   ]);
+  // Ticket drag-topic-groups-on-the-plan-board: a dragged place is read; a bad one gives no key.
+  const placed = parsePlanGroups({
+    groups: [
+      { id: "p", auto: true, place: { x: 250, y: 1200 } },
+      { id: "s", place: "here" },
+      { id: "n", place: { x: Number.NaN, y: 3 } },
+      { id: "m", place: { x: 4 } },
+    ],
+  });
+  assert.deepEqual(placed[0].place, { x: 250, y: 1200 });
+  for (const group of placed.slice(1)) assert.ok(!("place" in group), `${group.id} has no place key`);
 });
 
 test("a collapsed group stands for its tickets, takes their arrows and merges a pair", () => {
@@ -739,6 +752,82 @@ test("a line of blocks wider than the free space moves the tree and the blocks r
     lone.cards.map((card) => card.x),
   );
   assert.equal(result.layout.width, result.blocks[0].box.x + result.blocks[0].box.width + PLAN_PAD);
+});
+
+test("a dropped topic block snaps so that its cards stand on the grid, never left of or above 0", () => {
+  const cardsOf = (at: { x: number; y: number }) => ({ x: at.x + PLAN_BOX_PAD, y: at.y + PLAN_BOX_PAD + PLAN_BOX_TITLE + PLAN_ABOUT_HEIGHT });
+  for (const drop of [
+    { x: 333, y: 777 },
+    { x: 38, y: 16 },
+    { x: 1012.4, y: 2049.9 },
+  ]) {
+    const at = snapBlockPlace(drop);
+    const cards = cardsOf(at);
+    assert.equal(cards.x % PLAN_GRID, 0, `card x on the grid for ${JSON.stringify(drop)}`);
+    assert.equal(cards.y % PLAN_GRID, 0, `card y on the grid for ${JSON.stringify(drop)}`);
+    assert.ok(Math.abs(at.x - drop.x) <= PLAN_GRID / 2 && Math.abs(at.y - drop.y) <= PLAN_GRID / 2, "the nearest grid place");
+  }
+  const corner = snapBlockPlace({ x: -300, y: -200 });
+  assert.ok(corner.x >= 0 && corner.y >= 0, "never left of or above 0");
+  assert.equal(cardsOf(corner).x % PLAN_GRID, 0);
+  assert.equal(cardsOf(corner).y % PLAN_GRID, 0);
+});
+
+test("a dragged topic block stands at its saved place; the others keep their place and the shift", () => {
+  const layout = planLayout(TREE);
+  const result = planBlocks(
+    [
+      { id: "moved", shown: ["a", "b"], badge: true },
+      { id: "kept", shown: ["c"], badge: false },
+    ],
+    layout,
+    4,
+  );
+  const [moved, kept] = result.blocks;
+  const place = snapBlockPlace({ x: moved.box.x + 1000, y: moved.box.y + 600 });
+  const placed = placeTopicBlocks(result.blocks, new Map([["moved", place]]), 50, result.layout);
+  const [movedNow, keptNow] = placed.blocks;
+  assert.deepEqual({ x: movedNow.box.x, y: movedNow.box.y }, place, "the box at its place, without the shift");
+  const dx = place.x - moved.box.x;
+  const dy = place.y - moved.box.y;
+  assert.deepEqual({ width: movedNow.box.width, height: movedNow.box.height }, { width: moved.box.width, height: moved.box.height });
+  assert.deepEqual({ x: movedNow.about.x, y: movedNow.about.y }, { x: moved.about.x + dx, y: moved.about.y + dy }, "the description moves with it");
+  assert.deepEqual(
+    movedNow.cards.map((card) => [card.x, card.y]),
+    moved.cards.map((card) => [card.x + dx, card.y + dy]),
+    "the cards move with it",
+  );
+  assert.deepEqual(movedNow.badge, moved.badge && { x: moved.badge.x + dx, y: moved.badge.y + dy }, "the badge moves with it");
+  for (const card of movedNow.cards) assert.ok(card.x % PLAN_GRID === 0 && card.y % PLAN_GRID === 0, `${card.id} on the grid`);
+  assert.deepEqual({ x: keptNow.box.x, y: keptNow.box.y }, { x: kept.box.x + 50, y: kept.box.y }, "a block never dragged moves by the shift only");
+  assert.deepEqual(
+    keptNow.cards.map((card) => card.x),
+    kept.cards.map((card) => card.x + 50),
+  );
+  // The canvas grows to hold the dragged block.
+  assert.equal(placed.layout.width, Math.max(result.layout.width, movedNow.box.x + movedNow.box.width + PLAN_PAD));
+  assert.equal(placed.layout.height, movedNow.box.y + movedNow.box.height + PLAN_PAD);
+  assert.ok(placed.layout.height > result.layout.height);
+  // A block at the corner stays inside the canvas; no saved place: no change but the shift.
+  const corner = placeTopicBlocks(result.blocks, new Map([["kept", snapBlockPlace({ x: 0, y: 0 })]]), 0, result.layout);
+  assert.ok(corner.blocks[1].box.x >= 0 && corner.blocks[1].box.y >= 0);
+  assert.deepEqual(placeTopicBlocks(result.blocks, new Map(), 0, result.layout), { layout: result.layout, blocks: result.blocks });
+  assert.deepEqual(placeTopicBlocks([], new Map(), 50, layout), { layout, blocks: [] });
+});
+
+test("a topic group moves by a drag of its title bar, and the menu puts it back", () => {
+  const html = read("../index.html");
+  const main = read("../src/main.ts");
+  const css = read("../src/styles.css");
+  assert.match(main, /let planGroupDragging = false;/);
+  assert.match(main, /if \(!planOn \|\| planBoxDragging \|\| planGroupDragging\) return;/, "a render waits while a group is dragged");
+  assert.match(main, /placeTopicBlocks\(/);
+  assert.match(main, /snapBlockPlace\(/);
+  assert.match(main, /"Put back in its place"/);
+  assert.match(css, /\.plan-topic \.plan-group-title \{[^}]*cursor: grab;/);
+  assert.match(css, /cursor: grabbing;/);
+  assert.match(html, /A drag of its title bar moves a topic group/);
+  assert.match(html, /<b>Put back in its place<\/b>/);
 });
 
 test("the page has Auto group, its host command, its blocks and its Help", () => {

@@ -69,6 +69,8 @@ import {
   planArrows,
   planBadges,
   planBlocks,
+  placeTopicBlocks,
+  snapBlockPlace,
   planCentre,
   planJoin,
   planLayout,
@@ -16067,6 +16069,8 @@ const planGroupsBroken = new Set<string>();
 const planGroupsSavedAt = new Map<string, number>();
 /** A selection box is drawn: a render waits, so the box stays. */
 let planBoxDragging = false;
+/** A topic group is dragged by its title bar: a render waits, so the moved block stays (ticket drag-topic-groups-on-the-plan-board). */
+let planGroupDragging = false;
 /**
  * The open ticket window of the Plan view (ticket a-plan-view-ticket-opens-in-a-window): the project
  * key, the ticket id, and folded or not. A render rebuilds the canvas, so the window lives here and
@@ -16791,6 +16795,27 @@ function planGroupMenu(event: MouseEvent, ref: ProjectRef, group: PlanGroup): vo
     };
     menu.append(add("New ticket in this group (Scheduled)", "new"), add("New ticket in this group (Backlog)", "backlog"), own);
   }
+  // A dragged topic group goes back to its automatic place (ticket drag-topic-groups-on-the-plan-board, user decision 3).
+  if (group.auto && group.place) {
+    const back = mapElement("button", "", "Put back in its place");
+    back.type = "button";
+    back.title = "Forget the place where you dragged this topic group; Dispatch places it again";
+    back.setAttribute("role", "menuitem");
+    back.addEventListener("click", () => {
+      closeBoardMenu();
+      void planSetGroups(
+        ref,
+        planGroupsOf(ref).map((one) => {
+          if (one.id !== group.id) return one;
+          const { place: _place, ...rest } = one;
+          return rest;
+        }),
+      );
+    });
+    const backLine = mapElement("div", "plan-menu-line");
+    backLine.setAttribute("role", "separator");
+    menu.append(back, backLine);
+  }
   menu.append(...planBoardItems(ref));
   showMenu(menu, event, null);
 }
@@ -17258,7 +17283,7 @@ function planGroupName(group: PlanGroup): HTMLElement {
 /** Draws the toolbar, the tree and the side panel of the project of the view. */
 function renderPlan(): void {
   // A render would take away the selection box that the user draws.
-  if (!planOn || planBoxDragging) return;
+  if (!planOn || planBoxDragging || planGroupDragging) return;
   // A render would take away the title or description box that the user types in; the blur renders.
   const editing = document.activeElement;
   if ((editing instanceof HTMLInputElement || editing instanceof HTMLTextAreaElement) && planBoardEl.contains(editing)) return;
@@ -17340,9 +17365,12 @@ function renderPlan(): void {
     perRow,
   );
   const shelf = planShelf(looseIds, blockPlaces.layout, perRow);
-  const layout = shelf.layout;
-  // A wide shelf moves the tree right; the blocks move with it.
-  const blockShift = layout.root.x - blockPlaces.layout.root.x;
+  // A wide shelf moves the tree right; the blocks move with it. A block that the user dragged stands
+  // at its saved place, and the canvas grows to hold it (ticket drag-topic-groups-on-the-plan-board).
+  const blockShift = shelf.layout.root.x - blockPlaces.layout.root.x;
+  const savedPlaces = new Map(groups.flatMap((group) => (group.auto && group.place ? [[group.id, group.place] as const] : [])));
+  const topicPlaces = placeTopicBlocks(blockPlaces.blocks, savedPlaces, blockShift, shelf.layout);
+  const layout = topicPlaces.layout;
   planPlaces = layout.cards;
   const badges = planBadges(flow);
   const ticketArrows = planArrows(flow);
@@ -17399,7 +17427,7 @@ function renderPlan(): void {
   }
 
   // The selection keeps only what the tree still shows.
-  const shown = new Set([...layout.cards, ...shelf.cards, ...blockPlaces.blocks.flatMap((block) => block.cards)].map((card) => card.id));
+  const shown = new Set([...layout.cards, ...shelf.cards, ...topicPlaces.blocks.flatMap((block) => block.cards)].map((card) => card.id));
   planSelected = new Set([...planSelected].filter((id) => shown.has(id)));
   if (planSelectedGroup !== null && !groups.some((group) => group.id === planSelectedGroup)) planSelectedGroup = null;
   // A selected arrow is an arrow of the tickets whose line in the tree is not merged.
@@ -17668,13 +17696,13 @@ function renderPlan(): void {
   // cards of its Scheduled and Working tickets, and one count badge for the rest (user decision 2: a
   // click on the badge opens the group in the side panel).
   const topicOf = new Map(topics.map((block) => [block.id, block]));
-  for (const place of blockPlaces.blocks) {
+  for (const place of topicPlaces.blocks) {
     const group = groups.find((one) => one.id === place.id);
     const block = topicOf.get(place.id);
     if (!group || !block) continue;
     const el = mapElement("div", `plan-group-box plan-topic plan-color-${group.color}${planSelectedGroup === group.id ? " selected" : ""}`);
     el.dataset.group = group.id;
-    el.style.left = `${place.box.x + blockShift}px`;
+    el.style.left = `${place.box.x}px`;
     el.style.top = `${place.box.y}px`;
     el.style.width = `${place.box.width}px`;
     el.style.height = `${place.box.height}px`;
@@ -17710,14 +17738,19 @@ function renderPlan(): void {
     }
     about.classList.add("plan-block-about", `plan-color-${group.color}`);
     about.dataset.group = group.id;
-    about.style.left = `${place.about.x + blockShift}px`;
+    about.style.left = `${place.about.x}px`;
     about.style.top = `${place.about.y}px`;
     about.style.width = `${place.about.width}px`;
     about.style.height = `${place.about.height}px`;
     canvas.append(about);
+    // The parts of the block that a drag of its title bar moves.
+    const parts: HTMLElement[] = [el, about];
     for (const card of place.cards) {
       const ticket = byId.get(card.id);
-      if (ticket) canvas.append(looseCard(ticket, { x: card.x + blockShift, y: card.y }));
+      if (!ticket) continue;
+      const cardEl = looseCard(ticket, { x: card.x, y: card.y });
+      parts.push(cardEl);
+      canvas.append(cardEl);
     }
     const foldText = topicFoldText(block.fold);
     if (place.badge && foldText) {
@@ -17725,15 +17758,75 @@ function renderPlan(): void {
       badge.type = "button";
       badge.title = `${foldText}\nShow these tickets in a window, and the group in the side panel`;
       badge.dataset.group = group.id;
-      badge.style.left = `${place.badge.x + blockShift}px`;
+      badge.style.left = `${place.badge.x}px`;
       badge.style.maxWidth = `${place.box.width - 2 * PLAN_BOX_PAD}px`;
       badge.style.top = `${place.badge.y}px`;
       badge.addEventListener("click", () => {
         planList = { key, group: group.id, min: false };
         planSelect([], null, group.id);
       });
+      parts.push(badge);
       canvas.append(badge);
     }
+    // A drag of the title bar moves the block (ticket drag-topic-groups-on-the-plan-board); the drop
+    // snaps it to the grid (user decision 1) and saves its place. A click without a move still selects
+    // the group and edits its title. The window follows the pointer from the press: a fast first move
+    // leaves the thin bar at once, and a pointer capture would take the click from the title text.
+    let swallow = false;
+    bar.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      if (event.target instanceof Element && event.target.closest(".plan-group-toggle, input, textarea")) return;
+      const begin = { pointer: event.pointerId, x: event.clientX, y: event.clientY, zoom: planZoom(key) };
+      let moved = false;
+      const move = (next: PointerEvent) => {
+        if (next.pointerId !== begin.pointer) return;
+        const dx = next.clientX - begin.x;
+        const dy = next.clientY - begin.y;
+        if (!moved) {
+          if (Math.hypot(dx, dy) < 4) return;
+          moved = true;
+          planGroupDragging = true;
+          planBoardEl.classList.add("plan-group-dragging");
+        }
+        for (const part of parts) part.style.transform = `translate(${dx / begin.zoom}px, ${dy / begin.zoom}px)`;
+      };
+      const finish = (last: PointerEvent, cancel: boolean) => {
+        if (last.pointerId !== begin.pointer) return;
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", stop);
+        if (!moved) return;
+        planBoardEl.classList.remove("plan-group-dragging");
+        if (cancel) {
+          planGroupDragging = false;
+          renderPlan();
+          return;
+        }
+        const to = snapBlockPlace({ x: place.box.x + (last.clientX - begin.x) / begin.zoom, y: place.box.y + (last.clientY - begin.y) / begin.zoom });
+        // The click of this drop comes next: it is swallowed, then the save draws the block at its place.
+        swallow = true;
+        window.setTimeout(() => {
+          swallow = false;
+          planGroupDragging = false;
+          planChangeGroup(group.id, { place: to });
+        }, 0);
+      };
+      const up = (last: PointerEvent) => finish(last, false);
+      const stop = (last: PointerEvent) => finish(last, true);
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", stop);
+    });
+    bar.addEventListener(
+      "click",
+      (event) => {
+        if (!swallow) return;
+        swallow = false;
+        event.stopPropagation();
+        event.preventDefault();
+      },
+      true,
+    );
   }
   // Not in the flow (ticket plan-mode-is-unusable-on-wide-screen): a card per open ticket without an
   // arrow on the shelf. The selection box and the comment boxes take only the cards of the tree.

@@ -33,6 +33,18 @@ pub struct PlanGroup {
     pub auto: bool,
     /// What the group does and what it is for, at most two short paragraphs; empty for a manual one.
     pub description: String,
+    /// The top-left of a topic block that the user dragged on the Plan board, in canvas px
+    /// (ticket drag-topic-groups-on-the-plan-board). None keeps the automatic place.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub place: Option<PlanSpot>,
+}
+
+/// A place on the Plan board in canvas px.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PlanSpot {
+    pub x: f64,
+    pub y: f64,
 }
 
 /// The reply of both commands, and the shape of the file.
@@ -98,6 +110,7 @@ fn normalize(groups: Vec<PlanGroup>) -> Vec<PlanGroup> {
                 tickets,
                 auto: group.auto,
                 description: group.description.trim().to_string(),
+                place: group.place.map(|p| PlanSpot { x: if p.x.is_finite() { p.x.max(0.0) } else { 0.0 }, y: if p.y.is_finite() { p.y.max(0.0) } else { 0.0 } }),
             })
         })
         .collect()
@@ -263,6 +276,7 @@ fn merge(mut groups: Vec<PlanGroup>, proposals: Vec<Proposal>, stamp: &str) -> V
             tickets,
             auto: true,
             description: proposal.description,
+            place: None,
         });
         colour += 1;
     }
@@ -442,7 +456,7 @@ mod tests {
     fn a_second_run_keeps_titles_and_manual_groups() {
         let (project, base) = scratch("auto-again");
         let manual = PlanGroup { tickets: vec!["c".into()], ..group("g-1", &["c"]) };
-        let topic = PlanGroup { id: "auto-x-1".into(), title: "My login".into(), description: "Mine.".into(), auto: true, color: 2, collapsed: true, tickets: vec!["a".into()] };
+        let topic = PlanGroup { id: "auto-x-1".into(), title: "My login".into(), description: "Mine.".into(), auto: true, color: 2, collapsed: true, tickets: vec!["a".into()], place: Some(PlanSpot { x: 300.0, y: 450.0 }) };
         save(&project, vec![manual.clone(), topic.clone()]).unwrap();
         let asked = std::cell::RefCell::new(String::new());
         let answer = r#"[{"group":"auto-x-1","title":"Other title","description":"Other.","tickets":["b","a"]},{"group":"","title":"Looks","tickets":["c","d"]}]"#;
@@ -459,6 +473,7 @@ mod tests {
         assert_eq!(saved[1].title, "My login");
         assert_eq!(saved[1].description, "Mine.");
         assert!(saved[1].collapsed);
+        assert_eq!(saved[1].place, Some(PlanSpot { x: 300.0, y: 450.0 }), "the auto run keeps the dragged place");
         assert_eq!(saved[1].tickets, vec!["a".to_string(), "b".to_string()]);
         assert_eq!(saved[2].title, "Looks");
         assert_eq!(saved[2].tickets, vec!["c".to_string(), "d".to_string()], "a ticket of a manual group can join a topic group");
@@ -499,6 +514,26 @@ mod tests {
         let groups = load(&project).unwrap().groups;
         assert!(!groups[0].auto);
         assert_eq!(groups[0].description, "");
+        assert_eq!(groups[0].place, None);
+        save(&project, groups).unwrap();
+        let text = fs::read_to_string(project.reports.join(FILE)).unwrap();
+        assert!(!text.contains("\"place\""), "a group without a place writes no place: {text}");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_dragged_place_reads_back_the_same() {
+        let (project, base) = scratch("place");
+        let groups = vec![
+            PlanGroup { auto: true, place: Some(PlanSpot { x: 250.0, y: 1200.0 }), ..group("auto-x-1", &["a"]) },
+            PlanGroup { auto: true, place: Some(PlanSpot { x: -40.0, y: 100.0 }), ..group("auto-x-2", &["b"]) },
+        ];
+        let saved = save(&project, groups).unwrap().groups;
+        assert_eq!(saved[0].place, Some(PlanSpot { x: 250.0, y: 1200.0 }));
+        assert_eq!(saved[1].place, Some(PlanSpot { x: 0.0, y: 100.0 }), "a place left of the board is clamped to 0");
+        assert_eq!(load(&project).unwrap().groups, saved);
+        let text = fs::read_to_string(project.reports.join(FILE)).unwrap();
+        assert!(text.contains("\"place\""), "{text}");
         let _ = fs::remove_dir_all(base);
     }
 }

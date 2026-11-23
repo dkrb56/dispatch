@@ -11116,6 +11116,17 @@ svg.links {
   cursor: text;
 }
 
+/* A drag of the title bar of a topic group moves it (ticket drag-topic-groups-on-the-plan-board). */
+.plan-topic .plan-group-title {
+  cursor: grab;
+  user-select: none;
+}
+
+.plan-group-dragging,
+.plan-group-dragging * {
+  cursor: grabbing;
+}
+
 .plan-group-title .plan-group-name:hover {
   text-decoration: underline;
 }

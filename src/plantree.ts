@@ -335,6 +335,11 @@ export interface PlanGroup {
   auto: boolean;
   /** What a topic group does and what it is for; empty for a comment or a manual group. */
   description: string;
+  /**
+   * The top left of the box of a topic block that the user dragged, in canvas px (ticket
+   * drag-topic-groups-on-the-plan-board); no key: the automatic place.
+   */
+  place?: { x: number; y: number };
 }
 
 /** The node id of a collapsed group in the tree; the prefix keeps it apart from every ticket id. */
@@ -364,7 +369,7 @@ export function parsePlanGroups(value: unknown): PlanGroup[] {
     ids.add(id);
     const color = typeof raw.color === "number" && Number.isFinite(raw.color) ? Math.min(3, Math.max(0, Math.round(raw.color))) : 0;
     const tickets = Array.isArray(raw.tickets) ? [...new Set(raw.tickets.filter((one): one is string => typeof one === "string" && one !== ""))] : [];
-    groups.push({
+    const group: PlanGroup = {
       id,
       title: typeof raw.title === "string" ? raw.title : "",
       color,
@@ -372,7 +377,11 @@ export function parsePlanGroups(value: unknown): PlanGroup[] {
       tickets,
       auto: raw.auto === true,
       description: typeof raw.description === "string" ? raw.description : "",
-    });
+    };
+    // The key only for a place with two finite numbers, so a group without one has no key.
+    const place = raw.place && typeof raw.place === "object" ? (raw.place as Record<string, unknown>) : null;
+    if (place && typeof place.x === "number" && Number.isFinite(place.x) && typeof place.y === "number" && Number.isFinite(place.y)) group.place = { x: place.x, y: place.y };
+    groups.push(group);
   }
   return groups;
 }
@@ -723,6 +732,50 @@ export function planBlocks(blocks: readonly { id: string; shown: readonly string
     },
     blocks: moved,
   };
+}
+
+/**
+ * The top left of a dropped topic block box, moved so that its cards stand on the 50 px grid as in
+ * `planBlocks` (ticket drag-topic-groups-on-the-plan-board, user decision 1); never left of or above 0.
+ */
+export function snapBlockPlace(at: { x: number; y: number }): { x: number; y: number } {
+  const inX = PLAN_BOX_PAD;
+  const inY = PLAN_BOX_PAD + PLAN_BOX_TITLE + PLAN_ABOUT_HEIGHT;
+  let cardX = Math.round((at.x + inX) / PLAN_GRID) * PLAN_GRID;
+  let cardY = Math.round((at.y + inY) / PLAN_GRID) * PLAN_GRID;
+  while (cardX - inX < 0) cardX += PLAN_GRID;
+  while (cardY - inY < 0) cardY += PLAN_GRID;
+  return { x: cardX - inX, y: cardY - inY };
+}
+
+/**
+ * The topic blocks at their places on the canvas (ticket drag-topic-groups-on-the-plan-board). A
+ * block without a saved place moves right by `shift`, as the tree does under a wide shelf; a block
+ * with a saved place moves as a whole (box, description, cards and badge) so that its box starts
+ * at the place, without `shift`. The canvas grows to hold every block.
+ */
+export function placeTopicBlocks(
+  blocks: readonly PlanBlockPlace[],
+  saved: ReadonlyMap<string, { x: number; y: number }>,
+  shift: number,
+  layout: PlanLayout,
+): { layout: PlanLayout; blocks: PlanBlockPlace[] } {
+  const moved = blocks.map((block) => {
+    const place = saved.get(block.id);
+    const dx = place ? place.x - block.box.x : shift;
+    const dy = place ? place.y - block.box.y : 0;
+    return {
+      ...block,
+      box: { ...block.box, x: block.box.x + dx, y: block.box.y + dy },
+      about: { ...block.about, x: block.about.x + dx, y: block.about.y + dy },
+      cards: block.cards.map((card) => ({ ...card, x: card.x + dx, y: card.y + dy })),
+      badge: block.badge ? { x: block.badge.x + dx, y: block.badge.y + dy } : null,
+    };
+  });
+  if (moved.length === 0) return { layout, blocks: moved };
+  const right = Math.max(...moved.map((block) => block.box.x + block.box.width)) + PLAN_PAD;
+  const bottom = Math.max(...moved.map((block) => block.box.y + block.box.height)) + PLAN_PAD;
+  return { layout: { ...layout, width: Math.max(layout.width, right), height: Math.max(layout.height, bottom) }, blocks: moved };
 }
 
 /** The ids that a ticket comes after, by the arrows of the list. */
