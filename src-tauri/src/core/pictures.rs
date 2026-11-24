@@ -63,8 +63,8 @@ fn last_part(path: &str) -> &str {
 
 /// Finds the pictures that a report text names: tokens with a picture extension (no URL), a path
 /// with `…` or `...` as its bare name, and a bare name that a path with a folder also names left
-/// out. The folders for bare names are those of the found paths, the tokens that end in a slash,
-/// and the proof folder of the ticket. Pure text work: the task read runs it on each poll.
+/// out. The folders for bare names (and for paths with a slash below a named folder) are those of
+/// the found paths, the tokens that end in a slash, and the proof folder of the ticket. Pure text work: the task read runs it on each poll.
 pub(crate) fn report_pictures(text: &str, ticket: &str) -> ReportPictures {
     let mut names: Vec<String> = Vec::new();
     let mut folders: Vec<String> = Vec::new();
@@ -278,7 +278,25 @@ fn resolve(project: &Project, ticket: &str, text: &str, copies: &Path, data_dir:
     Ok(PicturesReply { found, missing })
 }
 
-/// Finds one name: a path in each place in order, a bare name in each folder of each place.
+/// The paths of a name with a slash below one folder: the plain join, then the join that drops the
+/// parts of the folder end that the name starts with (longest overlap first), each once.
+fn below_folder(folder: &str, name: &str) -> Vec<String> {
+    let mut out = vec![format!("{folder}/{name}")];
+    let folder_parts: Vec<&str> = folder.split('/').collect();
+    let name_parts: Vec<&str> = name.split('/').collect();
+    for overlap in (1..=folder_parts.len().min(name_parts.len() - 1)).rev() {
+        if folder_parts[folder_parts.len() - overlap..] == name_parts[..overlap] {
+            let rel = format!("{folder}/{}", name_parts[overlap..].join("/"));
+            if !out.contains(&rel) {
+                out.push(rel);
+            }
+        }
+    }
+    out
+}
+
+/// Finds one name: a path in each place in order, then below each folder; a bare name in each
+/// folder of each place.
 fn find(search: &mut Search, places: &[Place], project: &Project, data_dir: Option<&Path>, name: &str, folders: &[String]) -> Option<(String, FileEntry)> {
     let path = Path::new(name);
     if path.is_absolute() {
@@ -291,7 +309,20 @@ fn find(search: &mut Search, places: &[Place], project: &Project, data_dir: Opti
         return if inside_data { file_entry(path).map(|file| ("data folder".to_string(), file)) } else { None };
     }
     if name.contains('/') {
-        return places.iter().find_map(|place| search.at(place, name).map(|file| (label(place), file)));
+        if let Some(hit) = places.iter().find_map(|place| search.at(place, name).map(|file| (label(place), file))) {
+            return Some(hit);
+        }
+        // A path that the report gives relative to a folder that it named.
+        for place in places {
+            for folder in folders {
+                for rel in below_folder(folder, name) {
+                    if let Some(file) = search.at(place, &rel) {
+                        return Some((label(place), file));
+                    }
+                }
+            }
+        }
+        return None;
     }
     for place in places {
         for folder in folders {
@@ -413,6 +444,40 @@ mod tests {
             assert_eq!(path_of(&reply.found[at].file), copies.join(rel), "a copy outside the project folder");
             assert_eq!(fs::read_to_string(copies.join(rel)).unwrap(), bytes);
         }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn pictures_resolve_paths_below_named_folders() {
+        let root = scratch("below");
+        git(&root, &["init", "-q"]);
+        let config = root.join(".git").join("config");
+        let mut text = fs::read_to_string(&config).unwrap();
+        text.push_str("[user]\n\tname = Dispatch test\n\temail = test@example.invalid\n[commit]\n\tgpgsign = false\n[core]\n\texcludesFile = no-such-ignore-file\n");
+        fs::write(&config, text).unwrap();
+        fs::write(root.join("readme.txt"), "x").unwrap();
+        git(&root, &["add", "readme.txt"]);
+        git(&root, &["commit", "-q", "-m", "base"]);
+        git(&root, &["checkout", "-q", "-b", "task/t1"]);
+        fs::create_dir_all(root.join("logs/run/shots/before")).unwrap();
+        fs::create_dir_all(root.join("logs/run/other")).unwrap();
+        fs::write(root.join("logs/run/shots/before/a.png"), b"a bytes").unwrap();
+        fs::write(root.join("logs/run/other/b.png"), b"b bytes").unwrap();
+        git(&root, &["add", "logs/run/shots/before/a.png", "logs/run/other/b.png"]);
+        git(&root, &["commit", "-q", "-m", "shots"]);
+        git(&root, &["checkout", "-q", "-"]);
+        let project = Project::scratch(root.clone(), root.join(".dispatch"));
+        fs::create_dir_all(&project.reports).unwrap();
+        fs::write(project.branch_file("t1"), "branch: task/t1\nbase: master\n").unwrap();
+        let copies = root.join("copies");
+        fs::create_dir_all(&copies).unwrap();
+        let report = "Pictures are in logs/run/shots/ and logs/run/. Files: shots/before/a.png and other/b.png.";
+        let reply = resolve(&project, "t1", report, &copies, None).unwrap();
+        let got: Vec<(&str, &str)> = reply.found.iter().map(|found| (found.name.as_str(), found.from.as_str())).collect();
+        assert_eq!(got, vec![("shots/before/a.png", "branch task/t1"), ("other/b.png", "branch task/t1")]);
+        assert!(reply.missing.is_empty());
+        assert_eq!(path_of(&reply.found[0].file), copies.join("logs/run/shots/before/a.png"));
+        assert_eq!(path_of(&reply.found[1].file), copies.join("logs/run/other/b.png"));
         let _ = fs::remove_dir_all(&root);
     }
 
