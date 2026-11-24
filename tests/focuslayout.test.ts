@@ -267,3 +267,13 @@ test("a narrow column keeps room for its board: panel and terminal shrink first,
   const html = read("../index.html");
   assert.match(html, /When the projects do not fit side by side, the left panel and the terminal get narrower first, then the row scrolls sideways\./);
 });
+
+test("the page: the terminal panels of Focus mode have a frame", () => {
+  const css = read("../src/styles.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const sel of ["\\.focus-terminal \\.pane", "\\.focus-agents \\.pane", "\\.focus-commands \\.pane"]) {
+    const m = css.match(new RegExp("\\n" + sel + "\\s*\\{([^}]*)\\}"));
+    assert.ok(m, sel);
+    assert.match(m[1], /border:\s*1px solid var\(--line\)/);
+    assert.doesNotMatch(m[1], /border:\s*0[;\s]/);
+  }
+});
