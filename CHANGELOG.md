@@ -2,6 +2,11 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.92 (2026-11-24)
+- A – button in the head of each Overview card folds it to its head bar, + opens it again; the fold is kept per project (overview-folded).
+- A plan time that Dispatch writes at Approve counts as seen; no plan alert while the task starts.
+- The voice says the project before the ticket title; Options switch Project name (on by default); Listen follows it.
+
 ## 0.1.91 (2026-11-24)
 - The terminal panels of Focus mode get a 1px frame (var(--line)).
 - The end alert of a done work run follows the state line of its report (done, failed, waiting; needs-decision stays quiet); reportState in Worker, merge-wait event.
