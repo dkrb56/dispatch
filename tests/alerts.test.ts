@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
+  actionEndNotices,
   alertActions,
   alertState,
   CHIME,
@@ -143,11 +144,26 @@ test("the notification names the task, its project and what it waits for", () =>
   assert.deepEqual(notificationText([wait("a", "plan", "1"), wait("b", "question", "2")]), { title: "Dispatch", body: "2 tasks wait for you: a, b" });
 });
 
+// Ticket play-voice-for-actions-too-project: the end of an action run speaks.
+test("an action run that ends gives one notice, once, and none at night", () => {
+  const run = (id: string, state: string) => ({ id, name: "Release", state });
+  assert.deepEqual(actionEndNotices(undefined, [run("1", "done")], "starminer", false, new Set()), []);
+  const told = new Set<string>();
+  const done = actionEndNotices([run("1", "running")], [run("1", "done")], "starminer", false, told);
+  assert.deepEqual(done, [{ name: "Release", title: "Release", project: "starminer", text: "the action is done", event: "action-done" }]);
+  assert.deepEqual(speechLines(done), ["starminer. Release. The action is done."]);
+  assert.deepEqual(actionEndNotices([run("1", "running")], [run("1", "done")], "starminer", false, told), []);
+  assert.equal(actionEndNotices([run("2", "running")], [run("2", "failed")], "p", false, new Set())[0].event, "action-failed");
+  assert.deepEqual(actionEndNotices([run("3", "done")], [run("3", "done")], "p", false, new Set()), []);
+  assert.equal(actionEndNotices([], [run("4", "done")], "p", false, new Set()).length, 1);
+  assert.deepEqual(actionEndNotices([run("5", "running")], [run("5", "done")], "p", true, new Set()), []);
+});
+
 // Ticket the-voice-alert-says-the-ticket-title: one spoken line per alert, with title, project and event.
 test("the voice says the title, the project and one phrase for each event", () => {
   const events = Object.keys(SPOKEN) as AlertEvent[];
-  assert.equal(events.length, 12);
-  assert.equal(new Set(Object.values(SPOKEN)).size, 12, "each event has its own phrase");
+  assert.equal(events.length, 14);
+  assert.equal(new Set(Object.values(SPOKEN)).size, 14,"each event has its own phrase");
   for (const event of events) {
     assert.deepEqual(speechLines([{ name: "t", project: "starminer", text: "x", title: "Fix the login", event }]), [`starminer. Fix the login. ${SPOKEN[event]}.`]);
   }

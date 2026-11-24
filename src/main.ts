@@ -183,7 +183,7 @@ import { initPipeline, openSetup, setupNeeded, setupTodo, showSetup } from "./pi
 import { setupDue, setupLook, setupStamp, setupTitle } from "./setupmark";
 import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersion } from "./help";
 import { lastRunVersion, newEntries } from "./changelog";
-import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, seenStamp, speechLines, ticketTitle, voiceSample, type Wait, waitNotice, type WorkerEnd } from "./alerts";
+import { actionEndNotices, alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, seenStamp, speechLines, ticketTitle, voiceSample, type Wait, waitNotice, type WorkerEnd } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
 import { alertOptions, compactOn, initOptions, openOptions, ownHostRuns, phoneTabWanted, pulseOn, stopOwnHost, useOwnHost, voiceName, voiceProjectOn, voiceVolume } from "./options";
 import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
@@ -2743,6 +2743,10 @@ function storeProjectTasks(key: string, record: ProjectTasks, readAt: number): v
   // A task end marks the triage chat of the project for a compaction (triage-compact-after-task).
   if (before && taskEnds(taskShape(before), taskShape(record)).length > 0) markCompact(projectFor(record.host, record.cwd));
   projectTasks.set(key, record);
+  // The end of an action run speaks like a task end (ticket play-voice-for-actions-too-project).
+  let told = actionRunsTold.get(key);
+  if (!told) actionRunsTold.set(key, (told = new Set()));
+  fireAlerts(actionEndNotices(before?.actions.runs, record.actions.runs, projectName({ host: record.host, root: record.cwd }), nightAny(), told));
   projectReadFailed.delete(key);
   // "No triage" (ticket with-no-triage-on-a-project-shows-no): the triage pane of the project closes
   // when the switch goes on, also in the middle of an answer (user decision 1). The agent view stays.
@@ -12509,6 +12513,8 @@ function updateWorkerAlert(): void {
 
 /** The marks of the waits that alerted, for this run of the app. */
 const alertMarks = alertState();
+/** The ids of the action runs whose end was told, by project key (memory of one run of the app). */
+const actionRunsTold = new Map<string, Set<string>>();
 /**
  * The waits whose card the user pressed in this run (ticket card-attention): their signal stops. In
  * memory only, so a wait that is still there after a restart signals again (user decision 2).

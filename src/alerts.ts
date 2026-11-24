@@ -117,7 +117,7 @@ export function alertActions(options: AlertOptions, anyNew: boolean): AlertOptio
 }
 
 /** What an alert names: the task or worker name, the project folder name and the text (notification), the ticket title and the event (voice). */
-export type AlertEvent = WaitKind | "done" | "plan-empty" | "work-empty" | "plan-failed" | "work-failed" | "merge-wait";
+export type AlertEvent = WaitKind | "done" | "plan-empty" | "work-empty" | "plan-failed" | "work-failed" | "merge-wait" | "action-done" | "action-failed";
 export type Notice = Pick<Wait, "name" | "project" | "text"> & { title: string; event: AlertEvent };
 
 /** One end of a worker as the announcements of a poll told it (`announceWorkerChanges`). */
@@ -172,6 +172,34 @@ export function endNotices(ends: readonly WorkerEnd[], night: boolean): Notice[]
   return notices;
 }
 
+/**
+ * The notices for the action runs that ended between two reads of a project: one per run that is now
+ * `done` or `failed`, was not ended in the read before, and is not in `told` (its id is added there).
+ * No previous read (undefined) gives none, so old runs stay silent at the start. Night mode gives none.
+ */
+export function actionEndNotices(
+  before: readonly { id: string; name: string; state: string }[] | undefined,
+  now: readonly { id: string; name: string; state: string }[],
+  project: string,
+  night: boolean,
+  told: Set<string>,
+): Notice[] {
+  if (before === undefined) return [];
+  const earlier = new Map(before.map((run) => [run.id, run.state]));
+  const notices: Notice[] = [];
+  for (const run of now) {
+    if (run.state !== "done" && run.state !== "failed") continue;
+    const was = earlier.get(run.id);
+    if (was === "done" || was === "failed") continue;
+    if (told.has(run.id)) continue;
+    told.add(run.id);
+    if (night) continue;
+    const failed = run.state === "failed";
+    notices.push({ name: run.name, title: run.name, project, text: failed ? "the action failed" : "the action is done", event: failed ? "action-failed" : "action-done" });
+  }
+  return notices;
+}
+
 /** The title and the text of the system notification for the new waits. */
 export function notificationText(waits: Notice[]): { title: string; body: string } {
   const title = "Dispatch";
@@ -196,6 +224,8 @@ export const SPOKEN: Record<AlertEvent, string> = {
   "plan-failed": "The plan run failed",
   "work-failed": "The work run failed",
   "merge-wait": "It waits for other tasks to merge",
+  "action-done": "The action is done",
+  "action-failed": "The action failed",
 };
 
 function withoutRunEnd(task: string): string {
