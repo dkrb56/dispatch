@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { answeredLine, chosenCount, holdReason, questionWaitToOpen, replySending, replyText, SENDING_LIMIT_MS, windowChoices, windowTitle } from "../src/answers.ts";
+import { answeredLine, chosenCount, hasOwnWords, holdReason, lineWithWords, ownAnswer, questionWaitToOpen, replySending, replyText, replyWithWords, SENDING_LIMIT_MS, windowChoices, windowTitle, wordsLine, wordsReply } from "../src/answers.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -55,6 +55,14 @@ test("the Help says that the answers of several questions go together", () => {
   assert.match(item, /Send the answers/);
 });
 
+test("the Help names the box for your own words and Ctrl+V", () => {
+  const start = HTML.indexOf("<h3>Tasks and chats of a column</h3>");
+  const item = HTML.slice(start, HTML.indexOf("<h3>Where the work runs</h3>", start));
+  assert.match(item, /box for your own words/);
+  assert.match(item, /Ctrl\+V/);
+  assert.match(item, /Send only my words/);
+});
+
 test("the window selects the recommended option of each question", () => {
   assert.deepEqual([...windowChoices(TWO, new Map())], [[1, "Keep the map"], [2, "answers"]]);
   assert.deepEqual([...windowChoices(ONE, new Map())], [[1, "Yes"]]);
@@ -69,7 +77,7 @@ test("a question without options gets no choice, so no reply goes", () => {
   const empty = [{ number: 1, text: "Why?", options: [] }];
   assert.equal(windowChoices(empty, new Map()).size, 0);
   assert.equal(replyText(empty, windowChoices(empty, new Map())), null);
-  assert.match(holdReason(empty, new Map()) ?? "", /Answer in the report's chat/);
+  assert.match(holdReason(empty, new Map()) ?? "", /Write your answer in the box/);
 });
 
 const SEVEN = [
@@ -122,4 +130,40 @@ test("a reply in flight keeps the task as answered until a worker shows, the rep
   assert.equal(replySending({ modified: 5, sentAt: now - 1000 }, 5, false, now), true, "settled, inside the limit");
   assert.equal(replySending({ modified: 5, sentAt: now - SENDING_LIMIT_MS }, 5, false, now), false, "settled, past the limit");
   assert.equal(replySending({ modified: 5, sentAt: null }, 5, true, now), false, "live worker");
+});
+
+test("words and pictures go after the answers of the options", () => {
+  const reply = "Answer to question 1: Keep the map";
+  assert.equal(replyWithWords(reply, "", []), reply, "an empty box changes nothing");
+  assert.equal(replyWithWords(reply, "  but smaller ", []), `${reply} My words: but smaller`);
+  assert.equal(replyWithWords(reply, "", ["C:\p\paste-1.png"]), `${reply} My pictures: C:\p\paste-1.png`);
+  assert.equal(replyWithWords(reply, "look", ["a.png", "b.png"]), `${reply} My words: look My pictures: a.png b.png`);
+  assert.equal(lineWithWords("Question 1 of T-1 answered in Dispatch: Yes", "go", []), "Question 1 of T-1 answered in Dispatch: Yes My words: go");
+});
+
+test("line breaks of the box become spaces", () => {
+  assert.equal(replyWithWords("Answer to question 1: Yes", "Look B,\r\n  but changed\nlike this", []), "Answer to question 1: Yes My words: Look B, but changed like this");
+  assert.equal(ownAnswer("one\n\ntwo", []), "one two");
+});
+
+test("the words only answer every question, also those without options", () => {
+  assert.equal(wordsReply(ONE, "Look B", []), "Answer to question 1: Look B");
+  assert.equal(wordsReply(TWO, "Look B", []), "Answer to questions 1 and 2: Look B");
+  assert.equal(wordsReply(SEVEN, "done", []), "Answer to questions 1, 2, 3, 4, 5, 6 and 7: done");
+  const empty = [{ number: 1, text: "Why?", options: [] }];
+  assert.equal(wordsReply(empty, "Because", ["a.png"]), "Answer to question 1: Because My pictures: a.png");
+  assert.equal(wordsReply(empty, "", ["a.png"]), "Answer to question 1: My pictures: a.png");
+  assert.equal(wordsReply(ONE, "  \n ", []), null, "an empty box sends nothing");
+  assert.equal(wordsReply([], "words", []), null, "a report without questions");
+});
+
+test("the box counts as filled with words or pictures", () => {
+  assert.equal(hasOwnWords(" \n", []), false);
+  assert.equal(hasOwnWords("x", []), true);
+  assert.equal(hasOwnWords("", ["a.png"]), true);
+});
+
+test("the triage line of the words only names the questions and the words", () => {
+  assert.equal(wordsLine("T-1", ONE, "Look B", []), "Question 1 of T-1 answered in Dispatch with the user's own words: Look B");
+  assert.equal(wordsLine("T-1", TWO, "Look B", ["a.png"]), "Questions of T-1 answered in Dispatch with the user's own words: Look B My pictures: a.png");
 });

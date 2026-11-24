@@ -7225,6 +7225,39 @@ button.ticket-level {
   resize: vertical;
 }
 
+/* The box for the user's own words in the Questions window and the pasted pictures of the answer
+   boxes (ticket worker-questions-no-text-box-refused). */
+#questions-words {
+  box-sizing: border-box;
+  flex: 1 1 100%;
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  resize: vertical;
+}
+
+#questions-words:focus {
+  border-color: var(--accent-line);
+  outline: none;
+}
+
+#questions-images {
+  padding-top: 6px;
+}
+
+#decisions-ask-images {
+  margin-top: 8px;
+}
+
+.task-card .answer-images {
+  margin: 2px 0 6px;
+  padding-top: 6px;
+}
+
 #decisions-ask-text:focus {
   border-color: var(--accent-line);
   outline: none;

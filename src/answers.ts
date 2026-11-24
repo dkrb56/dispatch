@@ -21,12 +21,12 @@ export function answerable(questions: AnswerQuestion[]): AnswerQuestion[] {
 }
 
 /**
- * The reason why no reply goes, or null when nothing is held back. No question has options: answer
- * in the report's chat. Some questions have no choice while another has one: name the open ones.
+ * The reason why no reply goes, or null when nothing is held back. No question has options: write
+ * the answer in the box. Some questions have no choice while another has one: name the open ones.
  */
 export function holdReason(questions: AnswerQuestion[], choices: ReadonlyMap<number, string>): string | null {
   const real = answerable(questions);
-  if (real.length === 0) return "The report lists no options for its questions. Answer in the report's chat.";
+  if (real.length === 0) return "The report lists no options for its questions. Write your answer in the box and send it.";
   const open = real.filter((question) => !choices.has(question.number)).map((question) => question.number);
   if (open.length === 0 || open.length === real.length) return null;
   const names = open.length === 1 ? `question ${open[0]}` : `questions ${open.slice(0, -1).join(", ")} and ${open[open.length - 1]}`;
@@ -129,3 +129,76 @@ export function replySending(entry: SendingReply | undefined, reportModified: nu
   if (!entry || live || entry.modified !== reportModified) return false;
   return entry.sentAt === null || now - entry.sentAt < SENDING_LIMIT_MS;
 }
+
+// The user's own words and pictures (ticket worker-questions-no-text-box-refused): a box on the
+// question card and in the Questions window takes free words and pasted pictures. They go after the
+// answers of the options, or alone as the answer to every question of the report.
+
+/** The words of a box on one line: line breaks become spaces, white space at the ends goes. */
+function oneLine(words: string): string {
+  return words.replace(/\s*[\r\n]+\s*/g, " ").trim();
+}
+
+/** The pictures as the worker reads them: plain paths after `My pictures:`, or "" without pictures. */
+function picturesText(pictures: readonly string[]): string {
+  return pictures.length > 0 ? `My pictures: ${pictures.join(" ")}` : "";
+}
+
+/** True when the box has words or pictures. */
+export function hasOwnWords(words: string, pictures: readonly string[]): boolean {
+  return oneLine(words) !== "" || pictures.length > 0;
+}
+
+/**
+ * The words and pictures for the end of a text that has an answer already: ` My words: <words>` and
+ * ` My pictures: <path> <path>`, with a space in front; "" for an empty box.
+ */
+export function ownWordsSuffix(words: string, pictures: readonly string[]): string {
+  const text = oneLine(words);
+  return [text ? `My words: ${text}` : "", picturesText(pictures)].filter(Boolean).map((part) => ` ${part}`).join("");
+}
+
+/** The reply of the options with the words and pictures of the box after it. */
+export function replyWithWords(reply: string, words: string, pictures: readonly string[]): string {
+  return reply + ownWordsSuffix(words, pictures);
+}
+
+/** The words and pictures of a box as the text of a free answer: the words, then `My pictures: …`. */
+export function ownAnswer(words: string, pictures: readonly string[]): string {
+  return [oneLine(words), picturesText(pictures)].filter(Boolean).join(" ");
+}
+
+/** `question 1`, `questions 1 and 2`, `questions 1, 2 and 3`. */
+function numbersText(questions: readonly AnswerQuestion[]): string {
+  const numbers = questions.map((question) => question.number);
+  if (numbers.length === 1) return `question ${numbers[0]}`;
+  return `questions ${numbers.slice(0, -1).join(", ")} and ${numbers[numbers.length - 1]}`;
+}
+
+/**
+ * The reply of the words only, for every question of the report, also those without options:
+ * `Answer to question N: <words>` or `Answer to questions 1 and 2: <words>`. Null for an empty box
+ * or a report without questions.
+ */
+export function wordsReply(questions: readonly AnswerQuestion[], words: string, pictures: readonly string[]): string | null {
+  const answer = ownAnswer(words, pictures);
+  if (answer === "" || questions.length === 0) return null;
+  return `Answer to ${numbersText(questions)}: ${answer}`;
+}
+
+/** The line for the triage chat after a reply of the words only. */
+export function wordsLine(task: string, questions: readonly AnswerQuestion[], words: string, pictures: readonly string[]): string {
+  const of = questions.length === 1 ? `Question ${questions[0].number} of ${task}` : `Questions of ${task}`;
+  return `${of} answered in Dispatch with the user's own words: ${ownAnswer(words, pictures)}`;
+}
+
+/** The triage line of the answers of the options, with the words and pictures of the box after it. */
+export function lineWithWords(line: string, words: string, pictures: readonly string[]): string {
+  return line + ownWordsSuffix(words, pictures);
+}
+
+/** The placeholder of the box for the user's own words. */
+export const WORDS_PLACEHOLDER = "Your own words, if you like. Ctrl+V adds a picture. Write before you click an option: the words go with it.";
+
+/** The tooltip of the button that sends only the words of the box. */
+export const WORDS_ONLY_TIP = "Send the words and pictures of the box as your answer to every question, without an option";

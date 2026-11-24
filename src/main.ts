@@ -195,7 +195,7 @@ import { terminalTheme, themeName, themeTokens, TICKET_COLORS, ticketColors } fr
 import { nightButton, nightChanges, nightLines, nightSyncLines } from "./night";
 import { KEY_DOWN, KEY_ENTER, KEY_ESC, rcCommand, rcMenuFocus, rcSettled, rcView, type RcView, type RcWish } from "./remotecontrol";
 import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
-import { answerable, answeredLine, chosenCount, holdReason, questionWaitToOpen, replySending, replyText, SENDING_STATUS, windowChoices, windowTitle } from "./answers";
+import { answerable, answeredLine, chosenCount, hasOwnWords, holdReason, lineWithWords, ownAnswer, questionWaitToOpen, replySending, replyText, replyWithWords, SENDING_STATUS, windowChoices, windowTitle, WORDS_ONLY_TIP, WORDS_PLACEHOLDER, wordsLine, wordsReply } from "./answers";
 import type { SendingReply } from "./answers";
 import { CONFIRM_PLACEHOLDER, CONFIRM_TIP, CONFIRM_TITLE, confirmChoice, confirmLine, confirmQuestion, RESULT_LABEL, RESULT_TIP } from "./confirm";
 import { ANSWERED_KEY, type AnsweredQuestion, type AnsweredReport, answeredRecord, answerStands, parseAnswered, parseQueuedReplies, QUEUED_REPLIES_KEY, type QueuedReply, type RepeatAction, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered, serializeQueuedReplies } from "./repeat";
@@ -2912,6 +2912,85 @@ const questionChoices = new Map<string, { modified: number; choices: Map<number,
 const rejectDrafts = new Map<string, string>();
 /** The text of the box for changes of the confirm card of a task (ticket confirm-a-check-step-s-result-on-the). A re-render keeps it. */
 const confirmDrafts = new Map<string, string>();
+/** A picture that the user pasted into a box: its file on the computer of the project and a URL for the thumbnail. */
+type PastedImage = { path: string; url: string };
+/**
+ * The box for the user's own words of the question card and the Questions window (ticket
+ * worker-questions-no-text-box-refused): by task name, the time of the report, the words and the
+ * pasted pictures. The card and the window share it; a report with another time starts empty.
+ */
+const answerDrafts = new Map<string, { modified: number; text: string; images: PastedImage[] }>();
+/** The pasted pictures of the box for changes of the confirm card, by task name. */
+const confirmImages = new Map<string, PastedImage[]>();
+/** The pasted pictures of the Ask box of the Decisions window. */
+let askImages: PastedImage[] = [];
+
+/** Frees the thumbnails of pasted pictures. */
+function freeImages(images: readonly PastedImage[]): void {
+  for (const image of images) URL.revokeObjectURL(image.url);
+}
+
+/** The answer box draft of a task for its report now; an older draft goes with its pictures. */
+function answerDraft(task: Task): { modified: number; text: string; images: PastedImage[] } {
+  const modified = task.info?.report?.modified ?? 0;
+  let draft = answerDrafts.get(task.name);
+  if (!draft || draft.modified !== modified) {
+    if (draft) freeImages(draft.images);
+    draft = { modified, text: "", images: [] };
+    answerDrafts.set(task.name, draft);
+  }
+  return draft;
+}
+
+/** Drops the answer box draft and the confirm pictures of a task once its reply went. */
+function dropAnswerDrafts(name: string): void {
+  freeImages(answerDrafts.get(name)?.images ?? []);
+  answerDrafts.delete(name);
+  freeImages(confirmImages.get(name) ?? []);
+  confirmImages.delete(name);
+}
+
+/** Draws pasted pictures into a row: a thumbnail with × each, as in the chat view. The row hides without pictures. */
+function showPastedImages(row: HTMLElement, images: readonly PastedImage[], remove: (image: PastedImage) => void, disabled = false): void {
+  row.replaceChildren(
+    ...images.map((image) => {
+      const chip = mapElement("span", "chat-image");
+      const picture = new Image();
+      picture.src = image.url;
+      const button = mapElement("button", "", "×");
+      button.type = "button";
+      button.title = "Remove the picture";
+      button.disabled = disabled;
+      button.addEventListener("click", () => {
+        URL.revokeObjectURL(image.url);
+        remove(image);
+      });
+      chip.title = image.path;
+      chip.append(picture, button);
+      return chip;
+    }),
+  );
+  row.hidden = images.length === 0;
+}
+
+/**
+ * Ctrl+V of a picture into a text box: the picture goes to a file on the computer of the project
+ * (`image_save`) and `add` gets it. A paste with text stays text, as in the Add ticket window.
+ */
+function pastePictures(area: HTMLElement, host: () => HostId | null, add: (image: PastedImage) => void, fail: (error: string) => void): void {
+  area.addEventListener("paste", (event) => {
+    const data = event.clipboardData;
+    const image = [...(data?.files ?? [])].find((file) => file.type.startsWith("image/"));
+    const target = host();
+    if (!image || data?.getData("text/plain") || target === null) return;
+    event.preventDefault();
+    void image
+      .arrayBuffer()
+      .then((bytes) => call<string>(target, "image_save", new Uint8Array(bytes)))
+      .then((path) => add({ path, url: URL.createObjectURL(image) }))
+      .catch((error) => fail(`Could not save the picture: ${error}`));
+  });
+}
 /**
  * The checkboxes of the Plan ready cards that the user changed (ticket task-checks), by project key
  * and task name: the time of the plan file they belong to and the ticked names. A changed plan file
@@ -3427,6 +3506,7 @@ async function sendQueuedReply(task: Task, reply: QueuedReply): Promise<void> {
     markAnswered(task.name, { ...reply.record, workers });
     questionChoices.delete(task.name);
     confirmDrafts.delete(task.name);
+    dropAnswerDrafts(task.name);
     sentReplies.set(reply.key, { modified: reply.record.modified, at: Date.now() });
     sendingReplies.set(reply.key, { modified: reply.record.modified, sentAt: Date.now() });
   } else if ((actionErrors.get(task.name) ?? "").includes(OTHER_BRANCH) || folderOrFilesRefusal(task)) {
@@ -6317,7 +6397,8 @@ function openDecisions(task: Task, ask = false): void {
   decisionsTask = task;
   const stored = decisionPicks.get(queueKey(task));
   const picks = stored && stored.modified === task.info?.plan?.modified ? stored.picks : undefined;
-  if (askTask !== task.name) decisionsAskText().value = "";
+  if (askTask !== task.name) clearAskBox();
+  showAskImages();
   askTask = task.name;
   askDecision = undefined;
   const decisions = [...(task.info?.decisions ?? [])].sort((a, b) => Number(b.hold) - Number(a.hold) || a.number - b.number);
@@ -6435,6 +6516,34 @@ function openDecisions(task: Task, ask = false): void {
   if (ask) decisionsAskText().focus();
 }
 
+/**
+ * The text of the Ask box with the paths of its pasted pictures after it (ticket
+ * worker-questions-no-text-box-refused, decision 1): `My pictures: <path> <path>`.
+ */
+function askBoxText(): string {
+  const value = decisionsAskText().value;
+  if (askImages.length === 0) return value;
+  const pictures = `My pictures: ${askImages.map((image) => image.path).join(" ")}`;
+  return value.trim() ? `${value.trimEnd()} ${pictures}` : pictures;
+}
+
+/** Empties the Ask box and frees its pictures. */
+function clearAskBox(): void {
+  decisionsAskText().value = "";
+  freeImages(askImages);
+  askImages = [];
+  showAskImages();
+}
+
+/** Draws the pictures of the Ask box. */
+function showAskImages(): void {
+  showPastedImages(document.querySelector<HTMLElement>("#decisions-ask-images")!, askImages, (image) => {
+    askImages = askImages.filter((other) => other !== image);
+    showAskImages();
+    updateDecisionsFooter();
+  }, decisionsSending);
+}
+
 function decisionsAskText(): HTMLTextAreaElement {
   return document.querySelector<HTMLTextAreaElement>("#decisions-ask-text")!;
 }
@@ -6467,11 +6576,11 @@ function saveDecisionPicks(task: Task): void {
 function sendPlanQuestion(task: Task): void {
   const project = projectFor(taskHost(task), taskCwd(task));
   // "No triage" (ticket no-triage-a-project-switch-no-triage-in, point 6): the question goes to a new plain Chat.
-  if (projectNoTriage(project)) return void askInChat(task, askChatLine(task.name, decisionsAskText().value, askDecision));
+  if (projectNoTriage(project)) return void askInChat(task, askChatLine(task.name, askBoxText(), askDecision));
   const pane = triagePane(project);
   if (!pane) return updateDecisionsFooter();
-  tellTriage(project, askLine(task.name, decisionsAskText().value, askDecision));
-  decisionsAskText().value = "";
+  tellTriage(project, askLine(task.name, askBoxText(), askDecision));
+  clearAskBox();
   askDecision = undefined;
   decisionsDialog.close();
   showTriageView(pane, "chat");
@@ -6489,7 +6598,9 @@ const CHAT_READY_MS = 60_000;
  */
 async function askInChat(task: Task, text: string): Promise<void> {
   const question = decisionsAskText().value;
+  const images = askImages;
   decisionsAskText().value = "";
+  askImages = [];
   askDecision = undefined;
   decisionsDialog.close();
   const ref: ProjectRef = { host: taskHost(task), root: taskCwd(task) };
@@ -6503,9 +6614,14 @@ async function askInChat(task: Task, text: string): Promise<void> {
     pane.term.paste(text);
     await pause(RC_ENTER_WAIT_MS);
     await call(pane.host, "pty_write", { id: pane.id, data: KEY_ENTER });
+    freeImages(images);
     return;
   }
-  if (decisionsAskText().value === "") decisionsAskText().value = question;
+  if (decisionsAskText().value === "" && askImages.length === 0) {
+    decisionsAskText().value = question;
+    askImages = images;
+  } else freeImages(images);
+  showAskImages();
   actionErrors.set(task.name, "The terminal was not ready in time. Your question is still in the Ask box.");
   if (decisionsTask === task) updateDecisionsFooter();
 }
@@ -6532,7 +6648,7 @@ function updateDecisionsFooter(): void {
   const error = actionErrors.get(decisionsTask.name) ?? "";
   document.querySelector("#decisions-reason")!.textContent = [busy ? "A click of this task is still running." : wait, error].filter(Boolean).join("\n");
   // Text in the question box: only Ask may send it, so Approve and Revise wait.
-  const asking = questionPending(decisionsAskText().value);
+  const asking = questionPending(askBoxText());
   footerButton("#decisions-approve", busy || asking, asking ? ASK_FIRST : "");
   // Revise also sends the text of the box. A plan without decisions needs that text.
   const none = (decisionsTask.info?.decisions ?? []).length === 0;
@@ -7034,6 +7150,15 @@ function initDecisions(): void {
     run().then(end, () => end(false));
   };
   decisionsAskText().addEventListener("input", updateDecisionsFooter);
+  // Ctrl+V adds a picture to the Ask box (ticket worker-questions-no-text-box-refused, decision 1).
+  pastePictures(decisionsAskText(), () => (decisionsTask ? taskHost(decisionsTask) : null), (image) => {
+    if (!decisionsDialog.open) return URL.revokeObjectURL(image.url);
+    askImages = [...askImages, image];
+    showAskImages();
+    updateDecisionsFooter();
+  }, (error) => {
+    document.querySelector("#decisions-reason")!.textContent = error;
+  });
   const approveButton = document.querySelector<HTMLButtonElement>("#decisions-approve")!;
   approveButton.addEventListener("click", () => {
     const task = decisionsTask;
@@ -7045,12 +7170,12 @@ function initDecisions(): void {
   reviseButton.addEventListener("click", () => {
     const task = decisionsTask;
     if (!task || decisionsSending) return;
-    const reason = reviseReason(decisionLines(decisionAnswers(task)), decisionsAskText().value, askDecision);
-    const line = `Plan ${task.name} sent back in Dispatch with the decisions ${questionPending(decisionsAskText().value) ? "and the words " : ""}of the user.`;
+    const reason = reviseReason(decisionLines(decisionAnswers(task)), askBoxText(), askDecision);
+    const line = `Plan ${task.name} sent back in Dispatch with the decisions ${questionPending(askBoxText()) ? "and the words " : ""}of the user.`;
     send(reviseButton, "Sending…", async () => {
       const done = await taskAction(task, "task_reject", { id: task.name, reason }, line);
       if (done) {
-        decisionsAskText().value = "";
+        clearAskBox();
         askDecision = undefined;
       }
       return done;
@@ -7099,15 +7224,58 @@ function questionCard(task: Task, questions: Question[]): HTMLElement {
         choices.set(question.number, option);
         // A question without a choice: the click only marks the choice.
         if (replyText(questions, choices) === null) return renderChats();
-        void sendAnswers(task, questions, choices, modified);
+        void sendAnswers(task, questions, choices, modified, undefined, answerDraft(task));
       });
       actions.append(button);
     });
     card.append(text, actions);
   }
+  // The box for the user's own words, with pasted pictures (ticket worker-questions-no-text-box-refused).
+  // The Questions window shows the same draft.
+  const draft = answerDraft(task);
+  const busy = busyTasks.has(task.name);
+  const words = document.createElement("textarea");
+  words.className = "answer-words";
+  words.placeholder = WORDS_PLACEHOLDER;
+  words.value = draft.text;
+  words.disabled = busy;
+  const pictures = mapElement("div", "chat-images answer-images");
+  const wordsOnly = document.createElement("button");
+  wordsOnly.textContent = "Send only my words";
+  wordsOnly.title = WORDS_ONLY_TIP;
+  const refresh = (): void => {
+    showPastedImages(pictures, draft.images, (image) => {
+      draft.images = draft.images.filter((other) => other !== image);
+      refresh();
+    }, busy);
+    wordsOnly.disabled = busy || !hasOwnWords(draft.text, draft.images.map((image) => image.path));
+  };
+  refresh();
+  words.addEventListener("input", () => {
+    draft.text = words.value;
+    wordsOnly.disabled = busy || !hasOwnWords(draft.text, draft.images.map((image) => image.path));
+  });
+  words.addEventListener("blur", () => {
+    if (!renderSkipped) return;
+    renderSkipped = false;
+    renderChats();
+  });
+  pastePictures(words, () => taskHost(task), (image) => {
+    // A new report while the picture was saved: the draft went, and the picture with it.
+    if (answerDrafts.get(task.name) !== draft) return URL.revokeObjectURL(image.url);
+    draft.images = [...draft.images, image];
+    if (pictures.isConnected) refresh();
+    else renderChats();
+  }, (error) => {
+    actionErrors.set(task.name, error);
+    renderChats();
+  });
+  wordsOnly.addEventListener("click", () => void sendOwnWords(task, questions, modified, draft));
+  card.append(words, pictures);
   // The same questions in a window, like the Decisions window of a plan (ticket question-window).
   const more = document.createElement("div");
   more.className = "actions";
+  more.append(wordsOnly);
   const open = document.createElement("button");
   open.textContent = "Answer in a window";
   open.title = "Show every question with its options in a window; the recommended options are selected";
@@ -7156,6 +7324,22 @@ function confirmCard(task: Task, question: Question): HTMLElement {
     renderSkipped = false;
     renderChats();
   });
+  // Ctrl+V adds a picture to the changes (ticket worker-questions-no-text-box-refused, decision 1).
+  const pictures = mapElement("div", "chat-images answer-images");
+  const showPictures = (): void =>
+    showPastedImages(pictures, confirmImages.get(task.name) ?? [], (image) => {
+      confirmImages.set(task.name, (confirmImages.get(task.name) ?? []).filter((other) => other !== image));
+      showPictures();
+    }, busy);
+  showPictures();
+  pastePictures(changes, () => taskHost(task), (image) => {
+    confirmImages.set(task.name, [...(confirmImages.get(task.name) ?? []), image]);
+    if (pictures.isConnected) showPictures();
+    else renderChats();
+  }, (error) => {
+    actionErrors.set(task.name, error);
+    renderChats();
+  });
   const actions = document.createElement("div");
   actions.className = "actions";
   const confirm = document.createElement("button");
@@ -7164,14 +7348,14 @@ function confirmCard(task: Task, question: Question): HTMLElement {
   confirm.title = CONFIRM_TIP;
   confirm.disabled = busy;
   confirm.addEventListener("click", () => {
-    const choice = confirmChoice(question, changes.value);
+    const choice = confirmChoice(question, ownAnswer(changes.value, (confirmImages.get(task.name) ?? []).map((image) => image.path)));
     void sendAnswers(task, [question], new Map([[question.number, choice]]), modified, confirmLine(task.name, choice, false)).then((result) => {
       // A Confirm that waits in the queue keeps the box for Take back.
       if (result === "sent") confirmDrafts.delete(task.name);
     });
   });
   actions.append(confirm);
-  card.append(title, text, result, changes, actions);
+  card.append(title, text, result, changes, pictures, actions);
   const error = actionError(task);
   if (error) card.append(error);
   return card;
@@ -7294,12 +7478,39 @@ function sentReplyLine(at: number): HTMLElement {
  * answered and drops the kept choices. A reply that waits in the queue keeps them, for Take back. A
  * failed send keeps them; the card shows the error.
  */
-async function sendAnswers(task: Task, questions: Question[], choices: ReadonlyMap<number, string>, modified: number, line?: string): Promise<ReplyResult> {
-  const reply = replyText(questions, choices);
+async function sendAnswers(task: Task, questions: Question[], choices: ReadonlyMap<number, string>, modified: number, line?: string, words?: { text: string; images: PastedImage[] }): Promise<ReplyResult> {
+  const options = replyText(questions, choices);
+  if (options === null) return false;
+  // The words and pictures of the answer box go after the answers (ticket worker-questions-no-text-box-refused).
+  const text = words?.text ?? "";
+  const paths = (words?.images ?? []).map((image) => image.path);
+  const reply = replyWithWords(options, text, paths);
+  const said = lineWithWords(line ?? answeredLine(task.name, questions, choices), text, paths);
+  const result = await replyOrQueue(task, answeredRecord(modified, questions, choices, reply), reply, said);
+  if (result === "sent") {
+    questionChoices.delete(task.name);
+    dropAnswerDrafts(task.name);
+  }
+  if (result) renderChats();
+  return result;
+}
+
+/**
+ * Sends only the words and pictures of the answer box as the answer to every question of the report
+ * (ticket worker-questions-no-text-box-refused), also to questions without options. The record keeps
+ * the words as the answer of each question. A queued reply keeps the draft, for Take back.
+ */
+async function sendOwnWords(task: Task, questions: Question[], modified: number, words: { text: string; images: PastedImage[] }): Promise<ReplyResult> {
+  const paths = words.images.map((image) => image.path);
+  const reply = wordsReply(questions, words.text, paths);
   if (reply === null) return false;
-  line ??= answeredLine(task.name, questions, choices);
-  const result = await replyOrQueue(task, answeredRecord(modified, questions, choices, reply), reply, line);
-  if (result === "sent") questionChoices.delete(task.name);
+  const answer = ownAnswer(words.text, paths);
+  const choices = new Map(questions.map((question) => [question.number, answer]));
+  const result = await replyOrQueue(task, answeredRecord(modified, questions, choices, reply), reply, wordsLine(task.name, questions, words.text, paths));
+  if (result === "sent") {
+    questionChoices.delete(task.name);
+    dropAnswerDrafts(task.name);
+  }
   if (result) renderChats();
   return result;
 }
@@ -7310,6 +7521,23 @@ let questionsTask: Task | null = null;
 /** True from a click on Send the answers until the send ends: the window is locked. */
 let questionsSending = false;
 let questionsModified = 0;
+/** The answer box draft that the window shows: the same object as on the card of the task. */
+let questionsDraft: { modified: number; text: string; images: PastedImage[] } | null = null;
+const questionsWordsEl = document.querySelector<HTMLTextAreaElement>("#questions-words")!;
+const questionsImagesEl = document.querySelector<HTMLElement>("#questions-images")!;
+
+/** Draws the pasted pictures of the window's draft, and greys Send only my words for an empty box. */
+function showQuestionsDraft(): void {
+  const draft = questionsDraft;
+  if (!draft) return;
+  const busy = questionsSending || (questionsTask !== null && busyTasks.has(questionsTask.name));
+  showPastedImages(questionsImagesEl, draft.images, (image) => {
+    draft.images = draft.images.filter((other) => other !== image);
+    showQuestionsDraft();
+    renderChats();
+  }, busy);
+  document.querySelector<HTMLButtonElement>("#questions-words-send")!.disabled = busy || !hasOwnWords(draft.text, draft.images.map((image) => image.path));
+}
 
 /** The current state of a task of the window: from the last task list of its project, else as it was. */
 function currentTask(task: Task): Task {
@@ -7335,6 +7563,8 @@ function openQuestionWindow(task: Task): void {
   }
   const kept = saved.choices;
   const choices = windowChoices(questions, kept);
+  questionsDraft = answerDraft(task);
+  questionsWordsEl.value = questionsDraft.text;
   document.querySelector("#questions-title")!.textContent = windowTitle(task.name, questions, taskProjectName(task));
   const body = document.querySelector<HTMLElement>("#questions-body")!;
   // What the questions come from: the user's words of the brief and the first line of the report.
@@ -7398,7 +7628,7 @@ function openQuestionWindow(task: Task): void {
         });
         options.append(button);
       });
-      if (question.options.length === 0) reason.textContent = "The report lists no options for this question. Answer it in the report's chat.";
+      if (question.options.length === 0) reason.textContent = "The report lists no options for this question. Write your answer in the box below.";
       else select(Math.max(0, question.options.indexOf(choices.get(question.number) ?? "")));
       block.append(title, options, reason);
       return block;
@@ -7435,6 +7665,8 @@ function updateQuestionsWindow(): void {
   const error = actionErrors.get(task.name) ?? "";
   document.querySelector("#questions-reason")!.textContent = [busy ? "A click of this task is still running." : "", error].filter(Boolean).join("\n");
   document.querySelector<HTMLButtonElement>("#questions-send")!.disabled = busy;
+  questionsWordsEl.disabled = busy;
+  showQuestionsDraft();
 }
 
 /** The project name of a task, for the title of its windows. */
@@ -7489,7 +7721,7 @@ function initQuestions(): void {
     const answers = questionAnswers();
     if (replyText(questions, answers) === null) {
       document.querySelector("#questions-reason")!.textContent =
-        holdReason(questions, answers) ?? "A question has no selected option. Answer it in the report's chat.";
+        holdReason(questions, answers) ?? "A question has no selected option. Write your answer in the box below.";
       return;
     }
     questionsSending = true;
@@ -7501,7 +7733,39 @@ function initQuestions(): void {
       if (sent) questionsDialog.close();
       else updateQuestionsWindow();
     };
-    sendAnswers(task, questions, answers, questionsModified).then((result) => end(!!result), () => end(false));
+    sendAnswers(task, questions, answers, questionsModified, undefined, questionsDraft ?? undefined).then((result) => end(!!result), () => end(false));
+  });
+  // The box for the user's own words (ticket worker-questions-no-text-box-refused): the draft of the card.
+  questionsWordsEl.addEventListener("input", () => {
+    if (questionsDraft) questionsDraft.text = questionsWordsEl.value;
+    showQuestionsDraft();
+  });
+  pastePictures(questionsWordsEl, () => (questionsTask ? taskHost(questionsTask) : null), (image) => {
+    const draft = questionsDraft;
+    // The window closed or shows another report: the picture goes.
+    if (!draft || !questionsTask || answerDrafts.get(questionsTask.name) !== draft) return URL.revokeObjectURL(image.url);
+    draft.images = [...draft.images, image];
+    showQuestionsDraft();
+    renderChats();
+  }, (error) => {
+    document.querySelector("#questions-reason")!.textContent = error;
+  });
+  const wordsButton = document.querySelector<HTMLButtonElement>("#questions-words-send")!;
+  wordsButton.addEventListener("click", () => {
+    if (!questionsTask || questionsSending || !questionsDraft) return;
+    const task = currentTask(questionsTask);
+    if (busyTasks.has(task.name)) return updateQuestionsWindow();
+    const draft = questionsDraft;
+    if (!hasOwnWords(draft.text, draft.images.map((image) => image.path))) return;
+    questionsSending = true;
+    setDialogSending(questionsDialog, wordsButton, "Sending…");
+    const end = (sent: boolean): void => {
+      questionsSending = false;
+      setDialogSending(questionsDialog, wordsButton, null);
+      if (sent) questionsDialog.close();
+      else updateQuestionsWindow();
+    };
+    sendOwnWords(task, openQuestions(task), questionsModified, draft).then((result) => end(!!result), () => end(false));
   });
 }
 

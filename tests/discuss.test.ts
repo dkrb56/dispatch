@@ -97,7 +97,7 @@ test("the Ask button is off with a reason when the project has no open triage ch
 test("Ask sends the line to the triage chat of the project and closes the window; it approves nothing", () => {
   const body = /function sendPlanQuestion\(task: Task\): void \{([\s\S]*?)\n\}/.exec(MAIN)?.[1] ?? "";
   assert.ok(body, "src/main.ts has sendPlanQuestion");
-  assert.match(body, /tellTriage\(project, askLine\(task\.name, decisionsAskText\(\)\.value, askDecision\)\);/);
+  assert.match(body, /tellTriage\(project, askLine\(task\.name, askBoxText\(\), askDecision\)\);/);
   assert.match(body, /decisionsDialog\.close\(\);/);
   assert.match(body, /showTriageView\(pane, "chat"\);/);
   assert.doesNotMatch(body, /approveOrQueue|task_reject|task_approve|taskAction/);
@@ -132,7 +132,7 @@ test("no triage: nothing blocks the Ask, and the button names the Chat", () => {
   assert.match(MAIN, /askButton\.textContent = chatAsk \? CHAT_ASK_LABEL : FOOTER_LABELS\.ask;/);
   assert.match(MAIN, /askHint\.textContent = chatAsk \? CHAT_ASK_HINT : FOOTER_HINTS\.ask;/);
   const body = /function sendPlanQuestion\(task: Task\): void \{([\s\S]*?)\n\}/.exec(MAIN)?.[1] ?? "";
-  assert.match(body, /if \(projectNoTriage\(project\)\) return void askInChat\(task, askChatLine\(task\.name, decisionsAskText\(\)\.value, askDecision\)\);/);
+  assert.match(body, /if \(projectNoTriage\(project\)\) return void askInChat\(task, askChatLine\(task\.name, askBoxText\(\), askDecision\)\);/);
   assert.ok(body.indexOf("askInChat(") < body.indexOf("tellTriage("), "the Chat comes before the line to triage");
   const chat = /async function askInChat\(task: Task, text: string\): Promise<void> \{([\s\S]*?)\n\}/.exec(MAIN)?.[1] ?? "";
   assert.match(chat, /const id = \(await askTerminal\(ref\)\) \?\? \(await openProjectChat\(ref\)\);/);
@@ -163,6 +163,6 @@ test("reviseReason: choices only, words only, both, a decision named, newlines c
 });
 
 test("the Revise click sends the box text and clears it only on success", () => {
-  assert.match(MAIN, /reviseReason\(decisionLines\(decisionAnswers\(task\)\), decisionsAskText\(\)\.value, askDecision\)/);
-  assert.match(MAIN, /if \(done\) \{\s*decisionsAskText\(\)\.value = "";\s*askDecision = undefined;/);
+  assert.match(MAIN, /reviseReason\(decisionLines\(decisionAnswers\(task\)\), askBoxText\(\), askDecision\)/);
+  assert.match(MAIN, /if \(done\) \{\s*clearAskBox\(\);\s*askDecision = undefined;/);
 });

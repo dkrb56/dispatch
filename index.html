@@ -266,7 +266,8 @@
       <footer id="decisions-footer">
         <div id="decisions-ask-box">
           <div id="decisions-ask-about">Your question or change to this plan</div>
-          <textarea id="decisions-ask-text" rows="2" placeholder="A question goes with Ask; a change goes with Revise. Leave it empty and Ask explains in plain words."></textarea>
+          <textarea id="decisions-ask-text" rows="2" placeholder="A question goes with Ask; a change goes with Revise. Leave it empty and Ask explains in plain words. Ctrl+V adds a picture."></textarea>
+          <div id="decisions-ask-images" class="chat-images" hidden></div>
         </div>
         <div id="decisions-reason"></div>
         <div class="decisions-action">
@@ -345,8 +346,11 @@
       </p>
       <div id="questions-body"></div>
       <footer id="questions-footer">
+        <textarea id="questions-words" rows="2" placeholder="Your own words, if you like. Ctrl+V adds a picture. They go with Send the answers, or alone with Send only my words."></textarea>
+        <div id="questions-images" class="chat-images" hidden></div>
         <div id="questions-reason"></div>
         <button id="questions-send" class="primary" title="Send the selected option of every question to the worker in one reply; the worker goes on">Send the answers</button>
+        <button id="questions-words-send" title="Send the words and pictures of the box as your answer to every question, without an option">Send only my words</button>
       </footer>
     </dialog>
     <dialog id="check-result">
@@ -976,7 +980,7 @@
           <li><b>Work run.</b> The Plan ready card shows the model and the effort that the plan advises for the work run, marked "recommended". Change them there before Approve. Without your change, the work run uses the advice. "as above Workers" takes the lists above Workers.</li>
           <li><b>Reject</b> sends the plan back with your reason.</li>
           <li><b>Cancel</b> ends a task whose plan you no longer need, for example a duplicate. It asks first: <b>Cancel now</b> ends the task, and its ticket goes to Canceled. The plan stays readable there.</li>
-          <li><b>Questions.</b> A question of a worker shows its options as buttons. Click one for each question. A question that you answered does not come back as new.</li>
+          <li><b>Questions.</b> A question of a worker shows its options as buttons. Click one for each question. A question that you answered does not come back as new. The card and the window also have a box for your own words: they go with the options, or alone with <b>Send only my words</b>. Ctrl+V adds a picture to the box, and to the boxes of a check result and of a plan.</li>
           <li><b>Merge.</b> With Task branches on, a finished task shows <b>Merge into &lt;branch&gt;</b>. A branch that waits keeps Merge also after you turn Task branches off.</li>
           <li><b>Stop.</b> Ends a worker that runs. A stopped task shows <b>Resume</b>: it starts the stopped run again in its session. A plan run that ends without a plan turns the card red with "the plan run ended without a plan"; <b>Plan again</b> starts a new plan run. A work run that ends without a report turns the card red with "the work run ended without a report" and the reason when Claude Code gives one; <b>Continue</b> tells it to go on. A plan run or a work run that stops at an error of Claude Code, for example a login or a limit, shows "stopped at an error" and the message, on the card, on the board and on the phone; <b>Continue</b> starts it again after you fixed the login or the limit reset, and a plan run also keeps <b>Plan again</b>. A run whose turn ended without its plan or report, while Claude Code still lists it as working, shows "Plan run idle, no turn" or "Work run idle, no turn" without a timer; <b>Continue</b> tells it to go on.</li>
           <li><b>Report check.</b> The work run of a done report must run commands, and each check that you ticked. Else the task stays open.</li>
