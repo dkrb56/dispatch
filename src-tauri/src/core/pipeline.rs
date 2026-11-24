@@ -793,6 +793,13 @@ impl Project {
         self.reports.join(format!("{ticket}.approved"))
     }
 
+    /// A reply that the worker script refused while a work folder, the same files or the branch of
+    /// another task were busy (ticket keep-a-reply-that-the-worker-script): JSON with `text`, `at`
+    /// and `report`. Dispatch sends it when the project is free; the task read drops a stale one.
+    fn reply_file(&self, ticket: &str) -> PathBuf {
+        self.reports.join(format!("{ticket}.reply"))
+    }
+
     /// The actions of the Actions panel of the project (ticket project-actions).
     pub(crate) fn actions_file(&self) -> PathBuf {
         self.reports.join("actions.json")
@@ -1704,6 +1711,23 @@ function Refuse([string]$Why) {
   exit 2
 }
 
+# A refusal that ends when a work folder, the files or the branch of another task are free (ticket
+# keep-a-reply-that-the-worker-script). The verb reply sets $script:KeepReply for a work run: the
+# reply goes into <ticket-id>.reply as JSON (text, at, report: the time of the report in ms, 0
+# without one), and Dispatch sends it when the project is free. A newer reply replaces it.
+$script:KeepReply = ''
+function Refuse-Wait([string]$Why) {
+  if ($script:KeepReply) {
+    $report = Join-Path $Reports "$Id.md"
+    $time = 0
+    if (Test-Path -LiteralPath $report) { $time = [DateTimeOffset]::new((Get-Item -LiteralPath $report).LastWriteTimeUtc).ToUnixTimeMilliseconds() }
+    $kept = [ordered]@{ text = $script:KeepReply; at = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); report = $time }
+    [IO.File]::WriteAllText((Join-Path $Reports "$Id.reply"), (ConvertTo-Json $kept -Compress))
+    $Why += '; Dispatch keeps this reply and sends it then'
+  }
+  Refuse $Why
+}
+
 function Need-Id {
   if (-not $Id) { Refuse "the verb $Verb needs a ticket id" }
 }
@@ -2443,8 +2467,8 @@ function Enter-WorkFolder([string]$Use, $Worker) {
   if ($session -gt 0) {
     $number = $session
     $holder = Record-Holder $session
-    if ($holder -and $count -eq 1 -and $session -eq 1) { Refuse "the work folder of this project is in use (task $holder); the run starts when it is free" }
-    if ($holder) { Refuse "the work folder $session of this project, where the session of this task runs, is in use (task $holder); the run starts when it is free" }
+    if ($holder -and $count -eq 1 -and $session -eq 1) { Refuse-Wait "the work folder of this project is in use (task $holder); the run starts when it is free" }
+    if ($holder) { Refuse-Wait "the work folder $session of this project, where the session of this task runs, is in use (task $holder); the run starts when it is free" }
   } else {
     $number = Pick-Folder $holders $count
     if ($number -eq 0 -and $Use -eq 'merge') {
@@ -2462,16 +2486,16 @@ function Enter-WorkFolder([string]$Use, $Worker) {
     }
     if ($number -eq 0) {
       $what = if ($Use -eq 'merge') { 'merge' } else { 'run' }
-      if ($count -eq 1) { Refuse "the work folder of this project is in use (task $(Record-Holder 1)); the $what starts when it is free" }
+      if ($count -eq 1) { Refuse-Wait "the work folder of this project is in use (task $(Record-Holder 1)); the $what starts when it is free" }
       $names = @($holders | Where-Object { $_.N -le $count -and $_.Holder } | ForEach-Object { $_.Holder } | Select-Object -Unique)
-      Refuse "all $count work folders of this project are in use (tasks $($names -join ', ')); the $what starts when one is free"
+      Refuse-Wait "all $count work folders of this project are in use (tasks $($names -join ', ')); the $what starts when one is free"
     }
   }
   if ($Use -eq 'work') {
     foreach ($entry in $holders) {
       if (-not $entry.Holder -or $entry.Holder -eq $Id) { continue }
       $same = @(Same-Files $entry.Holder)
-      if ($same.Count -gt 0) { Refuse "the task $($entry.Holder) works on the same files ($($same -join ', ')); this work run starts when it has ended" }
+      if ($same.Count -gt 0) { Refuse-Wait "the task $($entry.Holder) works on the same files ($($same -join ', ')); this work run starts when it has ended" }
     }
   }
   $script:FolderNo = $number
@@ -2637,7 +2661,7 @@ function Enter-TaskBranch {
   $info = Ensure-BranchFile
   $current = Current-Branch
   if ($current -eq $info.branch) { return '' }
-  if ($current.StartsWith('task/')) { Refuse "the checkout is on $current, the branch of another task; Dispatch switches back to the base when that work run has ended" }
+  if ($current.StartsWith('task/')) { Refuse-Wait "the checkout is on $current, the branch of another task; Dispatch switches back to the base when that work run has ended" }
   # Dispatch holds the merge lock while it switches back to the base and copies the task files
   # (ticket merge-issue), for seconds: the switch waits for it, then reads the branch again.
   Wait-MergeLock
@@ -2646,7 +2670,7 @@ function Enter-TaskBranch {
   if (Merge-Open $Project) { Refuse 'the checkout has an unfinished merge; finish it or run git merge --abort first' }
   $current = Current-Branch
   if ($current -eq $info.branch) { return '' }
-  if ($current.StartsWith('task/')) { Refuse "the checkout is on $current, the branch of another task; Dispatch switches back to the base when that work run has ended" }
+  if ($current.StartsWith('task/')) { Refuse-Wait "the checkout is on $current, the branch of another task; Dispatch switches back to the base when that work run has ended" }
   $tip = Ref-Hash $Project "refs/heads/$($info.branch)"
   $exists = [bool]$tip
   $kept = @()
@@ -3653,7 +3677,12 @@ switch ($Verb) {
     $worker = Resume-Target $run
     # A reply of the work run brings a new report: the pick of the old one goes (Pick the checks after the work run).
     if ($run -eq 'work' -and (Option-On 'pickChecks')) { Clear-Picks }
+    # A work run that waits for a folder, the files or a branch keeps the reply (Refuse-Wait); a reply
+    # that went out leaves no kept copy.
+    if ($run -eq 'work') { $script:KeepReply = $text }
     Resume-Run $run $worker $text '' ''
+    $keptFile = Join-Path $Reports "$Id.reply"
+    if (Test-Path -LiteralPath $keptFile) { Remove-Item -LiteralPath $keptFile -Force }
   }
   'status' {
     $workers = Get-Workers
@@ -5874,6 +5903,17 @@ pub fn task_approve_cancel(cwd: String, id: String) -> Result<(), String> {
     }
 }
 
+/// Takes back a reply that the worker script kept for a busy project (ticket
+/// keep-a-reply-that-the-worker-script): removes `<ticket>.reply`. Ok without the file.
+pub fn task_reply_cancel(cwd: String, id: String) -> Result<(), String> {
+    check_ticket(&id)?;
+    let path = Project::find(&cwd)?.reply_file(&id);
+    match fs::remove_file(&path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(format!("{}: {error}", path.display())),
+        _ => Ok(()),
+    }
+}
+
 /// Writes the final choice of the picked checks of a task (ticket test-picker-an-agent-picks-the-checks,
 /// user decision 1): the file `<ticket>.checks` from the names, in the order of the list; the plan has
 /// no section to update. An old result file of the task goes, because a new run comes. Gives the
@@ -6472,6 +6512,19 @@ pub struct TaskInfo {
     /// approve-or-reject-a-plan-from-the-phone): the marker `<ticket>.approved` of this plan while
     /// the task is in `planning`. None else.
     approved: Option<u64>,
+    /// A reply that the worker script kept because the project was busy (ticket
+    /// keep-a-reply-that-the-worker-script), while it belongs to the current report and the task
+    /// is not stopped. None else.
+    kept: Option<KeptReply>,
+}
+
+/// A reply that the worker script kept for a busy project (`<ticket>.reply`): the text, the time of
+/// the refusal and the time of the report it answers (0 without a report), in milliseconds.
+#[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
+pub struct KeptReply {
+    text: String,
+    at: u64,
+    report: u64,
 }
 
 /// The decision of the user to take a task as done (ticket take-as-done): the time of the click
@@ -7398,6 +7451,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             checked: None,
             checks_open: false,
             approved: None,
+            kept: None,
         });
         tasks.len() - 1
     }
@@ -7447,6 +7501,19 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         tasks[at].check_result = section_block(&text, "Check result");
         tasks[at].waits_for = parse_waits_for(&text);
         tasks[at].report = Some(entry);
+    }
+    // A reply that the worker script kept holds for the report it answers, while the task is not
+    // stopped; a stale or broken file goes (ticket keep-a-reply-that-the-worker-script).
+    for task in tasks.iter_mut() {
+        let path = project.reply_file(&task.name);
+        let Ok(text) = fs::read_to_string(&path) else { continue };
+        let report = task.report.as_ref().map_or(0, |entry| entry.modified);
+        match serde_json::from_str::<KeptReply>(text.trim_start_matches('\u{feff}')) {
+            Ok(kept) if task.state != "stopped" && kept.report == report && !kept.text.trim().is_empty() => task.kept = Some(kept),
+            _ => {
+                let _ = fs::remove_file(&path);
+            }
+        }
     }
     // The checks picked after the work run (ticket test-picker-an-agent-picks-the-checks): with the
     // switch on and a list, a done report gets the pick that belongs to it and the run of the picks;
@@ -10645,6 +10712,7 @@ Blockers: none
             checked: None,
             checks_open: false,
             approved: None,
+            kept: None,
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };
@@ -14445,6 +14513,72 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
             assert!(out.contains(held), "{out}");
             assert_eq!(folder_branch(&one), "task/t-1");
             assert!(read(&project.folder_record(2)).starts_with("ticket: t-3\n"));
+            clean(&project);
+        }
+
+        /// Ticket keep-a-reply-that-the-worker-script: a reply that waits for the work folder of its
+        /// session is kept in `<ticket>.reply` with the report time, a newer one replaces it, the task
+        /// read gives it as `kept`, and a reply that goes out removes it. A stale file goes at the read,
+        /// and `task_reply_cancel` removes it.
+        #[test]
+        fn a_refused_reply_is_kept() {
+            let (project, fake, _base) = work_project("work-kept-reply");
+            let cwd = project.root.to_string_lossy().into_owned();
+            set_work_folder_count(&project, 2);
+            let two = project.work_folder_at(2);
+            plan_and_approve(&project, &fake, "t-1");
+            plan_only(&project, &fake, "t-2");
+            let (code, out) = run_script_env(&project, &fake, "working", &["approve", "t-2"], &[("FAKE_NAME", "t-1 [work]")]);
+            assert_eq!(code, 0, "{out}");
+            assert_eq!(folder_branch(&two), "task/t-2");
+            write_report(&project, "t-2");
+            let report = file_entry(&project.reports.join("t-2.md")).unwrap().modified;
+            let two_text = two.to_string_lossy().into_owned();
+            let kept_file = project.reply_file("t-2");
+            let kept_of = |list: &TaskList| list.tasks.iter().find(|task| task.name == "t-2").and_then(|task| task.kept.clone());
+
+            // Another task holds folder 2: the reply is refused and kept.
+            write_folder_record(&project, 2, "t-3", "work", std::process::id());
+            let held = "the work folder 2 of this project, where the session of this task runs, is in use (task t-3); the run starts when it is free";
+            let (code, out) = run_script_env(&project, &fake, "done", &["reply", "t-2", "Answer to question 1: \"Keep\" it"], &[("FAKE_NAME", "t-2 [work]"), ("FAKE_CWD", two_text.as_str())]);
+            assert_eq!(code, 2, "{out}");
+            assert!(out.contains(&format!("{held}; Dispatch keeps this reply and sends it then")), "{out}");
+            let kept: KeptReply = serde_json::from_str(read(&kept_file).trim_start_matches('\u{feff}')).unwrap();
+            assert_eq!((kept.text.as_str(), kept.report), ("Answer to question 1: 'Keep' it", report));
+            assert!(kept.at > 0);
+            assert_eq!(kept_of(&task_list(cwd.clone()).unwrap()), Some(kept.clone()));
+
+            // User decision 1: a newer reply replaces the kept one.
+            let (code, out) = run_script_env(&project, &fake, "done", &["reply", "t-2", "Do it the other way"], &[("FAKE_NAME", "t-2 [work]"), ("FAKE_CWD", two_text.as_str())]);
+            assert_eq!(code, 2, "{out}");
+            assert_eq!(kept_of(&task_list(cwd.clone()).unwrap()).map(|kept| kept.text), Some("Do it the other way".to_string()));
+
+            // The folder is free: the reply goes out and the kept copy goes.
+            fs::remove_file(project.folder_record(2)).unwrap();
+            let (code, out) = run_script_env(&project, &fake, "done", &["reply", "t-2", "Do it the other way"], &[("FAKE_NAME", "t-2 [work]"), ("FAKE_CWD", two_text.as_str())]);
+            assert_eq!(code, 0, "{out}");
+            assert!(last_call(&fake)[0].starts_with("Do it the other way"));
+            assert!(!kept_file.exists(), "the reply went out");
+
+            // A kept reply of another report goes at the read.
+            let report = file_entry(&project.reports.join("t-2.md")).map_or(0, |entry| entry.modified);
+            write_file(&kept_file, &format!("{{\"text\":\"old\",\"at\":1,\"report\":{}}}", report + 1)).unwrap();
+            assert_eq!(kept_of(&task_list(cwd.clone()).unwrap()), None);
+            assert!(!kept_file.exists(), "a stale reply goes");
+
+            // Take back removes it; a second take back is fine.
+            let valid = format!("{{\"text\":\"new\",\"at\":1,\"report\":{report}}}");
+            write_file(&kept_file, &valid).unwrap();
+            assert!(kept_of(&task_list(cwd.clone()).unwrap()).is_some());
+            task_reply_cancel(cwd.clone(), "t-2".into()).unwrap();
+            assert!(!kept_file.exists());
+            task_reply_cancel(cwd.clone(), "t-2".into()).unwrap();
+
+            // A stopped task keeps no reply.
+            write_file(&kept_file, &valid).unwrap();
+            write_file(&project.reports.join("t-2.state"), "stopped\n").unwrap();
+            assert_eq!(kept_of(&task_list(cwd.clone()).unwrap()), None);
+            assert!(!kept_file.exists(), "a stopped task keeps no reply");
             clean(&project);
         }
 

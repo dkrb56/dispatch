@@ -226,3 +226,40 @@ export function parseQueuedReplies(stored: string | null | undefined): QueuedRep
 export function serializeQueuedReplies(replies: Iterable<QueuedReply>): string {
   return JSON.stringify([...replies]);
 }
+
+/**
+ * A reply that the worker script kept because the project was busy (ticket
+ * keep-a-reply-that-the-worker-script): the file `<ticket>.reply` of the host, as `kept` of the task read.
+ */
+export interface KeptReply {
+  /** The reply word for word, as the script cleaned it. */
+  text: string;
+  /** The time of the refusal, in ms. */
+  at: number;
+  /** The time of the report that the reply answers, in ms; 0 without a report. */
+  report: number;
+}
+
+/**
+ * The queued reply that a kept reply of the host becomes (ticket keep-a-reply-that-the-worker-script),
+ * or null: when there is none, when it answers another report than `report`, when the key has a
+ * queued reply already (a reply of the card or the Questions window, refused by the script too), or
+ * when the user took back this kept reply (`cancelled`: the time `at` of it, by key).
+ */
+export function keptToQueue(
+  key: string,
+  kept: KeptReply | null | undefined,
+  report: number,
+  queued: ReadonlyMap<string, unknown>,
+  cancelled: ReadonlyMap<string, number>,
+): QueuedReply | null {
+  if (!kept || !kept.text.trim() || kept.report !== report || queued.has(key) || cancelled.get(key) === kept.at) return null;
+  const task = key.slice(key.lastIndexOf("\n") + 1);
+  return {
+    key,
+    record: { modified: kept.report, questions: [], reply: kept.text },
+    text: kept.text,
+    line: `The user replied to ${task} in a chat or on the phone while the project was busy, and the worker script kept the reply: ${kept.text}`,
+    at: kept.at,
+  };
+}

@@ -198,7 +198,7 @@ import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
 import { answerable, answeredLine, chosenCount, hasOwnWords, holdReason, lineWithWords, ownAnswer, questionWaitToOpen, replySending, replyText, replyWithWords, SENDING_STATUS, windowChoices, windowTitle, WORDS_ONLY_TIP, WORDS_PLACEHOLDER, wordsLine, wordsReply } from "./answers";
 import type { SendingReply } from "./answers";
 import { CONFIRM_PLACEHOLDER, CONFIRM_TIP, CONFIRM_TITLE, confirmChoice, confirmLine, confirmQuestion, RESULT_LABEL, RESULT_TIP } from "./confirm";
-import { ANSWERED_KEY, type AnsweredQuestion, type AnsweredReport, answeredRecord, answerStands, parseAnswered, parseQueuedReplies, QUEUED_REPLIES_KEY, type QueuedReply, type RepeatAction, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered, serializeQueuedReplies } from "./repeat";
+import { ANSWERED_KEY, type AnsweredQuestion, type AnsweredReport, answeredRecord, answerStands, type KeptReply, keptToQueue, parseAnswered, parseQueuedReplies, QUEUED_REPLIES_KEY, type QueuedReply, type RepeatAction, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered, serializeQueuedReplies } from "./repeat";
 
 type Shell = "powershell" | "cmd";
 
@@ -2460,6 +2460,8 @@ interface TaskInfo {
   workChoice?: WorkChoice | null;
   /** The plan time of an approval from the phone that waits (ticket approve-or-reject-a-plan-from-the-phone). Null or absent without one. */
   approved?: number | null;
+  /** A reply that the worker script kept for a busy project (ticket keep-a-reply-that-the-worker-script). Null or absent without one. */
+  kept?: KeptReply | null;
   /** The parts of the plan that follow its work run (ticket subtickets); empty for a part. Absent from an older host. */
   parts?: PlanPart[];
   /** A part whose parent did not tick the night box: night mode does not start it (ticket subtickets). Absent from an older host. */
@@ -3180,6 +3182,7 @@ async function refreshTasks(poll = false): Promise<void> {
  */
 function approvePlans(): void {
   adoptPhoneApprovals();
+  adoptKeptReplies();
   for (const project of projectTasks.values()) {
     // Only the window that drives the project's host approves by itself (remote-shared-state).
     if (!driverOf(project.host)) continue;
@@ -3356,6 +3359,49 @@ function adoptPhoneApprovals(): void {
   if (changed) saveQueued();
 }
 
+/** The kept replies of the host that the user took back in this window, by `queueKey`, with their time: until the next read shows the file gone. */
+const keptCancelled = new Map<string, number>();
+
+/**
+ * Takes the replies that the worker script kept for a busy project (ticket
+ * keep-a-reply-that-the-worker-script) into the queue of the window: a reply from a chat or the phone
+ * then waits on the card with Take back and goes out when the project is free. A key with a queued
+ * reply keeps it: a reply of the card that the script refused is kept by the script too.
+ */
+function adoptKeptReplies(): void {
+  let changed = false;
+  for (const project of projectTasks.values()) {
+    for (const task of projectTaskList(project)) {
+      const key = queueKey(task);
+      const kept = task.info?.kept;
+      if (keptCancelled.has(key) && keptCancelled.get(key) !== kept?.at) keptCancelled.delete(key);
+      // A reply in flight, or one that went after the refusal: the read is older than the send.
+      const sending = sendingReplies.get(key);
+      if (kept && sending && sending.modified === kept.report && (sending.sentAt === null || sending.sentAt >= kept.at)) continue;
+      const reply = keptToQueue(key, kept, task.info?.report?.modified ?? 0, queuedReplies, keptCancelled);
+      if (!reply) continue;
+      queuedReplies.set(key, reply);
+      sentReplies.delete(key);
+      changed = true;
+    }
+  }
+  if (changed) {
+    saveQueuedReplies();
+    renderChats();
+  }
+}
+
+/** Removes the kept reply of the host for a task (ticket keep-a-reply-that-the-worker-script), so the next read does not queue it again. */
+function cancelKeptReply(task: Task): void {
+  const kept = task.info?.kept;
+  if (!kept) return;
+  keptCancelled.set(queueKey(task), kept.at);
+  call(taskHost(task), "task_reply_cancel", { cwd: taskCwd(task), id: task.name }).catch((error) => {
+    actionErrors.set(task.name, String(error));
+    renderChats();
+  });
+}
+
 /**
  * The start leases of the projects (ticket one-work-run-race): a start counts from the moment
  * Dispatch calls it until the task list and the worker list show the work run.
@@ -3479,6 +3525,8 @@ function waitingReplies(project: ProjectTasks, tasks: Task[]): QueuedReply[] {
     const kept = !!task?.info && (!!task.info.report || workLostOf(task) || planLost(task));
     if (!task?.info || !kept || task.info.state === "stopped" || (task.info.report?.modified ?? 0) !== reply.record.modified || live) {
       queuedReplies.delete(key);
+      // The kept copy of the host goes too (ticket keep-a-reply-that-the-worker-script).
+      if (task) cancelKeptReply(task);
       changed = true;
       continue;
     }
@@ -7427,6 +7475,8 @@ function replyWait(task: Task): string {
 function takeBackReply(task: Task): void {
   if (!queuedReplies.delete(queueKey(task))) return;
   saveQueuedReplies();
+  // A reply that the worker script kept goes on the host too, or the next read queues it again (ticket keep-a-reply-that-the-worker-script).
+  cancelKeptReply(task);
   tellTriage(projectFor(taskHost(task), taskCwd(task)), `${task.name}: the user took back the waiting reply in Dispatch. The report waits for an answer again.`);
   renderChats();
 }

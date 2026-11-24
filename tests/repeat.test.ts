@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { answeredLine, replyText } from "../src/answers.ts";
-import { type AnsweredReport, answeredRecord, answerStands, parseAnswered, parseQueuedReplies, type QueuedReply, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered, serializeQueuedReplies } from "../src/repeat.ts";
+import { type AnsweredReport, answeredRecord, answerStands, type KeptReply, keptToQueue, parseAnswered, parseQueuedReplies, type QueuedReply, repeatCardText, repeatedQuestions, repeatLine, serializeAnswered, serializeQueuedReplies } from "../src/repeat.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
@@ -181,6 +181,29 @@ test("waiting replies survive serialize and parse word for word; a broken entry 
   assert.deepEqual(parseQueuedReplies("{not json"), []);
   assert.deepEqual(parseQueuedReplies(null), []);
   assert.deepEqual(parseQueuedReplies("{}"), []);
+});
+
+// Ticket keep-a-reply-that-the-worker-script: a reply from a chat or the phone that the worker script
+// refused for a busy work folder is kept by the host, and the window takes it into its queue once.
+test("a kept reply of the host becomes a queued reply once", () => {
+  const key = "local\nD:/dev/starminer\nmeasure-rocks";
+  const kept: KeptReply = { text: "Answer to question 1: Keep it", at: 1_700_000_000_000, report: 3_000 };
+  const queued = keptToQueue(key, kept, 3_000, new Map(), new Map());
+  assert.deepEqual(queued && { ...queued, line: "" }, { key, record: { modified: 3_000, questions: [], reply: kept.text }, text: kept.text, line: "", at: kept.at });
+  assert.match(queued!.line, /^The user replied to measure-rocks in a chat or on the phone while the project was busy/);
+  // The record survives a restart of Dispatch.
+  assert.deepEqual(parseQueuedReplies(serializeQueuedReplies([queued!])), [queued]);
+  // A reply of the card of the same task waits already: it stays, and the kept one is not added.
+  const card: QueuedReply = { key, record: answered(), text: "Answer to question 1: From the card", line: "Answered in Dispatch.", at: 1 };
+  assert.equal(keptToQueue(key, kept, 3_000, new Map([[key, card]]), new Map()), null);
+  // A taken-back reply is not adopted again until a new one comes.
+  assert.equal(keptToQueue(key, kept, 3_000, new Map(), new Map([[key, kept.at]])), null);
+  assert.ok(keptToQueue(key, { ...kept, at: kept.at + 1 }, 3_000, new Map(), new Map([[key, kept.at]])));
+  // A reply of another report, an empty one or none is not adopted.
+  assert.equal(keptToQueue(key, kept, 4_000, new Map(), new Map()), null);
+  assert.equal(keptToQueue(key, { ...kept, text: " " }, 3_000, new Map(), new Map()), null);
+  assert.equal(keptToQueue(key, null, 3_000, new Map(), new Map()), null);
+  assert.equal(keptToQueue(key, undefined, 3_000, new Map(), new Map()), null);
 });
 
 // Ticket continue-comes-back-on-the-task-card: the Continue of 09:29 on 2026-11-23 for the task
