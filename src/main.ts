@@ -15231,10 +15231,13 @@ async function refreshFocusTasks(onlyWhenChanged = false): Promise<void> {
   if (roots.size === 0) return;
   let changed = false;
   // The comments and groups of the Plan view, beside the task reads (ticket plan-view-selection-comments-and-groups).
+  const groupsKnown = planned ? planGroupsRead.has(refKey(planned)) : true;
   const groupsRead =
     planned && (!onlyWhenChanged || readIsDue(planned.host, `plan-groups:${refKey(planned)}`))
     ? loadPlanGroups(planned).then((groupsChanged) => {
         if (groupsChanged) changed = true;
+        // The first read ends the spinner at once, without a wait for the task reads of the other projects.
+        if (!groupsKnown && planOn && planGroupsRead.has(refKey(planned))) renderPlan();
       })
     : undefined;
   // The short lines of the Plan cards, beside the groups (ticket show-a-short-description-on-each-ticket).
@@ -16170,6 +16173,8 @@ let planSelectedArrow: PlanArrow | null = null;
 let planSelectedGroup: string | null = null;
 /** The comments and groups of each project, by project key. */
 const planGroups = new Map<string, PlanGroup[]>();
+/** The projects whose comments and groups are known: read once (with success or failure), saved or auto grouped. Until then the board shows a spinner. */
+const planGroupsRead = new Set<string>();
 /** Why the comments and groups of a project could not be read or saved; the toolbar count shows it. */
 const planGroupsError = new Map<string, string>();
 /** The projects whose file of comments and groups could not be read: a save would overwrite it. */
@@ -17481,6 +17486,7 @@ async function planSetGroups(ref: ProjectRef, groups: PlanGroup[]): Promise<void
   }
   planGroupsSavedAt.set(key, Date.now());
   planGroups.set(key, groups);
+  planGroupsRead.add(key);
   renderPlan();
   try {
     const reply = await call<unknown>(ref.host, "plan_groups_save", { cwd: ref.root, groups });
@@ -17504,6 +17510,8 @@ async function loadPlanGroups(ref: ProjectRef): Promise<boolean> {
   } catch (failure) {
     error = `Comments and groups not read: ${String(failure)}`;
   }
+  // Every ended read makes the groups known; a failed read shows the board without groups and the error.
+  planGroupsRead.add(key);
   if ((planGroupsSavedAt.get(key) ?? 0) >= readAt) return false;
   const before = JSON.stringify([planGroups.get(key) ?? [], planGroupsError.get(key) ?? ""]);
   planGroups.set(key, groups);
@@ -17538,6 +17546,7 @@ async function planAutoGroup(): Promise<void> {
   try {
     const groups = parsePlanGroups(await call<unknown>(ref.host, "plan_groups_auto", { cwd: ref.root }));
     planGroups.set(key, groups);
+    planGroupsRead.add(key);
     planGroupsError.delete(key);
     const made = groups.filter((group) => group.auto && !before.has(group.id)).length;
     const grouped = new Set(groups.filter((group) => group.auto).flatMap((group) => group.tickets));
@@ -17723,6 +17732,17 @@ function renderPlan(): void {
     planFlowButton.disabled = true;
     planFlowBarEl.hidden = true;
     planBoardEl.replaceChildren(mapElement("p", "map-muted map-none", "Reading the tickets…"));
+    planSideEl.replaceChildren();
+    return;
+  }
+  // A spinner, not the board without its groups, until the groups of the project are known (ticket when-i-open-plan-i-get-ungrouped-tickets).
+  if (!planGroupsRead.has(refKey(ref))) {
+    planCountEl.textContent = "";
+    planFlowButton.disabled = true;
+    planFlowBarEl.hidden = true;
+    const line = mapElement("p", "map-muted map-none project-load", "Reading the groups…");
+    line.prepend(mapElement("span", "load-spinner"));
+    planBoardEl.replaceChildren(line);
     planSideEl.replaceChildren();
     return;
   }

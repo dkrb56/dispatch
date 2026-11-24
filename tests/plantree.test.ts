@@ -1278,3 +1278,20 @@ test("the page has Describe, its host commands, the short line on the cards and 
   assert.match(css, /\.plan-card\.described \.plan-card-title \{/);
   assert.match(html, /<b>Describe<\/b> in the toolbar asks Claude/);
 });
+
+test("the Plan board shows a spinner until the groups of the project are read", () => {
+  const main = read("../src/main.ts");
+  const html = read("../index.html");
+  const body = (name: string) => {
+    const start = main.indexOf(name);
+    assert.ok(start >= 0, name);
+    return main.slice(start, main.indexOf("\n}\n", start));
+  };
+  assert.match(main, /const planGroupsRead = new Set<string>\(\);/);
+  assert.match(body("async function loadPlanGroups("), /planGroupsRead\.add\(key\);/);
+  const render = body("function renderPlan(): void {");
+  assert.match(render, /planGroupsRead\.has\(/);
+  assert.match(render, /load-spinner/);
+  assert.match(render, /Reading the groups…/);
+  assert.match(html, /while Dispatch reads the groups of the project, the board shows a spinner/i);
+});
