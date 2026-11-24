@@ -2,6 +2,14 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.94 (2026-11-24)
+- Look for a new version every 10 minutes and when Help opens; Looking line; time with seconds.
+- A Pictures button in the Questions window opens the Pictures window of the task card.
+- A picture path with a slash is also tried below the folders that the report names.
+- One more try after a failed connection to the voice service, inside the 30-second limit.
+- The Pictures window reads the real picture of a Git LFS pointer from the local LFS store.
+- An approved plan that waits locks its card except Cancel approval.
+
 ## 0.1.93 (2026-11-24)
 - A box for your own words on the question card and in the Questions window, Send only my words; Ctrl+V adds pictures there, in the check result box and in the plan Ask box.
 - A reply that waits for a work folder, the same files or another task's branch is kept in <ticket>.reply; the task read gives it as kept, the window queues it with Take back and sends it when free; task_reply_cancel.
