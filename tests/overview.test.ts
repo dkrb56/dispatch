@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { cardLayout, chatPlacer, doneTasks, freePlace, idleRun, inWork, limitStop, listedTasks, type LostFacts, type LostWorker, movedPlaces, OVERVIEW_CARD_WIDTH, OVERVIEW_DONE_SHOWN, OVERVIEW_EXTENDED_DONE, OVERVIEW_EXTENDED_WIDTH, OVERVIEW_GRID, type OverviewTask, PLAN_ERROR_TEXT, PLAN_LIMIT_TEXT, planLost, type PlanLostFacts, parsePlaces, parseSizes, type RunFacts, runStarting, savedView, sizeOf, snapPlace, toggledSize, WORK_ERROR_TEXT, WORK_LIMIT_TEXT, WORK_LOST_TEXT, workLost } from "../src/overview.ts";
+import { cardLayout, chatPlacer, doneTasks, freePlace, idleRun, inWork, isCardFolded, limitStop, parseCardFolds, toggledCardFold, listedTasks, type LostFacts, type LostWorker, movedPlaces, OVERVIEW_CARD_WIDTH, OVERVIEW_DONE_SHOWN, OVERVIEW_EXTENDED_DONE, OVERVIEW_EXTENDED_WIDTH, OVERVIEW_GRID, type OverviewTask, PLAN_ERROR_TEXT, PLAN_LIMIT_TEXT, planLost, type PlanLostFacts, parsePlaces, parseSizes, type RunFacts, runStarting, savedView, sizeOf, snapPlace, toggledSize, WORK_ERROR_TEXT, WORK_LIMIT_TEXT, WORK_LOST_TEXT, workLost } from "../src/overview.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const CSS = read("../src/styles.css");
@@ -696,4 +696,36 @@ test("the Help names the size button of a card", () => {
   const help = /<h3>Overview<\/h3>[\s\S]*?<ul>([\s\S]*?)<\/ul>/.exec(HTML)?.[1] ?? "";
   assert.match(help, /⤢/);
   assert.match(help, /twice as wide/);
+});
+
+// ---- The fold of a card ------------------------------------------------------------------------
+
+test("a saved fold comes back; a broken text or entry gives an open card", () => {
+  const folds = parseCardFolds(JSON.stringify({ "d:/one": true, "d:/two": true }));
+  assert.deepEqual(folds, { "d:/one": true, "d:/two": true });
+  assert.equal(isCardFolded(folds, "d:/one"), true);
+  assert.equal(isCardFolded(folds, "d:/three"), false);
+  for (const text of [null, undefined, "", "{broken", "[1,2]", "42", "null", "true"]) assert.deepEqual(parseCardFolds(text), {}, String(text));
+  assert.deepEqual(parseCardFolds(JSON.stringify({ a: false, b: "true", c: 1, d: true })), { d: true });
+});
+
+test("a click on the fold button folds an open card and opens a folded card", () => {
+  const before = { a: true as const };
+  const folded = toggledCardFold(before, "b");
+  assert.deepEqual(folded, { a: true, b: true });
+  assert.deepEqual(toggledCardFold(folded, "b"), { a: true });
+  assert.deepEqual(toggledCardFold(folded, "a"), { b: true });
+  assert.deepEqual(before, { a: true });
+});
+
+test("the page has the fold button, hides all but the head of a folded card and keeps the folds", () => {
+  const all = rules(CSS);
+  assert.ok(all.some((rule) => rule.selectors.includes(".overview-fold")), "src/styles.css has the fold button");
+  const hide = all.filter((rule) => rule.selectors.some((selector) => selector.startsWith(".overview-card.folded")) && rule.declarations.some(([name, value]) => name === "display" && value === "none"));
+  assert.ok(hide.length > 0, "a folded card hides what is not the head");
+  assert.match(MAIN, /"overview-folded"/);
+  assert.match(MAIN, /overview-fold"/);
+  assert.match(MAIN, /PROJECT_KEY_MAPS = \[[^\]]*"overview-folded"/);
+  const help = /<h3>Overview<\/h3>[\s\S]*?<ul>([\s\S]*?)<\/ul>/.exec(HTML)?.[1] ?? "";
+  assert.match(help, /<b>–<\/b> button/);
 });

@@ -10577,7 +10577,8 @@ svg.links {
 }
 
 /* The size button at the right end of the head: a flat control in the look of the close button of the Map. */
-.overview-expand {
+.overview-expand,
+.overview-fold {
   flex: none;
   width: 26px;
   height: 26px;
@@ -10591,9 +10592,19 @@ svg.links {
   cursor: pointer;
 }
 
-.overview-expand:hover {
+.overview-expand:hover,
+.overview-fold:hover {
   background: var(--card);
   color: var(--text);
+}
+
+/* A folded card shows only its head bar. */
+.overview-card.folded > :not(.overview-head) {
+  display: none;
+}
+
+.overview-card.folded .overview-head {
+  padding-bottom: 12px;
 }
 
 /* The Setup button of a card: shows only while the project misses setup steps

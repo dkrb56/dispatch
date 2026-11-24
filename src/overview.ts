@@ -437,3 +437,36 @@ export function toggledSize(sizes: CardSizes, key: string): CardSizes {
   if (sizes[key] !== "extended") next[key] = "extended";
   return next;
 }
+
+// ---- The fold of a card ----
+
+/** The folded cards by project key. */
+export type CardFolds = Record<string, true>;
+
+/** The folds from the saved text. Null, broken JSON or a text that is no object give none; an entry whose value is not true is dropped. */
+export function parseCardFolds(text: string | null | undefined): CardFolds {
+  if (!text) return {};
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    return {};
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return {};
+  const folds: CardFolds = {};
+  for (const [key, value] of Object.entries(data as Record<string, unknown>)) if (value === true) folds[key] = true;
+  return folds;
+}
+
+/** True when the card of a project is folded to its head bar. */
+export function isCardFolded(folds: CardFolds, key: string): boolean {
+  return folds[key] === true;
+}
+
+/** The folds after a click on the fold button: a folded card opens, an open one folds. */
+export function toggledCardFold(folds: CardFolds, key: string): CardFolds {
+  const next: CardFolds = {};
+  for (const [one, value] of Object.entries(folds)) if (one !== key) next[one] = value;
+  if (folds[key] !== true) next[key] = true;
+  return next;
+}

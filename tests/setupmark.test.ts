@@ -108,7 +108,7 @@ test("the Overview has no Rules or Setup pipeline in the bar, and a Setup button
   assert.ok(card.includes('"Setup"'));
   assert.ok(card.includes("project-setup"));
   assert.ok(card.includes("showSetup(ref.host, ref.root)"));
-  assert.match(main, /closest\("\.overview-name, \.overview-expand, \.overview-setup"\)/);
+  assert.match(main, /closest\("\.overview-name, \.overview-expand, .overview-fold, .overview-setup"\)/);
   const show = main.slice(main.indexOf("function showSetupButtons("), main.indexOf("function calmSetup("));
   assert.ok(show.includes("overview-setup") && show.includes("hidden"));
 });

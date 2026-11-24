@@ -103,7 +103,7 @@ import {
   type PlanPlace,
   type PlanTicket,
 } from "./plantree";
-import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, idleRun, inWork, limitStop, listedTasks, type LostWorker, movedPlaces, newestWorker, type OverviewPlaces, type OverviewRect, type OverviewTask, PLAN_ERROR_TEXT, PLAN_LIMIT_TEXT, planLost as planLostRule, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode, WORK_ERROR_TEXT, WORK_LIMIT_TEXT, WORK_LOST_TEXT, workLost } from "./overview";
+import { cardLayout, type CardFolds, type CardSizes, chatPlacer, doneTasks, freePlace, idleRun, inWork, isCardFolded, parseCardFolds, toggledCardFold, limitStop, listedTasks, type LostWorker, movedPlaces, newestWorker, type OverviewPlaces, type OverviewRect, type OverviewTask, PLAN_ERROR_TEXT, PLAN_LIMIT_TEXT, planLost as planLostRule, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode, WORK_ERROR_TEXT, WORK_LIMIT_TEXT, WORK_LOST_TEXT, workLost } from "./overview";
 import {
   allowanceLine,
   bars,
@@ -11738,7 +11738,7 @@ function startTicketDrag(event: PointerEvent, card: HTMLElement, project: string
  * drop snaps it to the grid, puts it on top and saves the places. The project name keeps its click.
  */
 function startCardDrag(event: PointerEvent, card: OverviewCard): void {
-  if (event.button !== 0 || (event.target as HTMLElement).closest(".overview-name, .overview-expand, .overview-setup")) return;
+  if (event.button !== 0 || (event.target as HTMLElement).closest(".overview-name, .overview-expand, .overview-fold, .overview-setup")) return;
   event.preventDefault();
   const head = event.currentTarget as HTMLElement;
   head.setPointerCapture(event.pointerId);
@@ -15984,6 +15984,8 @@ interface OverviewCard {
   headEl: HTMLElement;
   dotEl: HTMLElement;
   countEl: HTMLElement;
+  /** Folds the card to its head bar or shows it whole (class `folded`). */
+  foldEl: HTMLButtonElement;
   /** Extends the card or gives it its usual size back (overview-card-expand). */
   expandEl: HTMLButtonElement;
   tasksEl: HTMLElement;
@@ -16047,6 +16049,38 @@ function toggleCardSize(card: OverviewCard): void {
   saveSizes();
   const place = overviewPlaces[key];
   if (place) {
+    overviewPlaces = movedPlaces(overviewPlaces, key, place);
+    savePlaces();
+  }
+  renderOverview();
+}
+
+/** The folded cards, in localStorage `overview-folded`. */
+let overviewFolds: CardFolds = readFolds();
+
+function readFolds(): CardFolds {
+  try {
+    return parseCardFolds(localStorage.getItem("overview-folded"));
+  } catch {
+    return {};
+  }
+}
+
+function saveFolds(): void {
+  try {
+    localStorage.setItem("overview-folded", JSON.stringify(overviewFolds));
+  } catch {
+    // The folds then apply until the app closes.
+  }
+}
+
+/** Folds a card to its head bar or shows it whole. A card that opens lies on top, like a moved card. */
+function toggleCardFold(card: OverviewCard): void {
+  const key = projectKey(card.host, card.root);
+  overviewFolds = toggledCardFold(overviewFolds, key);
+  saveFolds();
+  const place = overviewPlaces[key];
+  if (place && !isCardFolded(overviewFolds, key)) {
     overviewPlaces = movedPlaces(overviewPlaces, key, place);
     savePlaces();
   }
@@ -16133,6 +16167,7 @@ function overviewCard(ref: ProjectRef): OverviewCard {
   name.title = `${root}\nOpen this project in Focus`;
   name.addEventListener("click", () => void showProject(ref));
   const countEl = mapElement("span", "overview-count");
+  const foldEl = mapElement("button", "overview-fold");
   const expandEl = mapElement("button", "overview-expand");
   // The sign of waiting tickets that do not go (ticket auto-todo), after the name.
   // The Setup button: shows only while the project misses setup steps; `showSetupButtons` sets
@@ -16147,7 +16182,7 @@ function overviewCard(ref: ProjectRef): OverviewCard {
     calmSetup(key);
     showSetup(ref.host, ref.root);
   });
-  head.append(grip, dotEl, name, ticketSign(ref), folderBar(key), countEl, setupEl, expandEl);
+  head.append(grip, dotEl, name, ticketSign(ref), folderBar(key), countEl, setupEl, foldEl, expandEl);
   markSetupButton(setupEl, key, projectName(ref));
   setupEl.hidden = !setupStates.get(key)?.stamp;
   const tasksEl = mapElement("div", "overview-tasks");
@@ -16157,8 +16192,9 @@ function overviewCard(ref: ProjectRef): OverviewCard {
   startEl.addEventListener("click", () => void (projectNoTriage(key) ? openProjectChat(ref) : ensureWorkspace(ref).then(renderOverview)));
   const chatEl = mapElement("div", "overview-chat");
   el.append(head, tasksEl, startEl, chatEl);
-  const card: OverviewCard = { host, root, el, headEl: head, dotEl, countEl, expandEl, tasksEl, startEl, chatEl };
+  const card: OverviewCard = { host, root, el, headEl: head, dotEl, countEl, foldEl, expandEl, tasksEl, startEl, chatEl };
   expandEl.addEventListener("click", () => toggleCardSize(card));
+  foldEl.addEventListener("click", () => toggleCardFold(card));
   head.title = "Drag to move this card; it snaps to the grid";
   head.addEventListener("pointerdown", (event) => startCardDrag(event, card));
   overviewCards.set(key, card);
@@ -16195,6 +16231,13 @@ function renderOverview(): void {
     card.expandEl.title = size === "extended" ? "Back to the usual size" : "Show more: a wider card with more finished tasks and the whole lines";
     card.expandEl.setAttribute("aria-label", size === "extended" ? "Back to the usual size" : "Extend this card");
     card.expandEl.setAttribute("aria-pressed", String(size === "extended"));
+    // The fold of the card: the class hides all but the head bar.
+    const folded = isCardFolded(overviewFolds, key);
+    card.el.classList.toggle("folded", folded);
+    card.foldEl.textContent = folded ? "+" : "–";
+    card.foldEl.title = folded ? "Show the whole card" : "Minimize this card to its bar";
+    card.foldEl.setAttribute("aria-label", folded ? "Show the whole card" : "Minimize this card to its bar");
+    card.foldEl.setAttribute("aria-pressed", String(folded));
     const record = projectTasks.get(key);
     if (!record) {
       // A spinner until the project is read (ticket when-projects-are-loading-i-see-triage).
@@ -18886,7 +18929,7 @@ function parseFocusProjects(saved: unknown): ProjectRef[] {
 /** The prefixes of the browser store whose rest is a project key. */
 const PROJECT_KEY_PREFIXES = ["triage:", "triage-role:", "triage-choice:", "triage-limit:", "triage-earlier:", "board-column-widths:"];
 /** The records of the browser store that map project keys to a value. */
-const PROJECT_KEY_MAPS = ["overview-places", "overview-sizes", "focus-sizes"];
+const PROJECT_KEY_MAPS = ["overview-places", "overview-sizes", "overview-folded", "focus-sizes"];
 
 /**
  * Decision 4 of remote-multi-host: a value that a window saved under a project key without a host
@@ -18929,6 +18972,7 @@ function migrateStoredKeys(): void {
   }
   overviewPlaces = readPlaces();
   overviewSizes = readSizes();
+  overviewFolds = readFolds();
 }
 
 /** The browser value with the project keys that the user keeps on their host (ticket this-pc-runs-twice, decision 3). */
