@@ -7645,9 +7645,8 @@ function openQuestionWindow(task: Task): void {
     const read = document.createElement("button");
     read.className = "questions-report";
     read.textContent = "Open the report";
-    read.title = "Close the window and show the report with the details of the questions";
+    read.title = "Show the report with the details of the questions on top; close it to come back here";
     read.addEventListener("click", () => {
-      questionsDialog.close();
       openFile(pane, report);
     });
     context.append(read);
