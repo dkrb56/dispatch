@@ -7649,6 +7649,15 @@ function openQuestionWindow(task: Task): void {
     });
     context.append(read);
   }
+  const pictureNames = task.info?.pictures ?? [];
+  if (pictureNames.length > 0) {
+    const pics = document.createElement("button");
+    pics.className = "questions-report";
+    pics.textContent = `${PICTURES_LABEL} ${pictureNames.length}`;
+    pics.title = "Open the pictures that the report names";
+    pics.addEventListener("click", () => void openPictures(task));
+    context.append(pics);
+  }
   body.replaceChildren(
     ...(context.childElementCount > 0 ? [context] : []),
     ...questions.map((question) => {

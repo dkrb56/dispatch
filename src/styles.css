@@ -7208,6 +7208,10 @@ button.ticket-level {
   cursor: pointer;
 }
 
+#questions-body .questions-report + .questions-report {
+  margin-left: 8px;
+}
+
 #decisions-footer button.primary,
 #questions-footer button.primary {
   border-color: var(--work-line);
