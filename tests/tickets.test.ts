@@ -1148,7 +1148,7 @@ test("subtickets: a part's message to triage carries the block of its chain; wit
 
 test("subtickets: the plan card lists the parts before Approve, with the night box, and the board edits the waiting parts", () => {
   const card = MAIN.slice(MAIN.indexOf("function planCard("), MAIN.indexOf("/** The answer of the user to a decision"));
-  assert.ok(card.indexOf("partsElement(task, parts, busy)") > 0 && card.indexOf("partsElement(task, parts, busy)") < card.indexOf("const approve = "), "the parts show above Approve");
+  assert.ok(card.indexOf("partsElement(task, parts, locked)") > 0 && card.indexOf("partsElement(task, parts, locked)") < card.indexOf("const approve = "), "the parts show above Approve");
   const parts = MAIN.slice(MAIN.indexOf("function partsElement("), MAIN.indexOf("/** The row of the checks that the user chose"));
   assert.match(parts, /`Parts that follow \(\$\{parts\.length\}\)`/);
   assert.match(parts, /`\$\{part\.title\} · \$\{level\} · \$\{partTypeName\(part\.type\)\}`/);
@@ -1169,6 +1169,11 @@ test("subtickets: the plan card lists the parts before Approve, with the night b
   assert.ok(HTML.includes("<li><b>Parts.</b> A plan for a large task can list parts that follow it."));
   assert.ok(HTML.includes("<b>Parts at night.</b> A plan card with parts has the box"));
   assert.ok(read("../README.md").includes("A plan can list parts that follow it: Approve puts one linked ticket per part in Backlog"));
+});
+
+test("an approved plan that waits locks its card except Cancel approval", () => {
+  const card = MAIN.slice(MAIN.indexOf("function planCard("), MAIN.indexOf("/** The answer of the user to a decision"));
+  for (const text of ["const locked = busy || queued", "checksElement(task, checks, locked)", "workElement(task, locked)", "decide.disabled = locked", "ask.disabled = locked", "reject.disabled = locked", "approve.disabled = busy"]) assert.ok(card.includes(text), text);
 });
 
 test("a right-click on the board adds a ticket to New or Backlog", () => {

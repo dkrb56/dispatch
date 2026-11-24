@@ -5944,6 +5944,9 @@ function checksRow(checks: CheckInfo[]): HTMLElement | null {
  */
 function planCard(task: Task): HTMLElement {
   const busy = busyTasks.has(task.name);
+  const queued = queuedApprovals.has(queueKey(task));
+  // An approval that waits locks the card; only Cancel approval stays (the ticket pencil is outside).
+  const locked = busy || queued;
   const card = document.createElement("div");
   card.className = "task-card";
   const title = document.createElement("div");
@@ -5960,7 +5963,7 @@ function planCard(task: Task): HTMLElement {
   }
   // The parts that follow the work run of the plan, before Approve (ticket subtickets).
   const parts = task.info?.parts ?? [];
-  if (parts.length > 0) card.append(partsElement(task, parts, busy));
+  if (parts.length > 0) card.append(partsElement(task, parts, locked));
   // A measuring command of the plan run changed the working tree (ticket measure-before-plan).
   const changed = task.info?.measureChanged ?? [];
   if (changed.length > 0) {
@@ -5980,14 +5983,13 @@ function planCard(task: Task): HTMLElement {
     note.className = "card-checks-head";
     note.textContent = "The checks are picked after the work run.";
     card.append(note);
-  } else if (checks.length > 0) card.append(checksElement(task, checks, busy));
+  } else if (checks.length > 0) card.append(checksElement(task, checks, locked));
   // The model and the effort of the work run, with the advice of the plan (ticket ticket-form-optional-fields-on-a-new).
-  card.append(workElement(task, busy));
+  card.append(workElement(task, locked));
   const actions = document.createElement("div");
   actions.className = "actions";
   const decisions = task.info?.decisions ?? [];
   // Approved while the project was not free: the card waits with a way back.
-  const queued = queuedApprovals.has(queueKey(task));
   if (queued) {
     title.textContent = "Approved · waits for the project";
     card.classList.add("approved");
@@ -6005,14 +6007,14 @@ function planCard(task: Task): HTMLElement {
   const reject = document.createElement("button");
   reject.textContent = "Reject";
   reject.title = "Send the plan back to the planner with your reason";
-  reject.disabled = busy;
+  reject.disabled = locked;
   actions.append(approve);
   if (decisions.length > 0) {
     const waiting = decisions.filter((decision) => decision.hold).length;
     const decide = document.createElement("button");
     decide.textContent = waiting > 0 ? `Decisions · ${waiting} wait` : `Decisions (${decisions.length})`;
     decide.title = "Show every decision of the plan with its options, and take them";
-    decide.disabled = busy;
+    decide.disabled = locked;
     decide.addEventListener("click", () => openDecisions(task));
     actions.append(decide);
   }
@@ -6021,6 +6023,7 @@ function planCard(task: Task): HTMLElement {
   const ask = document.createElement("button");
   ask.textContent = "Ask";
   ask.title = "Ask triage about this plan. The window opens with a box for your question; nothing changes";
+  ask.disabled = locked;
   ask.addEventListener("click", () => openDecisions(task, true));
   actions.append(ask);
   actions.append(reject);
@@ -6106,7 +6109,7 @@ function planCard(task: Task): HTMLElement {
     const reason = document.createElement("textarea");
     reason.placeholder = "Why, and what the plan must change";
     reason.value = draft;
-    reason.disabled = busy;
+    reason.disabled = locked;
     reason.addEventListener("input", () => rejectDrafts.set(task.name, reason.value));
     reason.addEventListener("blur", () => {
       if (!renderSkipped) return;
@@ -6116,7 +6119,7 @@ function planCard(task: Task): HTMLElement {
     const send = document.createElement("button");
     send.textContent = "Send back";
     send.title = "Send the reason to the planner, which revises the plan";
-    send.disabled = busy;
+    send.disabled = locked;
     send.addEventListener("click", () => {
       const text = reason.value.trim();
       const line = `Plan ${task.name} rejected in Dispatch${text ? `: ${text}` : "."}`;
