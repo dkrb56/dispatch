@@ -2,6 +2,11 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.96 (2026-11-24)
+- The report opens on top of the Questions window; text files show in a framed window with their own scroll bar.
+- Group title bars show the percentage of finished tickets.
+- The voice and alerts speak when an action run ends.
+
 ## 0.1.95 (2026-11-24)
 - Arrow keys step through the pictures of the gallery, the wheel zooms toward the pointer.
 
