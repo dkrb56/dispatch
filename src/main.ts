@@ -182,7 +182,7 @@ import { initPipeline, openSetup, setupNeeded, setupTodo, showSetup } from "./pi
 import { setupDue, setupLook, setupStamp, setupTitle } from "./setupmark";
 import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersion } from "./help";
 import { lastRunVersion, newEntries } from "./changelog";
-import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, speechLines, ticketTitle, VOICE_SAMPLE, type Wait, waitNotice, type WorkerEnd } from "./alerts";
+import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, seenStamp, speechLines, ticketTitle, VOICE_SAMPLE, type Wait, waitNotice, type WorkerEnd } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
 import { alertOptions, compactOn, initOptions, openOptions, ownHostRuns, phoneTabWanted, pulseOn, stopOwnHost, useOwnHost, voiceName, voiceVolume } from "./options";
 import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
@@ -6056,6 +6056,7 @@ async function writeDecisions(task: Task, choices: DecisionAnswer[]): Promise<nu
       written = await call<number>(taskHost(task), "task_checks", { cwd: taskCwd(task), id: task.name, names });
       // The written plan is the same plan: an automatic approval tries it once, not again.
       autoApproved.set(task.name, written);
+      seenStamp(alertMarks, `${projectKey(taskHost(task), taskCwd(task))}|${task.name}`, String(written));
     } catch (error) {
       actionErrors.set(task.name, String(error));
       renderChats();
@@ -6086,6 +6087,7 @@ async function writeDecisionLines(task: Task, choices: DecisionAnswer[]): Promis
     const written = await call<number>(taskHost(task), "task_decide", { cwd: taskCwd(task), id: task.name, text });
     // The written plan is the same plan: an automatic approval tries it once, not again.
     autoApproved.set(task.name, written);
+    seenStamp(alertMarks, `${projectKey(taskHost(task), taskCwd(task))}|${task.name}`, String(written));
     return written;
   } catch (error) {
     actionErrors.set(task.name, String(error));
@@ -12240,7 +12242,7 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
     for (const task of projectTaskList(project)) {
       const info = task.info;
       const base = { key: `${key}|${task.name}`, scope, name: task.name, title: ticketTitle(project.tickets, task.name), project: projectName({ host: project.host, root: project.cwd }), text: taskStatus(task).text };
-      if (planReady(task) && !approvalQueued(task) && info?.plan && !nightPlanOf(task)?.approves) {
+      if (planReady(task) && !approvalQueued(task) && info?.plan && !nightPlanOf(task)?.approves && !busyTasks.has(task.name) && startHolder(project.host, project.cwd) !== task.name) {
         // A part without the night box waits for the click of the user at night (ticket subtickets).
         const holds = info.hold || (!!info.nightHold && nightOf(project.host, project.cwd));
         waits.push({ ...base, kind: holds ? "hold" : "plan", stamp: String(info.plan.modified) });

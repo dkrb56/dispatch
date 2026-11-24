@@ -18,6 +18,7 @@ import {
   parseAlertOptions,
   parseVoice,
   parseVolume,
+  seenStamp,
   SPOKEN,
   speechLines,
   ticketTitle,
@@ -48,6 +49,18 @@ test("the first read of a group records its waits and alerts nothing", () => {
   assert.deepEqual(newWaits([wait("a", "plan", "1")], ["tasks|d:/p"], state, false), [], "the same list again");
   const b = wait("b", "question", "5");
   assert.deepEqual(newWaits([wait("a", "plan", "1"), b], ["tasks|d:/p"], state, false), [b], "a task that starts to wait");
+});
+
+test("a plan time that Dispatch wrote itself gives no plan alert", () => {
+  const state = alertState();
+  newWaits([], ["tasks|d:/p"], state, false);
+  seenStamp(state, "d:/p|a", "2");
+  assert.deepEqual(newWaits([wait("a", "plan", "2")], ["tasks|d:/p"], state, false), [], "plan wait, stamp seen");
+  assert.deepEqual(newWaits([wait("a", "hold", "2")], ["tasks|d:/p"], state, false), [], "hold wait, stamp seen");
+  const other = wait("a", "plan", "3");
+  assert.deepEqual(newWaits([other], ["tasks|d:/p"], state, false), [other], "another stamp still alerts");
+  const b = wait("b", "plan", "2");
+  assert.deepEqual(newWaits([b], ["tasks|d:/p"], state, false), [b], "another key is not affected");
 });
 
 test("a group that had no wait at its first read still alerts for its first new wait", () => {

@@ -103,6 +103,14 @@ export function newWaits(waits: Wait[], scopes: string[], state: AlertState, nig
   return found;
 }
 
+/**
+ * Ticket i-just-got-the-same-voice-message-the: a plan time that Dispatch wrote itself (the user
+ * decisions, the checks chosen) is the same plan, not a new wait. Marks it as seen for `plan` and `hold`.
+ */
+export function seenStamp(state: AlertState, key: string, stamp: string): void {
+  for (const kind of ["plan", "hold"] as const) state.marks.add(mark({ key, kind, stamp } as Wait));
+}
+
 /** The actions of the alert: each one only when its switch is on and a wait is new. */
 export function alertActions(options: AlertOptions, anyNew: boolean): AlertOptions {
   return { notify: anyNew && options.notify, chime: anyNew && options.chime, blink: anyNew && options.blink, voice: anyNew && options.voice };
