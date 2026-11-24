@@ -150,7 +150,7 @@ import { HOLD_NOTE, holdWait } from "./holdstep";
 import { showTriage, triageCard, triagePanesToClose, withoutTriage, type ProjectLoad } from "./notriage";
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
-import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type ReadTimes, ticketFolder, sameFiles, sameFilesRefusal, StartLeases, type WorkRun } from "./workstart";
+import { chooseNightMerge, chooseQueued, chooseStart, folderUse, mergeRefusal, nightPlan, projectBusy, type ReadTimes, ticketFolder, sameFiles, sameFilesRefusal, StartLeases, type WorkRun } from "./workstart";
 import { type Action, type ActionList, type ActionResume, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, resumeButtonText, resumeStep, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, takenText, uniqueId } from "./actions";
 import { failLines, freshOnly, type GateRefusal, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { autoMergeNote, type AutoMergeFacts, folderRefusal, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
@@ -5320,6 +5320,42 @@ function folderLabel(task: Task | undefined): HTMLElement | null {
   const label = mapElement("span", "ticket-folder", `Folder ${number}`);
   label.title = `This ticket works in work folder ${number}`;
   return label;
+}
+
+/**
+ * The bar of the work folders in use of a project (ticket add-indicator-how-many-workfolder-have):
+ * made in the Focus head, the Overview card and the Map head; `showFolderUse` fills each by its project key.
+ */
+function folderBar(key: string): HTMLElement {
+  const bar = mapElement("span", "focus-folders");
+  bar.dataset.project = key;
+  bar.setAttribute("role", "meter");
+  bar.setAttribute("aria-valuemin", "0");
+  bar.hidden = true;
+  bar.append(mapElement("span", "focus-folders-fill"));
+  return bar;
+}
+
+/** Sets every bar of the work folders in use from the task list of its project; a project not read yet hides it. */
+function showFolderUse(): void {
+  for (const bar of document.querySelectorAll<HTMLElement>(".focus-folders[data-project]")) {
+    const project = projectTasks.get(bar.dataset.project ?? "");
+    bar.hidden = !project;
+    if (!project) continue;
+    const use = folderUse({
+      workFolders: !!project.workFolders,
+      slots: slotsOf(project),
+      runs: workRuns(projectTaskList(project, false)).map((task) => task.name),
+      merging: project.merging ?? null,
+    });
+    const text = project.workFolders ? `${use.used} of ${use.slots} work folders in use` : use.used > 0 ? "The project folder is in use" : "The project folder is free";
+    const fill = bar.firstElementChild as HTMLElement | null;
+    if (fill) fill.style.width = `${use.share * 100}%`;
+    bar.setAttribute("aria-valuemax", String(use.slots));
+    bar.setAttribute("aria-valuenow", String(use.used));
+    bar.title = text;
+    bar.setAttribute("aria-label", text);
+  }
 }
 
 /**
@@ -14140,7 +14176,7 @@ function focusColumn(ref: ProjectRef): FocusColumn {
   restoreEl.addEventListener("click", () => setColumnSize(key, "restore"));
   // The sign of waiting tickets that do not go (ticket auto-todo); `showTicketSigns` keeps it current.
   const signEl = ticketSign(ref);
-  head.append(dotEl, name, signEl, stateEl, pathEl, spacer, morningEl, tools.el, divider, mapButton, minEl, maxEl, close, restoreEl);
+  head.append(dotEl, name, signEl, folderBar(key), stateEl, pathEl, spacer, morningEl, tools.el, divider, mapButton, minEl, maxEl, close, restoreEl);
   const body = document.createElement("div");
   body.className = "focus-body";
   const sideEl = document.createElement("aside");
@@ -15095,6 +15131,7 @@ function showProjectAttention(): void {
   }
   // The signs of waiting tickets (ticket auto-todo) follow the switch Pulse and reduced motion too.
   showTicketSigns();
+  showFolderUse();
 }
 
 /** Opens the workspace of a project when it has none: triage and the agent view start. */
@@ -15564,7 +15601,7 @@ function mapSection(ref: ProjectRef): HTMLElement {
   const path = mapElement("span", "map-muted", root);
   const counts = mapElement("span", "map-muted", [`${live.length} working`, waiting.length > 0 ? `${waiting.length} wait for you` : ""].filter(Boolean).join(" · "));
   // The sign of waiting tickets that do not go (ticket auto-todo), after the name.
-  head.append(dot, name, ticketSign(ref), path, counts);
+  head.append(dot, name, ticketSign(ref), folderBar(key), path, counts);
   section.append(head);
 
   const body = mapElement("div", "map-body");
@@ -15942,7 +15979,7 @@ function overviewCard(ref: ProjectRef): OverviewCard {
     calmSetup(key);
     showSetup(ref.host, ref.root);
   });
-  head.append(grip, dotEl, name, ticketSign(ref), countEl, setupEl, expandEl);
+  head.append(grip, dotEl, name, ticketSign(ref), folderBar(key), countEl, setupEl, expandEl);
   markSetupButton(setupEl, key, projectName(ref));
   setupEl.hidden = !setupStates.get(key)?.stamp;
   const tasksEl = mapElement("div", "overview-tasks");

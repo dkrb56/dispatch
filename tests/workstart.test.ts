@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type QueuedFacts, sameFiles, sameFilesRefusal, StartLeases, ticketFolder, type TicketFolderFacts, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts, type WorkRun } from "../src/workstart.ts";
+import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type QueuedFacts, sameFiles, sameFilesRefusal, StartLeases, folderUse, ticketFolder, type TicketFolderFacts, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts, type WorkRun } from "../src/workstart.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -705,6 +705,25 @@ test("ticketFolder: the folder number of a working or merging task, else null", 
   assert.equal(ticketFolder(folderFacts({ running: false, users: ["x", "t"] })), null);
   assert.equal(ticketFolder(folderFacts({ users: ["x"] })), null);
   assert.equal(ticketFolder(folderFacts({ legacyUser: "t" })), 1);
+});
+
+test("folderUse: the busy work folders of a project and the share of the bar", () => {
+  const use = (slots: number, runs: string[], merging: string | null = null, workFolders = true) => folderUse({ workFolders, slots, runs, merging });
+  assert.deepEqual(use(4, []), { used: 0, slots: 4, share: 0 });
+  assert.equal(use(4, ["a", "b"]).share, 0.5);
+  assert.equal(use(1, ["a"]).share, 1);
+  assert.equal(use(1, []).share, 0);
+  assert.equal(use(4, ["a"], "b").used, 2);
+  assert.equal(use(4, ["a"], "a").used, 1);
+  assert.deepEqual(use(2, ["a", "b", "c"]), { used: 2, slots: 2, share: 1 });
+  assert.equal(use(0, ["a"]).slots, 1);
+  assert.equal(use(Number.NaN, []).slots, 1);
+  assert.equal(use(1, ["a"], null, false).share, 1);
+});
+
+test("folderUse: the bar stands in the Focus head, the Overview card and the Map head", () => {
+  assert.match(MAIN, /function showFolderUse\(/);
+  assert.equal((MAIN.match(/folderBar\(/g) ?? []).length >= 4, true);
 });
 
 test("ticketFolder: the ticket card and both Plan card loops call the label helper", () => {

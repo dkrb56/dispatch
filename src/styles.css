@@ -8800,6 +8800,34 @@ body:not(.map-mode):not(.overview-mode) #stale-alert {
   display: none;
 }
 
+/* The bar of the work folders in use (ticket add-indicator-how-many-workfolder-have). */
+.focus-folders {
+  flex: none;
+  overflow: hidden;
+  width: 48px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--hairline);
+}
+
+.focus-folders[hidden] {
+  display: none;
+}
+
+.focus-folders-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  background: var(--work);
+  transition: width 0.2s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .focus-folders-fill {
+    transition: none;
+  }
+}
+
 .focus-workers-button,
 .focus-start {
   border: 0;

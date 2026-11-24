@@ -134,6 +134,29 @@ export function ticketFolder(facts: TicketFolderFacts): number | null {
   return facts.legacyUser === facts.task && facts.users.length === 0 ? 1 : null;
 }
 
+/** The facts of `folderUse`. */
+export interface FolderUseFacts {
+  workFolders: boolean;
+  slots: number;
+  /** The names of the tasks whose work runs edit now. */
+  runs: readonly string[];
+  /** The task whose merge runs, or null. */
+  merging: string | null;
+}
+
+/**
+ * The work folders in use and the share for the bar of a project (ticket
+ * add-indicator-how-many-workfolder-have): the distinct running tasks plus a merge of another task,
+ * capped at the slots; the slots are at least 1.
+ */
+export function folderUse(facts: FolderUseFacts): { used: number; slots: number; share: number } {
+  const slots = Number.isFinite(facts.slots) ? Math.max(1, Math.floor(facts.slots)) : 1;
+  const names = new Set(facts.runs);
+  if (facts.merging !== null) names.add(facts.merging);
+  const used = Math.min(names.size, slots);
+  return { used, slots, share: used / slots };
+}
+
 /**
  * The paths of `mine` that `theirs` names too (ticket the-page-lets-more-than-one-work-run): the same
  * path, or a path under a folder path (one that ends in `/`) of the other list, in either direction,
