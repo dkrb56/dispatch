@@ -7771,6 +7771,7 @@ function initCheckResult(): void {
 interface ReportPicturesReply {
   found: { name: string; from: string; file: FileInfo }[];
   missing: string[];
+  unavailable?: string[];
 }
 
 const PICTURES_LABEL = "Pictures";
@@ -7835,6 +7836,13 @@ From ${item.from}`;
     const line = document.createElement("p");
     line.className = "pictures-line";
     line.textContent = `Not found: ${name}`;
+    nodes.push(line);
+  }
+  for (const name of reply.unavailable ?? []) {
+    const line = document.createElement("p");
+    line.className = "pictures-line";
+    line.textContent = `LFS picture not available: ${name}`;
+    line.title = "The project keeps this picture in Git LFS, and this PC does not have it. Run git lfs pull in the project.";
     nodes.push(line);
   }
   if (nodes.length === 0) {

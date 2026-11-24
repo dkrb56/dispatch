@@ -43,6 +43,8 @@ pub struct FoundPicture {
 pub struct PicturesReply {
     found: Vec<FoundPicture>,
     missing: Vec<String>,
+    /// Names whose Git LFS object is not in the local LFS store.
+    unavailable: Vec<String>,
 }
 
 /// A token of the report text ends at these characters, besides white space.
@@ -114,10 +116,54 @@ fn safe_relative(path: &str) -> Option<PathBuf> {
     (normal && path.components().next().is_some()).then(|| path.to_path_buf())
 }
 
+/// The size below which a file can be a Git LFS pointer.
+const LFS_POINTER_MAX: usize = 1024;
+
+/// The facts of a Git LFS pointer: the object id (64 hex characters) and the size of the real file,
+/// or none when the bytes are no pointer.
+fn lfs_pointer(bytes: &[u8]) -> Option<(String, u64)> {
+    if bytes.len() >= LFS_POINTER_MAX {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut lines = text.lines();
+    if lines.next()?.trim_end() != "version https://git-lfs.github.com/spec/v1" {
+        return None;
+    }
+    let mut oid = None;
+    let mut size = None;
+    for line in lines {
+        if let Some(hex) = line.strip_prefix("oid sha256:") {
+            let hex = hex.trim();
+            if hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                oid = Some(hex.to_ascii_lowercase());
+            }
+        } else if let Some(number) = line.strip_prefix("size ") {
+            size = number.trim().parse::<u64>().ok();
+        }
+    }
+    Some((oid?, size?))
+}
+
 /// Where a picture can be: a folder on the disk with its label, or the task branch.
 enum Place {
     Folder(PathBuf, String),
     Branch(String),
+}
+
+/// The result of a look at one place.
+enum At {
+    Found(FileEntry),
+    /// The file is a Git LFS pointer and the real file is not in the local LFS store.
+    NotLocal,
+    Absent,
+}
+
+/// The result of the search for one name.
+enum Hit {
+    Found(String, FileEntry),
+    NotLocal,
+    Missing,
 }
 
 /// The searches of one call: the project folder, the copy folder, and the file list of the branch
@@ -125,6 +171,8 @@ enum Place {
 struct Search<'a> {
     root: &'a Path,
     copies: &'a Path,
+    /// The common git folder of the project, which holds the LFS store.
+    common_dir: Option<PathBuf>,
     branch_lists: HashMap<String, Vec<String>>,
 }
 
@@ -152,24 +200,52 @@ impl Search<'_> {
         file_entry(&target)
     }
 
+    /// The real bytes of a Git LFS pointer from the local LFS store, or none when the object is
+    /// not there or its size differs.
+    fn lfs_bytes(&self, oid: &str, size: u64) -> Option<Vec<u8>> {
+        let object = self.common_dir.as_ref()?.join("lfs").join("objects").join(&oid[0..2]).join(&oid[2..4]).join(oid);
+        let bytes = fs::read(object).ok()?;
+        (bytes.len() as u64 == size).then_some(bytes)
+    }
+
+    /// Copies bytes that may be an LFS pointer: the real bytes when the pointer is known.
+    fn keep_bytes(&self, path: &Path, bytes: &[u8]) -> At {
+        let bytes = match lfs_pointer(bytes) {
+            Some((oid, size)) => match self.lfs_bytes(&oid, size) {
+                Some(real) => real,
+                None => return At::NotLocal,
+            },
+            None => bytes.to_vec(),
+        };
+        self.keep(path, &bytes).map_or(At::Absent, At::Found)
+    }
+
     /// The picture at a relative path in one place: the file itself in the project folder, a copy
-    /// from elsewhere.
-    fn at(&self, place: &Place, rel: &str) -> Option<FileEntry> {
-        let path = safe_relative(rel)?;
+    /// from elsewhere (or from the LFS store when the file is a pointer).
+    fn at(&self, place: &Place, rel: &str) -> At {
+        let Some(path) = safe_relative(rel) else { return At::Absent };
         match place {
             Place::Folder(folder, _) => {
                 let full = folder.join(&path);
                 if !full.is_file() {
-                    return None;
+                    return At::Absent;
+                }
+                let small = fs::metadata(&full).is_ok_and(|meta| meta.len() < LFS_POINTER_MAX as u64);
+                if small {
+                    let Ok(bytes) = fs::read(&full) else { return At::Absent };
+                    if lfs_pointer(&bytes).is_some() {
+                        return self.keep_bytes(&path, &bytes);
+                    }
                 }
                 if folder.as_path() == self.root {
-                    return file_entry(&full);
+                    return file_entry(&full).map_or(At::Absent, At::Found);
                 }
-                self.keep(&path, &fs::read(&full).ok()?)
+                let Ok(bytes) = fs::read(&full) else { return At::Absent };
+                self.keep(&path, &bytes).map_or(At::Absent, At::Found)
             }
             Place::Branch(branch) => {
-                let bytes = git_bytes(self.root, &["cat-file", "blob", &format!("{branch}:{rel}")])?;
-                self.keep(&path, &bytes)
+                let Some(bytes) = git_bytes(self.root, &["cat-file", "blob", &format!("{branch}:{rel}")]) else { return At::Absent };
+                self.keep_bytes(&path, &bytes)
             }
         }
     }
@@ -265,17 +341,20 @@ fn resolve(project: &Project, ticket: &str, text: &str, copies: &Path, data_dir:
             places.push(Place::Folder(path.clone(), format!("work folder {n}")));
         }
     }
-    let mut search = Search { root: &project.root, copies, branch_lists: HashMap::new() };
+    let common_dir = gitfiles::Repo::find(&project.root).map(|repo| repo.common_dir);
+    let mut search = Search { root: &project.root, copies, common_dir, branch_lists: HashMap::new() };
     let mut found = Vec::new();
     let mut missing = Vec::new();
+    let mut unavailable = Vec::new();
     for name in &pictures.names {
         let hit = find(&mut search, &places, project, data_dir, name, &pictures.folders);
         match hit {
-            Some((from, file)) => found.push(FoundPicture { name: name.clone(), from, file }),
-            None => missing.push(name.clone()),
+            Hit::Found(from, file) => found.push(FoundPicture { name: name.clone(), from, file }),
+            Hit::NotLocal => unavailable.push(name.clone()),
+            Hit::Missing => missing.push(name.clone()),
         }
     }
-    Ok(PicturesReply { found, missing })
+    Ok(PicturesReply { found, missing, unavailable })
 }
 
 /// The paths of a name with a slash below one folder: the plain join, then the join that drops the
@@ -297,7 +376,7 @@ fn below_folder(folder: &str, name: &str) -> Vec<String> {
 
 /// Finds one name: a path in each place in order, then below each folder; a bare name in each
 /// folder of each place.
-fn find(search: &mut Search, places: &[Place], project: &Project, data_dir: Option<&Path>, name: &str, folders: &[String]) -> Option<(String, FileEntry)> {
+fn find(search: &mut Search, places: &[Place], project: &Project, data_dir: Option<&Path>, name: &str, folders: &[String]) -> Hit {
     let path = Path::new(name);
     if path.is_absolute() {
         // An absolute path counts in the project folder (with its work folders) and in the data folder.
@@ -306,34 +385,47 @@ fn find(search: &mut Search, places: &[Place], project: &Project, data_dir: Opti
             return find(search, places, project, data_dir, &rel, folders);
         }
         let inside_data = data_dir.is_some_and(|dir| path.strip_prefix(dir).is_ok_and(|rel| safe_relative(&rel.to_string_lossy()).is_some()));
-        return if inside_data { file_entry(path).map(|file| ("data folder".to_string(), file)) } else { None };
+        return match file_entry(path) {
+            Some(file) if inside_data => Hit::Found("data folder".to_string(), file),
+            _ => Hit::Missing,
+        };
     }
+    // A place that holds only a pointer without its object does not stop the search.
+    let mut not_local = false;
     if name.contains('/') {
-        if let Some(hit) = places.iter().find_map(|place| search.at(place, name).map(|file| (label(place), file))) {
-            return Some(hit);
+        for place in places {
+            match search.at(place, name) {
+                At::Found(file) => return Hit::Found(label(place), file),
+                At::NotLocal => not_local = true,
+                At::Absent => {}
+            }
         }
         // A path that the report gives relative to a folder that it named.
         for place in places {
             for folder in folders {
                 for rel in below_folder(folder, name) {
-                    if let Some(file) = search.at(place, &rel) {
-                        return Some((label(place), file));
+                    match search.at(place, &rel) {
+                        At::Found(file) => return Hit::Found(label(place), file),
+                        At::NotLocal => not_local = true,
+                        At::Absent => {}
                     }
                 }
             }
         }
-        return None;
+        return if not_local { Hit::NotLocal } else { Hit::Missing };
     }
     for place in places {
         for folder in folders {
             for rel in search.bare(place, folder, name) {
-                if let Some(file) = search.at(place, &rel) {
-                    return Some((label(place), file));
+                match search.at(place, &rel) {
+                    At::Found(file) => return Hit::Found(label(place), file),
+                    At::NotLocal => not_local = true,
+                    At::Absent => {}
                 }
             }
         }
     }
-    None
+    if not_local { Hit::NotLocal } else { Hit::Missing }
 }
 
 /// The pictures that the report of a ticket names, found in the project folder, in a work folder
@@ -444,6 +536,59 @@ mod tests {
             assert_eq!(path_of(&reply.found[at].file), copies.join(rel), "a copy outside the project folder");
             assert_eq!(fs::read_to_string(copies.join(rel)).unwrap(), bytes);
         }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn pointer(oid: &str, size: usize) -> String {
+        format!("version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {size}\n")
+    }
+
+    #[test]
+    fn pictures_lfs_pointer_parse() {
+        let oid = "a".repeat(64);
+        assert_eq!(lfs_pointer(pointer(&oid, 12).as_bytes()), Some((oid.clone(), 12)));
+        assert_eq!(lfs_pointer(b"just text"), None);
+        assert_eq!(lfs_pointer(&vec![b'x'; 2000]), None);
+        assert_eq!(lfs_pointer(pointer("abc", 1).as_bytes()), None, "a short oid is no pointer");
+    }
+
+    #[test]
+    fn pictures_resolve_lfs_pointers() {
+        let root = scratch("lfs");
+        git(&root, &["init", "-q"]);
+        let config = root.join(".git").join("config");
+        let mut text = fs::read_to_string(&config).unwrap();
+        text.push_str("[user]\n\tname = Dispatch test\n\temail = test@example.invalid\n[commit]\n\tgpgsign = false\n[core]\n\texcludesFile = no-such-ignore-file\n");
+        fs::write(&config, text).unwrap();
+        fs::write(root.join("readme.txt"), "x").unwrap();
+        git(&root, &["add", "readme.txt"]);
+        git(&root, &["commit", "-q", "-m", "base"]);
+        let real = b"real picture bytes";
+        let oid = "b".repeat(64);
+        let object = root.join(".git/lfs/objects").join(&oid[0..2]).join(&oid[2..4]);
+        fs::create_dir_all(&object).unwrap();
+        fs::write(object.join(&oid), real).unwrap();
+        git(&root, &["checkout", "-q", "-b", "task/t1"]);
+        fs::create_dir_all(root.join("shots")).unwrap();
+        fs::write(root.join("shots/lfs.png"), pointer(&oid, real.len())).unwrap();
+        fs::write(root.join("shots/gone.png"), pointer(&"c".repeat(64), 99)).unwrap();
+        git(&root, &["add", "shots/lfs.png", "shots/gone.png"]);
+        git(&root, &["commit", "-q", "-m", "shots"]);
+        git(&root, &["checkout", "-q", "-"]);
+        let project = Project::scratch(root.clone(), root.join(".dispatch"));
+        fs::create_dir_all(&project.reports).unwrap();
+        fs::write(project.branch_file("t1"), "branch: task/t1\nbase: master\n").unwrap();
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(root.join("docs/pointer.png"), pointer(&oid, real.len())).unwrap();
+        let copies = root.join("copies");
+        let reply = resolve(&project, "t1", "Pictures: shots/lfs.png, docs/pointer.png, shots/gone.png.", &copies, None).unwrap();
+        let got: Vec<(&str, &str)> = reply.found.iter().map(|found| (found.name.as_str(), found.from.as_str())).collect();
+        assert_eq!(got, vec![("shots/lfs.png", "branch task/t1"), ("docs/pointer.png", "project")]);
+        assert_eq!(fs::read(copies.join("shots/lfs.png")).unwrap(), real);
+        assert_eq!(path_of(&reply.found[1].file), copies.join("docs/pointer.png"));
+        assert_eq!(fs::read(copies.join("docs/pointer.png")).unwrap(), real);
+        assert_eq!(reply.unavailable, vec!["shots/gone.png"]);
+        assert!(reply.missing.is_empty());
         let _ = fs::remove_dir_all(&root);
     }
 
