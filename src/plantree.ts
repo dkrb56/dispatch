@@ -627,6 +627,14 @@ export function groupBadge(tickets: readonly PlanTicket[], group: PlanGroup): { 
   return { badge, done: counts.done, inWork: counts.inWork, total: counts.tickets };
 }
 
+/** The whole percentage (rounded down) of the ids whose ticket is finished (Done or Canceled); null when no id names a ticket. */
+export function groupDonePercent(tickets: readonly PlanTicket[], ids: readonly string[]): number | null {
+  const wanted = new Set(ids);
+  const inside = tickets.filter((ticket) => wanted.has(ticket.id));
+  if (inside.length === 0) return null;
+  return Math.floor((inside.filter((ticket) => planDone(ticket.status)).length * 100) / inside.length);
+}
+
 // Topic groups (ticket i-need-an-autogrouping-function-in-the): Auto group sorts the tickets of the
 // project into groups by topic. Most tickets have no arrow, so a topic group is not a box around
 // cards of the tree: it is its own block under the tree and above the shelf. A block shows as cards

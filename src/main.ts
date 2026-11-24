@@ -47,6 +47,7 @@ import {
   autoGroupNote,
   describeNote,
   groupBadge,
+  groupDonePercent,
   groupBox,
   groupCounts,
   groupMembers,
@@ -18473,6 +18474,10 @@ function renderPlan(): void {
   const nodeOf = (id: string) => tree.hidden.get(id) ?? id;
   const groupOfNode = new Map(groups.map((group) => [groupNodeId(group.id), group]));
   const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+  const planGroupCountText = (list: readonly PlanTicket[], count: number, ids: readonly string[]) => {
+    const percent = groupDonePercent(list, ids);
+    return percent === null ? plural(count, "ticket") : `${plural(count, "ticket")} · ${percent}% done`;
+  };
   const groupError = planGroupsError.get(key);
   planCountEl.textContent = [
     `${plural(flowTickets(flow).length, "ticket")} in the flow`,
@@ -18642,7 +18647,7 @@ function renderPlan(): void {
     const bar = mapElement("div", "plan-group-title");
     bar.style.height = `${PLAN_BOX_TITLE}px`;
     bar.title = "Select this comment or group";
-    bar.append(planGroupName(group), mapElement("span", "plan-group-count", plural(groupMembers(tickets, group).length, "ticket")));
+    bar.append(planGroupName(group), mapElement("span", "plan-group-count", planGroupCountText(tickets, groupMembers(tickets, group).length, group.tickets)));
     const collapse = mapElement("button", "plan-group-toggle", "▴");
     collapse.type = "button";
     collapse.title = "Collapse: one stacked card stands for these tickets";
@@ -18795,7 +18800,7 @@ function renderPlan(): void {
     const bar = mapElement("div", "plan-group-title");
     bar.style.height = `${PLAN_BOX_TITLE}px`;
     bar.title = group.description || "Select this topic group";
-    bar.append(planGroupName(group), mapElement("span", "plan-group-count", plural(block.members.length, "ticket")));
+    bar.append(planGroupName(group), mapElement("span", "plan-group-count", planGroupCountText(tickets, block.members.length, block.members)));
     const toggle = mapElement("button", "plan-group-toggle", group.collapsed ? "▾" : "▴");
     toggle.type = "button";
     toggle.title = group.collapsed ? "Expand: show its scheduled and working tickets as cards" : "Collapse: show only the title and the count";

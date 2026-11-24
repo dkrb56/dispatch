@@ -19,6 +19,7 @@ import {
   earlyText,
   flowTickets,
   groupBadge,
+  groupDonePercent,
   groupBox,
   groupCounts,
   layoutTickets,
@@ -404,6 +405,14 @@ test("the counts and the badge of a group", () => {
   assert.equal(groupBadge(early, g("g", ["b", "c"])).badge, "early");
   assert.equal(groupBadge(TREE, g("g", ["a", "d"])).badge, null);
   assert.equal(groupBadge(TREE, g("g", ["a", "d"])).done, 1);
+});
+
+test("the percentage of a group that is finished", () => {
+  const list = [t("a", "done"), t("b", "canceled"), t("c", "backlog")];
+  assert.equal(groupDonePercent(list, ["a", "b"]), 100);
+  assert.equal(groupDonePercent(list, ["a", "b", "c"]), 66);
+  assert.equal(groupDonePercent(list, ["c"]), 0);
+  assert.equal(groupDonePercent(list, ["gone"]), null);
 });
 
 test("the stand line and the lists before and after a ticket", () => {
