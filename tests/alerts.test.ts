@@ -186,6 +186,7 @@ test("the Options dialog holds the three switches and both lists; the top bar ho
   assert.match(dialog, /<select id="voice-pick" data-voice /, "the voice list is in the dialog");
   assert.match(dialog, /<button type="button" id="voice-listen"/, "the Listen button is in the dialog");
   assert.ok(dialog.includes('id="theme"') && dialog.includes('id="text-size"'), "both pickers are in the dialog");
+  assert.ok(dialog.includes('id="terminal-font"') && !bar.includes('id="terminal-font"'), "the terminal font row is in the dialog only");
 });
 
 test("the Options dialog holds the section Run the host on this PC, and the Help names it (remote-multi-host-help)", () => {
@@ -206,6 +207,7 @@ test("the Help says where the theme and the text size are and what the alerts do
   assert.match(section, /<b>Options<\/b>/);
   assert.match(section, /colour theme/);
   assert.match(section, /size of the text/);
+  assert.match(section, /font of the terminals/);
   assert.match(section, /notification/);
   assert.match(section, /chime/);
   assert.match(section, /voice/);

@@ -600,6 +600,29 @@ function setTextSize(size: number): void {
   }
 }
 
+/** The fonts that the row of buttons in the Options screen offers for the terminals. */
+const TERMINAL_FONTS = ["Cascadia Mono", "Cascadia Code", "Consolas", "Lucida Console", "Courier New"];
+/** The radios of the terminal fonts in the Options screen, one per button. */
+const terminalFontEls = [...document.querySelectorAll<HTMLInputElement>('#terminal-font input[name="terminal-font"]')];
+let terminalFont = TERMINAL_FONTS[0];
+
+function terminalFontFamily(): string {
+  return terminalFont === TERMINAL_FONTS[0] ? '"Cascadia Mono", Consolas, monospace' : `"${terminalFont}", monospace`;
+}
+
+/** Sets the font of every terminal, and keeps it on this computer. */
+function setTerminalFont(name: string | null): void {
+  terminalFont = name !== null && TERMINAL_FONTS.includes(name) ? name : TERMINAL_FONTS[0];
+  for (const radio of terminalFontEls) radio.checked = radio.value === terminalFont;
+  for (const pane of panes.values()) pane.term.options.fontFamily = terminalFontFamily();
+  if (activeId) fitTab(activeId);
+  try {
+    localStorage.setItem("terminal-font", terminalFont);
+  } catch {
+    // The terminals have the normal font again at the next start.
+  }
+}
+
 /** The radios of the theme cards in the Options screen (src/theme.ts), one per card. */
 const themeEls = [...document.querySelectorAll<HTMLInputElement>('#theme input[name="theme"]')];
 /** The name of the current colour theme. */
@@ -12986,7 +13009,7 @@ function createPane(tabId: string, saved: SavedPane): Pane {
 
   const term = new Terminal({
     scrollback: SCROLLBACK_LINES,
-    fontFamily: '"Cascadia Mono", Consolas, monospace',
+    fontFamily: terminalFontFamily(),
     fontSize: terminalFontSize(),
     cursorBlink: true,
     theme: terminalTheme(theme),
@@ -18878,6 +18901,16 @@ async function start(): Promise<void> {
     setTextSize(Number(localStorage.getItem("text-size")));
   } catch {
     setTextSize(100);
+  }
+  for (const radio of terminalFontEls) {
+    radio.addEventListener("change", () => {
+      if (radio.checked) setTerminalFont(radio.value);
+    });
+  }
+  try {
+    setTerminalFont(localStorage.getItem("terminal-font"));
+  } catch {
+    setTerminalFont(null);
   }
   initViewer(() => focusedPane()?.term.focus());
   // Setup pipeline and Rules act on the folder of the focused terminal, on its host.

@@ -95,3 +95,14 @@ test("the theme cards in Options offer exactly the theme names, above the text s
   assert.deepEqual(values, NAMES);
   assert.ok(HTML.indexOf('id="theme"') < HTML.indexOf('id="text-size"'), "the theme cards stand above the text size");
 });
+
+test("the terminal font row in Options follows the text size and offers the fonts of main.ts", () => {
+  const group = HTML.match(/<div id="terminal-font"[^>]*>([\s\S]*?)<\/div>\s*<\/section>/);
+  assert.ok(group, "index.html has the group #terminal-font");
+  const values = [...group[1].matchAll(/<input type="radio" name="terminal-font" value="([^"]+)" \/>/g)].map((match) => match[1]);
+  const MAIN = read("../src/main.ts");
+  const list = MAIN.match(/const TERMINAL_FONTS = \[([^\]]*)\]/);
+  assert.ok(list, "main.ts has TERMINAL_FONTS");
+  assert.deepEqual(values, [...list[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]));
+  assert.ok(HTML.indexOf('id="text-size"') < HTML.indexOf('id="terminal-font"'), "the terminal font stands below the text size");
+});
