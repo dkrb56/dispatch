@@ -2,6 +2,12 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.90 (2026-11-24)
+- Options > Look gets a Terminal font row (five fonts), applied to all panes and kept in localStorage.
+- The Plan board shows a spinner (Reading the groups…) until the groups of the project are read, then draws with its groups at once.
+- The Plan board shows the run spinner in place of the dot and the state of a card in its frame; finished and failed tickets get their own frame colour; Options > Look gets Ticket colours (one colour per state, both boards, kept in localStorage).
+- The work-folder bar gets a text label (Worktrees 1/2) and a clearer tooltip.
+
 ## 0.1.89 (2026-11-24)
 - The worker script takes only a worker of its own project (Own-Worker: cwd is the project folder or a work folder, or no cwd); Find-Worker and the Save-Session fallback filter by it, so stop, resume, reply, approve and status never act on a worker of another project with the same ticket id; fake claude prints agents.json when present; test stop_takes_the_worker_of_its_own_project.
 - The cards of the count badge window get the resize handle (looseCard: planCardGrip(key, card !== null), not scaled by the zoom; CSS position relative); a topic group box gets a corner handle (planGroupGrip: live width and height, never below its automatic size, cards stay, planGroupDragging guard, save as size in plan-groups.json; menu item Back to automatic size keeps the place); planBlocks takes a saved size per block (box width and height at least that, span counts the covered columns) and a description height function (rows at the automatic width, whole grid rows); renderPlan measures the description with a hidden element (planAboutHeight, cached), no 3-line clamp; the ticket window and its line stand on the canvas, so the pan and the zoom move and scale it (planWindowCanvas, planWindowScale, clamp and fallback in canvas px, title bar drag divided by the zoom).
