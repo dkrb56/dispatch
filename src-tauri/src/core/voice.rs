@@ -32,8 +32,11 @@ const WIN_EPOCH: u64 = 11_644_473_600;
 /// The longest wait for one phrase: the connection, the request and all the audio. The service
 /// sometimes pauses 2 to 6 seconds before the first audio and again in the middle; a line then
 /// takes up to 11 seconds (measured 2026-11-24). The page lets one line hold the queue for at most
-/// 60 seconds (`VOICE_LINE_CAP_MS`), playback included.
+/// 60 seconds (`VOICE_LINE_CAP_MS`), playback included. The limit covers both tries.
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// The wait before the second try after a failed connection. The service dropped one connection
+/// with "os error 10054" on 2026-11-24; a short pause lets it recover.
+const RETRY_PAUSE: Duration = Duration::from_secs(1);
 /// The longest text that the page may ask for.
 const MAX_TEXT: usize = 500;
 /// The cache keeps at most this many phrases; the oldest go first.
@@ -435,7 +438,16 @@ fn now_seconds() -> u64 {
 /// The MP3 of one phrase from the service, in at most `TIMEOUT`.
 pub(crate) async fn fetch(voice: &str, text: &str) -> Result<Vec<u8>, String> {
     check_input(voice, text)?;
-    match tokio::time::timeout(TIMEOUT, fetch_now(voice, text, now_seconds())).await {
+    fetch_with(TIMEOUT, RETRY_PAUSE, || fetch_attempt(voice, text, now_seconds())).await
+}
+
+/// Both tries of `try_twice` run inside the one limit `limit`.
+async fn fetch_with<F, Fut>(limit: Duration, pause: Duration, attempt: F) -> Result<Vec<u8>, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>, Failure>>,
+{
+    match tokio::time::timeout(limit, try_twice(pause, attempt)).await {
         Ok(result) => result,
         Err(_) => Err(timeout_text()),
     }
@@ -446,7 +458,49 @@ fn timeout_text() -> String {
     format!("the voice service did not send the whole line in {} seconds", TIMEOUT.as_secs())
 }
 
+/// One try of a line, with the text of its failure.
 async fn fetch_now(voice: &str, text: &str, now: u64) -> Result<Vec<u8>, String> {
+    fetch_attempt(voice, text, now).await.map_err(Failure::into_text)
+}
+
+/// A failed try: `Connect` means that nothing went out yet, so a new try is safe and cheap.
+#[derive(Debug)]
+enum Failure {
+    Connect(String),
+    Line(String),
+}
+
+impl Failure {
+    fn into_text(self) -> String {
+        match self {
+            Failure::Connect(text) | Failure::Line(text) => text,
+        }
+    }
+}
+
+impl From<String> for Failure {
+    fn from(text: String) -> Self {
+        Failure::Line(text)
+    }
+}
+
+/// Runs `attempt`; after a failed connection it waits `pause` and runs it once more. Any other
+/// failure, and a second failed connection, give the error text of that try.
+async fn try_twice<F, Fut>(pause: Duration, mut attempt: F) -> Result<Vec<u8>, String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<u8>, Failure>>,
+{
+    match attempt().await {
+        Err(Failure::Connect(_)) => {
+            tokio::time::sleep(pause).await;
+            attempt().await.map_err(Failure::into_text)
+        }
+        other => other.map_err(Failure::into_text),
+    }
+}
+
+async fn fetch_attempt(voice: &str, text: &str, now: u64) -> Result<Vec<u8>, Failure> {
     let url = connect_url(&token(now), &random_hex(16)?.to_lowercase());
     let mut request = url.into_client_request().map_err(err)?;
     let user_agent = format!(
@@ -464,7 +518,7 @@ async fn fetch_now(voice: &str, text: &str, now: u64) -> Result<Vec<u8>, String>
     headers.insert("Cookie", HeaderValue::from_str(&cookie).map_err(err)?);
 
     let (mut socket, _) =
-        tokio_tungstenite::connect_async(request).await.map_err(|e| format!("the voice service refused the connection: {e}"))?;
+        tokio_tungstenite::connect_async(request).await.map_err(|e| Failure::Connect(format!("the voice service refused the connection: {e}")))?;
     let date = date_string(now);
     socket.send(Message::text(config_message(&date))).await.map_err(|e| format!("the voice service took no request: {e}"))?;
     let request_id = random_hex(16)?.to_lowercase();
@@ -485,7 +539,7 @@ async fn fetch_now(voice: &str, text: &str, now: u64) -> Result<Vec<u8>, String>
     }
     let _ = socket.close(None).await;
     if audio.is_empty() {
-        return Err("the voice service sent no audio".into());
+        return Err("the voice service sent no audio".to_string().into());
     }
     Ok(audio)
 }
@@ -635,6 +689,57 @@ mod tests {
         assert!(TIMEOUT >= Duration::from_secs(20));
         assert!(TIMEOUT <= Duration::from_secs(40));
         assert_eq!(timeout_text(), format!("the voice service did not send the whole line in {} seconds", TIMEOUT.as_secs()));
+    }
+
+    fn run<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(future)
+    }
+
+    #[test]
+    fn a_refused_connection_gets_one_more_try() {
+        let mut calls = 0;
+        let result = run(try_twice(Duration::ZERO, || {
+            calls += 1;
+            let first = calls == 1;
+            async move { if first { Err(Failure::Connect("dropped".into())) } else { Ok(vec![1, 2]) } }
+        }));
+        assert_eq!(result, Ok(vec![1, 2]));
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn a_second_refusal_gives_the_error() {
+        let mut calls = 0;
+        let result = run(try_twice(Duration::ZERO, || {
+            calls += 1;
+            let n = calls;
+            async move { Err(Failure::Connect(format!("refused {n}"))) }
+        }));
+        assert_eq!(result, Err("refused 2".to_string()));
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn a_broken_line_gets_no_second_try() {
+        let mut calls = 0;
+        let result = run(try_twice(Duration::ZERO, || {
+            calls += 1;
+            async { Err(Failure::Line("broke off".into())) }
+        }));
+        assert_eq!(result, Err("broke off".to_string()));
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn both_tries_stay_inside_the_time_limit() {
+        let limit = Duration::from_millis(300);
+        let started = std::time::Instant::now();
+        let result = run(fetch_with(limit, Duration::from_millis(10), || async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            Err(Failure::Connect("never".into()))
+        }));
+        assert_eq!(result, Err(timeout_text()));
+        assert!(started.elapsed() < limit + Duration::from_millis(500));
     }
 
     #[test]
