@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { terminalTheme, THEMES, themeName, themeTokens } from "../src/theme.ts";
+import { terminalTheme, THEMES, themeName, themeTokens, TICKET_COLORS, ticketColors } from "../src/theme.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const CSS = read("../src/styles.css");
@@ -105,4 +105,29 @@ test("the terminal font row in Options follows the text size and offers the font
   assert.ok(list, "main.ts has TERMINAL_FONTS");
   assert.deepEqual(values, [...list[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]));
   assert.ok(HTML.indexOf('id="text-size"') < HTML.indexOf('id="terminal-font"'), "the terminal font stands below the text size");
+});
+
+test("the ticket colours: one state variable per entry, a known default, and Options rows below the terminal font", () => {
+  const start = CSS.indexOf(":root {\n  --state-");
+  assert.ok(start > 0, "styles.css has a separate :root block of the --state-* variables");
+  const block = CSS.slice(start, CSS.indexOf("}", start));
+  const defaults = Object.fromEntries([...block.matchAll(/(--state-[\w-]+): var\((--[\w-]+)\);/g)].map((match) => [match[1], match[2]]));
+  assert.deepEqual(Object.keys(defaults), TICKET_COLORS.map((one) => one.variable));
+  const tokens = themeTokens("slate");
+  for (const one of TICKET_COLORS) {
+    assert.equal(one.variable, `--state-${one.key}`);
+    assert.equal(defaults[one.variable], one.token, one.key);
+    assert.ok(one.token in tokens, `${one.key} takes a theme token`);
+  }
+  assert.ok(!(CSS.slice(CSS.indexOf(":root {"), CSS.indexOf("}", CSS.indexOf(":root {"))).includes("--state-")), "the first :root block stays the Slate set");
+  assert.deepEqual(ticketColors(JSON.stringify({ working: "#AABBCC", waits: "orange", odd: "#112233", done: "#123" })), { working: "#aabbcc" });
+  assert.deepEqual(ticketColors("not json"), {});
+  assert.deepEqual(ticketColors(null), {});
+  assert.deepEqual(ticketColors("[1]"), {});
+  assert.ok(HTML.includes('<div id="ticket-colors"></div>'), "index.html has the rows of Ticket colours");
+  assert.ok(HTML.indexOf('id="terminal-font"') < HTML.indexOf('id="ticket-colors"'), "the ticket colours stand below the terminal font");
+  const MAIN = read("../src/main.ts");
+  assert.match(MAIN, /localStorage\.setItem\("ticket-colors", JSON\.stringify\(ticketColorSet\)\)/);
+  assert.match(MAIN, /ticketColors\(localStorage\.getItem\("ticket-colors"\)\)/);
+  assert.match(MAIN, /root\.removeProperty\(color\.variable\)/);
 });

@@ -190,7 +190,7 @@ import { EFFORTS, MODELS, selector } from "./rulecheck";
 import { GIT_STATE_SIZE_KEY, ageText, commitFilesLabel, commitHeadText, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "./gitstate";
 import { initRules, openRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
-import { terminalTheme, themeName, themeTokens } from "./theme";
+import { terminalTheme, themeName, themeTokens, TICKET_COLORS, ticketColors } from "./theme";
 import { nightButton, nightChanges, nightLines, nightSyncLines } from "./night";
 import { KEY_DOWN, KEY_ENTER, KEY_ESC, rcCommand, rcMenuFocus, rcSettled, rcView, type RcView, type RcWish } from "./remotecontrol";
 import { DRIVER_CLAIM_MS, parseShared, type SharedState } from "./shared";
@@ -623,6 +623,43 @@ function setTerminalFont(name: string | null): void {
   }
 }
 
+/** The colour inputs of the ticket states in the Options screen (TICKET_COLORS of src/theme.ts), by state key. */
+const ticketColorEls = new Map<string, HTMLInputElement>();
+/** The frame colours that the user set, by state key; a state without one takes its theme colour. */
+let ticketColorSet: Record<string, string> = {};
+
+/** The colour that each input of the ticket states shows: the user's colour, else the colour of the theme. */
+function showTicketColors(): void {
+  const computed = getComputedStyle(document.documentElement);
+  for (const { key, variable } of TICKET_COLORS) {
+    const input = ticketColorEls.get(key);
+    if (!input) continue;
+    // An <input type="color"> takes only #rrggbb; the Graphite tokens are upper case.
+    const shown = (ticketColorSet[key] ?? computed.getPropertyValue(variable).trim()).toLowerCase();
+    input.value = /^#[0-9a-f]{6}$/.test(shown) ? shown : "#000000";
+  }
+}
+
+/**
+ * Sets the frame colour of one ticket state on both boards (ticket in-plan-mode-on-ticket-which-is-being),
+ * or with null gives it the colour of the theme again, and keeps the colours on this computer.
+ */
+function setTicketColor(key: string, value: string | null): void {
+  const color = TICKET_COLORS.find((one) => one.key === key);
+  if (!color) return;
+  if (value === null) delete ticketColorSet[key];
+  else ticketColorSet[key] = value.toLowerCase();
+  const root = document.documentElement.style;
+  if (ticketColorSet[key]) root.setProperty(color.variable, ticketColorSet[key]);
+  else root.removeProperty(color.variable);
+  showTicketColors();
+  try {
+    localStorage.setItem("ticket-colors", JSON.stringify(ticketColorSet));
+  } catch {
+    // The frames have the colours of the theme again at the next start.
+  }
+}
+
 /** The radios of the theme cards in the Options screen (src/theme.ts), one per card. */
 const themeEls = [...document.querySelectorAll<HTMLInputElement>('#theme input[name="theme"]')];
 /** The name of the current colour theme. */
@@ -635,6 +672,7 @@ function setTheme(name: string | null): void {
   for (const [token, value] of Object.entries(themeTokens(theme))) root.setProperty(token, value);
   for (const radio of themeEls) radio.checked = radio.value === theme;
   for (const pane of panes.values()) pane.term.options.theme = terminalTheme(theme);
+  showTicketColors();
   try {
     localStorage.setItem("theme", theme);
   } catch {
@@ -5249,6 +5287,24 @@ function approvalQueued(task: Task): boolean {
  */
 function approvedMark(task: Task): boolean {
   return approvalQueued(task) || taskPhase(task) === "starting";
+}
+
+/**
+ * The state class of the frame of a ticket card, on the tickets board and on the Plan board (ticket
+ * in-plan-mode-on-ticket-which-is-being): waits, else working (a run works now), else approved (ticket
+ * border-should-reflect-whats-actually), else parts, else failed, else finished (the work run ended with
+ * its report, the ticket is not closed). A parent without a task still gets parts; else an empty string.
+ */
+function cardFrame(ticket: Ticket, task: Task | undefined, tickets: Ticket[]): "waits" | "working" | "approved" | "parts" | "failed" | "finished" | "" {
+  if (task && taskAttentionWait(task)) return "waits";
+  const kind = task ? taskStatus(task).kind : null;
+  if (kind === "working") return "working";
+  if (task && approvedMark(task)) return "approved";
+  if (partProgress(ticket, tickets).total > 0) return "parts";
+  if (!task) return "";
+  if (kind === "failed") return "failed";
+  if (taskPhase(task) === "done") return "finished";
+  return "";
 }
 
 /** The plan run of a task is done, and its plan waits for the user. */
@@ -11450,18 +11506,14 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
     top.prepend(runSpinner);
   }
   // A task that waits for the user: an orange frame (ticket tickets-which-are-waiting-for-me-should).
-  // One state class per card: waits, else working (a run works now), else approved (ticket border-should-reflect-whats-actually).
-  if (ticketTask && taskAttentionWait(ticketTask)) card.classList.add("waits");
-  else if (ticketTask && taskStatus(ticketTask).kind === "working") {
-    card.classList.add("working");
-    if (attentionLook(true, pulseOn(), reducedMotion.matches) === "pulse") {
-      card.classList.add("flash");
-      // The board builds new cards at each poll: the clock keeps the flash in the same phase.
-      card.style.setProperty("--flash-shift", `${-(Date.now() % 1600)}ms`);
-    }
-  } else if (ticketTask && approvedMark(ticketTask)) card.classList.add("approved");
-  // A parent whose own work ended waits for its parts: a dashed grey frame (ticket order-is-messed-up-in-the-tasks-list-and).
-  else if (partProgress(ticket, tickets).total > 0) card.classList.add("parts");
+  // One state class per card from cardFrame: waits, working, approved, parts (a dashed frame), failed or finished.
+  const frame = cardFrame(ticket, ticketTask, tickets);
+  if (frame) card.classList.add(frame);
+  if (frame === "working" && attentionLook(true, pulseOn(), reducedMotion.matches) === "pulse") {
+    card.classList.add("flash");
+    // The board builds new cards at each poll: the clock keeps the flash in the same phase.
+    card.style.setProperty("--flash-shift", `${-(Date.now() % 1600)}ms`);
+  }
   meta.append(tag, levelTag, mapElement("span", "ticket-date", chatTime(ticket.created)));
   const folderTag = folderLabel(ticketTask);
   if (folderTag) meta.append(folderTag);
@@ -17622,13 +17674,43 @@ function planCardState(ticket: Ticket, queueIds: string[], record: ProjectTasks)
   const status = taskStatus(task);
   const word = planStateWord(ticket.status, taskPhase(task));
   const live = task.workers.find((worker) => LIVE_STATES.includes(worker.state ?? ""));
-  const dot = status.kind === "waits" ? "waits" : status.kind === "failed" ? "failed" : "in-progress";
+  // A finished task (its work run ended with its report, the ticket is not closed) has the dot of a done
+  // ticket, as its frame (ticket in-plan-mode-on-ticket-which-is-being, user decision 3).
+  const dot = status.kind === "waits" ? "waits" : status.kind === "failed" ? "failed" : cardFrame(ticket, task, record.tickets) === "finished" ? "done" : "in-progress";
   // An idle run shows its status text, not a timer (ticket a-worker-that-waits-with-no-turn-does).
   if (live && live.state === "working" && !live.idle) {
     const time = nodeTime(live);
     if (time.took) return { word, detail: time.took, since: time.since, dot };
   }
   return { word, detail: status.text, dot };
+}
+
+/**
+ * The top line of a ticket card of the Plan view: the dot, the ticket id and the folder tag. It also
+ * gives the card the state class of its frame, and a run that works now (also a running merge) shows the
+ * turning spinner of the tickets board in place of the dot (ticket in-plan-mode-on-ticket-which-is-being,
+ * user decision 1).
+ */
+function planTicketTop(el: HTMLElement, ticket: Ticket, state: PlanCardState, record: ProjectTasks): HTMLElement {
+  const task = ticket.status === "in-progress" ? projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id)) : undefined;
+  const frame = ticket.status === "in-progress" ? cardFrame(ticket, task, record.tickets) : "";
+  if (frame) el.classList.add(frame);
+  const top = mapElement("div", "plan-card-top");
+  if (task && (taskStatus(task).kind === "working" || mergeRunning(task))) {
+    const runSpinner = mapElement("span", "ticket-spinner run");
+    runSpinner.setAttribute("aria-label", "Runs now");
+    // The view builds new cards at each poll: the clock keeps the spinner in the same phase.
+    runSpinner.style.setProperty("--spin-shift", `${-(Date.now() % 800)}ms`);
+    top.append(runSpinner);
+  } else {
+    const dot = mapElement("span", `plan-dot ${state.dot}`);
+    dot.setAttribute("aria-hidden", "true");
+    top.append(dot);
+  }
+  top.append(mapElement("span", "plan-name", ticket.id));
+  const folderTag = task ? folderLabel(task) : null;
+  if (folderTag) top.append(folderTag);
+  return top;
 }
 
 /** An element of the SVG of the arrows. */
@@ -18070,12 +18152,7 @@ function renderPlan(): void {
     el.style.left = `${card.x}px`;
     el.style.top = `${card.y}px`;
     el.title = ticket.title;
-    const top = mapElement("div", "plan-card-top");
-    const dot = mapElement("span", `plan-dot ${state.dot}`);
-    dot.setAttribute("aria-hidden", "true");
-    top.append(dot, mapElement("span", "plan-name", ticket.id));
-    const folderTag = ticket.status === "in-progress" && record ? folderLabel(projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id))) : null;
-    if (folderTag) top.append(folderTag);
+    const top = planTicketTop(el, ticket, state, record);
     const line = mapElement("div", "plan-state", state.word);
     if (state.detail) {
       line.append(" · ");
@@ -18100,12 +18177,7 @@ function renderPlan(): void {
     el.style.left = `${card.x}px`;
     el.style.top = `${card.y}px`;
     el.title = !sub && draft && !picking ? `${ticket.title}\nClick to place it: then click the ticket that it comes after` : ticket.title;
-    const top = mapElement("div", "plan-card-top");
-    const dot = mapElement("span", `plan-dot ${state.dot}`);
-    dot.setAttribute("aria-hidden", "true");
-    top.append(dot, mapElement("span", "plan-name", ticket.id));
-    const folderTag = ticket.status === "in-progress" && record ? folderLabel(projectTaskList(record).find((one) => one.name === (ticket.task || ticket.id))) : null;
-    if (folderTag) top.append(folderTag);
+    const top = planTicketTop(el, ticket, state, record);
     const line = mapElement("div", "plan-state", state.word);
     if (state.detail) {
       line.append(" · ");
@@ -18932,6 +19004,37 @@ async function start(): Promise<void> {
   } catch {
     setTerminalFont(null);
   }
+  // The frame colours of the ticket states (ticket in-plan-mode-on-ticket-which-is-being): one row per state.
+  const ticketColorRows = document.getElementById("ticket-colors");
+  for (const { key, label } of TICKET_COLORS) {
+    const row = document.createElement("div");
+    row.className = "ticket-color-row";
+    const input = document.createElement("input");
+    input.type = "color";
+    input.id = `ticket-color-${key}`;
+    input.addEventListener("input", () => setTicketColor(key, input.value));
+    const name = document.createElement("label");
+    name.htmlFor = input.id;
+    name.textContent = label;
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.textContent = "Reset";
+    reset.title = "Give this state the colour of the theme again.";
+    reset.addEventListener("click", () => setTicketColor(key, null));
+    row.append(input, name, reset);
+    ticketColorRows?.append(row);
+    ticketColorEls.set(key, input);
+  }
+  let savedColors: Record<string, string> = {};
+  try {
+    savedColors = ticketColors(localStorage.getItem("ticket-colors"));
+  } catch {
+    // No saved colours: the frames take the colours of the theme.
+  }
+  for (const { key } of TICKET_COLORS) {
+    if (savedColors[key]) setTicketColor(key, savedColors[key]);
+  }
+  showTicketColors();
   initViewer(() => focusedPane()?.term.focus());
   // Setup pipeline and Rules act on the folder of the focused terminal, on its host.
   const focusedFolder = () => {

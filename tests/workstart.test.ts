@@ -728,6 +728,9 @@ test("folderUse: the bar stands in the Focus head, the Overview card and the Map
 
 test("ticketFolder: the ticket card and both Plan card loops call the label helper", () => {
   assert.match(MAIN, /function ticketCard[\s\S]*?folderLabel\(ticketTask\)/);
+  // Both Plan card loops build their top line with planTicketTop, which calls the label helper.
+  const top = MAIN.slice(MAIN.indexOf("function planTicketTop("), MAIN.indexOf("/** An element of the SVG of the arrows. */"));
+  assert.match(top, /folderLabel\(task\)/);
   const plan = MAIN.slice(MAIN.indexOf("function renderPlan"));
-  assert.equal((plan.match(/folderLabel\(/g) ?? []).length >= 2, true);
+  assert.equal((plan.match(/planTicketTop\(/g) ?? []).length >= 2, true);
 });

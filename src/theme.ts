@@ -140,3 +140,39 @@ export function terminalTheme(name: string | null | undefined): {
     selectionBackground: tokens["--term-selection"],
   };
 }
+
+/**
+ * The frame colours of the ticket states (ticket in-plan-mode-on-ticket-which-is-being): one entry
+ * per state, in the order of the Options rows. `variable` is the CSS variable that the card frames of
+ * the tickets board and the Plan board use; `token` is the theme token that it takes by default (the
+ * second :root block of src/styles.css). The user sets a colour in Options > Look.
+ */
+export const TICKET_COLORS: { key: string; label: string; variable: string; token: string }[] = [
+  { key: "backlog", label: "Backlog", variable: "--state-backlog", token: "--hairline" },
+  { key: "scheduled", label: "Scheduled", variable: "--state-scheduled", token: "--wait-line" },
+  { key: "working", label: "Working now", variable: "--state-working", token: "--work" },
+  { key: "waits", label: "Waits for you", variable: "--state-waits", token: "--wait" },
+  { key: "approved", label: "Approved", variable: "--state-approved", token: "--accent" },
+  { key: "finished", label: "Finished, not closed", variable: "--state-finished", token: "--accent-line" },
+  { key: "failed", label: "Failed", variable: "--state-failed", token: "--danger" },
+  { key: "parts", label: "Waits for its parts", variable: "--state-parts", token: "--text-2" },
+  { key: "done", label: "Done", variable: "--state-done", token: "--hairline" },
+  { key: "canceled", label: "Canceled", variable: "--state-canceled", token: "--hairline" },
+];
+
+/** The saved frame colours (localStorage `ticket-colors`, JSON): only known states with a `#rrggbb` value. */
+export function ticketColors(stored: string | null): Record<string, string> {
+  let parsed: unknown;
+  try {
+    parsed = stored ? JSON.parse(stored) : null;
+  } catch {
+    return {};
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+  const colors: Record<string, string> = {};
+  for (const { key } of TICKET_COLORS) {
+    const value = (parsed as Record<string, unknown>)[key];
+    if (typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value)) colors[key] = value.toLowerCase();
+  }
+  return colors;
+}

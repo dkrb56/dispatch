@@ -1282,23 +1282,27 @@ test("the copy button of a task card copies the ticket id", () => {
 
 test("an In progress ticket that waits for the user has an orange frame", () => {
   const card = MAIN.slice(MAIN.indexOf("function ticketCard("), MAIN.indexOf("function startTicketDrag("));
-  assert.match(card, /taskAttentionWait\(ticketTask\)/);
-  assert.match(card, /classList\.add\("waits"\)/);
-  assert.match(CSS, /\.ticket-card\.in-progress\.waits \{\s*border-color: var\(--wait\);/);
+  const frame = MAIN.slice(MAIN.indexOf("function cardFrame("), MAIN.indexOf("/** The plan run of a task is done"));
+  assert.match(frame, /taskAttentionWait\(task\)\) return "waits"/);
+  assert.match(card, /const frame = cardFrame\(ticket, ticketTask, tickets\);/);
+  assert.match(card, /if \(frame\) card\.classList\.add\(frame\);/);
+  assert.match(CSS, /\.ticket-card\.in-progress\.waits \{\s*border-color: var\(--state-waits\);/);
   const help = HTML.slice(HTML.indexOf("<h3>Tickets</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
   assert.ok(help.includes("orange frame"), "the Help sentence");
 });
 
 test("an In progress ticket shows its state in its frame", () => {
   const card = MAIN.slice(MAIN.indexOf("function ticketCard("), MAIN.indexOf("function startTicketDrag("));
-  const waits = card.indexOf('classList.add("waits")');
-  const working = card.indexOf('classList.add("working")');
-  const approved = card.indexOf('classList.add("approved")', working);
-  assert.ok(waits > 0 && working > waits && approved > working, "the order waits, working, approved");
-  assert.match(card, /attentionLook\(true, pulseOn\(\), reducedMotion\.matches\) === "pulse"/);
+  const frame = MAIN.slice(MAIN.indexOf("function cardFrame("), MAIN.indexOf("/** The plan run of a task is done"));
+  const order = ['return "waits"', 'return "working"', 'return "approved"', 'return "parts"', 'return "failed"', 'return "finished"'].map((one) => frame.indexOf(one));
+  assert.ok(order.every((at, i) => at > 0 && (i === 0 || at > order[i - 1])), "the order waits, working, approved, parts, failed, finished");
+  assert.match(frame, /taskPhase\(task\) === "done"\) return "finished"/);
+  assert.match(card, /frame === "working" && attentionLook\(true, pulseOn\(\), reducedMotion\.matches\) === "pulse"/);
   assert.match(card, /--flash-shift/);
-  assert.match(CSS, /\.ticket-card\.in-progress\.working \{[^}]*2px solid var\(--work\)/);
-  assert.match(CSS, /\.ticket-card\.in-progress\.approved \{\s*border-color: var\(--accent\);/);
+  assert.match(CSS, /\.ticket-card\.in-progress\.working \{[^}]*2px solid var\(--state-working\)/);
+  assert.match(CSS, /\.ticket-card\.in-progress\.approved \{\s*border-color: var\(--state-approved\);/);
+  assert.match(CSS, /\.ticket-card\.in-progress\.finished \{\s*border-color: var\(--state-finished\);/);
+  assert.match(CSS, /\.ticket-card\.in-progress\.failed \{\s*border-color: var\(--state-failed\);/);
   const flash = CSS.slice(CSS.indexOf(".ticket-card.in-progress.working.flash::after {"));
   const rule = flash.slice(0, flash.indexOf("}"));
   assert.match(rule, /animation: attention-pulse/);
@@ -1310,6 +1314,24 @@ test("an In progress ticket shows its state in its frame", () => {
   assert.match(card, /mergeRunning\(ticketTask\)/);
   assert.match(card, /--spin-shift/);
   assert.match(CSS, /\.ticket-spinner\.run \{[^}]*animation-delay: var\(--spin-shift/);
+});
+
+test("a Plan card shows the run spinner and the frame of its state (ticket in-plan-mode-on-ticket-which-is-being)", () => {
+  const top = MAIN.slice(MAIN.indexOf("function planTicketTop("), MAIN.indexOf("/** An element of the SVG of the arrows. */"));
+  assert.match(top, /cardFrame\(ticket, task, record\.tickets\)/);
+  assert.match(top, /mapElement\("span", "ticket-spinner run"\)/);
+  assert.match(top, /mergeRunning\(task\)/);
+  assert.match(top, /--spin-shift/);
+  const plan = MAIN.slice(MAIN.indexOf("function renderPlan("));
+  assert.equal(plan.split("const top = planTicketTop(el, ticket, state, record);").length - 1, 2, "the tree card and the loose card");
+  const state = MAIN.slice(MAIN.indexOf("function planCardState("), MAIN.indexOf("function planTicketTop("));
+  assert.match(state, /cardFrame\(ticket, task, record\.tickets\) === "finished" \? "done"/);
+  for (const one of ["working", "waits", "approved", "finished", "failed", "parts"]) {
+    assert.match(CSS, new RegExp(`\\.plan-ticket\\.in-progress\\.${one} \\{[^}]*border-color: var\\(--state-${one}\\);`), one);
+  }
+  assert.doesNotMatch(CSS, /\.plan-ticket\.in-progress \{\s*border-color: var\(--work-line\)/);
+  const help = HTML.slice(HTML.indexOf("<h3>Plan</h3>"), HTML.indexOf("<h3>Tickets</h3>"));
+  assert.ok(help.includes("turning spinner") && help.includes("frame"), "the Plan Help sentence");
 });
 
 test("the In progress column puts running tasks first", () => {
@@ -1352,9 +1374,9 @@ test("the task list puts running tasks first", () => {
   assert.match(MAIN, /pendingIndex\(tasks, \(task\) => taskRank\(task\) === 0\)/);
   const columns = MAIN.slice(MAIN.indexOf("function fillTicketColumns("), MAIN.indexOf("function fillTicketColumns(") + 3000);
   assert.match(columns, /boardTickets\(shown, status, view, status === "in-progress" \|\| status === "planning" \|\| status === "waiting" \? ticketPlace : undefined\)/);
-  const card = MAIN.slice(MAIN.indexOf("function ticketCard("), MAIN.indexOf("function startTicketDrag("));
-  assert.ok(card.indexOf('classList.add("parts")') > card.indexOf('classList.add("approved")'), "parts after approved");
-  assert.match(CSS, /\.ticket-card\.in-progress\.parts \{\s*border-style: dashed;\s*border-color: var\(--text-2\);/);
+  const frame = MAIN.slice(MAIN.indexOf("function cardFrame("), MAIN.indexOf("/** The plan run of a task is done"));
+  assert.ok(frame.indexOf('return "parts"') > frame.indexOf('return "approved"'), "parts after approved");
+  assert.match(CSS, /\.ticket-card\.in-progress\.parts \{\s*border-style: dashed;\s*border-color: var\(--state-parts\);/);
   const help = HTML.slice(HTML.indexOf("<h3>Tickets</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
   assert.ok(help.includes("the tickets that run now first") && help.includes("dashed grey frame"), "the Help of Tickets");
   const tasks = HTML.slice(HTML.indexOf("<h3>Tasks and chats of a column</h3>"), HTML.indexOf("<h3>Where the work runs</h3>"));

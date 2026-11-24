@@ -57,6 +57,22 @@
   --text-scale: 1;
 }
 
+/* The frame colours of the ticket states (ticket in-plan-mode-on-ticket-which-is-being). They take theme
+   tokens; Options > Look overrides one with an inline value on :root (TICKET_COLORS of theme.ts). This is
+   a separate block: the first :root block stays equal to the Slate set of theme.ts. */
+:root {
+  --state-backlog: var(--hairline);
+  --state-scheduled: var(--wait-line);
+  --state-working: var(--work);
+  --state-waits: var(--wait);
+  --state-approved: var(--accent);
+  --state-finished: var(--accent-line);
+  --state-failed: var(--danger);
+  --state-parts: var(--text-2);
+  --state-done: var(--hairline);
+  --state-canceled: var(--hairline);
+}
+
 html,
 body {
   height: 100%;
@@ -2467,13 +2483,25 @@ button.task-head:hover {
   border-color: var(--work-line);
 }
 
+.ticket-card.backlog {
+  border-color: var(--state-backlog);
+}
+
 .ticket-card.new {
-  border-color: var(--wait-line);
+  border-color: var(--state-scheduled);
+}
+
+.ticket-card.done {
+  border-color: var(--state-done);
+}
+
+.ticket-card.canceled {
+  border-color: var(--state-canceled);
 }
 
 /* Ticket tickets-which-are-waiting-for-me-should: an In progress card whose task waits for the user. */
 .ticket-card.in-progress.waits {
-  border-color: var(--wait);
+  border-color: var(--state-waits);
 }
 
 /* Ticket border-should-reflect-whats-actually: bold green while a run of the task works (it flashes
@@ -2481,13 +2509,13 @@ button.task-head:hover {
 .ticket-card.in-progress.working {
   position: relative;
   padding: 6px 7px 5px;
-  border: 2px solid var(--work);
+  border: 2px solid var(--state-working);
 }
 
 .ticket-card.in-progress.working.flash::after {
   position: absolute;
   inset: -2px;
-  border: 2px solid var(--work);
+  border: 2px solid var(--state-working);
   border-radius: inherit;
   box-shadow: 0 0 0 4px var(--work-glow);
   content: "";
@@ -2497,13 +2525,23 @@ button.task-head:hover {
 }
 
 .ticket-card.in-progress.approved {
-  border-color: var(--accent);
+  border-color: var(--state-approved);
+}
+
+/* Ticket in-plan-mode-on-ticket-which-is-being: a work run that ended with its report, ticket not closed,
+   and a task that failed. */
+.ticket-card.in-progress.finished {
+  border-color: var(--state-finished);
+}
+
+.ticket-card.in-progress.failed {
+  border-color: var(--state-failed);
 }
 
 /* Ticket order-is-messed-up-in-the-tasks-list-and: a parent whose own work ended waits for its parts. */
 .ticket-card.in-progress.parts {
   border-style: dashed;
-  border-color: var(--text-2);
+  border-color: var(--state-parts);
 }
 
 /* Ticket show-a-parent-ticket-and-its-parts-as: a parent and its parts stand inside one frame in the
@@ -5872,6 +5910,41 @@ button.ticket-level {
   background: var(--line);
   color: var(--text);
   font-weight: 600;
+}
+
+/* The rows of Ticket colours in Options > Look (ticket in-plan-mode-on-ticket-which-is-being):
+   the colour, the name of the state and its Reset button. */
+#ticket-colors {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 16px;
+}
+
+.ticket-color-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ticket-color-row > input[type="color"] {
+  flex: none;
+  width: 32px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+
+.ticket-color-row > label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The folder chooser of the mode "Use a host": the folders of the host through dir_list. */
@@ -10759,8 +10832,47 @@ svg.links {
   background: var(--surface);
 }
 
+/* The frame of a ticket card shows its state, as on the tickets board (ticket in-plan-mode-on-ticket-which-is-being).
+   An In progress card without a state class keeps the plain line. */
 .plan-ticket.in-progress {
-  border-color: var(--work-line);
+  border-color: var(--hairline);
+}
+
+.plan-ticket.in-progress.working {
+  border-color: var(--state-working);
+}
+
+.plan-ticket.in-progress.waits {
+  border-color: var(--state-waits);
+}
+
+.plan-ticket.in-progress.approved {
+  border-color: var(--state-approved);
+}
+
+.plan-ticket.in-progress.finished {
+  border-color: var(--state-finished);
+}
+
+.plan-ticket.in-progress.failed {
+  border-color: var(--state-failed);
+}
+
+.plan-ticket.in-progress.parts {
+  border-style: dashed;
+  border-color: var(--state-parts);
+}
+
+.plan-ticket.backlog {
+  border-color: var(--state-backlog);
+}
+
+/* The turning spinner of a run that works now stands in place of the dot. */
+.plan-card-top .ticket-spinner {
+  width: 8px;
+  height: 8px;
+  box-sizing: border-box;
+  border-width: 1.5px;
 }
 
 /* The title of the ticket on its card: 2 lines, more on a taller card (--plan-card-lines). */
@@ -10791,7 +10903,15 @@ svg.links {
 }
 
 .plan-ticket.new {
-  border-color: var(--wait-line);
+  border-color: var(--state-scheduled);
+}
+
+.plan-ticket.done {
+  border-color: var(--state-done);
+}
+
+.plan-ticket.canceled {
+  border-color: var(--state-canceled);
 }
 
 .plan-ticket.done,
