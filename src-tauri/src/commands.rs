@@ -24,6 +24,7 @@ use crate::core::update::{self, Update};
 use crate::core::voice;
 use crate::core::hostrun::{self, HostRun};
 use crate::core::plandescriptions::{self, PlanDescriptions};
+use crate::core::pictures::{self, PicturesReply};
 use crate::core::plangroups::{self, PlanGroup, PlanGroups};
 use crate::core::{pty, store, Core};
 
@@ -384,6 +385,13 @@ pub fn task_approve_cancel(cwd: String, id: String) -> Result<(), String> {
 #[tauri::command(async)]
 pub fn task_reply_cancel(cwd: String, id: String) -> Result<(), String> {
     pipeline::task_reply_cancel(cwd, id)
+}
+
+/// The pictures that the report of a task names, found in the project, a work folder or the task
+/// branch (ticket show-the-pictures-that-a-report-names-on).
+#[tauri::command(async)]
+pub fn report_pictures(core: State<Core>, cwd: String, id: String) -> Result<PicturesReply, String> {
+    pictures::report_pictures_call(&core, cwd, id)
 }
 
 /// Opens a ticket in In progress for a running task without one (ticket board-in-progress).

@@ -360,6 +360,13 @@
       </header>
       <div id="check-result-body"></div>
     </dialog>
+    <dialog id="pictures">
+      <header>
+        <h2 id="pictures-title">Pictures</h2>
+        <button id="pictures-close" title="Close (Esc)">&times;</button>
+      </header>
+      <div id="pictures-body"></div>
+    </dialog>
     <dialog id="tickets">
       <header>
         <h2 id="tickets-title">Tickets</h2>
@@ -998,7 +1005,7 @@
             <li>In the agent view the two runs are named <code>&lt;task&gt; [plan]</code> and <code>&lt;task&gt; [work]</code>; a project gets these names after Setup pipeline → Apply.</li>
             <li>The files of the <code>files:</code> line of a report show as a row of links at the top of the viewer, and a file name in code in the text of a report or a plan is a link. A name whose file is not there gets a mark. <b>Open in editor</b> opens the shown file in the program of this computer, only for a file of this PC.</li>
             <li>The plan row shows when the plan file changed and has no state chip, so it does not look like a run; the state of the task stands in the header of the card and in the tooltip of the row. The report row shows the state from the first line of the report. After you answer its question or click Continue in Dispatch, the report row shows Answered until the worker writes its new report.</li>
-            <li>The <b>Log</b> row under the report row opens the log of the task: the plan, each command of the worker with its output, and the report.</li>
+            <li>The <b>Log</b> row under the report row opens the log of the task: the plan, each command of the worker with its output, and the report. When the report names pictures, the row <b>Pictures</b> shows their count; a click opens their thumbnails, and a click on a thumbnail shows the picture large. Dispatch also finds a picture that is only in a work folder or on the task branch, and names a picture that it cannot find.</li>
             <li><b>Report check.</b> The worker writes the section Verification of its report in its own words. Dispatch reads the commands of the work run from the Claude Code transcripts of the task. Under the report row, the row <b>Commands of the work run</b> shows their count; a click opens each command with its exit code and its last output lines. An exit code behind a pipe can be 0 for a failed run, so read the last lines. A done report shows as <b>working</b> only when its work run ran no command, or when a check that you ticked is in no command of the work run: the report row gets a chip ("no command" or "1 check did not run"), the header says why, and the ticket stays in Working. The report file does not change. The card of such a task has the button <b>Take as done</b>: a click closes the task by hand, its ticket goes to Done, and the chip of the report row keeps the count and says that you took it as done, with the time. A reply to the worker that runs the commands and writes the report again closes the task.</li>
             <li>The check takes only a task whose work run has its own transcript on this computer, so a work run on another computer gets no warning. With Checks at the gate on, the check does not look for the ticked checks. A report of the old form, without Verification, Why, Files and Follow-ups, is not checked. Dispatch runs no check a second time after the work run. With Pick the checks after the work run on, the check looks for no ticked check either; a picked check that fails in its run keeps the task open the same way, with the title <b>Check failed</b>, the command that failed and the button <b>Take as done</b>.</li>
             <li>The two lines come from the title of its brief (else your words in the brief, else the title of the plan), and from the first Summary line of the plan, the first line of the report, or the open question. Dispatch writes nothing itself: the text is cut from the brief, the plan and the report. A long line ends in “…”; its tooltip has both lines in full.</li>

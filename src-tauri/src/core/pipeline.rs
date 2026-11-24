@@ -725,7 +725,7 @@ impl Project {
     }
 
     /// The branch file of a ticket: its branch, its base, and the merge when it is done.
-    fn branch_file(&self, ticket: &str) -> PathBuf {
+    pub(crate) fn branch_file(&self, ticket: &str) -> PathBuf {
         self.reports.join(format!("{ticket}.branch"))
     }
 
@@ -860,7 +860,7 @@ impl Project {
     }
 
     /// The folder of the work folders and their records. Git ignores it through `.dispatch/.gitignore`.
-    fn work_dir(&self) -> PathBuf {
+    pub(crate) fn work_dir(&self) -> PathBuf {
         self.reports.join("work")
     }
 
@@ -924,7 +924,7 @@ impl Project {
     }
 
     /// The ticket that the record of the work folder `n` names, or none without a record.
-    fn folder_user(&self, n: u8) -> Option<String> {
+    pub(crate) fn folder_user(&self, n: u8) -> Option<String> {
         let text = fs::read_to_string(self.folder_record(n)).ok()?;
         text.lines()
             .find_map(|line| line.trim().strip_prefix("ticket:"))
@@ -6516,6 +6516,9 @@ pub struct TaskInfo {
     /// keep-a-reply-that-the-worker-script), while it belongs to the current report and the task
     /// is not stopped. None else.
     kept: Option<KeptReply>,
+    /// The pictures that the report names (ticket show-the-pictures-that-a-report-names-on): paths
+    /// and bare names from a text parse; the call `report_pictures` finds the files.
+    pictures: Vec<String>,
 }
 
 /// A reply that the worker script kept for a busy project (`<ticket>.reply`): the text, the time of
@@ -6541,7 +6544,7 @@ pub struct TakenInfo {
 #[serde(rename_all = "camelCase")]
 pub struct BranchInfo {
     /// `task/<ticket>`.
-    name: String,
+    pub(crate) name: String,
     /// The branch that the task branch starts from and merges into.
     base: String,
     /// The merge line of the branch file after the merge: `done <sha> <time>` after the merge of
@@ -6569,7 +6572,7 @@ pub struct BranchInfo {
 }
 
 /// Reads a branch file: the lines `branch:`, `base:`, `merge:` and `push:`. None without the file.
-fn read_branch_file(path: &Path) -> Option<BranchInfo> {
+pub(crate) fn read_branch_file(path: &Path) -> Option<BranchInfo> {
     let text = fs::read_to_string(path).ok()?;
     let mut info = BranchInfo::default();
     for line in text.lines() {
@@ -7452,6 +7455,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             checks_open: false,
             approved: None,
             kept: None,
+            pictures: Vec::new(),
         });
         tasks.len() - 1
     }
@@ -7499,6 +7503,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         tasks[at].questions = questions;
         tasks[at].did = report_gist(&text);
         tasks[at].check_result = section_block(&text, "Check result");
+        tasks[at].pictures = crate::core::pictures::report_pictures(&text, &name).names;
         tasks[at].waits_for = parse_waits_for(&text);
         tasks[at].report = Some(entry);
     }
@@ -10713,6 +10718,7 @@ Blockers: none
             checks_open: false,
             approved: None,
             kept: None,
+            pictures: Vec::new(),
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };

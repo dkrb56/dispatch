@@ -13,6 +13,7 @@ pub mod flow;
 pub mod gitfiles;
 pub mod hostrun;
 pub mod phonepin;
+pub mod pictures;
 pub mod info;
 pub mod pipeline;
 pub mod plandescriptions;

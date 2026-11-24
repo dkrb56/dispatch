@@ -2386,6 +2386,8 @@ interface TaskInfo {
   checkResult?: string[];
   /** The ticket ids of the section `## Waits for` of the report (ticket a-task-that-waits-for-the-merge-of). Absent from an older host. */
   waitsFor?: string[];
+  /** The pictures that the report names, as paths or bare names (ticket show-the-pictures-that-a-report-names-on). Absent from an older host. */
+  pictures?: string[];
   /** The brief that triage wrote, or null. */
   brief: FileEntry | null;
   /** What the task is about: the title of its brief, else the user's words, else the plan title. */
@@ -7753,6 +7755,97 @@ function initCheckResult(): void {
   });
 }
 
+/** The reply of `report_pictures`: the pictures of the report that Dispatch found, and the names it did not find. */
+interface ReportPicturesReply {
+  found: { name: string; from: string; file: FileInfo }[];
+  missing: string[];
+}
+
+const PICTURES_LABEL = "Pictures";
+
+/** The row under the report row that opens the pictures that the report names. */
+function picturesRow(task: Task, names: string[]): HTMLElement {
+  const row = document.createElement("button");
+  row.className = "chat report";
+  row.title = "Open the pictures that the report names. Dispatch also finds a picture in a work folder or on the task branch.";
+  const name = document.createElement("span");
+  name.textContent = `${PICTURES_LABEL} ${names.length}`;
+  name.prepend(eyeIcon());
+  row.append(name);
+  row.addEventListener("click", () => void openPictures(task));
+  return row;
+}
+
+const picturesDialog = document.querySelector<HTMLDialogElement>("#pictures")!;
+/** The thumbnails of the open Pictures window. Each open gets a fresh container; the close empties it, so its image URLs go. */
+let picturesGallery: HTMLElement | null = null;
+/** The count of opens: a reply of an older open does not fill the window. */
+let picturesOpens = 0;
+
+/** Opens the Pictures window of a task: Dispatch finds the pictures of the report, then shows a thumbnail of each. */
+async function openPictures(task: Task): Promise<void> {
+  const host = taskHost(task);
+  const open = ++picturesOpens;
+  clearPictures();
+  document.querySelector("#pictures-title")!.textContent = `${taskProjectName(task)} · ${PICTURES_LABEL} · ${task.name}`;
+  const body = document.querySelector<HTMLElement>("#pictures-body")!;
+  const note = document.createElement("p");
+  note.className = "pictures-line";
+  note.textContent = "Looking for the pictures…";
+  body.replaceChildren(note);
+  if (!picturesDialog.open) picturesDialog.showModal();
+  let reply: ReportPicturesReply;
+  try {
+    reply = await call<ReportPicturesReply>(host, "report_pictures", { cwd: taskCwd(task), id: task.name });
+  } catch (error) {
+    if (open !== picturesOpens || !picturesDialog.open) return;
+    note.classList.add("error");
+    note.textContent = `Dispatch could not read the pictures: ${String(error)}`;
+    return;
+  }
+  if (open !== picturesOpens || !picturesDialog.open) return;
+  const seen = new Set<string>();
+  const found = reply.found.filter((item) => !seen.has(item.file.path) && Boolean(seen.add(item.file.path)));
+  const nodes: HTMLElement[] = [];
+  if (found.length > 0) {
+    const gallery = document.createElement("div");
+    gallery.className = "thumbs";
+    picturesGallery = gallery;
+    showGallery(gallery, onHost(host, found.map((item) => item.file)), (entry) => void openViewer(entry));
+    found.forEach((item, at) => {
+      const card = gallery.children[at] as HTMLElement | undefined;
+      if (card) card.title = `${item.name}
+From ${item.from}`;
+    });
+    nodes.push(gallery);
+  }
+  for (const name of reply.missing) {
+    const line = document.createElement("p");
+    line.className = "pictures-line";
+    line.textContent = `Not found: ${name}`;
+    nodes.push(line);
+  }
+  if (nodes.length === 0) {
+    note.textContent = "The report names no picture.";
+    nodes.push(note);
+  }
+  body.replaceChildren(...nodes);
+}
+
+/** Empties the thumbnails of the Pictures window, so their image URLs go. */
+function clearPictures(): void {
+  if (picturesGallery) showGallery(picturesGallery, [], () => undefined);
+  picturesGallery = null;
+}
+
+function initPictures(): void {
+  document.querySelector("#pictures-close")!.addEventListener("click", () => picturesDialog.close());
+  picturesDialog.addEventListener("click", (event) => {
+    if (event.target === picturesDialog) picturesDialog.close();
+  });
+  picturesDialog.addEventListener("close", clearPictures);
+}
+
 function initQuestions(): void {
   document.querySelector("#questions-close")!.addEventListener("click", () => questionsDialog.close());
   questionsDialog.addEventListener("click", (event) => {
@@ -12253,6 +12346,8 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
       if (commands) body.append(commands);
       // The result of a check step, also after the run went on (ticket confirm-a-check-step-s-result-on-the).
       if ((info.checkResult ?? []).length > 0) body.append(checkResultRow(task, info.checkResult ?? []));
+      // The pictures that the report names (ticket show-the-pictures-that-a-report-names-on).
+      if ((info.pictures ?? []).length > 0) body.append(picturesRow(task, info.pictures ?? []));
     }
     // The log of the task: the plan, each command with its output, the report (ticket task-log).
     if (info?.log) body.append(fileRow("Log", info.log, null, null));
@@ -19538,6 +19633,7 @@ async function start(): Promise<void> {
   initGitState();
   initQuestions();
   initCheckResult();
+  initPictures();
   initStale();
   initRemoveProject();
   initTickets();

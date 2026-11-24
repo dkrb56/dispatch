@@ -94,6 +94,7 @@ pub fn run() {
             commands::task_approve,
             commands::task_approve_cancel,
             commands::task_reply_cancel,
+            commands::report_pictures,
             commands::ticket_plan,
             commands::ticket_level_file,
             commands::task_work,
