@@ -103,7 +103,7 @@ import {
   type PlanPlace,
   type PlanTicket,
 } from "./plantree";
-import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, idleRun, inWork, listedTasks, type LostWorker, movedPlaces, newestWorker, type OverviewPlaces, type OverviewRect, type OverviewTask, PLAN_ERROR_TEXT, planLost as planLostRule, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode, WORK_ERROR_TEXT, WORK_LOST_TEXT, workLost } from "./overview";
+import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, idleRun, inWork, limitStop, listedTasks, type LostWorker, movedPlaces, newestWorker, type OverviewPlaces, type OverviewRect, type OverviewTask, PLAN_ERROR_TEXT, PLAN_LIMIT_TEXT, planLost as planLostRule, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode, WORK_ERROR_TEXT, WORK_LIMIT_TEXT, WORK_LOST_TEXT, workLost } from "./overview";
 import {
   allowanceLine,
   bars,
@@ -190,6 +190,7 @@ import { EFFORTS, MODELS, selector } from "./rulecheck";
 import { GIT_STATE_SIZE_KEY, ageText, commitFilesLabel, commitHeadText, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "./gitstate";
 import { initRules, openRules } from "./rules";
 import { initStatusBar, redrawStatusBar } from "./statusbar";
+import { limitPart } from "./status";
 import { terminalTheme, themeName, themeTokens, TICKET_COLORS, ticketColors } from "./theme";
 import { nightButton, nightChanges, nightLines, nightSyncLines } from "./night";
 import { KEY_DOWN, KEY_ENTER, KEY_ESC, rcCommand, rcMenuFocus, rcSettled, rcView, type RcView, type RcWish } from "./remotecontrol";
@@ -433,6 +434,12 @@ interface Worker {
    * Please run /login" (ticket a-run-that-stopped-at-a-login-or-limit). Null without one; absent from an older host.
    */
   error?: string | null;
+  /**
+   * For a worker with `error`: the kind of the stop, `rate_limit` for a usage limit of Claude,
+   * `authentication_failed` for a login (ticket if-claude-hourly-or-weekly-limits-are). Null
+   * without one; absent from an older host.
+   */
+  errorKind?: string | null;
   /**
    * For the newest run of its name that is failed without its plan or report: the time (ISO) at
    * which the daemon of Claude Code found the session dead while it worked (ticket
@@ -8641,7 +8648,22 @@ function resumeRow(task: Task): HTMLElement | null {
 
 /** The workers of a task as the rules `workLost` and `planLost` of src/overview.ts see them. */
 function lostWorkers(task: Task): LostWorker[] {
-  return task.workers.map((worker) => ({ run: workerRun(task, worker), state: worker.state, result: worker.result, finished: worker.finished, startedAt: worker.startedAt, error: worker.error, reapedAt: worker.reapedAt, idle: worker.idle }));
+  return task.workers.map((worker) => ({ run: workerRun(task, worker), state: worker.state, result: worker.result, finished: worker.finished, startedAt: worker.startedAt, error: worker.error, errorKind: worker.errorKind, reapedAt: worker.reapedAt, idle: worker.idle }));
+}
+
+/**
+ * The run of a task that stopped at a usage limit of Claude, with the message of Claude Code, or
+ * null (ticket if-claude-hourly-or-weekly-limits-are): the rule `limitStop` of src/overview.ts.
+ */
+function limitStopOf(task: Task): { run: "plan" | "work"; message: string } | null {
+  const info = task.info;
+  if (!info) return null;
+  return limitStop({ state: info.state, hasPlan: Boolean(info.plan), hasReport: Boolean(info.report), workers: lostWorkers(task) });
+}
+
+/** The status text of a run that stopped at a usage limit of Claude. */
+function limitStopText(run: "plan" | "work"): string {
+  return run === "plan" ? PLAN_LIMIT_TEXT : WORK_LIMIT_TEXT;
 }
 
 /**
@@ -8807,6 +8829,9 @@ function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"
   if (mergeWait) return { kind: mergeWait.kind === "problem" ? "waits" : "done", text: mergeWaitShort(mergeWait) };
   // A run whose turn ended without its result waits for Continue (ticket a-worker-that-waits-with-no-turn-does).
   const idle = idleRun(lostWorkers(task));
+  // An idle run that stopped at a usage limit says so (ticket if-claude-hourly-or-weekly-limits-are).
+  const limit = limitStopOf(task);
+  if (idle && limit) return { kind: "waits", text: limitStopText(limit.run) };
   if (idle) return { kind: "waits", text: `${idle.run === "plan" ? "Plan run" : idle.run === "work" ? "Work run" : "Worker"} idle, no turn` };
   const live = task.workers.find((worker) => worker.state === "working" || worker.state === "blocked");
   if (live) {
@@ -8821,6 +8846,7 @@ function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"
   if (picks === "running") return { kind: "working", text: pickStatusText(picks, pickAtMerge(task)) };
   if (picks === "picked" || picks === "failed") return { kind: "waits", text: pickStatusText(picks, pickAtMerge(task), task.info?.checked) };
   if (awayRun(task)) return { kind: "waits", text: "ran on another computer · no worker here" };
+  if (limit && (planLost(task) || workLostOf(task))) return { kind: "failed", text: limitStopText(limit.run) };
   if (planLost(task)) return { kind: "failed", text: lostError(task) ? PLAN_ERROR_TEXT : "failed · the plan run ended without a plan" };
   if (workLostOf(task)) return { kind: "failed", text: lostError(task) ? WORK_ERROR_TEXT : WORK_LOST_TEXT };
   if (task.info?.state === "stopped") return { kind: "failed", text: "stopped" };
@@ -12662,6 +12688,50 @@ function renderChats(): void {
   renderOverview();
   renderPlan();
   showProjectAttention();
+  showLimitStops();
+}
+
+/** The tasks of all projects whose run stopped at a usage limit, in the order of the projects (ticket if-claude-hourly-or-weekly-limits-are). */
+function limitStops(): { key: string; project: string; task: string; message: string }[] {
+  return [...projectTasks.entries()].flatMap(([key, record]) =>
+    projectTaskList(record).flatMap((task) => {
+      // A Continue that goes out or waits in the queue ends the stop for the bar.
+      if (replySendingOf(task) || queuedReplyOf(task)) return [];
+      const stop = limitStopOf(task);
+      const project = projectLabel(folderName(record.cwd), backendName(record.host), backends().length > 1);
+      return stop ? [{ key, project, task: task.name, message: stop.message }] : [];
+    }),
+  );
+}
+
+/**
+ * The part of the bottom bar that counts the runs stopped at a usage limit (ticket
+ * if-claude-hourly-or-weekly-limits-are). It flashes while one stop is left (user decision 1).
+ */
+function showLimitStops(): void {
+  const el = document.querySelector<HTMLElement>("#status-limit");
+  if (!el) return;
+  const stops = limitStops();
+  const part = limitPart(stops);
+  el.textContent = part.text;
+  el.title = part.title;
+  el.classList.toggle("missing", part.missing);
+  el.hidden = part.text === "";
+  toggleAttention(el, stops.length > 0);
+}
+
+/** Opens the card of the first task that stopped at a usage limit, as `openTokenConsumer` opens a task. */
+function openFirstLimitStop(): void {
+  const first = limitStops()[0];
+  if (!first) return;
+  setFocusCurrent(first.key);
+  taskOpenChoice.set(`${first.key}|${first.task}`, true);
+  renderChats();
+  requestAnimationFrame(() => {
+    // A hidden view can hold a card of the same task: the shown one comes first.
+    const cards = [...document.querySelectorAll<HTMLElement>(".task")].filter((el) => el.querySelector(".task-title")?.textContent === first.task);
+    (cards.find((el) => el.offsetParent !== null) ?? cards[0])?.scrollIntoView({ block: "center" });
+  });
 }
 
 /** Reads the chat list for the Chats sections of the columns. `poll`: a host whose read is not due keeps its last list. */
@@ -19102,6 +19172,7 @@ async function start(): Promise<void> {
       focusOn || mapOn || overviewOn,
     ),
   );
+  document.querySelector<HTMLElement>("#status-limit")?.addEventListener("click", openFirstLimitStop);
   initDecisions();
   initCommit();
   initGitState();

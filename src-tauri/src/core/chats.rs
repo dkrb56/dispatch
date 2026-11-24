@@ -183,6 +183,11 @@ pub struct Worker {
     /// `state.json`; the transcript keeps the error. None for every other worker.
     #[serde(skip_deserializing)]
     error: Option<String>,
+    /// For a worker with `error`: the `error` field of that transcript line, the kind of the stop,
+    /// for example `rate_limit` (the 5-hour or weekly usage limit) or `authentication_failed` (ticket
+    /// if-claude-hourly-or-weekly-limits-are). None without one.
+    #[serde(skip_deserializing)]
+    error_kind: Option<String>,
     /// For the newest run of the pipeline of its name that is `failed` without its result: the
     /// `reapedMidWorkAt` text of its `~/.claude/jobs/<id>/state.json`, the time (ISO) at which the
     /// daemon found the session dead while it worked (ticket a-failed-plan-run-or-work-run-gives-a).
@@ -367,11 +372,35 @@ fn worker_finished(claude: &Path, id: &str) -> Option<bool> {
 /// (`isApiErrorMessage`), trimmed and at most 200 characters (ticket a-run-that-stopped-at-a-login-or-limit).
 /// Other lines (`system`, `last-prompt`, `cost-state`) and a half line at the start are skipped. A
 /// resumed copy has the old error near its start and its own lines after it: no error then.
+#[cfg(test)]
 fn transcript_error(text: &str) -> Option<String> {
-    let last = text.lines().rev().find_map(|line| {
+    api_error(&last_message(text)?)
+}
+
+/// The kind of the error of a transcript: the `error` field of the line that `transcript_error`
+/// reads, for example `rate_limit` or `authentication_failed` (ticket
+/// if-claude-hourly-or-weekly-limits-are). None without an error or without the field.
+#[cfg(test)]
+fn transcript_error_kind(text: &str) -> Option<String> {
+    error_kind(&last_message(text)?)
+}
+
+/// The last `user` or `assistant` line of a transcript part, as JSON.
+fn last_message(text: &str) -> Option<Value> {
+    text.lines().rev().find_map(|line| {
         let entry: Value = serde_json::from_str(line.trim()).ok()?;
         matches!(entry.get("type")?.as_str()?, "user" | "assistant").then_some(entry)
-    })?;
+    })
+}
+
+/// The `error` field of a line that `api_error` takes as an error.
+fn error_kind(last: &Value) -> Option<String> {
+    api_error(last)?;
+    last.get("error")?.as_str().map(str::to_string)
+}
+
+/// The text of a message line that Claude Code wrote as an API error, as `transcript_error` gives it.
+fn api_error(last: &Value) -> Option<String> {
     if last.get("type").and_then(Value::as_str) != Some("assistant") || last.get("isApiErrorMessage").and_then(Value::as_bool) != Some(true) {
         return None;
     }
@@ -383,8 +412,8 @@ fn transcript_error(text: &str) -> Option<String> {
     Some(error.chars().take(200).collect())
 }
 
-/// `transcript_error` of the last `PART_BYTES` of `<project>/<session>.jsonl`.
-fn worker_error(projects: &[PathBuf], session_id: &str) -> Option<String> {
+/// `transcript_error` and `transcript_error_kind` of the last `PART_BYTES` of `<project>/<session>.jsonl`.
+fn worker_error(projects: &[PathBuf], session_id: &str) -> Option<(String, Option<String>)> {
     // The id becomes a part of a path.
     if session_id.is_empty() || !session_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return None;
@@ -393,7 +422,8 @@ fn worker_error(projects: &[PathBuf], session_id: &str) -> Option<String> {
     let mut file = fs::File::open(path).ok()?;
     let size = file.metadata().ok()?.len();
     let len = size.min(PART_BYTES);
-    transcript_error(&read_part(&mut file, size - len, len)?)
+    let last = last_message(&read_part(&mut file, size - len, len)?)?;
+    Some((api_error(&last)?, error_kind(&last)))
 }
 
 /// The text of a terminal screen without its control codes: a cursor position (CSI `H` or `f`) starts
@@ -674,8 +704,13 @@ pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
             Some("stopped") | Some("failed") => worker.name.as_deref().and_then(run_of).zip(worker.started_at).is_some_and(|((ticket, plan), start)| !from_run(modified(ticket, plan), start, next_start)),
             _ => false,
         };
-        if without_result && next_start.is_none() {
-            worker.error = worker.session_id.as_deref().and_then(|id| worker_error(&projects, id));
+        // A run that is idle with no turn may have stopped at an error too, for example a usage limit
+        // (ticket if-claude-hourly-or-weekly-limits-are).
+        let idle = worker.idle && worker.state.as_deref() == Some("working");
+        if (without_result || idle) && next_start.is_none() {
+            let (error, kind) = worker.session_id.as_deref().and_then(|id| worker_error(&projects, id)).unzip();
+            worker.error = error;
+            worker.error_kind = kind.flatten();
             // A failed job that the daemon found dead has no error; its state file says when it died.
             if worker.state.as_deref() == Some("failed") {
                 worker.reaped_at = claude.as_deref().and_then(|claude| job_state(claude, &worker.id)).as_deref().and_then(job_reaped);
@@ -730,7 +765,7 @@ pub fn end_session(id: String) -> Result<String, String> {
 
 #[cfg(test)]
 mod worker_tests {
-    use super::{check_session_id, end_session, from_later_run, job_finished, job_needs, job_reaped, permission_prompt, run_result, timeline_end, transcript_error, worker_finished, Worker, WorkerPrompt};
+    use super::{check_session_id, end_session, from_later_run, job_finished, job_needs, job_reaped, permission_prompt, run_result, timeline_end, transcript_error, transcript_error_kind, worker_finished, Worker, WorkerPrompt};
 
     /// The form of `~/.claude/jobs/<id>/state.json` (Claude Code 2.1.319, job 6a54e3cc: a plan run
     /// that ended without its plan; job 68b71856: a done run with queued work).
@@ -839,6 +874,25 @@ mod worker_tests {
         assert_eq!(transcript_error(&login).as_deref(), Some("Login reached its time limit · Please run /login"));
         let limit = format!("{user}\n{LIMIT_ERROR}\n{TAIL}");
         assert_eq!(transcript_error(&limit).as_deref(), Some("You've hit your weekly limit · resets 7pm (Europe/Ljubljana)"));
+    }
+
+    #[test]
+    fn transcript_error_kind_tells_a_usage_limit_from_a_login_stop() {
+        let user = r#"{"type":"user","message":{"role":"user","content":"Plan approved: …"},"sessionId":"ea33c60b"}"#;
+        assert_eq!(transcript_error_kind(&format!("{user}
+{LIMIT_ERROR}
+{TAIL}")).as_deref(), Some("rate_limit"));
+        assert_eq!(transcript_error_kind(&format!("{user}
+{LOGIN_ERROR}
+{TAIL}
+")).as_deref(), Some("authentication_failed"));
+        // No error at the end, or a line that is no error, gives no kind.
+        assert_eq!(transcript_error_kind(&format!("{user}
+{TAIL}")), None);
+        assert_eq!(transcript_error_kind(&LIMIT_ERROR.replace("\"isApiErrorMessage\":true", "\"isApiErrorMessage\":false")), None);
+        assert_eq!(transcript_error_kind(&format!("{LIMIT_ERROR}
+{user}
+")), None);
     }
 
     #[test]

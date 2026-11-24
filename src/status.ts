@@ -83,6 +83,26 @@ export function statusParts(
   return { account, claude, dispatch: dispatchPart(info.dispatch, host, hostName) };
 }
 
+/** A run that stopped at a usage limit of Claude: its project, its task and the message of Claude Code. */
+export interface LimitStop {
+  project: string;
+  task: string;
+  message: string;
+}
+
+const LIMIT_TITLE = "Runs that stopped at a usage limit of Claude (5-hour or weekly). Click Continue on the task card after the reset.";
+
+/**
+ * The part of the bar that counts the runs stopped at a usage limit (ticket
+ * if-claude-hourly-or-weekly-limits-are): empty without one, else "Limit stop: <number>", in the
+ * colour of a wait. The tooltip names each task with the message of Claude Code, which holds the reset time.
+ */
+export function limitPart(stops: readonly LimitStop[]): StatusPart {
+  if (stops.length === 0) return part("", LIMIT_TITLE);
+  const lines = stops.map((stop) => `${stop.project} · ${stop.task}: ${stop.message || "no message"}`);
+  return part(`Limit stop: ${stops.length}`, [LIMIT_TITLE, ...lines, "Click to open the first one."].join("\n"), true);
+}
+
 /** One weekly line of `/usage` of Claude Code: its name as Claude Code writes it ("all models", "Fable"), the percent used and the reset text. */
 export interface UsageWeek {
   name: string;

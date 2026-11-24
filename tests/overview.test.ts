@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { cardLayout, chatPlacer, doneTasks, freePlace, idleRun, inWork, listedTasks, type LostFacts, type LostWorker, movedPlaces, OVERVIEW_CARD_WIDTH, OVERVIEW_DONE_SHOWN, OVERVIEW_EXTENDED_DONE, OVERVIEW_EXTENDED_WIDTH, OVERVIEW_GRID, type OverviewTask, PLAN_ERROR_TEXT, planLost, type PlanLostFacts, parsePlaces, parseSizes, type RunFacts, runStarting, savedView, sizeOf, snapPlace, toggledSize, WORK_ERROR_TEXT, WORK_LOST_TEXT, workLost } from "../src/overview.ts";
+import { cardLayout, chatPlacer, doneTasks, freePlace, idleRun, inWork, limitStop, listedTasks, type LostFacts, type LostWorker, movedPlaces, OVERVIEW_CARD_WIDTH, OVERVIEW_DONE_SHOWN, OVERVIEW_EXTENDED_DONE, OVERVIEW_EXTENDED_WIDTH, OVERVIEW_GRID, type OverviewTask, PLAN_ERROR_TEXT, PLAN_LIMIT_TEXT, planLost, type PlanLostFacts, parsePlaces, parseSizes, type RunFacts, runStarting, savedView, sizeOf, snapPlace, toggledSize, WORK_ERROR_TEXT, WORK_LIMIT_TEXT, WORK_LOST_TEXT, workLost } from "../src/overview.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const CSS = read("../src/styles.css");
@@ -313,6 +313,39 @@ test("a plan run that works, has its plan, or stopped without an error is not lo
   assert.equal(planLost(planFacts({ state: "stopped" }, [{ state: "stopped", error: LOGIN }])), false);
   assert.equal(planLost(planFacts({}, [{ run: "work", state: "stopped", error: LOGIN }])), false);
   assert.equal(planLost(planFacts({ workers: [] })), false);
+});
+
+// ---- A run that stopped at a usage limit of Claude (if-claude-hourly-or-weekly-limits-are) ------
+
+const LIMIT = "You've hit your weekly limit · resets 7pm (Europe/Ljubljana)";
+
+function limitFacts(extra: Partial<LostFacts & { hasPlan: boolean }> = {}, workers: Partial<LostWorker>[] = [{}]): LostFacts & { hasPlan: boolean } {
+  const work: LostWorker = { run: "work", state: "stopped", result: null, finished: null, startedAt: 2000, error: LIMIT, errorKind: "rate_limit" };
+  return { state: "working", hasReport: false, hasPlan: true, workers: workers.map((one) => ({ ...work, ...one })), ...extra };
+}
+
+test("a lost work run, a lost plan run and an idle run that stopped at a usage limit count as a limit stop", () => {
+  assert.deepEqual(limitStop(limitFacts()), { run: "work", message: LIMIT });
+  assert.deepEqual(limitStop(limitFacts({}, [{ state: "done", result: false, finished: true }])), { run: "work", message: LIMIT });
+  assert.deepEqual(limitStop(limitFacts({ state: "planning", hasPlan: false }, [{ run: "plan" }])), { run: "plan", message: LIMIT });
+  assert.deepEqual(limitStop(limitFacts({}, [{ state: "working", idle: true }])), { run: "work", message: LIMIT });
+  assert.deepEqual(limitStop(limitFacts({ state: "planning", hasPlan: false }, [{ run: "plan", state: "working", idle: true }])), { run: "plan", message: LIMIT });
+  assert.equal(WORK_LIMIT_TEXT, "failed · the work run stopped at a usage limit");
+  assert.equal(PLAN_LIMIT_TEXT, "failed · the plan run stopped at a usage limit");
+});
+
+test("a login stop, a task that the user stopped, or a later run without an error is no limit stop", () => {
+  assert.equal(limitStop(limitFacts({}, [{ errorKind: "authentication_failed", error: "Login reached its time limit · Please run /login" }])), null);
+  assert.equal(limitStop(limitFacts({}, [{ errorKind: null }])), null);
+  assert.equal(limitStop(limitFacts({}, [{ errorKind: undefined }])), null);
+  assert.equal(limitStop(limitFacts({ state: "stopped" })), null);
+  assert.equal(limitStop(limitFacts({ state: "stopped" }, [{ state: "working", idle: true }])), null);
+  // Continue started a new job: it works, or it ended without an error.
+  assert.equal(limitStop(limitFacts({}, [{}, { state: "working", idle: false, error: null, errorKind: null, startedAt: 3000 }])), null);
+  assert.equal(limitStop(limitFacts({}, [{}, { state: "done", result: false, finished: true, error: null, errorKind: null, startedAt: 3000 }])), null);
+  // A report or a plan ends the stop.
+  assert.equal(limitStop(limitFacts({ hasReport: true })), null);
+  assert.equal(limitStop(limitFacts({ state: "planning", hasPlan: true }, [{ run: "plan" }])), null);
 });
 
 test("the Map decides open with the rule of the Overview, not with the state file", () => {

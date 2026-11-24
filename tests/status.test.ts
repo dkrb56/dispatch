@@ -2,7 +2,7 @@
 // The address is made up; no real address stands in a test.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ACCOUNT_LABEL, type StatusInfo, type UsageInfo, statusParts, USAGE_MODEL, usageParts } from "../src/status.ts";
+import { ACCOUNT_LABEL, limitPart, type StatusInfo, type UsageInfo, statusParts, USAGE_MODEL, usageParts } from "../src/status.ts";
 
 const EMAIL = "tester@example.com";
 
@@ -181,4 +181,17 @@ test("weekly usage: no answer yet: both parts show …", () => {
   assert.deepEqual([parts.week.text, parts.model.text], ["…", "…"]);
   const accountKnown = usageParts(null, "signed-in", "found", null);
   assert.deepEqual([accountKnown.week.text, accountKnown.model.text], ["…", "…"]);
+});
+
+test("limit stops: none gives an empty part; two give the number and a tooltip with both tasks", () => {
+  assert.equal(limitPart([]).text, "");
+  const two = limitPart([
+    { project: "dispatch", task: "first-task", message: "You've hit your weekly limit · resets 7pm (Europe/Ljubljana)" },
+    { project: "other", task: "second-task", message: "You've hit your session limit · resets 3pm" },
+  ]);
+  assert.equal(two.text, "Limit stop: 2");
+  assert.equal(two.missing, true);
+  assert.match(two.title, /dispatch · first-task: You've hit your weekly limit · resets 7pm \(Europe\/Ljubljana\)/);
+  assert.match(two.title, /other · second-task: You've hit your session limit · resets 3pm/);
+  assert.match(two.title, /Click to open the first one\./);
 });

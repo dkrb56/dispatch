@@ -361,6 +361,18 @@ body.focus-mode #bar #focus-split {
   color: var(--wait);
 }
 
+/* The count of runs that stopped at a usage limit (ticket if-claude-hourly-or-weekly-limits-are): it
+   never shrinks away, and it flashes while a stop is left; still with Pulse off or reduced motion. */
+#status-limit {
+  flex: none;
+  color: var(--wait);
+  cursor: pointer;
+}
+
+#status-limit.attention.pulse {
+  animation: setup-pulse 1.6s ease-in-out infinite;
+}
+
 #panes {
   position: relative;
   flex: 1;

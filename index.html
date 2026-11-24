@@ -46,6 +46,7 @@
       <main id="plan" hidden></main>
     </div>
     <footer id="status-bar">
+      <span id="status-limit" hidden></span>
       <span id="status-account">…</span>
       <span id="status-week">…</span>
       <span id="status-week-model">…</span>
@@ -1101,7 +1102,7 @@
             <li>An alert comes one time when a plan is ready, a report has a question or needs a permission, or a worker waits at a prompt. Each alert has its own switch in Options. The notification names the task and what it waits for. The button blinks until you open the window.</li>
             <li>When a plan run or a work run waits at a permission prompt, its task card shows the command, the reason and the time left before Claude Code refuses it by itself. You answer the prompt in the agent view.</li>
             <li>The tasks that already wait when Dispatch starts give no alert. The chime and the voice start only after your first key or click in Dispatch, because the window may play sound only then. With the voice on, it replaces the chime; the chime plays when the computer has no voice. In night mode only a plan with a HOLD decision, a permission and a prompt alert. A test build that runs with <code>npm run tauri dev</code> shows the notification as from PowerShell.</li>
-            <li>The bar at the bottom shows "Claude account:" with the email of the account that Claude Code uses on the computer that does the work. Then come the weekly usage for all models and for Fable, the version of Claude Code and the version of Dispatch. The email stays on this computer.</li>
+            <li>The bar at the bottom shows "Claude account:" with the email of the account that Claude Code uses on the computer that does the work. Then come the weekly usage for all models and for Fable, the version of Claude Code and the version of Dispatch. The email stays on this computer. When a run stops at the 5-hour or weekly usage limit of Claude, a flashing "Limit stop" number stands first: its tooltip names the tasks and the reset time, and a click opens the first task card, where Continue goes on after the reset.</li>
             <li>The computer that does the work is this PC, or the computer of the focused terminal with hosts. With several hosts the host name stands in front of the account. When the versions of this window and a host differ, the bar shows both in the wait colour.</li>
             <li>Dispatch reads the account and the versions at the start and then once a minute. Without a login the bar says "Not signed in to Claude Code"; without Claude Code it says "Claude Code not found".</li>
             <li><b>The weekly usage</b>, for example "Week: all models 41 % · Fable 7 %", is the used percent of the weekly limits of your subscription, as <code>/usage</code> of Claude Code shows it. After it the bar shows when the week starts again, for example "Resets Jan 1, 9:00am"; the tooltip adds the time zone and when Dispatch read it.</li>

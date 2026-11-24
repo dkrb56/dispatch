@@ -58,6 +58,12 @@ export interface LostWorker {
    */
   error?: string | null;
   /**
+   * For a worker with `error`: the kind of the stop as Claude Code wrote it, `rate_limit` for the
+   * 5-hour or weekly usage limit, `authentication_failed` for a login (ticket
+   * if-claude-hourly-or-weekly-limits-are). Null or absent without one, and from an older host.
+   */
+  errorKind?: string | null;
+  /**
    * For the newest run of its name that is `failed` without its result: the time (ISO) at which the
    * daemon of Claude Code found the session dead while it worked (ticket
    * a-failed-plan-run-or-work-run-gives-a). Null or absent without one.
@@ -87,6 +93,12 @@ export const WORK_ERROR_TEXT = "failed · the work run stopped at an error";
 
 /** The status of a task whose plan run stopped at an error of Claude Code. */
 export const PLAN_ERROR_TEXT = "failed · the plan run stopped at an error";
+
+/** The status of a task whose work run stopped at a usage limit of Claude (ticket if-claude-hourly-or-weekly-limits-are). */
+export const WORK_LIMIT_TEXT = "failed · the work run stopped at a usage limit";
+
+/** The status of a task whose plan run stopped at a usage limit of Claude. */
+export const PLAN_LIMIT_TEXT = "failed · the plan run stopped at a usage limit";
 
 /** The newest worker of a list by its start, or null. */
 export function newestWorker<T extends { startedAt: number | null }>(workers: readonly T[]): T | null {
@@ -152,6 +164,21 @@ export function planLost(facts: PlanLostFacts): boolean {
 export function idleRun<T extends LostWorker>(workers: readonly T[]): T | null {
   if (workers.some((worker) => (worker.state === "working" && !worker.idle) || worker.state === "blocked")) return null;
   return newestWorker(workers.filter((worker) => worker.state === "working" && worker.idle === true));
+}
+
+/**
+ * The run of a task that stopped at a usage limit of Claude, the 5-hour or the weekly one, with the
+ * message of Claude Code, or null (ticket if-claude-hourly-or-weekly-limits-are). The run is lost
+ * (`planLost` or `workLost`) or idle with no turn (`idleRun`), and the worker at which it stopped
+ * has the error kind `rate_limit`. A task that the user stopped never counts.
+ */
+export function limitStop(facts: LostFacts & { hasPlan: boolean }): { run: "plan" | "work"; message: string } | null {
+  if (facts.state === "stopped") return null;
+  const stop = (worker: LostWorker | null, run: "plan" | "work") => (worker?.errorKind === "rate_limit" ? { run, message: worker.error ?? "" } : null);
+  if (planLost(facts)) return stop(newestWorker(facts.workers), "plan");
+  if (workLost(facts)) return stop(newestWorker(facts.workers), "work");
+  const idle = idleRun(facts.workers);
+  return idle ? stop(idle, idle.run === "plan" ? "plan" : "work") : null;
 }
 
 /**
