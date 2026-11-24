@@ -2,6 +2,12 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.91 (2026-11-24)
+- The terminal panels of Focus mode get a 1px frame (var(--line)).
+- The end alert of a done work run follows the state line of its report (done, failed, waiting; needs-decision stays quiet); reportState in Worker, merge-wait event.
+- The natural voice waits up to 30 s for a line (the service sometimes takes 11 s; the 10 s limit sent the line to the Windows voice); error texts name the cause; live tests for each event line and the token window.
+- A run that stopped at a usage limit of Claude shows a flashing "Limit stop: N" in the bottom bar (tooltip with tasks and reset text, click opens the first task card); the card says "stopped at a usage limit" with its Continue.
+
 ## 0.1.90 (2026-11-24)
 - Options > Look gets a Terminal font row (five fonts), applied to all panes and kept in localStorage.
 - The Plan board shows a spinner (Reading the groups…) until the groups of the project are read, then draws with its groups at once.
