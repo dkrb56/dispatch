@@ -12133,8 +12133,19 @@ async function sayLine(text: string): Promise<void> {
     return;
   } catch (error) {
     console.warn("no natural voice for the alert; the system voice speaks", error);
+    showVoiceFailure(error);
   }
   if (!(await speakSystem(text))) chimeAfterVoice();
+}
+
+/** Options shows the time and the reason of the last line that the natural voice did not say. */
+function showVoiceFailure(error: unknown): void {
+  const line = document.querySelector<HTMLElement>("[data-voice-failure]");
+  if (!line) return;
+  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const reason = (error instanceof Error ? error.message : String(error)).trim().replace(/\.?$/, ".");
+  line.textContent = `Last failure of the natural voice at ${time}: ${reason} The Windows voice or the chime took its place.`;
+  line.hidden = false;
 }
 
 /** Plays MP3 bytes; ends when the sound ended, fails when the window cannot play them. */

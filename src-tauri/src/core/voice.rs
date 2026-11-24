@@ -29,8 +29,11 @@ const CHROMIUM_MAJOR_VERSION: &str = "143";
 const ORIGIN: &str = "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold";
 /// The time from 1601-01-01 (Windows) to 1970-01-01 (Unix), in seconds.
 const WIN_EPOCH: u64 = 11_644_473_600;
-/// The longest wait for one phrase: the connection, the request and all the audio.
-const TIMEOUT: Duration = Duration::from_secs(10);
+/// The longest wait for one phrase: the connection, the request and all the audio. The service
+/// sometimes pauses 2 to 6 seconds before the first audio and again in the middle; a line then
+/// takes up to 11 seconds (measured 2026-11-24). The page lets one line hold the queue for at most
+/// 60 seconds (`VOICE_LINE_CAP_MS`), playback included.
+const TIMEOUT: Duration = Duration::from_secs(30);
 /// The longest text that the page may ask for.
 const MAX_TEXT: usize = 500;
 /// The cache keeps at most this many phrases; the oldest go first.
@@ -429,17 +432,21 @@ fn now_seconds() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// The MP3 of one phrase from the service, in at most 10 seconds.
+/// The MP3 of one phrase from the service, in at most `TIMEOUT`.
 pub(crate) async fn fetch(voice: &str, text: &str) -> Result<Vec<u8>, String> {
     check_input(voice, text)?;
-    match tokio::time::timeout(TIMEOUT, fetch_now(voice, text)).await {
+    match tokio::time::timeout(TIMEOUT, fetch_now(voice, text, now_seconds())).await {
         Ok(result) => result,
-        Err(_) => Err("the voice service did not answer in 10 seconds".into()),
+        Err(_) => Err(timeout_text()),
     }
 }
 
-async fn fetch_now(voice: &str, text: &str) -> Result<Vec<u8>, String> {
-    let now = now_seconds();
+/// The error of a line that the service did not finish in time.
+fn timeout_text() -> String {
+    format!("the voice service did not send the whole line in {} seconds", TIMEOUT.as_secs())
+}
+
+async fn fetch_now(voice: &str, text: &str, now: u64) -> Result<Vec<u8>, String> {
     let url = connect_url(&token(now), &random_hex(16)?.to_lowercase());
     let mut request = url.into_client_request().map_err(err)?;
     let user_agent = format!(
@@ -459,13 +466,13 @@ async fn fetch_now(voice: &str, text: &str) -> Result<Vec<u8>, String> {
     let (mut socket, _) =
         tokio_tungstenite::connect_async(request).await.map_err(|e| format!("the voice service refused the connection: {e}"))?;
     let date = date_string(now);
-    socket.send(Message::text(config_message(&date))).await.map_err(err)?;
+    socket.send(Message::text(config_message(&date))).await.map_err(|e| format!("the voice service took no request: {e}"))?;
     let request_id = random_hex(16)?.to_lowercase();
-    socket.send(Message::text(ssml_message(&request_id, &date, voice, text))).await.map_err(err)?;
+    socket.send(Message::text(ssml_message(&request_id, &date, voice, text))).await.map_err(|e| format!("the voice service took no request: {e}"))?;
 
     let mut audio = Vec::new();
     while let Some(message) = socket.next().await {
-        match message.map_err(err)? {
+        match message.map_err(|e| format!("the voice service broke off the line: {e}"))? {
             Message::Text(text) if is_turn_end(text.as_str()) => break,
             Message::Binary(frame) => {
                 if let Some(bytes) = audio_of_frame(&frame) {
@@ -623,6 +630,14 @@ mod tests {
     }
 
     #[test]
+    fn the_time_limit_lets_a_slow_line_finish_and_names_itself() {
+        // The slowest line measured took 10.6 seconds; the page queue lets a line run 60 seconds.
+        assert!(TIMEOUT >= Duration::from_secs(20));
+        assert!(TIMEOUT <= Duration::from_secs(40));
+        assert_eq!(timeout_text(), format!("the voice service did not send the whole line in {} seconds", TIMEOUT.as_secs()));
+    }
+
+    #[test]
     fn the_url_holds_the_token_and_the_version() {
         let url = connect_url("T-K", "c0ffee");
         assert!(url.starts_with("wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?"));
@@ -726,5 +741,57 @@ mod tests {
         assert!(audio.len() > 1000);
         let mp3 = audio.starts_with(b"ID3") || (audio[0] == 0xFF && matches!(audio[1], 0xFB | 0xF3 | 0xF2));
         assert!(mp3, "the audio starts with {:02X?}", &audio[..4]);
+    }
+
+    /// The phrases of `SPOKEN` in `src/alerts.ts`, one per alert event.
+    const SPOKEN_PHRASES: [&str; 12] = [
+        "The plan is ready",
+        "The plan needs your decision",
+        "It waits for your answer",
+        "It needs a permission",
+        "It waits at a permission prompt",
+        "The checks wait for your click",
+        "The task is done",
+        "The plan run ended without a plan",
+        "The work run ended without a report",
+        "The plan run failed",
+        "The work run failed",
+        "It waits for other tasks to merge",
+    ];
+
+    /// Each alert line of each event, with a plain title and with a title in quotes, gives audio.
+    #[test]
+    #[ignore]
+    fn live_service_speaks_the_line_of_each_event() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let titles = ["Terminals need borders around windows", "Voice said that \"task is done\" but i had to answer these questions"];
+        let mut failures = Vec::new();
+        for title in titles {
+            for phrase in SPOKEN_PHRASES {
+                let line = format!("{title} in dispatch. {phrase}.");
+                match runtime.block_on(fetch("en-US-AvaMultilingualNeural", &line)) {
+                    Ok(audio) => println!("ok {} bytes: {line}", audio.len()),
+                    Err(e) => {
+                        println!("FAILED: {line}: {e}");
+                        failures.push(line);
+                    }
+                }
+            }
+        }
+        assert!(failures.is_empty(), "{} lines failed", failures.len());
+    }
+
+    /// The token of the 5-minute window before and after the one of the clock: the service takes
+    /// both, so a clock that is a few seconds off near the edge of a window is not why a line fails.
+    #[test]
+    #[ignore]
+    fn live_service_accepts_the_token_of_the_next_and_the_last_window() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        for offset in [-300i64, 300] {
+            let at = now_seconds().saturating_add_signed(offset);
+            let result = runtime.block_on(fetch_now("en-US-AvaMultilingualNeural", "The clock test.", at));
+            println!("{offset} seconds: {:?}", result.as_ref().map(Vec::len));
+            assert!(result.is_ok(), "{offset} seconds: {result:?}");
+        }
     }
 }
