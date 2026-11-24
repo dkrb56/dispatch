@@ -8876,6 +8876,17 @@ body:not(.map-mode):not(.overview-mode) #stale-alert {
 /* The bar of the work folders in use (ticket add-indicator-how-many-workfolder-have). */
 .focus-folders {
   flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.focus-folders[hidden] {
+  display: none;
+}
+
+.focus-folders-track {
+  display: block;
   overflow: hidden;
   width: 48px;
   height: 6px;
@@ -8883,8 +8894,11 @@ body:not(.map-mode):not(.overview-mode) #stale-alert {
   background: var(--hairline);
 }
 
-.focus-folders[hidden] {
-  display: none;
+.focus-folders-label {
+  flex: none;
+  color: var(--text-2);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .focus-folders-fill {

@@ -150,7 +150,7 @@ import { HOLD_NOTE, holdWait } from "./holdstep";
 import { showTriage, triageCard, triagePanesToClose, withoutTriage, type ProjectLoad } from "./notriage";
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
-import { chooseNightMerge, chooseQueued, chooseStart, folderUse, mergeRefusal, nightPlan, projectBusy, type ReadTimes, ticketFolder, sameFiles, sameFilesRefusal, StartLeases, type WorkRun } from "./workstart";
+import { chooseNightMerge, chooseQueued, chooseStart, folderUse, folderUseLabel, mergeRefusal, nightPlan, projectBusy, type ReadTimes, ticketFolder, sameFiles, sameFilesRefusal, StartLeases, type WorkRun } from "./workstart";
 import { type Action, type ActionList, type ActionResume, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, resumeButtonText, resumeStep, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, takenText, uniqueId } from "./actions";
 import { failLines, freshOnly, type GateRefusal, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { autoMergeNote, type AutoMergeFacts, folderRefusal, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
@@ -5411,7 +5411,11 @@ function folderBar(key: string): HTMLElement {
   bar.setAttribute("role", "meter");
   bar.setAttribute("aria-valuemin", "0");
   bar.hidden = true;
-  bar.append(mapElement("span", "focus-folders-fill"));
+  const label = mapElement("span", "focus-folders-label");
+  label.setAttribute("aria-hidden", "true");
+  const track = mapElement("span", "focus-folders-track");
+  track.append(mapElement("span", "focus-folders-fill"));
+  bar.append(label, track);
   return bar;
 }
 
@@ -5427,13 +5431,15 @@ function showFolderUse(): void {
       runs: workRuns(projectTaskList(project, false)).map((task) => task.name),
       merging: project.merging ?? null,
     });
-    const text = project.workFolders ? `${use.used} of ${use.slots} work folders in use` : use.used > 0 ? "The project folder is in use" : "The project folder is free";
-    const fill = bar.firstElementChild as HTMLElement | null;
+    const { label, title } = folderUseLabel(!!project.workFolders, use);
+    const fill = bar.querySelector<HTMLElement>(".focus-folders-fill");
     if (fill) fill.style.width = `${use.share * 100}%`;
+    const labelEl = bar.querySelector<HTMLElement>(".focus-folders-label");
+    if (labelEl) labelEl.textContent = label;
     bar.setAttribute("aria-valuemax", String(use.slots));
     bar.setAttribute("aria-valuenow", String(use.used));
-    bar.title = text;
-    bar.setAttribute("aria-label", text);
+    bar.title = title;
+    bar.setAttribute("aria-label", title);
   }
 }
 

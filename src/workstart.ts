@@ -157,6 +157,19 @@ export function folderUse(facts: FolderUseFacts): { used: number; slots: number;
   return { used, slots, share: used / slots };
 }
 
+/** The text before the bar of the work folders and its tooltip (ticket this-bar-needs-better-explanation). */
+export function folderUseLabel(workFolders: boolean, use: { used: number; slots: number }): { label: string; title: string } {
+  if (workFolders) {
+    return {
+      label: `Worktrees ${use.used}/${use.slots}`,
+      title: `Worktrees: ${use.used} of ${use.slots} in use. Each running task works in its own work folder (worktree).`,
+    };
+  }
+  return use.used > 0
+    ? { label: "Folder busy", title: "The project folder is in use by a task." }
+    : { label: "Folder free", title: "The project folder is free. No task works in it now." };
+}
+
 /**
  * The paths of `mine` that `theirs` names too (ticket the-page-lets-more-than-one-work-run): the same
  * path, or a path under a folder path (one that ends in `/`) of the other list, in either direction,

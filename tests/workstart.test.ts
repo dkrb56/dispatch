@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type QueuedFacts, sameFiles, sameFilesRefusal, StartLeases, folderUse, ticketFolder, type TicketFolderFacts, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts, type WorkRun } from "../src/workstart.ts";
+import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type QueuedFacts, sameFiles, sameFilesRefusal, StartLeases, folderUse, folderUseLabel,ticketFolder, type TicketFolderFacts, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts, type WorkRun } from "../src/workstart.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -719,6 +719,14 @@ test("folderUse: the busy work folders of a project and the share of the bar", (
   assert.equal(use(0, ["a"]).slots, 1);
   assert.equal(use(Number.NaN, []).slots, 1);
   assert.equal(use(1, ["a"], null, false).share, 1);
+});
+
+test("folderUseLabel: the text before the bar names the worktrees and the numbers", () => {
+  const withFolders = folderUseLabel(true, { used: 1, slots: 2 });
+  assert.equal(withFolders.label, "Worktrees 1/2");
+  assert.match(withFolders.title, /1 of 2/);
+  assert.equal(folderUseLabel(false, { used: 0, slots: 1 }).label, "Folder free");
+  assert.equal(folderUseLabel(false, { used: 1, slots: 1 }).label, "Folder busy");
 });
 
 test("folderUse: the bar stands in the Focus head, the Overview card and the Map head", () => {
