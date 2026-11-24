@@ -1,7 +1,7 @@
 // The Options screen (ticket alerts-options): the three switches of the alerts when a task waits for
 // the user, the switch of the triage compaction after a task (ticket triage-compact-after-task), and
 // the colour theme cards and the text size buttons (main.ts wires those two, as before).
-import { ALERT_OPTIONS_KEY, type AlertOptions, parseAlertOptions, parseVoice, parseVolume, VOICE_KEY, VOICES, VOLUME_KEY } from "./alerts";
+import { ALERT_OPTIONS_KEY, type AlertOptions, parseAlertOptions, parseVoice, parseVoiceProject, parseVolume, VOICE_KEY, VOICE_PROJECT_KEY, VOICES, VOLUME_KEY } from "./alerts";
 import { parsePulse, PULSE_KEY } from "./attention";
 import { COMPACT_KEY, parseCompact } from "./compact";
 import { cleanAddress, DEFAULT_PORT, type HostEntry, hostSettings, setHostSettings, windowCall } from "./backend";
@@ -398,6 +398,14 @@ export function voiceVolume(): number {
   return volume / 100;
 }
 
+/** The switch "Project name": the voice line starts with the project. On until the user turns it off. */
+let voiceProject = parseVoiceProject(null);
+
+/** The voice line includes the project name. */
+export function voiceProjectOn(): boolean {
+  return voiceProject;
+}
+
 /** The switch Pulse (ticket card-attention): a card that waits for the user pulses. On until the user turns it off. */
 let pulse = parsePulse(null);
 
@@ -499,6 +507,23 @@ export function initOptions(onClose: () => void, onHostChange: () => unknown): v
         localStorage.setItem(VOLUME_KEY, String(volume));
       } catch {
         // The volume stays for this run of the app.
+      }
+    });
+  }
+  try {
+    voiceProject = parseVoiceProject(localStorage.getItem(VOICE_PROJECT_KEY));
+  } catch {
+    // Without the storage, the project name is in the voice line.
+  }
+  const voiceProjectInput = dialog.querySelector<HTMLInputElement>("input[data-voice-project]");
+  if (voiceProjectInput) {
+    voiceProjectInput.checked = voiceProject;
+    voiceProjectInput.addEventListener("change", () => {
+      voiceProject = voiceProjectInput.checked;
+      try {
+        localStorage.setItem(VOICE_PROJECT_KEY, String(voiceProject));
+      } catch {
+        // The switch stays for this run of the app.
       }
     });
   }

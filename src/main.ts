@@ -182,9 +182,9 @@ import { initPipeline, openSetup, setupNeeded, setupTodo, showSetup } from "./pi
 import { setupDue, setupLook, setupStamp, setupTitle } from "./setupmark";
 import { allNews, initHelp, initNews, showFirstHelp, showNewsAtStart, showVersion } from "./help";
 import { lastRunVersion, newEntries } from "./changelog";
-import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, seenStamp, speechLines, ticketTitle, VOICE_SAMPLE, type Wait, waitNotice, type WorkerEnd } from "./alerts";
+import { alertActions, alertState, CHIME, endNotices, newWaits, type Notice, notificationText, seenStamp, speechLines, ticketTitle, voiceSample, type Wait, waitNotice, type WorkerEnd } from "./alerts";
 import { type AttentionWait, attentionLook, markSeen, signalKeys } from "./attention";
-import { alertOptions, compactOn, initOptions, openOptions, ownHostRuns, phoneTabWanted, pulseOn, stopOwnHost, useOwnHost, voiceName, voiceVolume } from "./options";
+import { alertOptions, compactOn, initOptions, openOptions, ownHostRuns, phoneTabWanted, pulseOn, stopOwnHost, useOwnHost, voiceName, voiceProjectOn, voiceVolume } from "./options";
 import { blankFaint, type CheckTrace, COMPACT_TEXT, compactEnded, compactHold, compactLateLine, type CompactSend, newTrace, promptEmpty, taskEnds, type TaskShape, traceCheck, traceLines } from "./compact";
 import { EFFORTS, MODELS, selector } from "./rulecheck";
 import { GIT_STATE_SIZE_KEY, ageText, commitFilesLabel, commitHeadText, diffRows, headLine, refChips, statusLetter, statusWord, uncommittedText } from "./gitstate";
@@ -12306,7 +12306,7 @@ function fireAlerts(found: Notice[]): void {
   const act = alertActions(alertOptions(), found.length > 0);
   const failed = (error: unknown) => console.error("alert failed", error);
   if (act.notify) notify(found).catch(failed);
-  const spoken = act.voice && speechLines(found).every((line) => speak(line));
+  const spoken = act.voice && speechLines(found, voiceProjectOn()).every((line) => speak(line));
   if (act.chime && !spoken) {
     try {
       playChime();
@@ -19276,7 +19276,7 @@ async function start(): Promise<void> {
   // The Listen button of Options says one sample line in the chosen voice; its click allows the sound.
   document.getElementById("voice-listen")?.addEventListener("click", () => {
     startChimeAudio();
-    speak(VOICE_SAMPLE);
+    speak(voiceSample(voiceProjectOn()));
   });
   updateAlertEl.addEventListener("click", () => void installUpdate());
   updateCheckEl.addEventListener("click", () => {

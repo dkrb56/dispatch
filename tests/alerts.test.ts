@@ -24,7 +24,9 @@ import {
   ticketTitle,
   type AlertEvent,
   VOICE_KEY,
-  VOICE_SAMPLE,
+  voiceSample,
+  VOICE_PROJECT_KEY,
+  parseVoiceProject,
   VOLUME_KEY,
   DEFAULT_VOLUME,
   VOICES,
@@ -147,21 +149,23 @@ test("the voice says the title, the project and one phrase for each event", () =
   assert.equal(events.length, 12);
   assert.equal(new Set(Object.values(SPOKEN)).size, 12, "each event has its own phrase");
   for (const event of events) {
-    assert.deepEqual(speechLines([{ name: "t", project: "starminer", text: "x", title: "Fix the login", event }]), [`Fix the login in starminer. ${SPOKEN[event]}.`]);
+    assert.deepEqual(speechLines([{ name: "t", project: "starminer", text: "x", title: "Fix the login", event }]), [`starminer. Fix the login. ${SPOKEN[event]}.`]);
   }
-  assert.deepEqual(speechLines([{ name: "t", project: "starminer", text: "x", title: "Fix the login", event: "plan" }]), ["Fix the login in starminer. The plan is ready."]);
+  assert.deepEqual(speechLines([{ name: "t", project: "starminer", text: "x", title: "Fix the login", event: "plan" }]), ["starminer. Fix the login. The plan is ready."]);
+  assert.deepEqual(speechLines([{ name: "t", project: "starminer", text: "x", title: "Fix the login", event: "plan" }], false), ["Fix the login. The plan is ready."]);
 });
 
 test("the voice says the project without its host and the task name without a title", () => {
   const n = (name: string, title: string) => ({ name, project: "starminer · desktop", text: "x", title, event: "done" as AlertEvent });
-  assert.deepEqual(speechLines([n("t", "Title")]), ["Title in starminer. The task is done."]);
-  assert.deepEqual(speechLines([n("fix-the_login [plan]", "")]), ["fix the login in starminer. The task is done."]);
+  assert.deepEqual(speechLines([n("t", "Title")]), ["starminer. Title. The task is done."]);
+  assert.deepEqual(speechLines([n("fix-the_login [plan]", "")]), ["starminer. fix the login. The task is done."]);
+  assert.deepEqual(speechLines([n("t", "Title")], false), ["Title. The task is done."]);
 });
 
 test("the voice says every alert, one line each, in order, with no count", () => {
-  const lines = speechLines(["a", "b", "c", "d", "e"].map((name) => ({ name, project: "p", text: "x", title: name.toUpperCase(), event: "plan" as AlertEvent })));
+  const lines = speechLines(["a", "b", "c", "d", "e"].map((name) => ({ name, project: "p", text: "x", title: name.toUpperCase(), event: "plan" as AlertEvent })), false);
   assert.equal(lines.length, 5);
-  assert.deepEqual(lines.map((line) => line.split(" ")[0]), ["A", "B", "C", "D", "E"]);
+  assert.deepEqual(lines.map((line) => line.split(" ")[0]), ["A.", "B.", "C.", "D.", "E."]);
   assert.ok(lines.every((line) => !/\d/.test(line)));
 });
 
@@ -196,6 +200,7 @@ test("the Options dialog holds the three switches and both lists; the top bar ho
   assert.ok(start >= 0, "index.html has the Options dialog");
   const dialog = HTML.slice(start, HTML.indexOf("</dialog>", start));
   for (const name of ["notify", "chime", "blink", "voice"]) assert.match(dialog, new RegExp(`type="checkbox" data-alert="${name}"`), name);
+  assert.match(dialog, /type="checkbox" data-voice-project/, "the Project name switch is in the dialog");
   assert.match(dialog, /<select id="voice-pick" data-voice /, "the voice list is in the dialog");
   assert.match(dialog, /<button type="button" id="voice-listen"/, "the Listen button is in the dialog");
   assert.ok(dialog.includes('id="theme"') && dialog.includes('id="text-size"'), "both pickers are in the dialog");
@@ -426,7 +431,17 @@ test("the voice list has twenty voices with unique ids and holds the default", (
     assert.ok(voice.label.trim().length > 0, `${voice.id} has a label`);
   }
   assert.equal(VOICE_KEY, "alert-voice");
-  assert.ok(VOICE_SAMPLE.length > 0 && VOICE_SAMPLE.length <= 500, "the sample fits the limit of the service call");
+  assert.equal(voiceSample(true), "This project. Dispatch. The plan is ready.");
+  assert.equal(voiceSample(false), "Dispatch. The plan is ready.");
+  assert.ok(voiceSample(true).length <= 500, "the sample fits the limit of the service call");
+});
+
+test("parseVoiceProject: on unless the stored text is false", () => {
+  assert.equal(VOICE_PROJECT_KEY, "alert-voice-project");
+  assert.equal(parseVoiceProject(null), true);
+  assert.equal(parseVoiceProject("false"), false);
+  assert.equal(parseVoiceProject("true"), true);
+  assert.equal(parseVoiceProject("junk"), true);
 });
 
 test("parseVolume: a whole number 0 to 100 stays, anything else gives 100", () => {

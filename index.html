@@ -1267,7 +1267,7 @@
               </label>
               <label class="switch-row">
                 <input type="checkbox" data-alert="voice" />
-                <span><b>Voice</b> The system voice says each alert, one by one, with the ticket title, the project and what happened, in place of the chime.</span>
+                <span><b>Voice</b> The system voice says each alert, one by one, with the project, the ticket title and what happened, in place of the chime.</span>
               </label>
               <div class="switch-field">
                 <label for="voice-pick">Natural voice</label>
@@ -1280,6 +1280,10 @@
                   <input type="range" id="voice-volume" data-volume min="0" max="100" step="5" aria-label="Voice volume" title="How loud the voice says the alerts" />
                   <span data-volume-text>100%</span>
                 </div>
+                <label class="switch-row">
+                  <input type="checkbox" data-voice-project />
+                  <span><b>Project name</b> The voice says the project before the ticket title.</span>
+                </label>
                 <small>The natural Microsoft voice needs the network. Without it, a line said before plays again, and a new line uses the Windows voice.</small>
                 <small data-voice-failure hidden></small>
               </div>

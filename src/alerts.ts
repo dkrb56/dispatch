@@ -215,14 +215,23 @@ export function waitNotice(wait: Wait): Notice {
 }
 
 /**
- * The lines the system voice says, one per notice, in order: `<title or task name> in <project>. <phrase>.`
- * The project is said without its ` · host` part.
+ * The lines the system voice says, one per notice, in order: `<project>. <title or task name>. <phrase>.`
+ * With `withProject` false the project part is left out. The project is said without its ` · host` part.
  */
-export function speechLines(notices: Notice[]): string[] {
+export function speechLines(notices: Notice[], withProject = true): string[] {
   return notices.map((notice) => {
     const who = notice.title.trim() || withoutRunEnd(notice.name).replace(/[-_]/g, " ");
-    return `${who} in ${notice.project.split(" · ")[0]}. ${SPOKEN[notice.event]}.`;
+    const project = withProject ? `${notice.project.split(" · ")[0]}. ` : "";
+    return `${project}${who}. ${SPOKEN[notice.event]}.`;
   });
+}
+
+/** The localStorage key of the switch that puts the project name into the voice line. */
+export const VOICE_PROJECT_KEY = "alert-voice-project";
+
+/** The stored switch of the project name in the voice line: on unless the stored text is `false`. */
+export function parseVoiceProject(stored: string | null): boolean {
+  return stored === null || stored.trim() !== "false";
 }
 
 /** The localStorage key of the natural voice of the voice alert. */
@@ -270,7 +279,9 @@ export function parseVoice(stored: string | null): string {
 }
 
 /** The line that the Listen button of Options says. */
-export const VOICE_SAMPLE = "Dispatch in this project. The plan is ready.";
+export function voiceSample(withProject: boolean): string {
+  return speechLines([{ name: "dispatch", project: "This project", text: "", title: "Dispatch", event: "plan" }], withProject)[0];
+}
 
 /** The localStorage key of the voice volume. */
 export const VOLUME_KEY = "alert-volume";
