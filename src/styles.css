@@ -8153,7 +8153,7 @@ body.chats-sized .focus-side {
   flex-wrap: wrap;
   max-width: 100%;
   padding: 2px;
-  border: 1px solid var(--group-line);
+  border: 1px solid var(--hairline);
   border-radius: 8px;
 }
 
@@ -8444,7 +8444,7 @@ body.chats-sized .focus-side {
 .focus-tabs > .focus-terminal-details {
   margin-left: 6px;
   padding-left: 10px;
-  border-left: 1px solid var(--group-line);
+  border-left: 1px solid var(--hairline);
   border-radius: 0;
 }
 
@@ -8457,7 +8457,7 @@ body.chats-sized .focus-side {
   padding: 0 0 0 10px;
   margin-left: 6px;
   border: 0;
-  border-left: 1px solid var(--group-line);
+  border-left: 1px solid var(--hairline);
   border-radius: 0;
   background: none;
 }
