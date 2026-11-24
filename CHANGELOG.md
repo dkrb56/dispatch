@@ -2,6 +2,11 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.93 (2026-11-24)
+- A box for your own words on the question card and in the Questions window, Send only my words; Ctrl+V adds pictures there, in the check result box and in the plan Ask box.
+- A reply that waits for a work folder, the same files or another task's branch is kept in <ticket>.reply; the task read gives it as kept, the window queues it with Take back and sends it when free; task_reply_cancel.
+- A Pictures row on the task card opens the pictures that the report names; report_pictures finds each in the project, a work folder or the task branch and copies an outside one into the data folder.
+
 ## 0.1.92 (2026-11-24)
 - A – button in the head of each Overview card folds it to its head bar, + opens it again; the fold is kept per project (overview-folded).
 - A plan time that Dispatch writes at Approve counts as seen; no plan alert while the task starts.
