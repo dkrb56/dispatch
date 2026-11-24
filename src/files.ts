@@ -41,9 +41,18 @@ const viewerCloseEl = document.querySelector<HTMLButtonElement>("#viewer-close")
  * The key of a thumbnail is the path and the modification time of the file.
  */
 const galleries = new WeakMap<HTMLElement, Map<string, HTMLElement>>();
+/** The files that each gallery shows now. A card reads them at its click, because cards are kept. */
+const galleryEntries = new WeakMap<HTMLElement, FileEntry[]>();
 /** Object URLs that the viewer made. */
 let viewerUrls: string[] = [];
 let viewerEntry: FileEntry | null = null;
+/** The pictures of the gallery of the shown picture. The arrow keys step through them. */
+let viewerList: FileEntry[] = [];
+/** The zoom of the shown picture: 1 is fitted to the window. */
+let viewerZoom = 1;
+/** The fitted size of the shown picture, taken before its first zoom step. */
+let viewerFit: { width: number; height: number } | null = null;
+const MAX_VIEWER_ZOOM = 8;
 let onViewerClose = (): void => {};
 
 function fileName(path: string): string {
@@ -92,7 +101,11 @@ async function fillPreview(preview: HTMLElement, entry: FileEntry): Promise<void
   }
 }
 
-function makeCard(entry: FileEntry, open: (entry: FileEntry) => void): HTMLElement {
+function makeCard(
+  entry: FileEntry,
+  container: HTMLElement,
+  open: (entry: FileEntry, list: FileEntry[]) => void,
+): HTMLElement {
   const card = document.createElement("button");
   card.className = `card ${entry.kind}`;
   card.title = entry.path;
@@ -101,7 +114,7 @@ function makeCard(entry: FileEntry, open: (entry: FileEntry) => void): HTMLEleme
   const name = document.createElement("span");
   name.textContent = fileName(entry.path);
   card.append(preview, name);
-  card.addEventListener("click", () => open(entry));
+  card.addEventListener("click", () => open(entry, galleryEntries.get(container) ?? [entry]));
   void fillPreview(preview, entry);
   return card;
 }
@@ -110,17 +123,18 @@ function makeCard(entry: FileEntry, open: (entry: FileEntry) => void): HTMLEleme
 export function showGallery(
   container: HTMLElement,
   entries: FileEntry[],
-  open: (entry: FileEntry) => void,
+  open: (entry: FileEntry, list: FileEntry[]) => void,
 ): void {
   const cards = galleries.get(container) ?? new Map<string, HTMLElement>();
   galleries.set(container, cards);
+  galleryEntries.set(container, entries);
   const shown = new Set<string>();
   const nodes = entries.map((entry) => {
     const key = `${entry.path}|${entry.modified}`;
     shown.add(key);
     let card = cards.get(key);
     if (!card) {
-      card = makeCard(entry, open);
+      card = makeCard(entry, container, open);
       cards.set(key, card);
     }
     return card;
@@ -144,6 +158,8 @@ function viewerClosed(): void {
   for (const url of viewerUrls) URL.revokeObjectURL(url);
   viewerUrls = [];
   viewerEntry = null;
+  viewerList = [];
+  resetZoom();
   onViewerClose();
 }
 
@@ -179,9 +195,20 @@ function filesRow(text: string): HTMLElement | null {
   return row;
 }
 
-/** Shows an image, a Markdown file or a text file on top of the terminals and of the open windows. */
-export async function openViewer(entry: FileEntry): Promise<void> {
+/** Sets the zoom of the shown picture back to fitted. */
+function resetZoom(): void {
+  viewerZoom = 1;
+  viewerFit = null;
+}
+
+/**
+ * Shows an image, a Markdown file or a text file on top of the terminals and of the open windows.
+ * `list` is the gallery of the file: the arrow keys then step through its pictures.
+ */
+export async function openViewer(entry: FileEntry, list: FileEntry[] = []): Promise<void> {
   viewerEntry = entry;
+  viewerList = list.filter((item) => item.kind === "image");
+  resetZoom();
   viewerPathEl.textContent = entry.path;
   viewerNoteEl.textContent = "";
   // The program of the system opens only a file of this PC (user decision 2).
@@ -221,6 +248,49 @@ export async function openViewer(entry: FileEntry): Promise<void> {
   }
   // The user can open a second file before the first one is ready.
   if (viewerEntry === entry) viewerBodyEl.replaceChildren(content);
+}
+
+/** Shows the previous (-1) or the next (1) picture of the gallery. At the first and the last picture it stays. */
+function stepViewer(direction: -1 | 1): void {
+  const entry = viewerEntry;
+  if (!entry) return;
+  const at = viewerList.findIndex((item) => item.path === entry.path);
+  if (at < 0) return;
+  const next = viewerList[at + direction];
+  if (next) void openViewer(next, viewerList);
+}
+
+/** The wheel zooms the shown picture in and out, toward the mouse pointer. */
+function zoomViewer(event: WheelEvent): void {
+  const image = viewerBodyEl.firstElementChild;
+  if (!(image instanceof HTMLImageElement)) return;
+  event.preventDefault();
+  if (!viewerFit) {
+    const rect = image.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    viewerFit = { width: rect.width, height: rect.height };
+  }
+  const zoom = Math.min(MAX_VIEWER_ZOOM, Math.max(1, viewerZoom * 1.1 ** (-event.deltaY / 100)));
+  if (zoom === viewerZoom) return;
+  // The share of the picture under the pointer stays under it; the padding and the centring margin
+  // of the body move the picture too, so the new place of the picture is measured.
+  const before = image.getBoundingClientRect();
+  const shareX = (event.clientX - before.left) / before.width;
+  const shareY = (event.clientY - before.top) / before.height;
+  viewerZoom = zoom;
+  if (zoom === 1) {
+    image.classList.remove("zoomed");
+    image.style.width = "";
+    image.style.height = "";
+    viewerFit = null;
+    return;
+  }
+  image.classList.add("zoomed");
+  image.style.width = `${viewerFit.width * zoom}px`;
+  image.style.height = `${viewerFit.height * zoom}px`;
+  const after = image.getBoundingClientRect();
+  viewerBodyEl.scrollLeft += after.left + shareX * after.width - event.clientX;
+  viewerBodyEl.scrollTop += after.top + shareY * after.height - event.clientY;
 }
 
 /** A link in a Markdown file must not replace the page of the app. */
@@ -293,12 +363,23 @@ export function initViewer(onClose: () => void): void {
   document.addEventListener(
     "keydown",
     (event) => {
+      if (!viewerEl.open) return;
+      // The arrow keys step through the pictures of the gallery of the shown picture.
+      const arrow = event.key === "ArrowLeft" ? -1 : event.key === "ArrowRight" ? 1 : 0;
+      const plain = !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey;
+      if (arrow !== 0 && plain && viewerEntry?.kind === "image" && viewerList.length > 1) {
+        event.preventDefault();
+        event.stopPropagation();
+        stepViewer(arrow);
+        return;
+      }
       // Esc closes only the viewer, also above another window, and reaches no other handler.
-      if (event.key !== "Escape" || !viewerEl.open) return;
+      if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
       closeViewer();
     },
     true,
   );
+  viewerBodyEl.addEventListener("wheel", zoomViewer, { passive: false });
 }

@@ -6267,6 +6267,18 @@ button.ticket-level {
   object-fit: contain;
 }
 
+/* A zoomed picture keeps the size that the wheel set; the body scrolls. */
+#viewer-body > img.zoomed {
+  max-width: none;
+  max-height: none;
+  flex-shrink: 0;
+}
+
+/* A centred flex box cuts off the left part of a wider picture; the auto margins still centre a smaller one. */
+#viewer-body:has(> img.zoomed) {
+  justify-content: flex-start;
+}
+
 #viewer-body > pre,
 #viewer-body > .markdown {
   width: min(100%, 900px);

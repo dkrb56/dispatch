@@ -913,7 +913,7 @@ function renderSide(pane: Pane): void {
     }),
   );
   renderContext(pane, session?.contextTokens ?? null);
-  showGallery(pane.thumbsEl, files, (entry) => void openViewer(entry));
+  showGallery(pane.thumbsEl, files, (entry, list) => void openViewer(entry, list));
 }
 
 /** The switch of the row Remote Control: `rcView` gives its look, a click calls `setRemoteControl`. */
@@ -7827,7 +7827,7 @@ async function openPictures(task: Task): Promise<void> {
     const gallery = document.createElement("div");
     gallery.className = "thumbs";
     picturesGallery = gallery;
-    showGallery(gallery, onHost(host, found.map((item) => item.file)), (entry) => void openViewer(entry));
+    showGallery(gallery, onHost(host, found.map((item) => item.file)), (entry, list) => void openViewer(entry, list));
     found.forEach((item, at) => {
       const card = gallery.children[at] as HTMLElement | undefined;
       if (card) card.title = `${item.name}
