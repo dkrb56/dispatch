@@ -528,7 +528,10 @@ const CHAT_VIEW_REFRESH_MS = 1000;
 /** A worker that waits for the user must show quickly. */
 const WORKERS_REFRESH_MS = 5000;
 const REPORTS_REFRESH_MS = 5000;
-const UPDATE_CHECK_MS = 3_600_000;
+/** How often the app looks for a new version by itself: 10 minutes. */
+const UPDATE_CHECK_MS = 600_000;
+/** Opening Help looks again when the last look is older than this. */
+const HELP_RECHECK_MS = 60_000;
 /** How often the app looks whether the installer it started is still open. */
 const INSTALLER_POLL_MS = 2000;
 /** A new Commands terminal gets its command at its first prompt, or after this time. */
@@ -12751,17 +12754,27 @@ function versionText(update: Update): string {
 const updateCheckEl = document.querySelector<HTMLButtonElement>("#update-check")!;
 /** The last check found a newer version: the button of the Help window then installs it. */
 let updateNewer = false;
+/** A look runs now: a second one waits for it. */
+let updateChecking = false;
+/** The time (ms) when the last look ended; 0 before the first. */
+let updateCheckedAt = 0;
+/** The app version that the last look showed, for the line of the next look. */
+let updateCurrent = "";
 
 /** Looks for a new version, and shows the result in the Help window and in the bar. */
 async function checkUpdate(): Promise<void> {
+  if (updateChecking) return;
+  updateChecking = true;
   updateCheckEl.disabled = true;
   updateCheckEl.textContent = "Checking…";
-  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  showVersion(`${updateCurrent ? `Dispatch ${updateCurrent}. ` : ""}Looking for a new version…`);
+  const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
   try {
     const update = await windowCall<Update>("update_check");
     showVersion(`${versionText(update)} Checked at ${time}.`);
     document.querySelector<HTMLElement>("#show-help")!.title = `Help · Dispatch ${update.current}`;
     updateNewer = update.newer;
+    updateCurrent = update.current;
     // A download that runs keeps its button.
     if (!updateAlertEl.disabled) {
       updateAlertEl.hidden = !update.newer;
@@ -12772,11 +12785,13 @@ async function checkUpdate(): Promise<void> {
     console.error("update check failed", error);
     showVersion(`The update check failed at ${time}: ${error}`);
   }
+  updateChecking = false;
+  updateCheckedAt = Date.now();
   updateCheckEl.disabled = false;
   updateCheckEl.textContent = updateNewer ? updateAlertEl.textContent ?? "Update" : "Check for update";
   updateCheckEl.title = updateNewer
     ? "Download and start the installer of the new version"
-    : "Look for a new version of Dispatch now; the app also looks once an hour";
+    : "Look for a new version of Dispatch now; the app also looks every 10 minutes and when Help opens";
 }
 
 /** Shows a button in the bar when the repository has a new version. It runs again and again. */
@@ -19698,6 +19713,10 @@ async function start(): Promise<void> {
       updateCheckEl.textContent = updateAlertEl.textContent;
       updateCheckEl.disabled = updateAlertEl.disabled;
     });
+  });
+  document.querySelector<HTMLElement>("#show-help")!.addEventListener("click", () => {
+    if (updateChecking || updateNewer || updateAlertEl.disabled) return;
+    if (Date.now() - updateCheckedAt > HELP_RECHECK_MS) void checkUpdate();
   });
   void pollUpdate();
 

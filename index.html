@@ -502,7 +502,7 @@
       </header>
       <div id="help-version-row">
         <p id="help-version">Dispatch. The update check did not run yet.</p>
-        <button id="update-check" title="Look for a new version of Dispatch now; the app also looks once an hour">Check for update</button>
+        <button id="update-check" title="Look for a new version of Dispatch now; the app also looks every 10 minutes and when Help opens">Check for update</button>
         <button id="show-changelog" title="What each update of Dispatch brought, newest first">What's new</button>
       </div>
       <div id="help-body">
@@ -1109,7 +1109,7 @@
             <li>A rule of the triage role comes back with the next Apply of Setup pipeline. The settings in JSON files have no buttons.</li>
             <li>The update saves your tabs, downloads the installer and installs: Dispatch closes, a progress bar runs, and the new version opens with your tabs. The check reads the public releases on GitHub and needs no login.</li>
             <li>On a Mac the click downloads the disk image and opens it, and Dispatch closes. Drag Dispatch to Applications. The app is not signed, so run <code>xattr -cr /Applications/Dispatch.app</code> in Terminal once before the next start.</li>
-            <li>The line below the title of this window shows the version and the result of the check. Dispatch checks once an hour; <b>Check for update</b> checks now, and installs a new version that it found.</li>
+            <li>The line below the title of this window shows the version and the result of the check. Dispatch checks every 10 minutes and each time Help opens; <b>Check for update</b> checks now, and installs a new version that it found.</li>
             <li>The Options window holds where the work runs (see Where the work runs), the alerts, the colour theme of the window and the terminals (Slate, or Graphite with a blue, indigo, teal or amber accent) and the size of the text (90 to 150 percent). The terminal font is a row of buttons that changes only the terminals. <b>Ticket colours</b> has one colour per ticket state (Backlog, Scheduled, Working now, Waits for you, Approved, Finished, Failed, Waits for its parts, Done, Canceled): it sets the frame of the cards on the tickets board and on the Plan board, and <b>Reset</b> gives a state the colour of the theme again. A change applies at once, and Dispatch keeps the choices on this computer. The window shows its sections in a list at the left, one section at a time, and opens on the first one. The theme is a row of cards with a preview of each theme, and the text size a row of buttons.</li>
             <li>An alert comes one time when a plan is ready, a report has a question or needs a permission, or a worker waits at a prompt. Each alert has its own switch in Options. The notification names the task and what it waits for. The button blinks until you open the window.</li>
             <li>When a plan run or a work run waits at a permission prompt, its task card shows the command, the reason and the time left before Claude Code refuses it by itself. You answer the prompt in the agent view.</li>
