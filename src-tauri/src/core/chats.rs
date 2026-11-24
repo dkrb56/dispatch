@@ -172,6 +172,10 @@ pub struct Worker {
     /// turn with a question writes it there too. None without the field.
     #[serde(skip_deserializing)]
     reason: Option<String>,
+    /// For a done work run with its result (`result` true): the `state:` line of its report
+    /// (ticket voice-said-that-task-is-done-but-i-had). None for every other worker.
+    #[serde(skip_deserializing)]
+    report_state: Option<String>,
     /// For the newest run of the pipeline of its name that is `done` or `stopped` without its result:
     /// the text of the last message of its transcript when Claude Code wrote it as an API error, for
     /// example "Login reached its time limit · Please run /login" (ticket
@@ -677,6 +681,14 @@ pub fn worker_list(core: &Core) -> Result<Vec<Worker>, String> {
                 worker.reaped_at = claude.as_deref().and_then(|claude| job_state(claude, &worker.id)).as_deref().and_then(job_reaped);
             }
         }
+    }
+    // The state of the report of each done work run with its result, from the same project cache.
+    for worker in &mut workers {
+        let (Some(true), Some(cwd)) = (worker.result, worker.cwd.as_deref()) else { continue };
+        let Some((ticket, false)) = worker.name.as_deref().and_then(run_of) else { continue };
+        let Some(project) = found.entry(cwd.to_string()).or_insert_with(|| crate::core::pipeline::Project::find(cwd).ok()).as_ref() else { continue };
+        let text = fs::read_to_string(project.reports.join(format!("{ticket}.md"))).ok();
+        worker.report_state = text.as_deref().and_then(crate::core::pipeline::report_state);
     }
     Ok(workers)
 }

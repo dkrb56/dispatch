@@ -131,8 +131,8 @@ test("the notification names the task, its project and what it waits for", () =>
 // Ticket the-voice-alert-says-the-ticket-title: one spoken line per alert, with title, project and event.
 test("the voice says the title, the project and one phrase for each event", () => {
   const events = Object.keys(SPOKEN) as AlertEvent[];
-  assert.equal(events.length, 11);
-  assert.equal(new Set(Object.values(SPOKEN)).size, 11, "each event has its own phrase");
+  assert.equal(events.length, 12);
+  assert.equal(new Set(Object.values(SPOKEN)).size, 12, "each event has its own phrase");
   for (const event of events) {
     assert.deepEqual(speechLines([{ name: "t", project: "starminer", text: "x", title: "Fix the login", event }]), [`Fix the login in starminer. ${SPOKEN[event]}.`]);
   }
@@ -357,6 +357,16 @@ test("no triage: a done work run and a failed run alert, a done plan run does no
   // A run that stopped without its result is no done end (early-done-line): the announcements give it as done-early, not done.
   assert.deepEqual(endNotices([end("t-5", "work", "done-early")], false), []);
   assert.deepEqual(endNotices([end("t-6", "", "done")], false), [], "a worker of an older script names no run");
+});
+
+// Ticket voice-said-that-task-is-done-but-i-had: the end notice follows the state line of the report.
+test("no triage: a done work run alerts by the state of its report", () => {
+  const done = (reportState?: string) => endNotices([{ ...end("t-1", "work", "done"), ...(reportState === undefined ? {} : { reportState }) }], false);
+  assert.deepEqual(done("needs-decision"), [], "the question wait alerts by itself");
+  assert.deepEqual(done("failed"), [{ name: "t-1", project: "app", text: "the work run failed", title: "", event: "work-failed" }]);
+  assert.deepEqual(done("waiting"), [{ name: "t-1", project: "app", text: "the work run waits for other tasks to merge", title: "", event: "merge-wait" }]);
+  assert.deepEqual(done("done"), [{ name: "t-1", project: "app", text: "the task is done", title: "", event: "done" }]);
+  assert.deepEqual(done(), [{ name: "t-1", project: "app", text: "the task is done", title: "", event: "done" }]);
 });
 
 // Ticket a-plan-run-that-ends-without-a-plan: a plan run that ended for good without its plan alerts.

@@ -4940,6 +4940,11 @@ pub struct Question {
     options: Vec<String>,
 }
 
+/// The `state` line of a report, or None when it has no header (ticket voice-said-that-task-is-done-but-i-had).
+pub(crate) fn report_state(text: &str) -> Option<String> {
+    parse_report(text).0.map(|header| header.state)
+}
+
 /// Reads the header and the questions of a report. The header is lenient: title lines and empty
 /// lines may come first, the four keys may come in any order, and the header ends at the first
 /// empty line after its first key. A report without a `state` line has no header.
@@ -9330,6 +9335,13 @@ pub(crate) mod tests {
         default_flags(&project).unwrap();
         assert_eq!(read(&project.work_flags()), before);
         clean(&project);
+    }
+
+    #[test]
+    fn a_report_gives_its_state() {
+        assert_eq!(report_state("state: needs-decision\nneeds: decision\nfiles: none\nplan: p.md\n").as_deref(), Some("needs-decision"));
+        assert_eq!(report_state("# Report\nstate: done\nneeds: nothing\nfiles: a.rs\nplan: p.md\n").as_deref(), Some("done"));
+        assert_eq!(report_state("# Report\n\nI did things.\n"), None);
     }
 
     #[test]

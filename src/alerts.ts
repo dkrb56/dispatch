@@ -109,7 +109,7 @@ export function alertActions(options: AlertOptions, anyNew: boolean): AlertOptio
 }
 
 /** What an alert names: the task or worker name, the project folder name and the text (notification), the ticket title and the event (voice). */
-export type AlertEvent = WaitKind | "done" | "plan-empty" | "work-empty" | "plan-failed" | "work-failed";
+export type AlertEvent = WaitKind | "done" | "plan-empty" | "work-empty" | "plan-failed" | "work-failed" | "merge-wait";
 export type Notice = Pick<Wait, "name" | "project" | "text"> & { title: string; event: AlertEvent };
 
 /** One end of a worker as the announcements of a poll told it (`announceWorkerChanges`). */
@@ -128,6 +128,8 @@ export interface WorkerEnd {
   reason?: string;
   /** The ticket title, or empty. */
   title?: string;
+  /** The `state:` line of the report of a done work run; absent from an older host or when unread. */
+  reportState?: string;
 }
 
 /**
@@ -135,7 +137,8 @@ export interface WorkerEnd {
  * one per work run that is done, per plan or work run that failed, per plan run that ended
  * without a plan (ticket a-plan-run-that-ends-without-a-plan) and per work run that ended without a
  * report, with the reason of Claude Code (ticket a-work-run-that-ended-without-a-report), only for a project with "No
- * triage" on. A done plan run gives the wait "plan", which alerts already. Night mode gives none
+ * triage" on. A done work run gives a notice by the state of its report: done, failed or waiting;
+ * `needs-decision` gives none (the wait alerts). A done plan run gives the wait "plan", which alerts already. Night mode gives none
  * (user decision 5): it alerts only what waits for the user.
  */
 export function endNotices(ends: readonly WorkerEnd[], night: boolean): Notice[] {
@@ -144,7 +147,12 @@ export function endNotices(ends: readonly WorkerEnd[], night: boolean): Notice[]
   for (const end of ends) {
     if (!end.noTriage) continue;
     const title = end.title ?? "";
-    if (end.state === "done" && end.run === "work") notices.push({ name: end.ticket, project: end.project, text: "the task is done", title, event: "done" });
+    if (end.state === "done" && end.run === "work") {
+      // The state line of the report decides; the question and permission waits alert by themselves.
+      if (end.reportState === undefined || end.reportState === "done") notices.push({ name: end.ticket, project: end.project, text: "the task is done", title, event: "done" });
+      else if (end.reportState === "failed") notices.push({ name: end.ticket, project: end.project, text: "the work run failed", title, event: "work-failed" });
+      else if (end.reportState === "waiting") notices.push({ name: end.ticket, project: end.project, text: "the work run waits for other tasks to merge", title, event: "merge-wait" });
+    }
     else if (end.state === "done-empty" && end.run === "plan") notices.push({ name: end.ticket, project: end.project, text: "the plan run ended without a plan", title, event: "plan-empty" });
     else if (end.state === "done-empty" && end.run === "work") {
       notices.push({ name: end.ticket, project: end.project, text: `the work run ended without a report${end.reason ? ` · ${end.reason}` : ""}`, title, event: "work-empty" });
@@ -179,6 +187,7 @@ export const SPOKEN: Record<AlertEvent, string> = {
   "work-empty": "The work run ended without a report",
   "plan-failed": "The plan run failed",
   "work-failed": "The work run failed",
+  "merge-wait": "It waits for other tasks to merge",
 };
 
 function withoutRunEnd(task: string): string {

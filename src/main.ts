@@ -425,6 +425,8 @@ interface Worker {
    * limit" (ticket a-work-run-that-ended-without-a-report). Null without one; absent from an older host.
    */
   reason?: string | null;
+  /** For a done work run with its result: the `state:` line of its report. */
+  reportState?: string | null;
   /**
    * For the newest run of its name that is done or stopped without its plan or report: the message
    * of Claude Code when the run stopped at an error, for example "Login reached its time limit ·
@@ -5172,6 +5174,7 @@ function announceWorkerChanges(workers: Worker[]): void {
       project: projectName({ host: worker.host, root: worker.cwd ?? "" }),
       noTriage: projectNoTriage(projectFor(worker.host, worker.cwd)),
       reason: worker.reason ?? "",
+      reportState: worker.reportState ?? undefined,
       title: ticketTitle(projectTickets(projectFor(worker.host, worker.cwd)), workerTask(worker)),
     }));
   fireAlerts(endNotices(ends, nightAny()));
