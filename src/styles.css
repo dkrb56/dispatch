@@ -11063,23 +11063,6 @@ svg.links {
   user-select: text;
 }
 
-/* The list window of a count badge: the Plan cards of the counted tickets in a grid that scrolls. */
-.plan-list-window {
-  width: 444px;
-}
-
-.plan-list-body {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, var(--plan-card-width, 200px));
-  gap: 8px;
-  align-content: start;
-}
-
-/* Relative: the handle of the card stands in its corner (ticket issue-ticket-panel-is-only-resizable). */
-.plan-list-window .plan-card {
-  position: relative;
-}
-
 .plan-window .ticket-card {
   flex: 1 1 auto;
   width: auto;
@@ -11277,6 +11260,35 @@ svg.links {
 
 .plan-fold:hover {
   border-color: var(--plan-color);
+}
+
+/* An open count badge: its tickets show in the subgroups under it (ticket count-pill-opens-subgroups-inside-a). */
+.plan-fold.open {
+  border-color: var(--plan-color);
+  background: color-mix(in srgb, var(--plan-color) 24%, var(--surface));
+}
+
+/* A subgroup of an open count badge: a box inside the group box behind its cards, with the kind and
+   the count in its title bar. It takes no pointer, so a pan or a selection box starts on it. */
+.plan-sub-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--plan-color) 30%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--plan-color) 4%, transparent);
+  pointer-events: none;
+}
+
+.plan-sub-title {
+  box-sizing: border-box;
+  padding: 0 10px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: calc(11px * var(--text-scale));
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 /* The description of a topic group under its title bar: the whole text, the row grows to hold it

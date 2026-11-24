@@ -37,6 +37,7 @@ import {
   PLAN_BOX_TITLE,
   PLAN_CARD_HEIGHT,
   PLAN_FOLD_HEIGHT,
+  PLAN_SUB_PAD,
   PLAN_CARD_WIDTH,
   PLAN_COLUMN_STEP,
   PLAN_GRID,
@@ -68,6 +69,7 @@ import {
   toggleSelection,
   topicBlocks,
   topicFoldText,
+  topicSubgroups,
   turnedArrow,
   withArrow,
   withoutArrow,
@@ -233,25 +235,32 @@ test("the page has the Plan button, its canvas and its Help, and main.ts draws i
   assert.match(css, /\.plan-wire \{[^}]*pointer-events: none/);
   assert.match(main, /function renderPlanWindow\(\): void/);
   assert.match(html, /joined to the card by a line/);
-  // Ticket plan-mode-updates: the zoom, the place and size of the windows, the list window and their Help.
+  // Ticket plan-mode-updates: the zoom, the place and size of the windows and their Help.
   assert.match(css, /\.plan-canvas \{[^}]*transform-origin: 0 0/);
   assert.match(main, /canvas\.style\.transform = `scale\(\$\{zoom\}\)`/);
   assert.match(main, /planZooms\.delete\(refKey\(ref\)\)/, "Centre the tree sets the zoom back");
   assert.match(main, /"plan-window-spot"/);
-  assert.match(main, /"plan-list-spot"/);
   assert.doesNotMatch(main.slice(main.indexOf("function planCloseWindow("), main.indexOf("function planCloseWindow(") + 300), /spot = null/, "a close keeps the place");
   assert.match(css, /\.plan-window \{[^}]*resize: both/);
-  assert.match(main, /"plan-window plan-list-window"/);
-  // Ticket issue-ticket-panel-is-only-resizable: relative, so the handle of a list window card stands in its corner.
-  assert.match(css, /\.plan-list-window \.plan-card \{[^}]*position: relative/);
-  assert.match(main, /el\.append\(planCardGrip\(key, card !== null\)\);/, "a card of the list window has the handle, not scaled by the zoom");
-  assert.match(main, /planList = \{ key, group: group\.id, min: false \};/, "the badge opens the list window");
   assert.match(html, /The mouse wheel zooms the board in and out/);
   assert.match(html, /The window opens again at the same place and size, also after a restart/);
-  assert.match(html, /A click on the badge also opens a window with a card for each ticket that the badge counts/);
+  // Ticket count-pill-opens-subgroups-inside-a, user decision 1: the count badge opens subgroups inside
+  // the group, not a window; a click on the badge opens and closes them, and the group keeps the state.
+  assert.doesNotMatch(main, /plan-list-window|"plan-list-spot"|renderPlanList|planList\b/, "the list window is gone");
+  assert.doesNotMatch(css, /\.plan-list-window|\.plan-list-body/);
+  assert.match(main, /planChangeGroup\(group\.id, \{ unfolded: !open, collapsed: false \}\);/, "the badge opens and closes the subgroups");
+  assert.match(main, /mapElement\("div", `plan-sub-box plan-color-\$\{group\.color\}`\)/);
+  assert.match(main, /looseCard\(ticket, \{ x: card\.x, y: card\.y \}, true\)/, "a subgroup card stands on the canvas");
+  assert.match(main, /if \(sub\) planOpenWindow\(key, ticket\.id\);/, "a click on a subgroup card only opens the ticket window");
+  assert.match(main, /topicSubgroups\(block, group\)/);
+  assert.match(css, /\.plan-sub-box \{[^}]*pointer-events: none/);
+  assert.match(css, /\.plan-fold\.open \{/);
+  assert.match(html, /A click on the badge also opens the tickets that it counts inside the group/);
+  assert.match(html, /Click the badge again to close the boxes\./);
+  assert.doesNotMatch(html, /count badge window|opens a window with a card for each ticket/);
 });
 
-const g = (id: string, tickets: string[], collapsed = true, title = "Group"): PlanGroup => ({ id, title, color: 0, collapsed, tickets, auto: false, description: "" });
+const g = (id: string, tickets: string[], collapsed = true, title = "Group"): PlanGroup => ({ id, title, color: 0, collapsed, tickets, auto: false, description: "", unfolded: false });
 
 test("the line from a card to the window joins the nearest borders", () => {
   const card = { x: 0, y: 100, width: 200, height: 84 };
@@ -272,13 +281,13 @@ test("the host reply of the groups is read safely", () => {
     groups: [{ id: "g-1", title: "Login", color: 7, collapsed: true, tickets: ["a", "a", 3, "b"] }, { id: "" }, { id: "g-1" }, "x", { id: "g-2", color: -1 }],
   });
   assert.deepEqual(groups, [
-    { id: "g-1", title: "Login", color: 3, collapsed: true, tickets: ["a", "b"], auto: false, description: "" },
-    { id: "g-2", title: "", color: 0, collapsed: false, tickets: [], auto: false, description: "" },
+    { id: "g-1", title: "Login", color: 3, collapsed: true, tickets: ["a", "b"], auto: false, description: "", unfolded: false },
+    { id: "g-2", title: "", color: 0, collapsed: false, tickets: [], auto: false, description: "", unfolded: false },
   ]);
   // Ticket i-need-an-autogrouping-function-in-the: a topic group keeps its flag and description.
   assert.deepEqual(parsePlanGroups({ groups: [{ id: "auto-1", title: "Login", auto: true, description: "What it does.", tickets: ["a"] }, { id: "g", auto: "yes", description: 3 }] }), [
-    { id: "auto-1", title: "Login", color: 0, collapsed: false, tickets: ["a"], auto: true, description: "What it does." },
-    { id: "g", title: "", color: 0, collapsed: false, tickets: [], auto: false, description: "" },
+    { id: "auto-1", title: "Login", color: 0, collapsed: false, tickets: ["a"], auto: true, description: "What it does.", unfolded: false },
+    { id: "g", title: "", color: 0, collapsed: false, tickets: [], auto: false, description: "", unfolded: false },
   ]);
   // Ticket drag-topic-groups-on-the-plan-board: a dragged place is read; a bad one gives no key.
   const placed = parsePlanGroups({
@@ -303,6 +312,12 @@ test("the host reply of the groups is read safely", () => {
   });
   assert.deepEqual(sized[0].size, { width: 724, height: 418.5 });
   for (const group of sized.slice(1)) assert.ok(!("size" in group), `${group.id} has no size key`);
+  // Ticket count-pill-opens-subgroups-inside-a: the open state of a count badge is read; anything else is closed.
+  const opened = parsePlanGroups({ groups: [{ id: "o", auto: true, unfolded: true }, { id: "p", unfolded: "yes" }, { id: "q" }] });
+  assert.deepEqual(
+    opened.map((group) => group.unfolded),
+    [true, false, false],
+  );
 });
 
 test("a collapsed group stands for its tickets, takes their arrows and merges a pair", () => {
@@ -910,6 +925,151 @@ test("a dragged topic block stands at its saved place; the others keep their pla
   assert.deepEqual(placeTopicBlocks([], new Map(), 50, layout), { layout, blocks: [] });
 });
 
+// Ticket count-pill-opens-subgroups-inside-a: a click on the count badge opens subgroups inside the box.
+
+test("a topic block keeps the ids that its badge counts, per kind, in the board order", () => {
+  const board = [t("a", "done", []), t("x", "new"), t("y", "in-progress"), t("z", "done"), t("w", "canceled"), t("v", "backlog"), t("u", "backlog"), t("q", "new")];
+  const [block] = topicBlocks(board, [topic("one", ["u", "z", "y", "a", "w", "v", "x", "q"])], new Set(["a"]));
+  assert.deepEqual(block.folded, { scheduled: [], working: [], done: ["z"], canceled: ["w"], backlog: ["v", "u"], inTree: ["a"] });
+  assert.deepEqual(block.fold, { scheduled: 0, working: 0, done: 1, canceled: 1, backlog: 2, inTree: 1 }, "the counts come from the ids");
+  const [closed] = topicBlocks(board, [topic("one", ["q", "y", "x", "z"], true)], new Set());
+  assert.deepEqual(closed.folded.scheduled, ["x", "q"], "a collapsed block keeps its scheduled ids in the board order");
+  assert.deepEqual(closed.folded.working, ["y"]);
+});
+
+test("an open count badge gives one subgroup per kind; a closed or collapsed one gives none", () => {
+  const board = [t("a", "done", []), t("x", "new"), t("y", "in-progress"), t("z", "done"), t("w", "canceled"), t("v", "backlog")];
+  const open = (collapsed: boolean, unfolded: boolean): PlanGroup => ({ ...topic("one", ["v", "z", "y", "a", "w", "x"], collapsed), unfolded });
+  const [block] = topicBlocks(board, [open(false, true)], new Set(["a"]));
+  assert.deepEqual(topicSubgroups(block, open(false, true)), [
+    { kind: "done", title: "Done", ids: ["z"] },
+    { kind: "canceled", title: "Canceled", ids: ["w"] },
+    { kind: "backlog", title: "Backlog", ids: ["v"] },
+    { kind: "inTree", title: "In the tree", ids: ["a"] },
+  ]);
+  assert.deepEqual(topicSubgroups(block, open(false, false)), [], "a closed badge: no subgroup");
+  const [shut] = topicBlocks(board, [open(true, true)], new Set(["a"]));
+  assert.deepEqual(topicSubgroups(shut, open(true, true)), [], "a collapsed group: no subgroup, also no Scheduled or In work");
+  const [few] = topicBlocks([t("x", "new"), t("z", "done")], [open(false, true)], new Set());
+  assert.deepEqual(
+    topicSubgroups(few, open(false, true)).map((sub) => sub.title),
+    ["Done"],
+    "a kind without tickets gives no subgroup",
+  );
+});
+
+test("the subgroups stand under the badge inside the box, on the grid and without overlap; the box grows", () => {
+  const layout = planLayout(TREE);
+  const subs = [
+    { title: "Done", ids: ["d1", "d2", "d3", "d4", "d5", "d6"] },
+    { title: "Canceled", ids: ["c1"] },
+    { title: "Backlog", ids: ["b1", "b2"] },
+  ];
+  const input = [
+    { id: "open", shown: ["s1", "s2"], badge: true },
+    { id: "next", shown: ["n1"], badge: false },
+  ];
+  const closed = planBlocks(input, layout, 6);
+  const opened = planBlocks([{ ...input[0], subs }, input[1]], layout, 6);
+  const [was] = closed.blocks;
+  const [now, next] = opened.blocks;
+  assert.deepEqual(was.subs, [], "no subgroups: no sub box");
+  assert.deepEqual(
+    now.subs.map((sub) => [sub.title, sub.cards.map((card) => card.id)]),
+    subs.map((sub) => [sub.title, sub.ids]),
+  );
+  // The cards of the block, the description and the badge stay where they were.
+  assert.deepEqual(now.cards, was.cards);
+  assert.deepEqual(now.badge, was.badge);
+  assert.deepEqual({ x: now.about.x, y: now.about.y, height: now.about.height }, { x: was.about.x, y: was.about.y, height: was.about.height });
+  assert.deepEqual({ x: now.box.x, y: now.box.y }, { x: was.box.x, y: was.box.y });
+  // The box grows: six columns for the six Done cards in a line of six, and down to the last sub box.
+  assert.equal(now.box.width, 5 * PLAN_COLUMN_STEP + PLAN_CARD_WIDTH + 2 * PLAN_BOX_PAD);
+  assert.ok(now.box.height > was.box.height);
+  const last = now.subs[now.subs.length - 1].box;
+  assert.equal(now.box.y + now.box.height, last.y + last.height + PLAN_BOX_PAD, "the box ends under the last sub box");
+  // The Done cards go in rows of the block columns: one row of six.
+  assert.deepEqual(
+    now.subs[0].cards.map((card) => card.row),
+    [0, 0, 0, 0, 0, 0],
+  );
+  const inside = (inner: { x: number; y: number; width: number; height: number }, outer: { x: number; y: number; width: number; height: number }) =>
+    inner.x >= outer.x && inner.y >= outer.y && inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
+  const apart = (a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }) =>
+    a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y;
+  assert.ok(now.badge !== null);
+  const badge = { x: now.badge.x, y: now.badge.y, width: PLAN_CARD_WIDTH, height: PLAN_FOLD_HEIGHT };
+  const above = [...now.cards.map((card) => ({ x: card.x, y: card.y, width: PLAN_CARD_WIDTH, height: PLAN_CARD_HEIGHT })), badge, now.about];
+  for (const [at, sub] of now.subs.entries()) {
+    assert.ok(inside(sub.box, { x: now.box.x + PLAN_BOX_PAD - PLAN_SUB_PAD, y: now.box.y + PLAN_BOX_TITLE, width: now.box.width - 2 * (PLAN_BOX_PAD - PLAN_SUB_PAD), height: now.box.height - PLAN_BOX_TITLE }), `${sub.title} inside the group box`);
+    assert.equal(sub.box.x, now.box.x + PLAN_BOX_PAD - PLAN_SUB_PAD);
+    for (const part of above) assert.ok(apart(sub.box, part), `${sub.title} overlaps no card, badge or description`);
+    for (const other of now.subs.slice(at + 1)) assert.ok(apart(sub.box, other.box) && other.box.y >= sub.box.y + sub.box.height + PLAN_SUB_PAD, `${sub.title} above ${other.title}`);
+    for (const card of sub.cards) {
+      assert.equal(card.x % PLAN_GRID, 0, `${card.id} x on the grid`);
+      assert.equal(card.y % PLAN_GRID, 0, `${card.id} y on the grid`);
+      assert.ok(inside({ x: card.x, y: card.y, width: PLAN_CARD_WIDTH, height: PLAN_CARD_HEIGHT }, sub.box), `${card.id} inside ${sub.title}`);
+      assert.ok(card.y >= sub.box.y + PLAN_BOX_TITLE + PLAN_SUB_PAD, `${card.id} under the title bar of ${sub.title}`);
+    }
+  }
+  assert.equal(now.subs[0].box.y, Math.ceil((badge.y + badge.height + PLAN_BOX_TITLE + 2 * PLAN_SUB_PAD) / PLAN_GRID) * PLAN_GRID - PLAN_BOX_TITLE - PLAN_SUB_PAD, "the first sub box under the badge");
+  assert.equal(now.subs[1].box.width, PLAN_CARD_WIDTH + 2 * PLAN_SUB_PAD, "a sub box is as wide as its cards");
+  // The wider box pushes the next block right in its line, or into the next line: no two boxes overlap.
+  assert.ok(apart(now.box, next.box));
+  // Six cards in a line of four columns: two rows.
+  const narrow = planBlocks([{ ...input[0], subs }], layout, 4).blocks[0];
+  assert.deepEqual(
+    narrow.subs[0].cards.map((card) => card.row),
+    [0, 0, 0, 0, 1, 1],
+  );
+  assert.equal(narrow.subs[0].box.width, 3 * PLAN_COLUMN_STEP + PLAN_CARD_WIDTH + 2 * PLAN_SUB_PAD);
+  // A saved size stays a minimum: a tall saved box keeps its height; a small one gives the grown box.
+  const tall = planBlocks([{ ...input[0], subs, size: { width: 10, height: now.box.height + 300 } }, input[1]], layout, 6).blocks[0];
+  assert.equal(tall.box.height, now.box.height + 300);
+  assert.deepEqual(tall.subs, now.subs);
+  const small = planBlocks([{ ...input[0], subs, size: { width: 10, height: 10 } }, input[1]], layout, 6).blocks[0];
+  assert.deepEqual(small.box, now.box);
+  // The description takes its rows at the width without the subgroups, so the cards stay.
+  const asked: number[] = [];
+  planBlocks([{ ...input[0], subs }], layout, 6, undefined, (_, width) => {
+    asked.push(width);
+    return 20;
+  });
+  assert.deepEqual(asked, [was.about.width]);
+});
+
+test("a dragged or shifted topic block moves its subgroups with it", () => {
+  const layout = planLayout(TREE);
+  const result = planBlocks([{ id: "open", shown: ["s1"], badge: true, subs: [{ title: "Done", ids: ["d1", "d2"] }] }], layout, 4);
+  const [block] = result.blocks;
+  const place = snapBlockPlace({ x: block.box.x + 1000, y: block.box.y + 600 });
+  const [moved] = placeTopicBlocks(result.blocks, new Map([["open", place]]), 50, result.layout).blocks;
+  const dx = place.x - block.box.x;
+  const dy = place.y - block.box.y;
+  assert.deepEqual(
+    moved.subs.map((sub) => sub.box),
+    block.subs.map((sub) => ({ ...sub.box, x: sub.box.x + dx, y: sub.box.y + dy })),
+    "the sub boxes move with the box",
+  );
+  assert.deepEqual(
+    moved.subs.flatMap((sub) => sub.cards.map((card) => [card.x, card.y])),
+    block.subs.flatMap((sub) => sub.cards.map((card) => [card.x + dx, card.y + dy])),
+    "their cards move with it",
+  );
+  for (const card of moved.subs.flatMap((sub) => sub.cards)) assert.ok(card.x % PLAN_GRID === 0 && card.y % PLAN_GRID === 0, `${card.id} on the grid after the drop`);
+  const [shifted] = placeTopicBlocks(result.blocks, new Map(), 50, result.layout).blocks;
+  assert.deepEqual(
+    shifted.subs.map((sub) => sub.box.x),
+    block.subs.map((sub) => sub.box.x + 50),
+    "a block never dragged moves its subgroups by the shift",
+  );
+  // A wide shelf shifts the blocks inside planBlocks too: the subgroups move with them.
+  const lone = planLayout([t("x", "new")]);
+  const wide = planBlocks([{ id: "wide", shown: [], badge: true, subs: [{ title: "Done", ids: ["a", "b", "c", "d", "e", "f"] }] }], lone, 6).blocks[0];
+  assert.equal(Math.min(...wide.subs[0].cards.map((card) => card.x)), PLAN_PAD);
+  assert.equal(wide.subs[0].box.x, wide.box.x + PLAN_BOX_PAD - PLAN_SUB_PAD);
+});
+
 test("a topic group moves by a drag of its title bar, and the menu puts it back", () => {
   const html = read("../index.html");
   const main = read("../src/main.ts");
@@ -949,7 +1109,7 @@ test("the Help says that a new ticket and a new part go into a topic group by th
 });
 
 test("a new ticket joins a group once, at its end; an unknown group changes nothing", () => {
-  const group = (id: string, tickets: string[]): PlanGroup => ({ id, title: id, color: 0, collapsed: true, tickets, auto: false, description: "" });
+  const group = (id: string, tickets: string[]): PlanGroup => ({ id, title: id, color: 0, collapsed: true, tickets, auto: false, description: "", unfolded: false });
   const groups = [group("a", ["t1"]), group("b", ["t2"])];
   const added = withTicketInGroup(groups, "a", "t3");
   assert.deepEqual(added[0].tickets, ["t1", "t3"]);
@@ -1079,7 +1239,6 @@ test("a drag of the corner of a card sizes every card of the project, and the me
   assert.match(css, /width: var\(--plan-card-width, 200px\);/);
   assert.match(css, /height: var\(--plan-card-height, 84px\);/);
   assert.match(css, /-webkit-line-clamp: var\(--plan-card-lines, 2\);/);
-  assert.match(css, /repeat\(auto-fill, var\(--plan-card-width, 200px\)\)/);
   assert.match(css, /\.plan-card-grip \{[^}]*cursor: nwse-resize;/);
   assert.match(html, /<b>Card size<\/b>: drag the small handle in the bottom right corner of any card/);
   assert.match(html, /<b>Cards back to normal size<\/b>/);

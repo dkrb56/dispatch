@@ -88,6 +88,7 @@ import {
   toggleSelection,
   topicBlocks,
   topicFoldText,
+  topicSubgroups,
   turnedArrow,
   withArrow,
   withoutArrow,
@@ -101,7 +102,6 @@ import {
   type PlanOffset,
   type PlanPlace,
   type PlanTicket,
-  type TopicBlock,
 } from "./plantree";
 import { cardLayout, type CardSizes, chatPlacer, doneTasks, freePlace, idleRun, inWork, listedTasks, type LostWorker, movedPlaces, newestWorker, type OverviewPlaces, type OverviewRect, type OverviewTask, PLAN_ERROR_TEXT, planLost as planLostRule, parsePlaces, parseSizes, runStarting, savedView, sizeOf, snapPlace, toggledSize, type ViewMode, WORK_ERROR_TEXT, WORK_LOST_TEXT, workLost } from "./overview";
 import {
@@ -16134,12 +16134,6 @@ let planWindow: { key: string; ticket: string; min: boolean } | null = null;
 /** The window with the Tickets board card of the ticket, and the line from its Plan card to the window; made once. */
 const planWindowEl = mapElement("section", "plan-window");
 const planWireEl = planSvg("svg", { class: "plan-wire", "aria-hidden": "true" });
-/**
- * The list window of a count badge of a topic group (ticket plan-mode-updates, user decision 4): the
- * project key, the group id, and folded or not; it shows the cards of the tickets that the badge counts.
- */
-let planList: { key: string; group: string; min: boolean } | null = null;
-const planListEl = mapElement("section", "plan-window plan-list-window");
 /** The place and size of a window on the board; no width or height: the size of the CSS. */
 interface PlanSpot {
   x: number;
@@ -16157,7 +16151,6 @@ interface PlanFrame {
   spot: PlanSpot | null;
 }
 const planWindowFrame: PlanFrame = { el: planWindowEl, storage: "plan-window-spot", spot: planLoadSpot("plan-window-spot") };
-const planListFrame: PlanFrame = { el: planListEl, storage: "plan-list-spot", spot: planLoadSpot("plan-list-spot") };
 /** The places of the cards of the last render, on the canvas; the selection box hits them. */
 let planPlaces: PlanPlace[] = [];
 /** The place of the canvas on the board of each project, by project key: a drag moves it, a render keeps it (ticket plan-mode-is-unusable-on-wide-screen). */
@@ -16212,7 +16205,7 @@ function planSaveCardSize(key: string, size: PlanCardSize | null): void {
   }
 }
 /**
- * The card size as CSS variables on the board: the cards of the canvas and of the list window take it.
+ * The card size as CSS variables on the board: the cards of the canvas take it.
  * The letters keep their size; a taller card shows more lines of the title (user decision 2).
  */
 function planApplyCardSize(size: PlanCardSize): void {
@@ -16240,8 +16233,8 @@ function planCardText(key: string, ticket: Ticket, el: HTMLElement): HTMLElement
 /**
  * The handle in the bottom right corner of a card: a drag makes every card of the project bigger or
  * smaller, live through the CSS variables; the drop saves the size and lays the board out again.
- * `scaled` false: the card stands outside the canvas (the list window of a count badge), so the zoom
- * does not scale the move (ticket issue-ticket-panel-is-only-resizable).
+ * `scaled` false: the card stands outside the canvas, so the zoom does not scale the move (ticket
+ * issue-ticket-panel-is-only-resizable).
  */
 function planCardGrip(key: string, scaled = true): HTMLElement {
   const grip = mapElement("span", "plan-card-grip");
@@ -16300,9 +16293,15 @@ function planGroupGrip(key: string, groupId: string, box: HTMLElement, place: Pl
   const grip = mapElement("span", "plan-group-grip");
   grip.setAttribute("aria-hidden", "true");
   grip.title = "Drag to make this topic group wider or taller";
-  // The smallest box: the automatic size, as planBlocks makes it without a saved size.
-  const fitWidth = Math.max(size.width + 2 * PLAN_BOX_PAD, ...place.cards.map((card) => card.x + size.width + PLAN_BOX_PAD - place.box.x));
-  const content = Math.max(place.about.y + place.about.height + 8, ...place.cards.map((card) => card.y + size.height), place.badge ? place.badge.y + PLAN_FOLD_HEIGHT : 0);
+  // The smallest box: the automatic size, as planBlocks makes it without a saved size; with its subgroups.
+  const cards = [...place.cards, ...place.subs.flatMap((sub) => sub.cards)];
+  const fitWidth = Math.max(size.width + 2 * PLAN_BOX_PAD, ...cards.map((card) => card.x + size.width + PLAN_BOX_PAD - place.box.x));
+  const content = Math.max(
+    place.about.y + place.about.height + 8,
+    ...cards.map((card) => card.y + size.height),
+    place.badge ? place.badge.y + PLAN_FOLD_HEIGHT : 0,
+    ...place.subs.map((sub) => sub.box.y + sub.box.height),
+  );
   const fitHeight = content + PLAN_BOX_PAD - place.box.y;
   grip.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) return;
@@ -16462,8 +16461,8 @@ const planFlowBarEl = mapElement("div", "plan-flow-bar");
   planEl.append(planToolbarEl, planFlowBarEl, body);
   // The keys work only while the board has the focus; there is no key handler on the page.
   planBoardEl.tabIndex = 0;
-  /** The target is inside the ticket window or the list window: the board keys, pan, wheel and menu leave it alone. */
-  const inWindow = (target: EventTarget | null) => target instanceof Node && (planWindowEl.contains(target) || planListEl.contains(target));
+  /** The target is inside the ticket window: the board keys, pan, wheel and menu leave it alone. */
+  const inWindow = (target: EventTarget | null) => target instanceof Node && planWindowEl.contains(target);
   planBoardEl.addEventListener("keydown", (event) => {
     const target = event.target;
     if (inWindow(target)) return;
@@ -16697,12 +16696,6 @@ function planCloseWindow(): void {
   planWireEl.remove();
 }
 
-/** Closes the list window of a count badge; its place and size stay for the next open. */
-function planCloseList(): void {
-  planList = null;
-  planListEl.remove();
-}
-
 /** The remembered place and size of a window, from localStorage; null when none or not readable. */
 function planLoadSpot(storage: string): PlanSpot | null {
   try {
@@ -16731,7 +16724,7 @@ function planSaveSpot(frame: PlanFrame): void {
 /**
  * The canvas that holds a window of the Plan view, or null: the window stands on the board. The ticket
  * window stands on the canvas, so the pan and the zoom move and scale it like a card (ticket
- * issue-ticket-panel-is-only-resizable, user decision 1); the list window of a count badge stays on the board.
+ * issue-ticket-panel-is-only-resizable, user decision 1).
  */
 function planWindowCanvas(el: Element): HTMLElement | null {
   const parent = el.parentElement;
@@ -16778,7 +16771,7 @@ const planSpotSaves = new Map<PlanFrame, number>();
  */
 const planFrameSizer = new ResizeObserver((entries) => {
   for (const entry of entries) {
-    const frame = [planWindowFrame, planListFrame].find((one) => one.el === entry.target);
+    const frame = [planWindowFrame].find((one) => one.el === entry.target);
     if (!frame || !frame.el.isConnected || frame.el.classList.contains("min")) continue;
     const width = parseFloat(frame.el.style.width);
     const height = parseFloat(frame.el.style.height);
@@ -16793,7 +16786,6 @@ const planFrameSizer = new ResizeObserver((entries) => {
   }
 });
 planFrameSizer.observe(planWindowEl);
-planFrameSizer.observe(planListEl);
 
 /** The title bar of a window of the Plan view: its name and the – and × buttons; a drag of the bar moves the window. */
 function planFrameHead(frame: PlanFrame, name: string, min: boolean, fold: () => void, close: () => void): HTMLElement {
@@ -16913,50 +16905,13 @@ function renderPlanWindow(): void {
   planDrawWire();
 }
 
-/**
- * Draws the list window of a count badge again (ticket plan-mode-updates, user decision 4): a card per
- * ticket that the badge counts, in a body that scrolls. `card` makes the Plan card of a ticket; a click
- * on it opens the ticket window. A list without its project, its group or a counted ticket closes.
- */
-function renderPlanList(key: string, groups: readonly PlanGroup[], blocks: readonly TopicBlock[], byId: ReadonlyMap<string, Ticket>, card: (ticket: Ticket) => HTMLElement): void {
-  if (!planList) {
-    planListEl.remove();
-    return;
-  }
-  const open = planList;
-  const group = groups.find((one) => one.id === open.group);
-  const block = blocks.find((one) => one.id === open.group);
-  const tickets = block ? block.members.filter((id) => !block.shown.includes(id)).flatMap((id) => byId.get(id) ?? []) : [];
-  if (open.key !== key || !group || !block || tickets.length === 0) {
-    planCloseList();
-    return;
-  }
-  const scroll = planListEl.querySelector(".plan-window-body")?.scrollTop ?? 0;
-  const head = planFrameHead(
-    planListFrame,
-    `${group.title || "Untitled"} · ${topicFoldText(block.fold)}`,
-    open.min,
-    () => {
-      open.min = !open.min;
-      renderPlan();
-    },
-    () => planCloseList(),
-  );
-  const body = mapElement("div", "plan-window-body plan-list-body");
-  body.append(...tickets.map(card));
-  planListEl.replaceChildren(head, body);
-  planListEl.setAttribute("aria-label", `Tickets of ${group.title || "the group"}`);
-  if (!planListEl.isConnected || planListEl.parentElement !== planBoardEl) planBoardEl.append(planListEl);
-  body.scrollTop = scroll;
-  // Without a remembered place: the top left corner, away from the ticket window.
-  planFramePlace(planListFrame, open.min, { x: 16, y: 16 });
-}
-
 /** The line from the Plan card of the window's ticket to the nearest border of the window; no card on the canvas gives no line. */
 function planDrawWire(): void {
   planWireEl.replaceChildren();
   if (!planWindow || !planWindowEl.isConnected) return;
-  const card = planBoardEl.querySelector<HTMLElement>(`.plan-canvas .plan-ticket[data-ticket="${CSS.escape(planWindow.ticket)}"]`);
+  // A ticket of the subgroup In the tree has two cards: the line goes to the card that is not in a subgroup.
+  const selector = `.plan-canvas .plan-ticket[data-ticket="${CSS.escape(planWindow.ticket)}"]`;
+  const card = planBoardEl.querySelector<HTMLElement>(`${selector}:not(.plan-sub-card)`) ?? planBoardEl.querySelector<HTMLElement>(selector);
   if (!card) return;
   // The line stands on the canvas with the window: canvas px, the screen rects divided by the zoom.
   const canvas = planWindowCanvas(planWireEl);
@@ -17215,7 +17170,7 @@ function planAddGroup(collapsed: boolean): void {
   const groups = planGroupsOf(ref);
   const tickets = planSelectedTickets(groups);
   if (tickets.length === 0) return;
-  const group: PlanGroup = { id: `g-${Date.now().toString(36)}`, title: collapsed ? "Group" : "Comment", color: 0, collapsed, tickets, auto: false, description: "" };
+  const group: PlanGroup = { id: `g-${Date.now().toString(36)}`, title: collapsed ? "Group" : "Comment", color: 0, collapsed, tickets, auto: false, description: "", unfolded: false };
   planSelected = new Set();
   planSelectedArrow = null;
   planSelectedGroup = group.id;
@@ -17753,8 +17708,12 @@ function renderPlan(): void {
   // A resized box keeps its saved size, and the description row holds the whole text (ticket
   // issue-ticket-panel-is-only-resizable).
   const aboutOf = new Map(groups.map((group) => [group.id, group.description]));
+  // An open count badge puts its tickets into subgroups inside the box (ticket count-pill-opens-subgroups-inside-a).
   const blockPlaces = planBlocks(
-    topics.map((block) => ({ id: block.id, shown: block.shown, badge: topicFoldText(block.fold) !== "", size: groups.find((group) => group.id === block.id)?.size })),
+    topics.map((block) => {
+      const group = groups.find((one) => one.id === block.id);
+      return { id: block.id, shown: block.shown, badge: topicFoldText(block.fold) !== "", size: group?.size, subs: group ? topicSubgroups(block, group) : [] };
+    }),
     treeLayout,
     perRow,
     size,
@@ -18051,17 +18010,16 @@ function renderPlan(): void {
     el.append(planCardGrip(key));
     canvas.append(el);
   }
-  // A card of the shelf or of a topic block: a ticket that is not in the tree. No place (null): a card
-  // of the list window of a count badge, which only opens the ticket window (ticket plan-mode-updates).
-  const looseCard = (ticket: Ticket, card: { x: number; y: number } | null): HTMLElement => {
+  // A card of the shelf or of a topic block: a ticket that is not in the tree. `sub`: a card of a
+  // subgroup of an open count badge, which only opens the ticket window and is never selected or placed
+  // (ticket count-pill-opens-subgroups-inside-a); a ticket of the subgroup In the tree also has its tree card.
+  const looseCard = (ticket: Ticket, card: { x: number; y: number }, sub = false): HTMLElement => {
     const state = planCardState(ticket, queueIds, record);
-    const el = mapElement("div", `plan-card plan-ticket ${ticket.status}${card && planSelected.has(ticket.id) ? " selected" : ""}`);
+    const el = mapElement("div", `plan-card plan-ticket ${ticket.status}${sub ? " plan-sub-card" : planSelected.has(ticket.id) ? " selected" : ""}`);
     el.dataset.ticket = ticket.id;
-    if (card) {
-      el.style.left = `${card.x}px`;
-      el.style.top = `${card.y}px`;
-    }
-    el.title = card && draft && !picking ? `${ticket.title}\nClick to place it: then click the ticket that it comes after` : ticket.title;
+    el.style.left = `${card.x}px`;
+    el.style.top = `${card.y}px`;
+    el.title = !sub && draft && !picking ? `${ticket.title}\nClick to place it: then click the ticket that it comes after` : ticket.title;
     const top = mapElement("div", "plan-card-top");
     const dot = mapElement("span", `plan-dot ${state.dot}`);
     dot.setAttribute("aria-hidden", "true");
@@ -18076,11 +18034,10 @@ function renderPlan(): void {
       line.append(detail);
     }
     el.append(top, ...planCardText(key, ticket, el), line);
-    // A card of the list window has the handle too (ticket issue-ticket-panel-is-only-resizable); the zoom does not scale it.
-    el.append(planCardGrip(key, card !== null));
+    el.append(planCardGrip(key));
     // While an arrow is drawn or a ticket placed, a click picks it; while planning it places it; else it selects.
     el.addEventListener("click", (event) => {
-      if (!card) planOpenWindow(key, ticket.id);
+      if (sub) planOpenWindow(key, ticket.id);
       else if (picking) planPickCard(ticket.id);
       else if (draft) planPlace(ticket.id);
       else {
@@ -18151,18 +18108,43 @@ function renderPlan(): void {
       parts.push(cardEl);
       canvas.append(cardEl);
     }
+    // The subgroups of an open count badge (ticket count-pill-opens-subgroups-inside-a): a box with the
+    // kind and the count in its title bar, and a card per ticket; they move with the block.
+    for (const sub of place.subs) {
+      const subEl = mapElement("div", `plan-sub-box plan-color-${group.color}`);
+      subEl.dataset.group = group.id;
+      subEl.style.left = `${sub.box.x}px`;
+      subEl.style.top = `${sub.box.y}px`;
+      subEl.style.width = `${sub.box.width}px`;
+      subEl.style.height = `${sub.box.height}px`;
+      const subTitle = mapElement("div", "plan-sub-title", `${sub.title} · ${sub.cards.length}`);
+      subTitle.style.height = `${PLAN_BOX_TITLE}px`;
+      subEl.append(subTitle);
+      parts.push(subEl);
+      canvas.append(subEl);
+      for (const card of sub.cards) {
+        const ticket = byId.get(card.id);
+        if (!ticket) continue;
+        const cardEl = looseCard(ticket, { x: card.x, y: card.y }, true);
+        parts.push(cardEl);
+        canvas.append(cardEl);
+      }
+    }
     const foldText = topicFoldText(block.fold);
     if (place.badge && foldText) {
-      const badge = mapElement("button", `plan-fold plan-color-${group.color}`, foldText);
+      const open = place.subs.length > 0;
+      const badge = mapElement("button", `plan-fold plan-color-${group.color}${open ? " open" : ""}`, foldText);
       badge.type = "button";
-      badge.title = `${foldText}\nShow these tickets in a window, and the group in the side panel`;
+      badge.title = `${foldText}\n${open ? "Close the boxes of these tickets" : "Show these tickets as cards in boxes inside the group"}, and the group in the side panel`;
+      badge.setAttribute("aria-expanded", String(open));
       badge.dataset.group = group.id;
       badge.style.left = `${place.badge.x}px`;
       badge.style.maxWidth = `${place.box.width - 2 * PLAN_BOX_PAD}px`;
       badge.style.top = `${place.badge.y}px`;
+      // A collapsed group opens too: its scheduled and working tickets then show as cards again.
       badge.addEventListener("click", () => {
-        planList = { key, group: group.id, min: false };
         planSelect([], null, group.id);
+        planChangeGroup(group.id, { unfolded: !open, collapsed: false });
       });
       parts.push(badge);
       canvas.append(badge);
@@ -18249,9 +18231,7 @@ function renderPlan(): void {
     canvas.append(note);
   }
   planBoardEl.replaceChildren(canvas);
-  // The replace took the list window out of the board, and the ticket window and its line with the old
-  // canvas; this puts the list window back on the board and the ticket window on the new canvas.
-  renderPlanList(key, groups, topics, byId, (ticket) => looseCard(ticket, null));
+  // The replace took the ticket window and its line away with the old canvas; this puts them on the new canvas.
   renderPlanWindow();
   if (planFocusEdit) {
     planFocusEdit = false;

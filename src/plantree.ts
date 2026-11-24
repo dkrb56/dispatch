@@ -377,6 +377,11 @@ export interface PlanGroup {
   /** What a topic group does and what it is for; empty for a comment or a manual group. */
   description: string;
   /**
+   * A topic group whose count badge the user clicked open (ticket count-pill-opens-subgroups-inside-a):
+   * its counted tickets show as cards in subgroups inside its box. False when the file has none.
+   */
+  unfolded: boolean;
+  /**
    * The top left of the box of a topic block that the user dragged, in canvas px (ticket
    * drag-topic-groups-on-the-plan-board); no key: the automatic place.
    */
@@ -423,6 +428,7 @@ export function parsePlanGroups(value: unknown): PlanGroup[] {
       tickets,
       auto: raw.auto === true,
       description: typeof raw.description === "string" ? raw.description : "",
+      unfolded: raw.unfolded === true,
     };
     // The key only for a place with two finite numbers, so a group without one has no key.
     const place = raw.place && typeof raw.place === "object" ? (raw.place as Record<string, unknown>) : null;
@@ -643,6 +649,8 @@ export interface TopicBlock {
   id: string;
   shown: string[];
   fold: TopicFold;
+  /** The ids that `fold` counts, per kind, in the board order (ticket count-pill-opens-subgroups-inside-a). */
+  folded: Record<keyof TopicFold, string[]>;
   /** The tickets of the group that the board has. */
   members: string[];
 }
@@ -658,7 +666,7 @@ export function topicBlocks(tickets: readonly PlanTicket[], groups: readonly Pla
   const blocks: TopicBlock[] = [];
   for (const group of groups) {
     if (!group.auto) continue;
-    const fold: TopicFold = { scheduled: 0, working: 0, done: 0, canceled: 0, backlog: 0, inTree: 0 };
+    const kinds: Record<keyof TopicFold, { id: string; at: number }[]> = { scheduled: [], working: [], done: [], canceled: [], backlog: [], inTree: [] };
     const shown: { id: string; at: number }[] = [];
     const members: string[] = [];
     for (const id of group.tickets) {
@@ -667,16 +675,34 @@ export function topicBlocks(tickets: readonly PlanTicket[], groups: readonly Pla
       taken.add(id);
       members.push(id);
       const status = found.ticket.status;
-      if (inTree.has(id)) fold.inTree += 1;
-      else if (status === "done") fold.done += 1;
-      else if (status === "canceled") fold.canceled += 1;
-      else if (status === "backlog") fold.backlog += 1;
-      else if (!group.collapsed) shown.push({ id, at: found.at });
-      else if (status === "new") fold.scheduled += 1;
-      else fold.working += 1;
+      const one = { id, at: found.at };
+      if (inTree.has(id)) kinds.inTree.push(one);
+      else if (status === "done") kinds.done.push(one);
+      else if (status === "canceled") kinds.canceled.push(one);
+      else if (status === "backlog") kinds.backlog.push(one);
+      else if (!group.collapsed) shown.push(one);
+      else if (status === "new") kinds.scheduled.push(one);
+      else kinds.working.push(one);
     }
     if (members.length === 0) continue;
-    blocks.push({ id: group.id, shown: shown.sort((a, b) => a.at - b.at).map((one) => one.id), fold, members });
+    const ordered = (list: { id: string; at: number }[]) => list.sort((a, b) => a.at - b.at).map((one) => one.id);
+    const folded: Record<keyof TopicFold, string[]> = {
+      scheduled: ordered(kinds.scheduled),
+      working: ordered(kinds.working),
+      done: ordered(kinds.done),
+      canceled: ordered(kinds.canceled),
+      backlog: ordered(kinds.backlog),
+      inTree: ordered(kinds.inTree),
+    };
+    const fold: TopicFold = {
+      scheduled: folded.scheduled.length,
+      working: folded.working.length,
+      done: folded.done.length,
+      canceled: folded.canceled.length,
+      backlog: folded.backlog.length,
+      inTree: folded.inTree.length,
+    };
+    blocks.push({ id: group.id, shown: ordered(shown), fold, folded, members });
   }
   return blocks;
 }
@@ -695,6 +721,29 @@ export function topicFoldText(fold: TopicFold): string {
     .filter(([count]) => count > 0)
     .map(([count, word]) => `${count} ${word}`)
     .join(" · ");
+}
+
+/** One subgroup of an open topic block: its kind, its title and the ids of its cards in the board order. */
+export interface TopicSubgroup {
+  kind: "done" | "canceled" | "backlog" | "inTree";
+  title: string;
+  ids: string[];
+}
+
+/**
+ * The subgroups of a topic block whose count badge is open (ticket count-pill-opens-subgroups-inside-a):
+ * one per kind that has tickets, in the order Done, Canceled, Backlog, In the tree. Scheduled and Working
+ * tickets are cards of the block, so they get no subgroup. A group that is not open, or is collapsed, has none.
+ */
+export function topicSubgroups(block: TopicBlock, group: PlanGroup): TopicSubgroup[] {
+  if (!group.unfolded || group.collapsed) return [];
+  const kinds: [TopicSubgroup["kind"], string][] = [
+    ["done", "Done"],
+    ["canceled", "Canceled"],
+    ["backlog", "Backlog"],
+    ["inTree", "In the tree"],
+  ];
+  return kinds.flatMap(([kind, title]) => (block.folded[kind].length > 0 ? [{ kind, title, ids: [...block.folded[kind]] }] : []));
 }
 
 /** The note of the toolbar after Auto group. */
@@ -717,6 +766,16 @@ export function describeNote(before: ReadonlyMap<string, PlanDescription>, after
 
 /** The height of the count badge of a block. */
 export const PLAN_FOLD_HEIGHT = 28;
+/** The padding of a subgroup box around its cards, under its title bar (ticket count-pill-opens-subgroups-inside-a). */
+export const PLAN_SUB_PAD = 6;
+
+/** The place of one subgroup of an open block: its box with its title bar, the top `PLAN_BOX_TITLE` px, and its cards. */
+export interface PlanSubPlace {
+  title: string;
+  box: PlanRect;
+  /** The places of its cards; `row` is the row inside the subgroup. */
+  cards: PlanPlace[];
+}
 
 /** The place of one block on the canvas. */
 export interface PlanBlockPlace {
@@ -729,6 +788,8 @@ export interface PlanBlockPlace {
   cards: PlanPlace[];
   /** The top left corner of the count badge; null without a badge. */
   badge: { x: number; y: number } | null;
+  /** The subgroups under the badge, inside the box; empty when the badge is not open. */
+  subs: PlanSubPlace[];
 }
 
 /** The blocks under the tree. */
@@ -751,9 +812,20 @@ export interface PlanBlocks {
  * rows as the text needs at the automatic width (at least 1), and the cards move down by the extra
  * rows. The description is as wide as the box. Without them each box has its automatic size and the
  * description one grid row.
+ *
+ * Ticket count-pill-opens-subgroups-inside-a: a block with `subs` (an open count badge) has under its
+ * badge one sub box per subgroup, with its title bar and its cards in rows of the block columns, every
+ * card corner on the grid. The block columns count the largest subgroup too, so the box grows to hold
+ * them; the description keeps the rows that it needs without the subgroups, so the other cards stay.
  */
 export function planBlocks(
-  blocks: readonly { id: string; shown: readonly string[]; badge: boolean; size?: { width: number; height: number } }[],
+  blocks: readonly {
+    id: string;
+    shown: readonly string[];
+    badge: boolean;
+    size?: { width: number; height: number };
+    subs?: readonly { title: string; ids: readonly string[] }[];
+  }[],
   layout: PlanLayout,
   perRow = 4,
   size: PlanCardSize = PLAN_CARD_DEFAULT,
@@ -763,13 +835,16 @@ export function planBlocks(
   const steps = planSteps(size);
   const across = Math.max(1, Math.floor(perRow));
   const sized = blocks.map((block) => {
-    const columns = Math.max(1, Math.min(across, block.shown.length));
+    const subs = (block.subs ?? []).filter((sub) => sub.ids.length > 0);
+    const columns = Math.max(1, Math.min(across, Math.max(block.shown.length, ...subs.map((sub) => sub.ids.length))));
     const rows = Math.ceil(block.shown.length / columns);
     const autoWidth = (columns - 1) * steps.column + size.width + 2 * PLAN_BOX_PAD;
+    // The automatic width without the subgroups: the description takes its rows at this width.
+    const aboutAuto = (Math.max(1, Math.min(across, block.shown.length)) - 1) * steps.column + size.width;
     const boxWidth = Math.max(autoWidth, block.size?.width ?? 0);
     // The card columns that the box covers: the next block of the line starts after them.
     const span = Math.max(columns, Math.ceil((boxWidth - 2 * PLAN_BOX_PAD - size.width) / steps.column) + 1);
-    return { ...block, columns, rows, autoWidth, boxWidth, span };
+    return { ...block, subs, columns, rows, autoWidth, aboutAuto, boxWidth, span };
   });
   // The lines: as many blocks as fit side by side.
   const lines: (typeof sized)[] = [];
@@ -789,7 +864,7 @@ export function planBlocks(
       const aboutWidth = block.boxWidth - 2 * PLAN_BOX_PAD;
       // The rows of the description at the automatic width: a wider box keeps them, so its cards stay
       // where they are (user decision 2); the text at the wider width needs no more rows.
-      const text = aboutHeight ? aboutHeight(block.id, block.autoWidth - 2 * PLAN_BOX_PAD) : 0;
+      const text = aboutHeight ? aboutHeight(block.id, block.aboutAuto) : 0;
       const aboutRow = Math.max(1, Math.ceil((Number.isFinite(text) ? text : 0) / PLAN_GRID)) * PLAN_ABOUT_HEIGHT;
       const firstY = top + PLAN_GRID + aboutRow;
       const cards: PlanPlace[] = block.shown.map((id, at) => ({
@@ -799,7 +874,30 @@ export function planBlocks(
         y: firstY + Math.floor(at / block.columns) * steps.shelfRow,
       }));
       const badge = block.badge ? { x: left, y: firstY + block.rows * steps.shelfRow } : null;
-      const content = Math.max(cards.length > 0 ? firstY + (block.rows - 1) * steps.shelfRow + size.height : firstY, badge ? badge.y + PLAN_FOLD_HEIGHT : firstY);
+      let content = Math.max(cards.length > 0 ? firstY + (block.rows - 1) * steps.shelfRow + size.height : firstY, badge ? badge.y + PLAN_FOLD_HEIGHT : firstY);
+      // The subgroups under the badge: each first card row is the first grid row with room for the
+      // title bar and the padding of its sub box under the part above.
+      const subs: PlanSubPlace[] = [];
+      let below = badge ? badge.y + PLAN_FOLD_HEIGHT : firstY + block.rows * steps.shelfRow;
+      for (const sub of block.subs) {
+        const cardY = Math.ceil((below + PLAN_BOX_TITLE + 2 * PLAN_SUB_PAD) / PLAN_GRID) * PLAN_GRID;
+        const covered = Math.min(block.columns, sub.ids.length);
+        const subRows = Math.ceil(sub.ids.length / block.columns);
+        const subTop = cardY - PLAN_BOX_TITLE - PLAN_SUB_PAD;
+        const subBottom = cardY + (subRows - 1) * steps.shelfRow + size.height + PLAN_SUB_PAD;
+        subs.push({
+          title: sub.title,
+          box: { x: left - PLAN_SUB_PAD, y: subTop, width: (covered - 1) * steps.column + size.width + 2 * PLAN_SUB_PAD, height: subBottom - subTop },
+          cards: sub.ids.map((id, at) => ({
+            id,
+            row: Math.floor(at / block.columns),
+            x: left + (at % block.columns) * steps.column,
+            y: cardY + Math.floor(at / block.columns) * steps.shelfRow,
+          })),
+        });
+        below = subBottom;
+        content = Math.max(content, subBottom);
+      }
       const boxTop = firstY - aboutRow - PLAN_BOX_PAD - PLAN_BOX_TITLE;
       const boxBottom = Math.max(content + PLAN_BOX_PAD, boxTop + (block.size?.height ?? 0));
       const aboutY = boxTop + PLAN_BOX_TITLE + 4;
@@ -809,6 +907,7 @@ export function planBlocks(
         about: { x: left, y: aboutY, width: aboutWidth, height: Math.min(aboutRow, firstY - 6 - aboutY) },
         cards,
         badge,
+        subs,
       });
       bottom = Math.max(bottom, boxBottom);
       left += block.span * steps.column;
@@ -822,6 +921,7 @@ export function planBlocks(
     about: { ...block.about, x: block.about.x + shift },
     cards: block.cards.map((card) => ({ ...card, x: card.x + shift })),
     badge: block.badge ? { x: block.badge.x + shift, y: block.badge.y } : null,
+    subs: block.subs.map((sub) => ({ ...sub, box: { ...sub.box, x: sub.box.x + shift }, cards: sub.cards.map((card) => ({ ...card, x: card.x + shift })) })),
   }));
   const right = Math.max(...moved.map((block) => block.box.x + block.box.width)) + PLAN_PAD;
   const bottom = Math.max(...moved.map((block) => block.box.y + block.box.height)) + PLAN_PAD;
@@ -854,8 +954,8 @@ export function snapBlockPlace(at: { x: number; y: number }): { x: number; y: nu
 /**
  * The topic blocks at their places on the canvas (ticket drag-topic-groups-on-the-plan-board). A
  * block without a saved place moves right by `shift`, as the tree does under a wide shelf; a block
- * with a saved place moves as a whole (box, description, cards and badge) so that its box starts
- * at the place, without `shift`. The canvas grows to hold every block.
+ * with a saved place moves as a whole (box, description, cards, badge and subgroups) so that its box
+ * starts at the place, without `shift`. The canvas grows to hold every block.
  */
 export function placeTopicBlocks(
   blocks: readonly PlanBlockPlace[],
@@ -873,6 +973,11 @@ export function placeTopicBlocks(
       about: { ...block.about, x: block.about.x + dx, y: block.about.y + dy },
       cards: block.cards.map((card) => ({ ...card, x: card.x + dx, y: card.y + dy })),
       badge: block.badge ? { x: block.badge.x + dx, y: block.badge.y + dy } : null,
+      subs: block.subs.map((sub) => ({
+        ...sub,
+        box: { ...sub.box, x: sub.box.x + dx, y: sub.box.y + dy },
+        cards: sub.cards.map((card) => ({ ...card, x: card.x + dx, y: card.y + dy })),
+      })),
     };
   });
   if (moved.length === 0) return { layout, blocks: moved };
