@@ -391,6 +391,29 @@ export interface PlanGroup {
    * issue-ticket-panel-is-only-resizable); no key: the automatic size.
    */
   size?: { width: number; height: number };
+  /**
+   * A section (ticket i-need-an-option-to-create-group-of): the ids of its topic groups, which stand
+   * together in one box with its title; `collapsed` folds it to that title. No key: not a section.
+   */
+  groups?: string[];
+}
+
+/** A section holds topic groups and no tickets (ticket i-need-an-option-to-create-group-of). */
+export function isSection(group: PlanGroup): boolean {
+  return (group.groups?.length ?? 0) > 0;
+}
+
+/**
+ * The groups after a topic group moved into the section `sectionId`, or out of every section with
+ * null. A topic group stands in one section at most; a section that loses its last topic group goes.
+ */
+export function withGroupInSection(groups: readonly PlanGroup[], groupId: string, sectionId: string | null): PlanGroup[] {
+  return groups.flatMap((group) => {
+    if (!isSection(group)) return [group];
+    const kept = (group.groups ?? []).filter((id) => id !== groupId);
+    const members = group.id === sectionId ? [...kept, groupId] : kept;
+    return members.length > 0 ? [{ ...group, groups: members }] : [];
+  });
 }
 
 /** The node id of a collapsed group in the tree; the prefix keeps it apart from every ticket id. */
@@ -437,6 +460,9 @@ export function parsePlanGroups(value: unknown): PlanGroup[] {
     const box = raw.size && typeof raw.size === "object" ? (raw.size as Record<string, unknown>) : null;
     const positive = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value > 0;
     if (box && positive(box.width) && positive(box.height)) group.size = { width: box.width, height: box.height };
+    // The key only for a list of ids, as a section has it.
+    const members = Array.isArray(raw.groups) ? [...new Set(raw.groups.filter((one): one is string => typeof one === "string" && one !== ""))] : [];
+    if (members.length > 0) group.groups = members;
     groups.push(group);
   }
   return groups;
@@ -831,6 +857,11 @@ export interface PlanBlocks {
  * line counts the card columns that it covers. A `free` block (it has a saved place) keeps a slot of
  * its automatic size in its line: its saved size moves no other block and not the bounds of the
  * layout (user decision 1); its own box still gets the saved size.
+ *
+ * Ticket i-need-an-option-to-create-group-of: the blocks with the same `set` (the topic groups of one
+ * section) stand next to each other at the place of the first of them. A set starts a new line, the
+ * block after it starts a new line too, and the first line of a set is one grid row lower, so the
+ * title bar of the section box (`setBoxes`) overlaps no other box.
  */
 export function planBlocks(
   blocks: readonly {
@@ -840,6 +871,7 @@ export function planBlocks(
     size?: { width: number; height: number };
     subs?: readonly { title: string; ids: readonly string[] }[];
     free?: boolean;
+    set?: string;
   }[],
   layout: PlanLayout,
   perRow = 4,
@@ -850,7 +882,15 @@ export function planBlocks(
   if (blocks.length === 0) return { layout, blocks: [] };
   const steps = planSteps(size);
   const across = Math.max(1, Math.floor(perRow));
-  const sized = blocks.map((block) => {
+  // The blocks of one set follow the first of them.
+  const sets = new Set<string>();
+  const ordered = blocks.flatMap((block) => {
+    if (block.set === undefined) return [block];
+    if (sets.has(block.set)) return [];
+    sets.add(block.set);
+    return blocks.filter((one) => one.set === block.set);
+  });
+  const sized = ordered.map((block) => {
     const subs = (block.subs ?? []).filter((sub) => sub.ids.length > 0);
     const columns = Math.max(1, Math.min(across, Math.max(block.shown.length, ...subs.map((sub) => sub.ids.length))));
     const rows = Math.ceil(block.shown.length / columns);
@@ -868,19 +908,25 @@ export function planBlocks(
     const span = Math.max(columns, Math.ceil((slotWidth - 2 * PLAN_BOX_PAD - size.width) / steps.column) + 1);
     return { ...block, subs, columns, rows, autoWidth, aboutAuto, boxWidth, slotWidth, span };
   });
-  // The lines: as many blocks as fit side by side.
+  // The lines: as many blocks as fit side by side; a line holds the blocks of one set or of none.
   const lines: (typeof sized)[] = [];
+  // The lines that start a set: they stand one grid row lower.
+  const setStarts = new Set<number>();
   for (const block of sized) {
     const line = lines[lines.length - 1];
     const used = line ? line.reduce((sum, one) => sum + one.span, 0) : across;
-    if (line && used + block.span <= across) line.push(block);
-    else lines.push([block]);
+    if (line && used + block.span <= across && line[0].set === block.set) line.push(block);
+    else {
+      if (block.set !== undefined && (!line || line[0].set !== block.set)) setStarts.add(lines.length);
+      lines.push([block]);
+    }
   }
   const placed: PlanBlockPlace[] = [];
   // The slot of each placed block: its box, at the automatic size for a free block.
   const slots: PlanRect[] = [];
   let top = Math.ceil((layout.height - PLAN_PAD + PLAN_GRID) / PLAN_GRID) * PLAN_GRID;
-  for (const line of lines) {
+  for (const [index, line] of lines.entries()) {
+    if (setStarts.has(index)) top += PLAN_GRID;
     const width = line.reduce((sum, one) => sum + one.span, 0);
     let left = snap(layout.root.x - ((width - 1) / 2) * steps.column);
     let bottom = top;
@@ -1011,6 +1057,23 @@ export function placeTopicBlocks(
   const right = Math.max(...moved.map((block) => block.box.x + block.box.width)) + PLAN_PAD;
   const bottom = Math.max(...moved.map((block) => block.box.y + block.box.height)) + PLAN_PAD;
   return { layout: { ...layout, width: Math.max(layout.width, right), height: Math.max(layout.height, bottom) }, blocks: moved };
+}
+
+/**
+ * The boxes of the sections (ticket i-need-an-option-to-create-group-of): around the placed boxes of
+ * their topic groups, also a dragged one, with the padding of a box and a title bar above. A section
+ * without a placed topic group has no box.
+ */
+export function setBoxes(blocks: readonly PlanBlockPlace[], sets: readonly { id: string; members: readonly string[] }[]): { id: string; box: PlanRect }[] {
+  return sets.flatMap((set) => {
+    const boxes = blocks.filter((block) => set.members.includes(block.id)).map((block) => block.box);
+    if (boxes.length === 0) return [];
+    const x1 = Math.min(...boxes.map((box) => box.x));
+    const y1 = Math.min(...boxes.map((box) => box.y));
+    const x2 = Math.max(...boxes.map((box) => box.x + box.width));
+    const y2 = Math.max(...boxes.map((box) => box.y + box.height));
+    return [{ id: set.id, box: { x: x1 - PLAN_BOX_PAD, y: y1 - PLAN_BOX_PAD - PLAN_BOX_TITLE, width: x2 - x1 + 2 * PLAN_BOX_PAD, height: y2 - y1 + 2 * PLAN_BOX_PAD + PLAN_BOX_TITLE } }];
+  });
 }
 
 /** The ids that a ticket comes after, by the arrows of the list. */

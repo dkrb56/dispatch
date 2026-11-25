@@ -11413,6 +11413,26 @@ svg.links {
   user-select: none;
 }
 
+/* A section (ticket i-need-an-option-to-create-group-of): a dashed box behind its topic groups; a drag
+   of its title bar moves it with them. A folded section shows its title and the names of its groups. */
+.plan-set {
+  border-style: dashed;
+  background: color-mix(in srgb, var(--plan-color) 3%, transparent);
+}
+
+.plan-set:not(.plan-set-folded) .plan-group-title {
+  cursor: grab;
+  user-select: none;
+}
+
+.plan-set-folded {
+  background: color-mix(in srgb, var(--plan-color) 8%, transparent);
+}
+
+div.plan-block-about.plan-set-about {
+  cursor: pointer;
+}
+
 .plan-group-dragging,
 .plan-group-dragging * {
   cursor: grabbing;

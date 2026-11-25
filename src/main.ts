@@ -77,6 +77,11 @@ import {
   planBlocks,
   placeTopicBlocks,
   snapBlockPlace,
+  isSection,
+  planDone,
+  setBoxes,
+  withGroupInSection,
+  type PlanRect,
   planCentre,
   planJoin,
   planLayout,
@@ -17803,7 +17808,7 @@ function planGroupMenu(event: MouseEvent, ref: ProjectRef, group: PlanGroup): vo
   PLAN_COLOR_NAMES.forEach((name, color) => {
     const button = mapElement("button", "plan-color-item");
     button.type = "button";
-    button.title = `Show this ${group.auto ? "topic group" : group.collapsed ? "group" : "comment"} in ${name.toLowerCase()}`;
+    button.title = `Show this ${isSection(group) ? "section" : group.auto ? "topic group" : group.collapsed ? "group" : "comment"} in ${name.toLowerCase()}`;
     button.setAttribute("role", "menuitemradio");
     button.setAttribute("aria-checked", String(group.color === color));
     button.append(mapElement("span", `plan-swatch-mark plan-color-${color}`), mapElement("span", "", name));
@@ -17817,7 +17822,7 @@ function planGroupMenu(event: MouseEvent, ref: ProjectRef, group: PlanGroup): vo
   line.setAttribute("role", "separator");
   menu.append(line);
   // A topic group or a stacked group card shows its new member at once; a comment box does not (user decision 1).
-  if (group.auto || group.collapsed) {
+  if ((group.auto || group.collapsed) && !isSection(group)) {
     const project: ProjectRef = { host: ref.host, root: ref.root };
     const own = mapElement("div", "plan-menu-line");
     own.setAttribute("role", "separator");
@@ -17833,6 +17838,48 @@ function planGroupMenu(event: MouseEvent, ref: ProjectRef, group: PlanGroup): vo
       return button;
     };
     menu.append(add("New ticket in this group (Scheduled)", "new"), add("New ticket in this group (Backlog)", "backlog"), own);
+  }
+  // Ticket i-need-an-option-to-create-group-of: a topic group starts a section or leaves its section;
+  // a drag onto a section box puts it into that section (user decision 2).
+  const menuItem = (label: string, title: string, act: () => void) => {
+    const button = mapElement("button", "", label);
+    button.type = "button";
+    button.title = title;
+    button.setAttribute("role", "menuitem");
+    button.addEventListener("click", () => {
+      closeBoardMenu();
+      act();
+    });
+    return button;
+  };
+  const menuLine = () => {
+    const one = mapElement("div", "plan-menu-line");
+    one.setAttribute("role", "separator");
+    return one;
+  };
+  if (group.auto) {
+    const holder = planGroupsOf(ref).find((one) => isSection(one) && (one.groups ?? []).includes(group.id));
+    if (holder) menu.append(menuItem(`Take out of "${holder.title || "Untitled"}"`, "This topic group leaves its section and keeps its tickets", () => planMoveToSection(group.id, null)), menuLine());
+    else menu.append(menuItem("New section with this group", "Make a section box around this topic group; drag other topic groups onto it", () => planNewSection(group.id)), menuLine());
+  }
+  // A section goes back to its automatic place: each of its topic groups forgets the place where you dragged it.
+  if (isSection(group)) {
+    const members = new Set(group.groups ?? []);
+    if (planGroupsOf(ref).some((one) => members.has(one.id) && one.place)) {
+      menu.append(
+        menuItem("Put back in its place", "Forget the places where you dragged this section and its groups; Dispatch places them again", () =>
+          void planSetGroups(
+            ref,
+            planGroupsOf(ref).map((one) => {
+              if (!members.has(one.id)) return one;
+              const { place: _place, ...rest } = one;
+              return rest;
+            }),
+          ),
+        ),
+        menuLine(),
+      );
+    }
   }
   // A dragged topic group goes back to its automatic place (ticket drag-topic-groups-on-the-plan-board, user decision 3).
   if (group.auto && group.place) {
@@ -17945,6 +17992,32 @@ function planAddGroup(collapsed: boolean): void {
   planSelectedGroup = group.id;
   planFocusTitle = true;
   void planSetGroups(ref, [group, ...groups]);
+}
+
+/**
+ * Makes a section around a topic group (ticket i-need-an-option-to-create-group-of): first in the
+ * list, in the colour of the group, selected with its title ready to type. The group leaves any other section.
+ */
+function planNewSection(groupId: string): void {
+  const ref = planProject();
+  if (!ref) return;
+  const groups = planGroupsOf(ref);
+  const topic = groups.find((one) => one.id === groupId);
+  if (!topic?.auto) return;
+  const section: PlanGroup = { id: `s-${Date.now().toString(36)}`, title: "Section", color: topic.color, collapsed: false, tickets: [], auto: false, description: "", unfolded: false, groups: [groupId] };
+  planSelected = new Set();
+  planSelectedArrow = null;
+  planSelectedGroup = section.id;
+  planFocusTitle = true;
+  void planSetGroups(ref, [section, ...withGroupInSection(groups, groupId, null)]);
+}
+
+/** Puts a topic group into a section, or out of its section with null, with a change of the group in the same save; a section without a group goes. */
+function planMoveToSection(groupId: string, sectionId: string | null, change: Partial<PlanGroup> = {}): void {
+  const ref = planProject();
+  if (!ref) return;
+  const groups = planGroupsOf(ref).map((group) => (group.id === groupId ? { ...group, ...change } : group));
+  void planSetGroups(ref, withGroupInSection(groups, groupId, sectionId));
 }
 
 /** X or Del: removes the selected comment or group and the selected group cards; the tickets and arrows stay. */
@@ -18517,6 +18590,19 @@ function renderPlan(): void {
   // i-need-an-autogrouping-function-in-the); a ticket of a block is not on the shelf.
   const topics = topicBlocks(tickets, groups, new Set([...inTree, ...tree.hidden.keys()]));
   const inBlock = new Set(topics.flatMap((block) => block.members));
+  const topicOf = new Map(topics.map((block) => [block.id, block]));
+  // The sections (ticket i-need-an-option-to-create-group-of): each holds the topic blocks that it
+  // names, a topic block in the first section only. A folded section stands as one block for them.
+  const sectionOf = new Map<string, PlanGroup>();
+  const sections: { group: PlanGroup; members: string[]; tickets: string[] }[] = [];
+  for (const group of groups) {
+    if (!isSection(group)) continue;
+    const members = (group.groups ?? []).filter((id) => topicOf.has(id) && !sectionOf.has(id));
+    if (members.length === 0) continue;
+    for (const id of members) sectionOf.set(id, group);
+    sections.push({ group, members, tickets: members.flatMap((id) => topicOf.get(id)?.members ?? []) });
+  }
+  const sectionById = new Map(sections.map((one) => [one.group.id, one]));
   const looseIds = notInFlow(flow).flatMap((one) => (byId.has(one.id) && !inTree.has(one.id) && !inBlock.has(one.id) ? [one.id] : []));
   const perRow = boardSize.width > 0 ? Math.floor((boardSize.width - 2 * PLAN_PAD) / planSteps(size).column) : 4;
   // A resized box keeps its saved size, and the description row holds the whole text (ticket
@@ -18527,6 +18613,10 @@ function renderPlan(): void {
     const percent = groupDonePercent(list, ids);
     return percent === null ? plural(count, "ticket") : `${plural(count, "ticket")} · ${percent}% done`;
   };
+  // A section counts its topic groups and the tickets of all of them; a folded one lists their titles.
+  const sectionCountText = (one: { members: readonly string[]; tickets: readonly string[] }) => `${plural(one.members.length, "group")} · ${planGroupCountText(tickets, one.tickets.length, one.tickets)}`;
+  const sectionNames = (one: { members: readonly string[] }) => one.members.map((id) => groups.find((group) => group.id === id)?.title || "Untitled").join(" · ");
+  for (const one of sections) aboutOf.set(one.group.id, sectionNames(one));
   // The width that the whole title bar of each block needs: the same title and count as the bar shows
   // (ticket groups-are-too-narrow-i-cant-read-the).
   // A box is at most as wide as a line of blocks, as planBlocks makes it.
@@ -18538,19 +18628,36 @@ function renderPlan(): void {
       return [block.id, planTitleWidth(shown, planGroupCountText(tickets, block.members.length, block.members), group?.collapsed ? "▾" : "▴")] as const;
     }),
   );
+  for (const one of sections) titleWidthOf.set(one.group.id, planTitleWidth(one.group.title || "Untitled", sectionCountText(one), one.group.collapsed ? "▾" : "▴"));
+  // A folded section stands where its topic groups stand when the user dragged each of them; else in the automatic place.
+  const foldedPlace = (one: { members: readonly string[] }) => {
+    const spots = one.members.map((id) => groups.find((group) => group.id === id)?.place);
+    if (spots.some((spot) => !spot)) return undefined;
+    return { x: Math.min(...spots.map((spot) => spot!.x)), y: Math.min(...spots.map((spot) => spot!.y)) };
+  };
   // An open count badge puts its tickets into subgroups inside the box (ticket count-pill-opens-subgroups-inside-a).
   // A block that the user dragged keeps a slot of its automatic size, so its saved size moves no other block.
+  // The topic groups of an open section stand together; a folded section is one block at the place of its first topic group.
   const blockPlaces = planBlocks(
-    topics.map((block) => {
+    topics.flatMap((block): Parameters<typeof planBlocks>[0][number][] => {
       const group = groups.find((one) => one.id === block.id);
-      return {
-        id: block.id,
-        shown: block.shown,
-        badge: topicFoldText(block.fold) !== "",
-        size: group?.size,
-        subs: group ? topicSubgroups(block, group) : [],
-        free: Boolean(group?.auto && group.place),
-      };
+      const section = sectionOf.get(block.id);
+      if (section?.collapsed) {
+        const one = sectionById.get(section.id);
+        if (!one || one.members[0] !== block.id) return [];
+        return [{ id: section.id, shown: [], badge: false, free: Boolean(foldedPlace(one)) }];
+      }
+      return [
+        {
+          id: block.id,
+          shown: block.shown,
+          badge: topicFoldText(block.fold) !== "",
+          size: group?.size,
+          subs: group ? topicSubgroups(block, group) : [],
+          free: Boolean(group?.auto && group.place),
+          set: section?.id,
+        },
+      ];
     }),
     treeLayout,
     perRow,
@@ -18563,8 +18670,23 @@ function renderPlan(): void {
   // at its saved place, and the canvas grows to hold it (ticket drag-topic-groups-on-the-plan-board).
   const blockShift = shelf.layout.root.x - blockPlaces.layout.root.x;
   const savedPlaces = new Map(groups.flatMap((group) => (group.auto && group.place ? [[group.id, group.place] as const] : [])));
+  for (const one of sections) {
+    const spot = one.group.collapsed ? foldedPlace(one) : undefined;
+    if (spot) savedPlaces.set(one.group.id, spot);
+  }
   const topicPlaces = placeTopicBlocks(blockPlaces.blocks, savedPlaces, blockShift, shelf.layout);
-  const layout = topicPlaces.layout;
+  // The box of an open section stands around its topic groups, and the canvas grows to hold it.
+  const sectionBoxes = setBoxes(
+    topicPlaces.blocks,
+    sections.filter((one) => !one.group.collapsed).map((one) => ({ id: one.group.id, members: one.members })),
+  );
+  const layout = {
+    ...topicPlaces.layout,
+    width: Math.max(topicPlaces.layout.width, ...sectionBoxes.map((one) => one.box.x + one.box.width + PLAN_PAD)),
+    height: Math.max(topicPlaces.layout.height, ...sectionBoxes.map((one) => one.box.y + one.box.height + PLAN_PAD)),
+  };
+  // A topic group dropped on one of these boxes joins that section (user decision 2).
+  const sectionTargets: { id: string; box: PlanRect }[] = [...sectionBoxes, ...topicPlaces.blocks.filter((place) => sectionById.get(place.id)?.group.collapsed).map((place) => ({ id: place.id, box: place.box }))];
   planPlaces = layout.cards;
   const badges = planBadges(flow);
   const ticketArrows = planArrows(flow);
@@ -18728,7 +18850,7 @@ function renderPlan(): void {
   canvas.append(root);
   // The open comments and groups: a box around their cards, behind them, with a title bar above.
   for (const group of groups) {
-    if (group.collapsed || group.auto) continue;
+    if (group.collapsed || group.auto || isSection(group)) continue;
     const box = groupBox(layout.cards, group.tickets, tree.hidden, size);
     if (!box) continue;
     const el = mapElement("div", `plan-group-box plan-color-${group.color}${planSelectedGroup === group.id ? " selected" : ""}`);
@@ -18879,9 +19001,148 @@ function renderPlan(): void {
   // The topic blocks (ticket i-need-an-autogrouping-function-in-the): a box with a title bar, the
   // cards of its Scheduled and Working tickets, and one count badge for the rest (user decision 2: a
   // click on the badge opens the group in the side panel).
-  const topicOf = new Map(topics.map((block) => [block.id, block]));
+  // The parts of each topic block, which the drag of its section moves too.
+  const partsOf = new Map<string, HTMLElement[]>();
+  // The open sections (ticket i-need-an-option-to-create-group-of): a box behind their topic blocks
+  // with a title bar; a drag of the title bar moves the section with all its topic groups.
+  for (const { id, box } of sectionBoxes) {
+    const one = sectionById.get(id);
+    if (!one) continue;
+    const section = one.group;
+    const el = mapElement("div", `plan-group-box plan-set plan-color-${section.color}${planSelectedGroup === section.id ? " selected" : ""}`);
+    el.dataset.group = section.id;
+    el.style.left = `${box.x}px`;
+    el.style.top = `${box.y}px`;
+    el.style.width = `${box.width}px`;
+    el.style.height = `${box.height}px`;
+    const bar = mapElement("div", "plan-group-title");
+    bar.style.height = `${PLAN_BOX_TITLE}px`;
+    bar.title = "Select this section; drag to move it with its groups";
+    bar.append(planGroupName(section), mapElement("span", "plan-group-count", sectionCountText(one)));
+    const fold = mapElement("button", "plan-group-toggle", "▴");
+    fold.type = "button";
+    fold.title = "Fold: show only the title of the section";
+    fold.setAttribute("aria-label", "Fold");
+    fold.addEventListener("click", (event) => {
+      event.stopPropagation();
+      planChangeGroup(section.id, { collapsed: true });
+    });
+    bar.append(fold);
+    bar.addEventListener("click", () => planSelect([], null, section.id));
+    el.append(bar);
+    canvas.append(el);
+    // The drag moves the box and every part of its topic blocks; the drop moves each topic group by
+    // the same whole grid steps and saves its place, so they keep their places to each other.
+    let swallow = false;
+    bar.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      if (event.target instanceof Element && event.target.closest(".plan-group-toggle, input, textarea")) return;
+      const begin = { pointer: event.pointerId, x: event.clientX, y: event.clientY, zoom: planZoom(key) };
+      const moving = [el, ...one.members.flatMap((member) => partsOf.get(member) ?? [])];
+      let moved = false;
+      const move = (next: PointerEvent) => {
+        if (next.pointerId !== begin.pointer) return;
+        const dx = next.clientX - begin.x;
+        const dy = next.clientY - begin.y;
+        if (!moved) {
+          if (Math.hypot(dx, dy) < 4) return;
+          moved = true;
+          planGroupDragging = true;
+          planBoardEl.classList.add("plan-group-dragging");
+        }
+        for (const part of moving) part.style.transform = `translate(${dx / begin.zoom}px, ${dy / begin.zoom}px)`;
+      };
+      const finish = (last: PointerEvent, cancel: boolean) => {
+        if (last.pointerId !== begin.pointer) return;
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", stop);
+        if (!moved) return;
+        planBoardEl.classList.remove("plan-group-dragging");
+        if (cancel) {
+          planGroupDragging = false;
+          renderPlan();
+          return;
+        }
+        // Whole grid steps, and never so far that the box of the section leaves the board at the top or the left.
+        const boxes = topicPlaces.blocks.filter((place) => one.members.includes(place.id)).map((place) => ({ id: place.id, box: place.box }));
+        const left = Math.min(...boxes.map((member) => member.box.x));
+        const top = Math.min(...boxes.map((member) => member.box.y));
+        const step = (value: number) => Math.round(value / PLAN_GRID) * PLAN_GRID;
+        const dx = Math.max(step((last.clientX - begin.x) / begin.zoom), Math.ceil((PLAN_BOX_PAD - left) / PLAN_GRID) * PLAN_GRID);
+        const dy = Math.max(step((last.clientY - begin.y) / begin.zoom), Math.ceil((PLAN_BOX_PAD + PLAN_BOX_TITLE - top) / PLAN_GRID) * PLAN_GRID);
+        const spots = new Map(boxes.map((member) => [member.id, { x: member.box.x + dx, y: member.box.y + dy }]));
+        swallow = true;
+        window.setTimeout(() => {
+          swallow = false;
+          planGroupDragging = false;
+          if (dx === 0 && dy === 0) {
+            renderPlan();
+            return;
+          }
+          void planSetGroups(
+            ref,
+            planGroupsOf(ref).map((group) => {
+              const spot = spots.get(group.id);
+              return spot ? { ...group, place: spot } : group;
+            }),
+          );
+        }, 0);
+      };
+      const up = (last: PointerEvent) => finish(last, false);
+      const stop = (last: PointerEvent) => finish(last, true);
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", stop);
+    });
+    bar.addEventListener(
+      "click",
+      (event) => {
+        if (!swallow) return;
+        swallow = false;
+        event.stopPropagation();
+        event.preventDefault();
+      },
+      true,
+    );
+  }
   for (const place of topicPlaces.blocks) {
     const group = groups.find((one) => one.id === place.id);
+    const section = sectionById.get(place.id);
+    if (group && section) {
+      // A folded section: its title bar and the titles of its topic groups; Open shows them again.
+      const el = mapElement("div", `plan-group-box plan-set plan-set-folded plan-color-${group.color}${planSelectedGroup === group.id ? " selected" : ""}`);
+      el.dataset.group = group.id;
+      el.style.left = `${place.box.x}px`;
+      el.style.top = `${place.box.y}px`;
+      el.style.width = `${place.box.width}px`;
+      el.style.height = `${place.box.height}px`;
+      const bar = mapElement("div", "plan-group-title");
+      bar.style.height = `${PLAN_BOX_TITLE}px`;
+      bar.title = "Select this section; open it to see or move its groups";
+      bar.append(planGroupName(group), mapElement("span", "plan-group-count", sectionCountText(section)));
+      const open = mapElement("button", "plan-group-toggle", "▾");
+      open.type = "button";
+      open.title = "Open: show the groups of this section";
+      open.setAttribute("aria-label", "Open");
+      open.addEventListener("click", (event) => {
+        event.stopPropagation();
+        planChangeGroup(group.id, { collapsed: false });
+      });
+      bar.append(open);
+      bar.addEventListener("click", () => planSelect([], null, group.id));
+      el.append(bar);
+      const names = mapElement("div", `plan-block-about plan-set-about plan-color-${group.color}`, sectionNames(section));
+      names.dataset.group = group.id;
+      names.title = sectionNames(section);
+      names.style.left = `${place.about.x}px`;
+      names.style.top = `${place.about.y}px`;
+      names.style.width = `${place.about.width}px`;
+      names.style.height = `${place.about.height}px`;
+      names.addEventListener("click", () => planSelect([], null, group.id));
+      canvas.append(el, names);
+      continue;
+    }
     const block = topicOf.get(place.id);
     if (!group || !block) continue;
     const el = mapElement("div", `plan-group-box plan-topic plan-color-${group.color}${planSelectedGroup === group.id ? " selected" : ""}`);
@@ -18929,6 +19190,7 @@ function renderPlan(): void {
     canvas.append(about);
     // The parts of the block that a drag of its title bar moves.
     const parts: HTMLElement[] = [el, about];
+    partsOf.set(group.id, parts);
     for (const card of place.cards) {
       const ticket = byId.get(card.id);
       if (!ticket) continue;
@@ -18986,6 +19248,9 @@ function renderPlan(): void {
       if (event.button !== 0) return;
       if (event.target instanceof Element && event.target.closest(".plan-group-toggle, input, textarea")) return;
       const begin = { pointer: event.pointerId, x: event.clientX, y: event.clientY, zoom: planZoom(key) };
+      // The canvas point under the pointer at the press: the drop point decides the section.
+      const rect = el.getBoundingClientRect();
+      const grab = { x: place.box.x + (event.clientX - rect.left) / begin.zoom, y: place.box.y + (event.clientY - rect.top) / begin.zoom };
       let moved = false;
       const move = (next: PointerEvent) => {
         if (next.pointerId !== begin.pointer) return;
@@ -19012,12 +19277,19 @@ function renderPlan(): void {
           return;
         }
         const to = snapBlockPlace({ x: place.box.x + (last.clientX - begin.x) / begin.zoom, y: place.box.y + (last.clientY - begin.y) / begin.zoom });
+        // Ticket i-need-an-option-to-create-group-of (user decision 2): a drop on a section puts the
+        // topic group into it; a drop outside its own section takes it out.
+        const point = { x: grab.x + (last.clientX - begin.x) / begin.zoom, y: grab.y + (last.clientY - begin.y) / begin.zoom };
+        const own = sectionOf.get(group.id)?.id ?? null;
+        const inside = (box: PlanRect) => point.x >= box.x && point.x <= box.x + box.width && point.y >= box.y && point.y <= box.y + box.height;
+        const into = sectionTargets.find((target) => target.id === own && inside(target.box))?.id ?? sectionTargets.find((target) => inside(target.box))?.id ?? null;
         // The click of this drop comes next: it is swallowed, then the save draws the block at its place.
         swallow = true;
         window.setTimeout(() => {
           swallow = false;
           planGroupDragging = false;
-          planChangeGroup(group.id, { place: to });
+          if (into === own) planChangeGroup(group.id, { place: to });
+          else planMoveToSection(group.id, into, { place: to });
         }, 0);
       };
       const up = (last: PointerEvent) => finish(last, false);
@@ -19149,7 +19421,8 @@ function renderPlan(): void {
   if (selectedGroup) {
     // One comment or group: its title, colour, counts, Collapse or Expand, Remove and its tickets.
     const group = selectedGroup;
-    const top = head(group.auto ? "Topic group" : group.collapsed ? "Group" : "Comment");
+    const isSectionGroup = isSection(group);
+    const top = head(isSectionGroup ? "Section" : group.auto ? "Topic group" : group.collapsed ? "Group" : "Comment");
     const input = mapElement("input", "plan-title-input");
     input.type = "text";
     input.value = group.title;
@@ -19172,43 +19445,87 @@ function renderPlan(): void {
       swatches.append(swatch);
     });
     top.append(input, swatches);
-    const counts = groupCounts(flow, group);
-    const table = mapElement("dl", "plan-counts");
-    const count = (label: string, value: number) => table.append(mapElement("dt", "", label), mapElement("dd", "", String(value)));
-    count("Tickets", counts.tickets);
-    count("Done", counts.done);
-    count("In work", counts.inWork);
-    count("Next up", counts.nextUp);
-    count("Waiting", counts.waiting);
-    count("Started early", counts.early);
-    count("Arrows in", counts.arrowsIn);
-    count("Arrows out", counts.arrowsOut);
-    const actions = mapElement("div", "plan-side-actions");
-    const [expandTip, collapseTip] = group.auto
-      ? ["Show its scheduled and working tickets as cards", "Show only the title and the count"]
-      : ["Show its tickets in the tree inside a box", "One stacked card stands for its tickets"];
-    actions.append(
-      group.collapsed
-        ? sideButton("Expand", expandTip, () => planChangeGroup(group.id, { collapsed: false }))
-        : sideButton("Collapse", collapseTip, () => planChangeGroup(group.id, { collapsed: true })),
-      sideButton("Remove", "Remove this comment or group; its tickets and arrows stay (X or Del)", () => {
-        planSelect([], null, group.id);
-        planRemoveSelectedGroups();
-      }),
-    );
-    top.append(table, actions);
-    if (!group.auto) {
-      parts.push(top, list("Its tickets", groupMembers(tickets, group), "None of its tickets is on the board.", true));
+    // A topic group names its section (ticket i-need-an-option-to-create-group-of).
+    const holder = group.auto ? sectionOf.get(group.id) : undefined;
+    if (holder) top.append(mapElement("p", "plan-side-sub", `In ${holder.title || "Untitled"}`));
+    const one = isSectionGroup ? sectionById.get(group.id) : undefined;
+    if (isSectionGroup) {
+      // A section: its counts over the tickets of all its topic groups, Fold or Open, Remove, and its topic groups.
+      const ids = one?.tickets ?? [];
+      const done = ids.filter((id) => planDone(byId.get(id)?.status ?? "")).length;
+      const table = mapElement("dl", "plan-counts");
+      const count = (label: string, value: number) => table.append(mapElement("dt", "", label), mapElement("dd", "", String(value)));
+      count("Groups", one?.members.length ?? 0);
+      count("Tickets", ids.length);
+      count("Done", done);
+      count("In work", ids.filter((id) => byId.get(id)?.status === "in-progress").length);
+      const actions = mapElement("div", "plan-side-actions");
+      actions.append(
+        group.collapsed
+          ? sideButton("Open", "Show the groups of this section", () => planChangeGroup(group.id, { collapsed: false }))
+          : sideButton("Fold", "Show only the title of this section", () => planChangeGroup(group.id, { collapsed: true })),
+        sideButton("Remove", "Remove this section; its groups and tickets stay (X or Del)", () => {
+          planSelect([], null, group.id);
+          planRemoveSelectedGroups();
+        }),
+      );
+      top.append(table, actions);
+      const groupList = mapElement("section", "plan-side-part");
+      const members = (one?.members ?? []).flatMap((id) => groups.filter((topic) => topic.id === id));
+      groupList.append(mapElement("h3", "", `Its groups (${members.length})`));
+      if (members.length === 0) groupList.append(mapElement("p", "plan-none", "None of its groups has a ticket on the board."));
+      for (const topic of members) {
+        const row = mapElement("div", "plan-side-row plan-side-link");
+        row.title = topic.description || topic.title || "Untitled";
+        const dot = mapElement("span", `plan-swatch-mark plan-color-${topic.color}`);
+        dot.setAttribute("aria-hidden", "true");
+        const ticketCount = topicOf.get(topic.id)?.members.length ?? 0;
+        row.append(dot, mapElement("span", "plan-name", topic.title || "Untitled"), mapElement("span", "plan-side-state", plural(ticketCount, "ticket")));
+        row.addEventListener("click", () => planSelect([], null, topic.id));
+        groupList.append(row);
+      }
+      parts.push(top, groupList);
     } else {
-      // User decision 2: all tickets of a topic group; a row selects only a ticket that has a card,
-      // or that gets one when the collapsed block opens.
-      const members = groupMembers(tickets, group);
-      const reachable = (ticket: Ticket) => shown.has(ticket.id) || tree.hidden.has(ticket.id) || (group.collapsed && (ticket.status === "new" || ticket.status === "in-progress"));
-      const section = mapElement("section", "plan-side-part");
-      section.append(mapElement("h3", "", `Its tickets (${members.length})`));
-      if (members.length === 0) section.append(mapElement("p", "plan-none", "None of its tickets is on the board."));
-      for (const ticket of members) section.append(ticketRow(ticket, reachable(ticket)));
-      parts.push(top, section);
+      const counts = groupCounts(flow, group);
+      const table = mapElement("dl", "plan-counts");
+      const count = (label: string, value: number) => table.append(mapElement("dt", "", label), mapElement("dd", "", String(value)));
+      count("Tickets", counts.tickets);
+      count("Done", counts.done);
+      count("In work", counts.inWork);
+      count("Next up", counts.nextUp);
+      count("Waiting", counts.waiting);
+      count("Started early", counts.early);
+      count("Arrows in", counts.arrowsIn);
+      count("Arrows out", counts.arrowsOut);
+      const actions = mapElement("div", "plan-side-actions");
+      const [expandTip, collapseTip] = group.auto
+        ? ["Show its scheduled and working tickets as cards", "Show only the title and the count"]
+        : ["Show its tickets in the tree inside a box", "One stacked card stands for its tickets"];
+      actions.append(
+        group.collapsed
+          ? sideButton("Expand", expandTip, () => planChangeGroup(group.id, { collapsed: false }))
+          : sideButton("Collapse", collapseTip, () => planChangeGroup(group.id, { collapsed: true })),
+        sideButton("Remove", "Remove this comment or group; its tickets and arrows stay (X or Del)", () => {
+          planSelect([], null, group.id);
+          planRemoveSelectedGroups();
+        }),
+      );
+      top.append(table, actions);
+      if (!group.auto) {
+        parts.push(top, list("Its tickets", groupMembers(tickets, group), "None of its tickets is on the board.", true));
+      } else {
+        // User decision 2: all tickets of a topic group; a row selects only a ticket that has a card,
+        // or that gets one when the collapsed block opens.
+        const members = groupMembers(tickets, group);
+        // A topic group of a folded section shows no card (ticket i-need-an-option-to-create-group-of).
+        const folded = sectionOf.get(group.id)?.collapsed === true;
+        const reachable = (ticket: Ticket) => !folded && (shown.has(ticket.id) || tree.hidden.has(ticket.id) || (group.collapsed && (ticket.status === "new" || ticket.status === "in-progress")));
+        const section = mapElement("section", "plan-side-part");
+        section.append(mapElement("h3", "", `Its tickets (${members.length})`));
+        if (members.length === 0) section.append(mapElement("p", "plan-none", "None of its tickets is on the board."));
+        for (const ticket of members) section.append(ticketRow(ticket, reachable(ticket)));
+        parts.push(top, section);
+      }
     }
   } else if (planSelectedArrow) {
     const arrow = planSelectedArrow;

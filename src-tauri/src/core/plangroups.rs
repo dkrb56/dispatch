@@ -48,6 +48,11 @@ pub struct PlanGroup {
     /// (ticket issue-ticket-panel-is-only-resizable). None keeps the automatic size.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<PlanSize>,
+    /// A section (ticket i-need-an-option-to-create-group-of): the ids of its topic groups, which it
+    /// holds as one box on the Plan board; `collapsed` folds it. Empty: not a section. An old file
+    /// without the field reads empty, and a group that is no section writes no field.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
 }
 
 /// A place on the Plan board in canvas px.
@@ -104,11 +109,25 @@ fn save(project: &Project, groups: Vec<PlanGroup>) -> Result<PlanGroups, String>
 }
 
 /// Trims the titles, keeps the colour in 0..3, drops empty and double ticket ids, and drops a
-/// group without an id or with the id of an earlier group.
+/// group without an id or with the id of an earlier group. A section keeps only the ids of topic
+/// groups of the list, each in the first section only, and has no tickets, place or size; a section
+/// that lost its last topic group goes.
 fn normalize(groups: Vec<PlanGroup>) -> Vec<PlanGroup> {
     let mut ids = HashSet::new();
+    let topics: HashSet<String> = groups.iter().filter(|g| g.auto && g.groups.is_empty()).map(|g| g.id.trim().to_string()).collect();
+    let mut held = HashSet::new();
     groups
         .into_iter()
+        .filter_map(|group| {
+            if group.groups.is_empty() {
+                return Some(group);
+            }
+            let members: Vec<String> = group.groups.iter().map(|g| g.trim().to_string()).filter(|g| topics.contains(g) && held.insert(g.clone())).collect();
+            if members.is_empty() {
+                return None;
+            }
+            Some(PlanGroup { auto: false, tickets: Vec::new(), description: String::new(), unfolded: false, place: None, size: None, groups: members, ..group })
+        })
         .filter_map(|group| {
             let id = group.id.trim().to_string();
             if id.is_empty() || !ids.insert(id.clone()) {
@@ -133,6 +152,7 @@ fn normalize(groups: Vec<PlanGroup>) -> Vec<PlanGroup> {
                 place: group.place.map(|p| PlanSpot { x: if p.x.is_finite() { p.x.max(0.0) } else { 0.0 }, y: if p.y.is_finite() { p.y.max(0.0) } else { 0.0 } }),
                 // A size that is not finite or not positive is dropped: the box keeps its automatic size.
                 size: group.size.filter(|s| s.width.is_finite() && s.height.is_finite() && s.width > 0.0 && s.height > 0.0),
+                groups: group.groups,
             })
         })
         .collect()
@@ -425,6 +445,7 @@ fn merge(mut groups: Vec<PlanGroup>, proposals: Vec<Proposal>, stamp: &str) -> V
             unfolded: false,
             place: None,
             size: None,
+            groups: Vec::new(),
         });
         colour += 1;
     }
@@ -604,7 +625,7 @@ mod tests {
     fn a_second_run_keeps_titles_and_manual_groups() {
         let (project, base) = scratch("auto-again");
         let manual = PlanGroup { tickets: vec!["c".into()], ..group("g-1", &["c"]) };
-        let topic = PlanGroup { id: "auto-x-1".into(), title: "My login".into(), description: "Mine.".into(), auto: true, color: 2, collapsed: true, tickets: vec!["a".into()], unfolded: true, place: Some(PlanSpot { x: 300.0, y: 450.0 }), size: Some(PlanSize { width: 600.0, height: 400.0 }) };
+        let topic = PlanGroup { id: "auto-x-1".into(), title: "My login".into(), description: "Mine.".into(), auto: true, color: 2, collapsed: true, tickets: vec!["a".into()], unfolded: true, place: Some(PlanSpot { x: 300.0, y: 450.0 }), size: Some(PlanSize { width: 600.0, height: 400.0 }), groups: Vec::new() };
         save(&project, vec![manual.clone(), topic.clone()]).unwrap();
         let asked = std::cell::RefCell::new(String::new());
         let answer = r#"[{"group":"auto-x-1","title":"Other title","description":"Other.","tickets":["b","a"]},{"group":"","title":"Looks","tickets":["c","d"]}]"#;
@@ -731,6 +752,75 @@ mod tests {
         assert!(!load(&project).unwrap().groups[0].unfolded);
         let _ = fs::remove_dir_all(base);
     }
+    fn section(id: &str, members: &[&str]) -> PlanGroup {
+        PlanGroup { id: id.into(), title: "Section".into(), color: 2, groups: members.iter().map(|m| m.to_string()).collect(), ..PlanGroup::default() }
+    }
+
+    #[test]
+    fn a_section_reads_back_the_same() {
+        // Ticket i-need-an-option-to-create-group-of: a section holds topic groups and can be folded.
+        let (project, base) = scratch("section");
+        let groups = vec![
+            PlanGroup { collapsed: true, ..section("s-1", &["auto-x-1", "auto-x-2"]) },
+            PlanGroup { auto: true, collapsed: false, ..group("auto-x-1", &["a"]) },
+            PlanGroup { auto: true, collapsed: false, ..group("auto-x-2", &["b"]) },
+        ];
+        let saved = save(&project, groups.clone()).unwrap().groups;
+        assert_eq!(saved, groups);
+        assert_eq!(load(&project).unwrap().groups, saved);
+        let text = fs::read_to_string(project.reports.join(FILE)).unwrap();
+        assert_eq!(text.matches("\"groups\": [").count(), 2, "the list of the file and the one section: {text}");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_save_cleans_the_sections() {
+        let (project, base) = scratch("section-clean");
+        let groups = vec![
+            PlanGroup { tickets: vec!["z".into()], auto: true, description: "No.".into(), place: Some(PlanSpot { x: 50.0, y: 50.0 }), size: Some(PlanSize { width: 400.0, height: 300.0 }), ..section("s-1", &[" auto-x-1 ", "auto-x-1", "unknown", "g-1", "s-2", "auto-x-2"]) },
+            section("s-2", &["auto-x-1", "auto-x-3"]),
+            section("s-3", &["auto-x-1", "gone"]),
+            PlanGroup { auto: true, ..group("auto-x-1", &["a"]) },
+            PlanGroup { auto: true, ..group("auto-x-2", &["b"]) },
+            PlanGroup { auto: true, ..group("auto-x-3", &["c"]) },
+            group("g-1", &["d"]),
+        ];
+        let saved = save(&project, groups).unwrap().groups;
+        let ids: Vec<&str> = saved.iter().map(|g| g.id.as_str()).collect();
+        assert_eq!(ids, vec!["s-1", "s-2", "auto-x-1", "auto-x-2", "auto-x-3", "g-1"], "a section without a topic group of its own goes: {saved:?}");
+        assert_eq!(saved[0].groups, vec!["auto-x-1".to_string(), "auto-x-2".to_string()], "only topic groups, trimmed, once, no section: {saved:?}");
+        assert!(saved[0].tickets.is_empty() && !saved[0].auto && saved[0].description.is_empty());
+        assert_eq!((saved[0].place.clone(), saved[0].size.clone()), (None, None));
+        assert_eq!(saved[1].groups, vec!["auto-x-3".to_string()], "a topic group stays in the first section only");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn an_old_file_reads_no_section_and_writes_none() {
+        let (project, base) = scratch("section-old");
+        write_file(&project.reports.join(FILE), "{\"groups\":[{\"id\":\"g-1\",\"auto\":true,\"tickets\":[\"a\"]}]}").unwrap();
+        let groups = load(&project).unwrap().groups;
+        assert!(groups[0].groups.is_empty());
+        save(&project, groups).unwrap();
+        let text = fs::read_to_string(project.reports.join(FILE)).unwrap();
+        assert_eq!(text.matches("\"groups\"").count(), 1, "only the list of the file: {text}");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn auto_group_keeps_a_section() {
+        let (project, base) = scratch("section-auto");
+        let topic = PlanGroup { id: "auto-x-1".into(), title: "Login".into(), auto: true, tickets: vec!["a".into()], ..PlanGroup::default() };
+        let held = PlanGroup { collapsed: true, ..section("s-1", &["auto-x-1"]) };
+        save(&project, vec![held.clone(), topic]).unwrap();
+        let answer = r#"[{"group":"auto-x-1","tickets":["b"]},{"group":"","title":"Looks","tickets":["c","d"]}]"#;
+        let saved = auto_with(&project, &board(), None, &|_| Ok(answer.to_string())).unwrap().groups;
+        assert_eq!(saved[0], held, "Auto group does not change a section");
+        assert_eq!(saved[1].tickets, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(saved[2].title, "Looks");
+        let _ = fs::remove_dir_all(base);
+    }
+
     #[test]
     fn a_new_ticket_sort_asks_nothing_without_a_topic_group() {
         let (project, base) = scratch("new-none");

@@ -60,6 +60,9 @@ import {
   planStateWord,
   planSteps,
   queueMarks,
+  setBoxes,
+  isSection,
+  withGroupInSection,
   runningAfter,
   standLine,
   startsEarly,
@@ -1157,7 +1160,7 @@ test("the page has Auto group, its host command, its blocks and its Help", () =>
   const css = read("../src/styles.css");
   assert.match(main, /"plan-tool plan-auto-group", "Auto group"/);
   assert.match(main, /"plan_groups_auto"/);
-  assert.match(main, /if \(group\.collapsed \|\| group\.auto\) continue;/, "the open boxes skip the topic groups");
+  assert.match(main, /if \(group\.collapsed \|\| group\.auto \|\| isSection\(group\)\) continue;/, "the open boxes skip the topic groups");
   assert.match(main, /"Topic group"/);
   assert.match(css, /\.plan-fold \{/);
   assert.match(css, /\.plan-block-about \{/);
@@ -1360,4 +1363,116 @@ test("the Plan board shows a spinner until the groups of the project are read", 
   assert.match(render, /load-spinner/);
   assert.match(render, /Reading the groups…/);
   assert.match(html, /while Dispatch reads the groups of the project, the board shows a spinner/i);
+});
+
+// Ticket i-need-an-option-to-create-group-of: a section holds topic groups in one box with its title.
+
+test("the host reply keeps the topic groups of a section; a bad list gives no key", () => {
+  const read = parsePlanGroups({ groups: [{ id: "s", groups: ["a", "a", 3, "", "b"] }, { id: "t", groups: "a" }, { id: "u", groups: [] }, { id: "v" }] });
+  assert.deepEqual(read[0].groups, ["a", "b"]);
+  for (const group of read.slice(1)) assert.ok(!("groups" in group), `${group.id} has no groups key`);
+  assert.deepEqual(
+    read.map((group) => isSection(group)),
+    [true, false, false, false],
+  );
+});
+
+test("a topic group moves into a section and out; an emptied section goes", () => {
+  const topic = (id: string): PlanGroup => ({ ...g(id, [id], false, id), auto: true });
+  const section = (id: string, groups: string[]): PlanGroup => ({ ...g(id, [], false, "Section"), groups });
+  const groups = [section("s-1", ["a", "b"]), section("s-2", ["c"]), topic("a"), topic("b"), topic("c")];
+  const moved = withGroupInSection(groups, "a", "s-2");
+  assert.deepEqual(moved[0].groups, ["b"]);
+  assert.deepEqual(moved[1].groups, ["c", "a"], "it joins the end of the other section");
+  const out = withGroupInSection(moved, "b", null);
+  assert.deepEqual(
+    out.map((group) => group.id),
+    ["s-2", "a", "b", "c"],
+    "the section without a topic group goes; the topic groups stay",
+  );
+  assert.deepEqual(withGroupInSection(groups, "a", "s-1")[0].groups, ["b", "a"], "a drop in its own section keeps it there");
+});
+
+test("the topic groups of a section stand together on their own lines, and the section box overlaps no other box", () => {
+  const layout = planLayout(TREE);
+  const input = [
+    { id: "one", shown: ["a"], badge: false },
+    { id: "in-1", shown: ["b", "c"], badge: false, set: "s" },
+    { id: "two", shown: ["d"], badge: false },
+    { id: "in-2", shown: ["e"], badge: true, set: "s" },
+    { id: "in-3", shown: ["f", "g", "h"], badge: false, set: "s" },
+    { id: "three", shown: ["i"], badge: false },
+  ];
+  const result = planBlocks(input, layout, 4);
+  assert.deepEqual(
+    result.blocks.map((block) => block.id),
+    ["one", "in-1", "in-2", "in-3", "two", "three"],
+    "the set stands at the place of its first block",
+  );
+  const at = (id: string) => result.blocks.find((block) => block.id === id)!;
+  assert.equal(at("in-1").box.y, at("in-2").box.y, "two blocks of the set side by side");
+  assert.ok(at("in-1").box.y > at("one").box.y + at("one").box.height, "the set starts a new line");
+  assert.ok(at("in-3").box.y > at("in-1").box.y + at("in-1").box.height, "a full line of the set goes on in the next line");
+  assert.ok(at("two").box.y > at("in-3").box.y + at("in-3").box.height, "the block after the set starts a new line");
+  for (const block of result.blocks) for (const card of block.cards) assert.equal(card.y % PLAN_GRID, 0, `${card.id} y on the grid`);
+  // One grid row more above the set than above an other line: the line top is the first card row less the title and description rows.
+  const lineTop = (id: string) => at(id).cards[0].y - PLAN_GRID - PLAN_ABOUT_HEIGHT;
+  const nextTop = (id: string) => Math.ceil((at(id).box.y + at(id).box.height + PLAN_GRID) / PLAN_GRID) * PLAN_GRID;
+  assert.equal(lineTop("in-1"), nextTop("one") + PLAN_GRID, "the first line of the set is one grid row lower");
+  assert.equal(lineTop("in-3"), nextTop("in-2"), "the next line of the set is not");
+  assert.equal(lineTop("two"), nextTop("in-3"), "the line after the set is not");
+  const [box] = setBoxes(result.blocks, [{ id: "s", members: ["in-1", "in-2", "in-3"] }]);
+  assert.equal(box.id, "s");
+  for (const id of ["in-1", "in-2", "in-3"]) {
+    const inner = at(id).box;
+    assert.ok(inner.x - PLAN_BOX_PAD >= box.box.x && inner.y - PLAN_BOX_PAD - PLAN_BOX_TITLE >= box.box.y, `${id} inside the section box`);
+    assert.ok(inner.x + inner.width + PLAN_BOX_PAD <= box.box.x + box.box.width && inner.y + inner.height + PLAN_BOX_PAD <= box.box.y + box.box.height, `${id} inside the section box`);
+  }
+  for (const id of ["one", "two", "three"]) {
+    const other = at(id).box;
+    const apart = other.y + other.height <= box.box.y || other.y >= box.box.y + box.box.height || other.x + other.width <= box.box.x || other.x >= box.box.x + box.box.width;
+    assert.ok(apart, `the section box does not overlap ${id}`);
+  }
+  assert.ok(box.box.x >= 0 && box.box.y >= 0);
+  assert.ok(result.layout.height >= box.box.y + box.box.height && result.layout.width >= box.box.x + box.box.width, "the canvas holds the section box");
+});
+
+test("the section box follows a dragged topic group; a section without a placed group has no box", () => {
+  const layout = planLayout(TREE);
+  const blocks = planBlocks(
+    [
+      { id: "in-1", shown: ["a"], badge: false, set: "s" },
+      { id: "in-2", shown: ["b"], badge: false, set: "s", free: true },
+    ],
+    layout,
+    4,
+  ).blocks;
+  const placed = placeTopicBlocks(blocks, new Map([["in-2", { x: 2000, y: 1500 }]]), 0, layout).blocks;
+  const [box] = setBoxes(placed, [
+    { id: "s", members: ["in-1", "in-2"] },
+    { id: "empty", members: ["gone"] },
+  ]);
+  const dragged = placed[1].box;
+  assert.equal(box.box.x, placed[0].box.x - PLAN_BOX_PAD);
+  assert.equal(box.box.y, placed[0].box.y - PLAN_BOX_PAD - PLAN_BOX_TITLE);
+  assert.equal(box.box.x + box.box.width, dragged.x + dragged.width + PLAN_BOX_PAD);
+  assert.equal(box.box.y + box.box.height, dragged.y + dragged.height + PLAN_BOX_PAD);
+  assert.equal(setBoxes(placed, [{ id: "empty", members: ["gone"] }]).length, 0);
+});
+
+test("the page makes, fills, folds, moves and removes a section", () => {
+  const html = read("../index.html");
+  const main = read("../src/main.ts");
+  const css = read("../src/styles.css");
+  assert.match(html, /<li><b>Sections<\/b>: a section is a bigger box/);
+  assert.match(html, /drag other topic groups by their title bar onto the section box to put them in/);
+  assert.match(html, /Remove a section in the side panel or with X or Del: its groups and tickets stay\./);
+  assert.match(main, /"New section with this group"/);
+  assert.match(main, /`Take out of "\$\{holder\.title \|\| "Untitled"\}"`/);
+  assert.match(main, /if \(group\.collapsed \|\| group\.auto \|\| isSection\(group\)\) continue;/, "a section is no comment box");
+  assert.match(main, /if \(\(group\.auto \|\| group\.collapsed\) && !isSection\(group\)\) \{/, "a folded section offers no new ticket");
+  assert.match(main, /else planMoveToSection\(group\.id, into, \{ place: to \}\);/, "a drop on a section box puts the topic group into it");
+  assert.match(main, /planChangeGroup\(section\.id, \{ collapsed: true \}\);/, "the fold button");
+  assert.match(main, /head\(isSectionGroup \? "Section"/);
+  assert.match(css, /\.plan-set \{[^}]*border-style: dashed/);
 });
