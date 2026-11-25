@@ -1020,6 +1020,36 @@ mod tests {
         clean(&project);
     }
 
+    /// A command step that ends before the first read of the task list: the list of `task_list`
+    /// (under its read lock, as the task read calls it) gives the run done, with the exit code and
+    /// the output (ticket actions-panel-stays-on-running-after-a).
+    #[test]
+    fn a_quick_command_step_is_done_in_the_list() {
+        let project = git_scratch("actions-quick");
+        let cwd = cwd_of(&project);
+        save(&cwd, "quick", vec![command("echo quick")]);
+        let started = action_run(cwd.clone(), "quick".to_string()).unwrap();
+        let began = Instant::now();
+        let most = Duration::from_secs(60);
+        let run = loop {
+            let shown = {
+                let lock = pipeline::read_lock(&project.root);
+                let _held = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                list(&project)
+            };
+            let run = shown.runs.into_iter().find(|run| run.id == started.id).expect("the run is in the list");
+            if run.state != "running" {
+                break run;
+            }
+            assert!(began.elapsed() < most, "the run {} still runs in the list after {most:?}", started.id);
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        assert_eq!((run.state.as_str(), run.steps[0].state.as_str()), ("done", "done"), "{run:?}");
+        assert!(run.ended.is_some(), "{run:?}");
+        assert_eq!((run.steps[0].exit.as_deref(), run.steps[0].output.as_str()), (Some("0"), "quick"));
+        clean(&project);
+    }
+
     #[test]
     fn placeholders_take_the_tag_and_the_commits() {
         let project = git_scratch("actions-values");

@@ -163,7 +163,7 @@ import { showTriage, triageCard, triagePanesToClose, withoutTriage, type Project
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, DISCUSS_LABEL, DISCUSS_TITLE, discussLine, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
 import { answerFolderNote, chooseNightMerge, chooseQueued, chooseStart, folderUse, folderUseLabel, mergeRefusal, nightPlan, projectBusy, type ReadTimes, ticketFolder, sameFiles, sameFilesRefusal, StartLeases, type WorkRun } from "./workstart";
-import { type Action, type ActionList, type ActionResume, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, resumeButtonText, resumeStep, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, takenText, uniqueId } from "./actions";
+import { type Action, type ActionList, type ActionResume, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, keepEndedRuns, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, resumeButtonText, resumeStep, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, takenText, uniqueId } from "./actions";
 import { failLines, freshOnly, type GateRefusal, gateRefusal, logName, refusalHeadline } from "./mergefail";
 import { autoMergeNote, type AutoMergeFacts, folderRefusal, mergedWords, mergeOffered, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
 import { type ContextBlock, TLDR_LABEL, contextBlocks, formatLines, tldrBlock } from "./decisions-context";
@@ -2753,7 +2753,11 @@ function storeProjectTasks(key: string, record: ProjectTasks, readAt: number): v
   }
   // A task end marks the triage chat of the project for a compaction (triage-compact-after-task).
   if (before && taskEnds(taskShape(before), taskShape(record)).length > 0) markCompact(projectFor(record.host, record.cwd));
+  // An older reply that came after a newer one keeps the end of a run (ticket actions-panel-stays-on-running-after-a).
+  record = { ...record, actions: keepEndedRuns(before?.actions, record.actions) };
   projectTasks.set(key, record);
+  // The open Actions panel of this project draws each new list at once, not at the next draw of the screens.
+  if (actionsDialog.open && actionsRef && refKey(actionsRef) === key) renderActions();
   // The end of an action run speaks like a task end (ticket play-voice-for-actions-too-project).
   let told = actionRunsTold.get(key);
   if (!told) actionRunsTold.set(key, (told = new Set()));
@@ -15884,6 +15888,8 @@ async function refreshFocusTasks(onlyWhenChanged = false): Promise<void> {
   if (planned) roots.set(refKey(planned), planned);
   // The board and the queue of the tickets (ticket tickets): a project with a New ticket or a card in flight.
   if (ticketsRef) roots.set(refKey(ticketsRef), ticketsRef);
+  // The project of the open Actions panel (ticket actions-panel-stays-on-running-after-a).
+  if (actionsDialog.open && actionsRef) roots.set(refKey(actionsRef), actionsRef);
   for (const pane of panes.values()) {
     if (pane.role !== "triage" || !pane.project) continue;
     const key = paneKey(pane);

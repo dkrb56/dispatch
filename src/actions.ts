@@ -246,6 +246,20 @@ export function lastRun(list: ActionList, id: string): ActionRun | undefined {
   return list.runs.find((run) => run.action === id);
 }
 
+/**
+ * The new list of a project, with each run that the earlier list shows ended (`done` or `failed`)
+ * kept as it was when the new list shows it `running` or `held` (ticket
+ * actions-panel-stays-on-running-after-a). A run id never goes back from its end: such a reply is a
+ * read that began before the end and came after a newer one.
+ */
+export function keepEndedRuns(before: ActionList | undefined, now: ActionList): ActionList {
+  if (!before) return now;
+  const ended = new Map(before.runs.filter((run) => run.state === "done" || run.state === "failed").map((run) => [run.id, run]));
+  if (ended.size === 0) return now;
+  const runs = now.runs.map((run) => ((run.state === "running" || run.state === "held") && ended.get(run.id)) || run);
+  return runs.every((run, at) => run === now.runs[at]) ? now : { ...now, runs };
+}
+
 /** A text with each known placeholder replaced in one pass, for the preview in the editor. An unknown `{word}` stays. */
 export function expandPlaceholders(text: string, values: Record<string, string>): string {
   return text.replace(/\{([^{}]*)\}/g, (whole, key: string) => (Object.prototype.hasOwnProperty.call(values, key) ? values[key] : whole));

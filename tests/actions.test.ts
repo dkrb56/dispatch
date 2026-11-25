@@ -13,6 +13,7 @@ import {
   checkAction,
   EMPTY_ACTIONS,
   expandPlaceholders,
+  keepEndedRuns,
   lastRun,
   lastRunText,
   RELEASE_EXAMPLE,
@@ -240,4 +241,30 @@ test("main.ts, index.html and styles.css: Run from step N, the question about ch
   for (const part of ["Run from step N", "do not run again", "Start anyway", "Cancel", "{last_tag}", "Claude task step gets no button", "Run still starts at step 1"]) assert.ok(help.includes(part), part);
   assert.match(CSS, /\.action-step\.taken \{/);
   assert.match(CSS, /\.action-resume-ask \{[^}]*var\(--wait-bg\)/);
+});
+
+test("keepEndedRuns: an ended run stays ended against an older running copy of the same run", () => {
+  const ended = run({ id: "quick-1", state: "done", ended: 9, steps: [step({ state: "done", exit: "0", output: "text" })] });
+  const failed = run({ id: "quick-0", state: "failed", ended: 5 });
+  const before: ActionList = { actions: [], runs: [ended, failed], error: "" };
+  // An older reply: both runs still run or wait; each keeps its end.
+  const older: ActionList = { actions: [], runs: [run({ id: "quick-1" }), run({ id: "quick-0", state: "held" })], error: "" };
+  assert.deepEqual(keepEndedRuns(before, older).runs, [ended, failed]);
+  // A running run becomes done from the new list.
+  const runningBefore: ActionList = { actions: [], runs: [run({ id: "quick-1" })], error: "" };
+  const done: ActionList = { actions: [], runs: [ended], error: "" };
+  assert.equal(keepEndedRuns(runningBefore, done), done);
+  // A new run id comes from the new list, also when an earlier run of the action ended.
+  const next: ActionList = { actions: [], runs: [run({ id: "quick-2" }), ended], error: "" };
+  assert.equal(keepEndedRuns(before, next), next);
+  // The first list of a project.
+  assert.equal(keepEndedRuns(undefined, older), older);
+});
+
+test("main.ts: each stored task list draws the open Actions panel of its project, and the poll reads that project", () => {
+  const store = MAIN.slice(MAIN.indexOf("function storeProjectTasks("), MAIN.indexOf("async function closeTriagePanes("));
+  assert.match(store, /record = \{ \.\.\.record, actions: keepEndedRuns\(before\?\.actions, record\.actions\) \};\n  projectTasks\.set\(key, record\);/);
+  assert.match(store, /if \(actionsDialog\.open && actionsRef && refKey\(actionsRef\) === key\) renderActions\(\);/);
+  const poll = MAIN.slice(MAIN.indexOf("async function refreshFocusTasks("), MAIN.indexOf("approvePlans();", MAIN.indexOf("async function refreshFocusTasks(")));
+  assert.match(poll, /if \(actionsDialog\.open && actionsRef\) roots\.set\(refKey\(actionsRef\), actionsRef\);/);
 });
