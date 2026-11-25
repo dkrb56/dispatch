@@ -2,6 +2,15 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.97 (2026-11-25)
+- No merge before the work run reports done or while an answer waits; a new work run skips the folder of a task that waits for an answer.
+- Topic group boxes are as wide as their title bar; a dragged group keeps a slot of its normal size, so its resize moves no other group.
+- The host listens on 127.0.0.1 at once and adds Tailscale later; the window starts a missing host of this PC; host.log keeps each start; plainer mode and host texts.
+- Sections on the Plan board: a box with a title around several topic groups; drag a group onto it to add, out of it to take out; the title bar moves it with its groups; fold button; Remove keeps the groups.
+- Discuss button on each ticket card opens a Claude Code terminal with the ticket.
+- The selection box catches topic groups and sections; Make a section (S) puts them into one new section; a section can hold sections and its drag moves everything inside.
+- The selection box also catches tickets of the tree and of Not in the flow and comment boxes; Make a section (S) puts them into the section where they stand; a section drag moves them and saves their places.
+
 ## 0.1.96 (2026-11-24)
 - The report opens on top of the Questions window; text files show in a framed window with their own scroll bar.
 - Group title bars show the percentage of finished tickets.
