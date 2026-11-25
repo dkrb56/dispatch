@@ -1,7 +1,9 @@
 //! The actions of a project (ticket project-actions): the buttons of the Actions panel. An action
 //! has a name and one or more steps. A step is a command on the computer of the project in the
 //! project folder, or a Claude task: a brief that goes through the pipeline as a ticket (plan run,
-//! work run, report) without the triage chat. A click on Run starts the first step; the driver
+//! work run, report) without the triage chat, or a show step: the viewer of Dispatch shows a file
+//! or a folder of the project, or the output of the step before (ticket
+//! actions-a-step-that-opens-a-viewer). A click on Run starts the first step; the driver
 //! window calls `action_step` when a step ended well, and the chain stops at the first step that
 //! fails. Nothing here runs at a start or on a timer.
 //!
@@ -61,6 +63,9 @@ pub enum Step {
         #[serde(default)]
         auto: bool,
     },
+    /// The viewer of the window that clicked Run shows a source: a file or folder of the project
+    /// (relative to the project folder, or absolute), or `{output}`, the output of the step before.
+    Show { source: String },
 }
 
 /// One action of the Actions panel.
@@ -83,9 +88,9 @@ struct Definitions {
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 pub struct RunStep {
-    /// `command` or `claude`.
+    /// `command`, `claude` or `show`.
     kind: String,
-    /// The command, or the brief text.
+    /// The command, the brief text, or the source of a show step.
     text: String,
     /// The ticket of a Claude step; empty for a command.
     ticket: String,
@@ -98,7 +103,8 @@ pub struct RunStep {
     ended: Option<u64>,
     /// The exit code of a command step, `timeout` after the limit; none before the end.
     exit: Option<String>,
-    /// The last lines of the output of a command step, stdout and stderr together.
+    /// The last lines of the output of a command step, stdout and stderr together; for a show step
+    /// the folder listing, or the output of the command step before it.
     output: String,
     /// Why the step failed or waits, in words; empty else.
     note: String,
@@ -111,6 +117,11 @@ pub struct RunStep {
     head: String,
     /// The uncommitted files at the start of the step (`git status --porcelain`, without `.dispatch`).
     dirty: String,
+    /// What the viewer shows for a show step: `text`, `markdown`, `image`, `html` or `folder`; empty
+    /// before the end and for the other kinds.
+    view: String,
+    /// The absolute path that the viewer reads for a show step; empty for the output of a command step.
+    target: String,
 }
 
 /// One run of an action.
@@ -209,6 +220,14 @@ fn check_action(action: &Action) -> Result<(), String> {
                 }
                 if ticket.is_empty() || !ticket.chars().all(|c| c.is_ascii_alphanumeric() || "-_.{}".contains(c)) {
                     return Err(format!("the ticket of step {number} has letters, digits, -, _, . and {{placeholders}} only"));
+                }
+            }
+            Step::Show { source } => {
+                if source.trim().is_empty() {
+                    return Err(format!("step {number} has no source"));
+                }
+                if source.contains(['\n', '\r']) {
+                    return Err(format!("the source of step {number} has more than one line"));
                 }
             }
         }
@@ -471,6 +490,12 @@ fn run_steps(action: &Action, values: &BTreeMap<String, String>) -> Vec<RunStep>
                 state: "waiting".to_string(),
                 ..RunStep::default()
             },
+            Step::Show { source } => RunStep {
+                kind: "show".to_string(),
+                text: expand(source.trim(), values),
+                state: "waiting".to_string(),
+                ..RunStep::default()
+            },
         })
         .collect()
 }
@@ -550,7 +575,7 @@ fn resume_with(cwd: &str, source_id: &str, anyway: bool, start: Start) -> Result
             return Err("the run failed at step 1: use Run".to_string());
         }
         let Some(failed) = source.steps.get(index) else { return Err(format!("the run {source_id} has no step {}", index + 1)) };
-        if failed.kind != "command" {
+        if failed.kind == "claude" {
             return Err(format!("step {} is a Claude task: its ticket exists already, so use Run", index + 1));
         }
         let actions = read_definitions(&project)?;
@@ -594,6 +619,8 @@ enum Todo {
     Nothing,
     Command(usize),
     Claude(usize),
+    /// A show step: `advance` resolves it at once, under the lock.
+    Show(usize),
 }
 
 fn advance(cwd: &str, run_id: &str, start: Start) -> Result<ActionRun, String> {
@@ -652,14 +679,20 @@ fn advance(cwd: &str, run_id: &str, start: Start) -> Result<ActionRun, String> {
                 if run.steps[index].state == "done" {
                     run.step = index + 1;
                 }
-                start_next(&project, &mut run, at)
+                match start_next(&project, &mut run, at) {
+                    Todo::Show(index) => {
+                        settle_show(&project, &mut run, index);
+                        Todo::Nothing
+                    }
+                    todo => todo,
+                }
             }
         };
         write_run(&project, &run)?;
         (run, todo)
     };
     match todo {
-        Todo::Nothing => Ok(run),
+        Todo::Nothing | Todo::Show(_) => Ok(run),
         Todo::Command(index) => {
             spawn_command(&project, &run, index);
             Ok(run)
@@ -712,9 +745,114 @@ fn start_next(project: &Project, run: &mut ActionRun, at: u64) -> Todo {
         step.owner = Some(std::process::id());
         RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(path);
         Todo::Command(index)
+    } else if step.kind == "show" {
+        Todo::Show(index)
     } else {
         Todo::Claude(index)
     }
+}
+
+/// The most lines of a folder listing of a show step; a last line names the rest.
+const FOLDER_LINES: usize = 1000;
+
+/// Ends a show step that `start_next` started, under the lock: resolves its source, marks the step
+/// done or failed, and settles the run as `finish_command` does. A file stat and a folder listing
+/// are quick, so no thread runs it.
+fn settle_show(project: &Project, run: &mut ActionRun, index: usize) {
+    let at = now();
+    let result = resolve_show(project, run, index);
+    let last = index + 1 == run.steps.len();
+    let Some(step) = run.steps.get_mut(index) else { return };
+    step.ended = Some(at);
+    match result {
+        Ok(()) => step.state = "done".to_string(),
+        Err(error) => {
+            step.state = "failed".to_string();
+            step.note = error;
+        }
+    }
+    if step.state == "done" {
+        if last {
+            run.state = "done".to_string();
+            run.ended = Some(at);
+        } else {
+            run.step = index + 1;
+        }
+    } else {
+        run.state = "failed".to_string();
+        run.ended = Some(at);
+        run.note = format!("step {} failed", index + 1);
+    }
+}
+
+/// The view of a file by its extension: `image`, `markdown`, `html` or `text`.
+fn view_of(path: &Path) -> &'static str {
+    let extension = path.extension().map(|extension| extension.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    match extension.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" | "ico" => "image",
+        "md" | "markdown" => "markdown",
+        "html" | "htm" => "html",
+        _ => "text",
+    }
+}
+
+/// The entries of a folder, folders first with a trailing `/`, each group sorted without case; at
+/// most `FOLDER_LINES` lines and a last line with the count of the rest.
+fn folder_listing(folder: &Path) -> Result<String, String> {
+    let entries = fs::read_dir(folder).map_err(|error| format!("the folder {} could not be read: {error}", folder.display()))?;
+    let mut names: Vec<(bool, String)> = entries
+        .filter_map(Result::ok)
+        .map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let is_dir = entry.path().is_dir();
+            (!is_dir, if is_dir { format!("{name}/") } else { name })
+        })
+        .collect();
+    names.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
+    let mut lines: Vec<String> = names.iter().take(FOLDER_LINES).map(|(_, name)| name.clone()).collect();
+    if names.len() > FOLDER_LINES {
+        lines.push(format!("… and {} more", names.len() - FOLDER_LINES));
+    }
+    Ok(lines.join("\n"))
+}
+
+/// Resolves the source of a show step on the host: fills `view`, `target` and `output` of the
+/// step, or gives why the viewer cannot show it.
+fn resolve_show(project: &Project, run: &mut ActionRun, index: usize) -> Result<(), String> {
+    let source = run.steps.get(index).map(|step| step.text.trim().to_string()).unwrap_or_default();
+    let (view, target, output) = if source == "{output}" {
+        let Some(before) = index.checked_sub(1).and_then(|before| run.steps.get(before)) else { return Err("no step before it".to_string()) };
+        match before.kind.as_str() {
+            "command" => ("text".to_string(), String::new(), before.output.clone()),
+            // User decision 3: after a Claude task, the report of that task.
+            "claude" => {
+                let report = project.reports.join(format!("{}.md", before.ticket));
+                if !report.is_file() {
+                    return Err(format!("no report {}", report.display()));
+                }
+                ("markdown".to_string(), report.display().to_string(), String::new())
+            }
+            _ => return Err("the step before it is a show step".to_string()),
+        }
+    } else if source.starts_with("http://") || source.starts_with("https://") {
+        return Err("a web address as a source comes with the part \"A web address as the source of a show step\"; today the window shows files, folders and the output of the step before".to_string());
+    } else {
+        let given = PathBuf::from(&source);
+        let path = if given.is_absolute() { given } else { project.root.join(given) };
+        if path.is_dir() {
+            ("folder".to_string(), path.display().to_string(), folder_listing(&path)?)
+        } else if path.is_file() {
+            (view_of(&path).to_string(), path.display().to_string(), String::new())
+        } else {
+            return Err(format!("no file or folder {}", path.display()));
+        }
+    };
+    if let Some(step) = run.steps.get_mut(index) {
+        step.view = view;
+        step.target = target;
+        step.output = output;
+    }
+    Ok(())
 }
 
 /// Starts the task of a Claude step: opens its ticket in In progress, writes the brief and starts
@@ -1264,6 +1402,59 @@ mod tests {
         assert!(resume("rel-claude", true).unwrap_err().contains("is a Claude task"));
         // A run that did not fail.
         assert!(resume(&chained.id, true).unwrap_err().contains("did not fail"));
+        clean(&project);
+    }
+
+    #[test]
+    fn show_step_resolves_a_file_a_folder_and_the_output() {
+        let project = git_scratch("actions-show");
+        let root = project.root.clone();
+        let cwd = cwd_of(&project);
+        let show = |source: &str| Step::Show { source: source.to_string() };
+        // The output of the command step before: a text view of its output, and the run ends done.
+        save(&cwd, "out", vec![command("echo see https://example.com"), show("{output}")]);
+        let run = action_run(cwd.clone(), "out".to_string()).unwrap();
+        let run = wait_step(&cwd, &run.id, 0);
+        assert_eq!((run.state.as_str(), run.step, run.steps[1].state.as_str()), ("running", 1, "waiting"));
+        let run = action_step(cwd.clone(), run.id).unwrap();
+        assert_eq!((run.state.as_str(), run.steps[1].state.as_str()), ("done", "done"), "{run:?}");
+        assert_eq!((run.steps[1].view.as_str(), run.steps[1].target.as_str(), run.steps[1].output.as_str()), ("text", "", "see https://example.com"));
+        assert!(run.ended.is_some() && run.steps[1].ended.is_some(), "{run:?}");
+        // A Markdown file of the project: the target is absolute, the step ends in the call of Run.
+        write_file(&root.join("docs").join("links.md"), "# Links\n").unwrap();
+        save(&cwd, "md", vec![show("docs/links.md")]);
+        let run = action_run(cwd.clone(), "md".to_string()).unwrap();
+        assert_eq!((run.state.as_str(), run.steps[0].state.as_str(), run.steps[0].view.as_str()), ("done", "done", "markdown"), "{run:?}");
+        assert!(Path::new(&run.steps[0].target).is_absolute() && Path::new(&run.steps[0].target).is_file(), "{run:?}");
+        // A folder: the listing, folders first with a trailing slash.
+        write_file(&root.join("docs").join("B.png"), "x").unwrap();
+        write_file(&root.join("docs").join("sub").join("a.txt"), "x").unwrap();
+        save(&cwd, "folder", vec![show("docs")]);
+        let run = action_run(cwd.clone(), "folder".to_string()).unwrap();
+        assert_eq!((run.state.as_str(), run.steps[0].view.as_str(), run.steps[0].output.as_str()), ("done", "folder", "sub/\nB.png\nlinks.md"), "{run:?}");
+        // The view by the extension.
+        assert_eq!((view_of(Path::new("a.SVG")), view_of(Path::new("a.htm")), view_of(Path::new("a.log"))), ("image", "html", "text"));
+        // A missing file: the step and the run fail, and the note names the path.
+        save(&cwd, "missing", vec![show("docs/none.md"), command("echo never> never.txt")]);
+        let run = action_run(cwd.clone(), "missing".to_string()).unwrap();
+        assert_eq!((run.state.as_str(), run.steps[0].state.as_str(), run.note.as_str()), ("failed", "failed", "step 1 failed"), "{run:?}");
+        assert!(run.steps[0].note.starts_with("no file or folder ") && run.steps[0].note.contains("none.md"), "{run:?}");
+        assert!(!root.join("never.txt").exists());
+        // A web address comes with a later part.
+        save(&cwd, "web", vec![show("https://example.com/")]);
+        let run = action_run(cwd.clone(), "web".to_string()).unwrap();
+        assert_eq!(run.state, "failed");
+        assert!(run.steps[0].note.contains("a web address as a source comes with the part"), "{run:?}");
+        // The output of the step before, as step 1.
+        save(&cwd, "first", vec![show("{output}")]);
+        let run = action_run(cwd.clone(), "first".to_string()).unwrap();
+        assert_eq!((run.state.as_str(), run.steps[0].note.as_str()), ("failed", "no step before it"));
+        // The rules of a definition.
+        let refused = |source: &str| action_save(cwd.clone(), Action { id: "bad".to_string(), name: "Bad".to_string(), steps: vec![show(source)] }).unwrap_err();
+        assert!(refused("  ").contains("step 1 has no source"));
+        assert!(refused("a\nb").contains("more than one line"));
+        let text = fs::read_to_string(project.actions_file()).unwrap();
+        assert!(text.contains("\"kind\": \"show\"") && text.contains("\"source\": \"docs\""), "{text}");
         clean(&project);
     }
 

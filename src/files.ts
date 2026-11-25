@@ -201,52 +201,158 @@ function resetZoom(): void {
   viewerFit = null;
 }
 
+/** The web addresses in a plain text, for the links of a text view. */
+const TEXT_URL = /https?:\/\/[^\s<>"')\]]+/g;
+
+/** A `pre` with the text; each web address in it is a link (ticket actions-a-step-that-opens-a-viewer). */
+function linkedText(text: string): HTMLElement {
+  const pre = document.createElement("pre");
+  let at = 0;
+  for (const match of text.matchAll(TEXT_URL)) {
+    const start = match.index ?? 0;
+    if (start > at) pre.append(text.slice(at, start));
+    const link = document.createElement("a");
+    link.href = match[0];
+    link.textContent = match[0];
+    pre.append(link);
+    at = start + match[0].length;
+  }
+  if (at < text.length) pre.append(text.slice(at));
+  return pre;
+}
+
+/**
+ * An HTML page without its scripts and forms (user decision 1): the sanitizer keeps the look (its
+ * `style` tags too, with `FORCE_BODY`), and a shadow root keeps the styles of the page inside and
+ * the styles of Dispatch outside.
+ */
+function htmlView(text: string): HTMLElement {
+  const host = document.createElement("div");
+  host.className = "viewer-html";
+  const root = host.attachShadow({ mode: "open" });
+  root.innerHTML = DOMPurify.sanitize(text, { FORCE_BODY: true, FORBID_TAGS: ["form"] });
+  return host;
+}
+
+/** The content of the viewer for the bytes of a file: an image, a Markdown file, an HTML page or a text. */
+async function renderContent(kind: string, path: string, bytes: ArrayBuffer): Promise<HTMLElement> {
+  if (kind === "image") {
+    const image = new Image();
+    image.src = imageUrl({ path } as FileEntry, bytes);
+    viewerUrls.push(image.src);
+    return image;
+  }
+  const text = new TextDecoder().decode(bytes);
+  if (text.includes("\0")) throw new Error("this is not a text file");
+  if (kind === "markdown") {
+    const content = document.createElement("div");
+    content.className = "markdown";
+    // The file is not trusted. The sanitizer removes scripts and event handlers.
+    content.innerHTML = DOMPurify.sanitize(await marked.parse(text));
+    markPaths(content);
+    const files = filesRow(text);
+    if (files) content.prepend(files);
+    return content;
+  }
+  if (kind === "html") return htmlView(text);
+  return linkedText(text);
+}
+
+/** Opens the viewer empty for an entry, with its title, and gives the focus to its close button. */
+function startViewer(entry: FileEntry, title: string, openable: boolean): void {
+  viewerEntry = entry;
+  resetZoom();
+  viewerPathEl.textContent = title;
+  viewerNoteEl.textContent = "";
+  // The program of the system opens only a file of this PC (user decision 2).
+  viewerOpenEl.hidden = !openable;
+  viewerBodyEl.replaceChildren();
+  if (!viewerEl.open) viewerEl.showModal();
+  // The keys must not go to the terminal while the viewer is open.
+  viewerCloseEl.focus();
+}
+
 /**
  * Shows an image, a Markdown file or a text file on top of the terminals and of the open windows.
  * `list` is the gallery of the file: the arrow keys then step through its pictures.
  */
 export async function openViewer(entry: FileEntry, list: FileEntry[] = []): Promise<void> {
-  viewerEntry = entry;
   viewerList = list.filter((item) => item.kind === "image");
-  resetZoom();
-  viewerPathEl.textContent = entry.path;
-  viewerNoteEl.textContent = "";
-  // The program of the system opens only a file of this PC (user decision 2).
-  viewerOpenEl.hidden = entry.host !== LOCAL;
-  viewerBodyEl.replaceChildren();
-  if (!viewerEl.open) viewerEl.showModal();
-  // The keys must not go to the terminal while the viewer is open.
-  viewerCloseEl.focus();
+  startViewer(entry, entry.path, entry.host === LOCAL);
 
   let content: HTMLElement;
   try {
     const bytes = await readFile(entry.host, entry.path);
-    if (entry.kind === "image") {
-      const image = new Image();
-      image.src = imageUrl(entry, bytes);
-      viewerUrls.push(image.src);
-      content = image;
-    } else {
-      const text = new TextDecoder().decode(bytes);
-      if (text.includes("\0")) throw new Error("this is not a text file");
-      if (entry.kind === "markdown") {
-        content = document.createElement("div");
-        content.className = "markdown";
-        // The file is not trusted. The sanitizer removes scripts and event handlers.
-        content.innerHTML = DOMPurify.sanitize(await marked.parse(text));
-        markPaths(content);
-        const files = filesRow(text);
-        if (files) content.prepend(files);
-      } else {
-        content = document.createElement("pre");
-        content.textContent = text;
-      }
-    }
+    content = await renderContent(entry.kind, entry.path, bytes);
   } catch (error) {
     content = document.createElement("p");
     content.textContent = `Could not show the file: ${error}`;
   }
   // The user can open a second file before the first one is ready.
+  if (viewerEntry === entry) viewerBodyEl.replaceChildren(content);
+}
+
+/** What a show step of an action gives the viewer (`RunStep` of src/actions.ts). */
+export interface ShownStep {
+  /** `text`, `markdown`, `image`, `html` or `folder`. */
+  view: string;
+  /** The absolute path of the file or folder on the host; empty for the output of a command step. */
+  target: string;
+  /** The folder listing, or the output of the command step before. */
+  output: string;
+}
+
+/** The list of a folder of a show step: one button per entry; a file opens in the viewer. */
+function folderView(host: HostId, folder: string, listing: string): HTMLElement {
+  const content = document.createElement("div");
+  content.className = "viewer-folder";
+  for (const line of listing.split("\n").filter(Boolean)) {
+    if (line.startsWith("… and ")) {
+      const rest = document.createElement("span");
+      rest.textContent = line;
+      content.append(rest);
+      continue;
+    }
+    const isFolder = line.endsWith("/");
+    const name = line.replace(/\/$/, "");
+    const button = document.createElement("button");
+    button.textContent = line;
+    button.title = isFolder ? `${name}: a folder` : `Open ${name}`;
+    if (isFolder) button.classList.add("folder");
+    else
+      button.addEventListener("click", () => {
+        statFile(host, folder, name).then(
+          (entry) => {
+            if (entry) void openViewer(entry);
+            else viewerNoteEl.textContent = `Not found: ${name}`;
+          },
+          (error) => (viewerNoteEl.textContent = `Could not look for ${name}: ${error}`),
+        );
+      });
+    content.append(button);
+  }
+  return content;
+}
+
+/**
+ * Shows the result of a show step of an action (ticket actions-a-step-that-opens-a-viewer): a file
+ * of the host by its view, a folder as a list, or the output of the command step before it.
+ */
+export async function openShown(host: HostId, step: ShownStep, title: string): Promise<void> {
+  const kind = step.view === "image" || step.view === "markdown" ? step.view : "other";
+  const entry: FileEntry = { path: step.target || title, kind, modified: 0, size: 0, host };
+  viewerList = [];
+  startViewer(entry, title, host === LOCAL && step.target !== "" && step.view !== "folder");
+
+  let content: HTMLElement;
+  try {
+    if (step.view === "folder") content = folderView(host, step.target, step.output);
+    else if (!step.target) content = linkedText(step.output);
+    else content = await renderContent(step.view, step.target, await readFile(host, step.target));
+  } catch (error) {
+    content = document.createElement("p");
+    content.textContent = `Could not show the file: ${error}`;
+  }
   if (viewerEntry === entry) viewerBodyEl.replaceChildren(content);
 }
 
@@ -349,13 +455,16 @@ export function initViewer(onClose: () => void): void {
   // A click on the dark area around the content closes the viewer.
   viewerBodyEl.addEventListener("click", (event) => {
     if (event.target === viewerBodyEl) closeViewer();
-    const pathLink = (event.target as HTMLElement).closest<HTMLElement>("[data-path]");
+    // A shadow root (an HTML page) gives its host as `event.target`; the path has the real element.
+    const first = event.composedPath()[0];
+    const clicked = (first instanceof Element ? first : event.target) as HTMLElement;
+    const pathLink = clicked.closest<HTMLElement>("[data-path]");
     if (pathLink) {
       event.preventDefault();
       void followPathLink(pathLink);
       return;
     }
-    const link = (event.target as HTMLElement).closest("a");
+    const link = clicked.closest("a");
     if (!link) return;
     event.preventDefault();
     void followViewerLink(link.getAttribute("href") ?? "");

@@ -8,7 +8,8 @@
 /** One step of an action, as the definitions file writes it. */
 export type Step =
   | { kind: "command"; command: string; limit?: number }
-  | { kind: "claude"; brief: string; ticket: string; auto: boolean };
+  | { kind: "claude"; brief: string; ticket: string; auto: boolean }
+  | { kind: "show"; source: string };
 
 /** One action of the panel. The id names its run files and stays at a rename. */
 export interface Action {
@@ -20,7 +21,7 @@ export interface Action {
 /** One step of a run: the step at the click with the placeholders expanded, and what happened. */
 export interface RunStep {
   kind: string;
-  /** The command, or the brief text. */
+  /** The command, the brief text, or the source of a show step. */
   text: string;
   /** The ticket of a Claude step; empty for a command. */
   ticket: string;
@@ -32,7 +33,7 @@ export interface RunStep {
   ended: number | null;
   /** The exit code of a command step, `timeout` after its limit; null before the end. */
   exit: string | null;
-  /** The last lines of the output of a command step. */
+  /** The last lines of the output of a command step; for a show step the folder listing or the output of the command step before it. */
   output: string;
   note: string;
   owner: number | null;
@@ -42,6 +43,10 @@ export interface RunStep {
   head: string;
   /** The uncommitted files at the start of the step. */
   dirty: string;
+  /** What the viewer shows for a show step: `text`, `markdown`, `image`, `html` or `folder`; empty before its end. */
+  view: string;
+  /** The absolute path that the viewer reads for a show step; empty for the output of a command step. */
+  target: string;
 }
 
 /** One run of an action. */
@@ -97,6 +102,9 @@ export function checkAction(action: Action): string | null {
       if (!step.command.trim()) return `Step ${number} has no command.`;
       if (/[\r\n]/.test(step.command)) return `The command of step ${number} has more than one line; join the commands with &&.`;
       if (step.limit !== undefined && (!Number.isInteger(step.limit) || step.limit < 1 || step.limit > 86400)) return `The time limit of step ${number} is 1 to 86400 seconds.`;
+    } else if (step.kind === "show") {
+      if (!step.source.trim()) return `Step ${number} has no source.`;
+      if (/[\r\n]/.test(step.source)) return `The source of step ${number} has more than one line.`;
     } else {
       if (!step.brief.trim()) return `Step ${number} has no brief.`;
       if (!/^[A-Za-z0-9._{}-]+$/.test(step.ticket)) return `The ticket of step ${number} has letters, digits, -, _, . and {placeholders} only.`;
@@ -129,6 +137,7 @@ export function uniqueId(name: string, taken: string[]): string {
 
 /** The words of a step kind. */
 export function stepWord(kind: string): string {
+  if (kind === "show") return "show";
   return kind === "claude" ? "Claude task" : "command";
 }
 
@@ -183,7 +192,8 @@ export function runButtonState(run: ActionRun | undefined, starting: boolean): "
  */
 export function resumeStep(run: ActionRun | undefined, action: Action): number | null {
   if (!run || run.state !== "failed" || run.step < 1) return null;
-  if (run.steps[run.step]?.kind !== "command") return null;
+  const kind = run.steps[run.step]?.kind;
+  if (kind !== "command" && kind !== "show") return null;
   if (action.steps.length <= run.step) return null;
   return run.step;
 }

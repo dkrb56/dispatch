@@ -144,7 +144,7 @@ import { MENU_ABOVE_LINES, menuScreen, parseMenu, parseReview, SUBMIT_QUESTION }
 import { joinRows, type MenuRecord, recordName, type ScreenRow } from "./menurecord";
 import { agentListShown, asksAgain, backKey, BACK_TITLE, LIST_TITLE } from "./agentview";
 import { getVersion } from "@tauri-apps/api/app";
-import { type FileEntry, type FileInfo, imageFileUrl, initViewer, onHost, openViewer, showGallery, statFile } from "./files";
+import { type FileEntry, type FileInfo, imageFileUrl, initViewer, onHost, openShown, openViewer, showGallery, statFile } from "./files";
 import { durationText, runTime } from "./duration";
 import { agentsText, fileRowTitle, reportChip, rowParts, runChip, type RunChip, runCostText, runTokensTitle, stepRows, tokenText, type WorkStep, type WorkWait } from "./workerrow";
 import { commandLines, groupLabel, unverifiedText } from "./commandrows";
@@ -2758,6 +2758,7 @@ function storeProjectTasks(key: string, record: ProjectTasks, readAt: number): v
   projectTasks.set(key, record);
   // The open Actions panel of this project draws each new list at once, not at the next draw of the screens.
   if (actionsDialog.open && actionsRef && refKey(actionsRef) === key) renderActions();
+  openNewShown(key, record);
   // The end of an action run speaks like a task end (ticket play-voice-for-actions-too-project).
   let told = actionRunsTold.get(key);
   if (!told) actionRunsTold.set(key, (told = new Set()));
@@ -10423,12 +10424,43 @@ const refusedRuns = new Map<string, string>();
  */
 const resumeAsks = new Map<string, { run: string; changes: string[] }>();
 
+/**
+ * The runs that Run or "Run from step N" of this window started, as `<project key>\n<run id>`: a
+ * show step of such a run opens the viewer in this window when it ends (user decision 2 of ticket
+ * actions-a-step-that-opens-a-viewer). The other windows show the Show button of the step only.
+ */
+const watchedRuns = new Set<string>();
+/** The show steps whose viewer opened by itself, as `<project key>\n<run id>\n<step index>`: each opens once. */
+const shownSteps = new Set<string>();
+
+/**
+ * Opens the viewer for each show step of a watched run of a project that is done now and did not
+ * open yet. A step that "Run from step N" copied from an earlier run does not open again.
+ */
+function openNewShown(key: string, record: ProjectTasks): void {
+  for (const run of record.actions.runs) {
+    if (!watchedRuns.has(`${key}\n${run.id}`)) continue;
+    for (const [at, step] of run.steps.entries()) {
+      const mark = `${key}\n${run.id}\n${at}`;
+      if (step.kind !== "show" || step.state !== "done" || step.from || shownSteps.has(mark)) continue;
+      shownSteps.add(mark);
+      void openShown(record.host, step, shownTitle(step, at));
+    }
+  }
+}
+
+/** The title of the viewer of a show step: the shown file or folder, or the step whose output it shows. */
+function shownTitle(step: ActionRun["steps"][number], index: number): string {
+  return step.target || `Output of step ${index}`;
+}
+
 /** Runs an action command for a project (by its key), reads the list again and renders. True on success. */
 async function actionCall(project: string, command: string, args: Record<string, unknown>): Promise<boolean> {
   const { host, cwd } = projectCwd(project);
   actionsError = "";
   try {
-    await call(host, command, { cwd, ...args });
+    const result = await call<ActionRun | ActionList>(host, command, { cwd, ...args });
+    if (command === "action_run" && "id" in result) watchedRuns.add(`${project}\n${result.id}`);
     await readProjectTasks(host, cwd);
     return true;
   } catch (error) {
@@ -10455,6 +10487,7 @@ async function resumeCall(key: string, startKey: string, runId: string, anyway: 
   renderActions();
   try {
     const answer = await call<ActionResume>(host, "action_resume", { cwd, run: runId, anyway });
+    if (answer.run) watchedRuns.add(`${key}\n${answer.run.id}`);
     if (!answer.run && answer.changes.length > 0) resumeAsks.set(startKey, { run: runId, changes: answer.changes });
     await readProjectTasks(host, cwd);
   } catch (error) {
@@ -10564,7 +10597,7 @@ function renderActions(): void {
   const open = new Set([...actionsListEl.querySelectorAll<HTMLDetailsElement>("details[open]")].map((details) => details.dataset.run ?? ""));
   actionsListEl.replaceChildren();
   if (list.actions.length === 0 && !editingAction) {
-    actionsListEl.append(mapElement("p", "action-empty", "No action yet. New action makes a button for a command on this computer, a Claude task, or both in a row."));
+    actionsListEl.append(mapElement("p", "action-empty", "No action yet. New action makes a button for a command on this computer, a Claude task, a window that shows a file, or several in a row."));
     return;
   }
   for (const action of list.actions) actionsListEl.append(actionCard(key, action, lastRun(list, action.id), open));
@@ -10656,7 +10689,7 @@ function actionCard(key: string, action: Action, run: ActionRun | undefined, ope
     details.open = open.has(run.id) || run.state === "running" || run.state === "held" || run.state === "failed";
     details.append(mapElement("summary", "", `Steps of the last run: ${runStateWord(run)}`));
     const items = mapElement("ol", "action-step-list");
-    for (const step of run.steps) items.append(runStepItem(step));
+    for (const [at, step] of run.steps.entries()) items.append(runStepItem(step, () => void openShown(projectCwd(key).host, step, shownTitle(step, at))));
     details.append(items);
     card.append(details);
   }
@@ -10670,12 +10703,16 @@ function runLook(run: ActionRun): string {
   return "wait";
 }
 
-/** One step of a run: its kind, its text or ticket, its state, and the output tail of a command. */
-function runStepItem(step: ActionRun["steps"][number]): HTMLElement {
+/**
+ * One step of a run: its kind, its text or ticket, its state, and the output tail of a command. A
+ * show step that is done has the button Show, which opens the viewer again with `show`.
+ */
+function runStepItem(step: ActionRun["steps"][number], show: () => void): HTMLElement {
   const item = mapElement("li", `action-step ${step.state}${step.from ? " taken" : ""}`);
   const what = step.kind === "claude" ? step.ticket : step.text;
   const state = [step.state, step.exit !== null ? `exit ${step.exit}` : "", step.ended ? shortTime(step.ended) : ""].filter(Boolean).join(" · ");
   item.append(mapElement("span", "action-step-kind", stepWord(step.kind)), mapElement("code", "", what), mapElement("span", "action-step-state", state));
+  if (step.kind === "show" && step.state === "done") item.append(ticketButton("Show", "Open the window with what this step shows", show));
   if (step.from) item.append(mapElement("div", "action-taken", takenText(step)));
   if (step.note) item.append(mapElement("div", "action-note", step.note));
   if (step.kind === "command" && step.output) item.append(mapElement("pre", "action-output", step.output));
@@ -10707,6 +10744,10 @@ function actionEditor(key: string, list: ActionList): HTMLElement {
       }),
       ticketButton("+ Claude task", "Add a step that gives Claude a task through the pipeline: a ticket, a plan, a work run and a report", () => {
         editing.steps.push({ kind: "claude", brief: "", ticket: "", auto: false });
+        draw();
+      }),
+      ticketButton("+ Show", "Add a step that opens a window with a file or folder of the project, or with the output of the step before", () => {
+        editing.steps.push({ kind: "show", source: "" });
         draw();
       }),
       ticketButton("Release example", "Fill in the example Release: a release task that approves its plan by itself, then the tag and the push to GitHub. Nothing is saved until Save.", () => {
@@ -10790,6 +10831,15 @@ function stepEditor(steps: Step[], at: number, step: Step, redraw: () => void): 
     const limitRow = mapElement("label", "action-row");
     limitRow.append(mapElement("span", "", "Time limit (s)"), limit);
     row.append(commandRow, limitRow);
+  } else if (step.kind === "show") {
+    const source = mapElement("input");
+    source.type = "text";
+    source.value = step.source;
+    source.placeholder = "A file or folder of the project, or {output} for the output of the step before";
+    source.addEventListener("input", () => (step.source = source.value));
+    const sourceRow = mapElement("label", "action-row");
+    sourceRow.append(mapElement("span", "", "Source"), source);
+    row.append(sourceRow);
   } else {
     const ticket = mapElement("input");
     ticket.type = "text";

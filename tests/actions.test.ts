@@ -27,6 +27,7 @@ import {
   slugOf,
   stepEnded,
   stepSummary,
+  stepWord,
   takenText,
   uniqueId,
 } from "../src/actions.ts";
@@ -52,6 +53,8 @@ const step = (fields: Partial<RunStep>): RunStep => ({
   from: "",
   head: "",
   dirty: "",
+  view: "",
+  target: "",
   ...fields,
 });
 
@@ -267,4 +270,39 @@ test("main.ts: each stored task list draws the open Actions panel of its project
   assert.match(store, /if \(actionsDialog\.open && actionsRef && refKey\(actionsRef\) === key\) renderActions\(\);/);
   const poll = MAIN.slice(MAIN.indexOf("async function refreshFocusTasks("), MAIN.indexOf("approvePlans();", MAIN.indexOf("async function refreshFocusTasks(")));
   assert.match(poll, /if \(actionsDialog\.open && actionsRef\) roots\.set\(refKey\(actionsRef\), actionsRef\);/);
+});
+
+test("a show step: the rules, the words, and Run from step N (ticket actions-a-step-that-opens-a-viewer)", () => {
+  const good: Action = { id: "show", name: "Show", steps: [{ kind: "command", command: "echo x" }, { kind: "show", source: "{output}" }] };
+  assert.equal(checkAction(good), null);
+  assert.match(checkAction({ ...good, steps: [{ kind: "show", source: "  " }] }) ?? "", /Step 1 has no source/);
+  assert.match(checkAction({ ...good, steps: [{ kind: "show", source: "a\nb" }] }) ?? "", /source of step 1 has more than one line/);
+  assert.equal(stepWord("show"), "show");
+  assert.equal(stepSummary(good.steps), "command → show");
+  // A failed show step may start again; a failed Claude step still may not.
+  const steps = [step({ state: "done", exit: "0" }), step({ kind: "show", text: "docs/links.md", state: "failed", note: "no file or folder docs/links.md" })];
+  assert.equal(resumeStep(run({ action: "show", state: "failed", step: 1, steps }), good), 1);
+  assert.equal(resumeStep(run({ action: "show", state: "failed", step: 1, steps: [steps[0], step({ kind: "claude", ticket: "t", state: "failed" })] }), good), null);
+});
+
+test("main.ts, index.html and styles.css: the editor offers Show, the step opens the viewer, the Help names it", () => {
+  const editor = MAIN.slice(MAIN.indexOf("function actionEditor("), MAIN.indexOf("function initActions("));
+  assert.match(editor, /ticketButton\("\+ Show"/);
+  assert.match(editor, /kind: "show", source: ""/);
+  assert.match(editor, /mapElement\("span", "", "Source"\)/);
+  const item = MAIN.slice(MAIN.indexOf("function runStepItem("), MAIN.indexOf("function actionEditor("));
+  assert.match(item, /step\.kind === "show" && step\.state === "done"[^\n]*ticketButton\("Show"/);
+  assert.match(MAIN, /openShown\(projectCwd\(key\)\.host, step, shownTitle\(step, at\)\)/);
+  // The window that clicked Run or Run from step N opens the viewer once per step (user decision 2).
+  assert.match(MAIN, /watchedRuns\.add\(`\$\{project\}\\n\$\{result\.id\}`\)/);
+  assert.match(MAIN, /if \(answer\.run\) watchedRuns\.add/);
+  const store = MAIN.slice(MAIN.indexOf("function storeProjectTasks("), MAIN.indexOf("async function closeTriagePanes("));
+  assert.match(store, /openNewShown\(key, record\);/);
+  const opens = MAIN.slice(MAIN.indexOf("function openNewShown("), MAIN.indexOf("function shownTitle("));
+  assert.match(opens, /step\.from \|\| shownSteps\.has\(mark\)/);
+  const help = HTML.slice(HTML.indexOf("<h3>Actions</h3>"), HTML.indexOf("<h3>Night mode</h3>"));
+  for (const part of ["A <b>show</b> step", "{output}", "without their scripts", "<b>Show</b> on the step", "A missing file fails the step", "Show steps."]) assert.ok(help.includes(part), part);
+  assert.match(HTML, /id="actions-new" title="[^"]*a window that shows a file/);
+  assert.match(CSS, /#viewer-body > \.viewer-html,\n#viewer-body > \.viewer-folder \{/);
+  assert.match(CSS, /\.viewer-folder button,/);
 });
