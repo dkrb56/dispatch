@@ -14188,8 +14188,7 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
-        Command::new("taskkill").args(["/T", "/F", "/PID", &child.id().to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
-        child.wait().unwrap();
+        kill_merge_script(&mut child);
         // The rest: an open merge of the old base tip and the branch tip in the work folder, its record and the marker.
         let tip = git_out(&project, &["rev-parse", "task/t-1"]);
         assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_none(), "the project folder has an open merge");
@@ -15575,6 +15574,21 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
             .unwrap()
     }
 
+    /// Stops the merge script `child` first, then the processes of its gate (cmd.exe and what it
+    /// started). A kill of the whole tree can end the gate first on a busy computer: the script then
+    /// sees a failed gate and cancels the open merge before it ends. A plain kill alone leaves the gate alive.
+    fn kill_merge_script(child: &mut std::process::Child) {
+        let pid = child.id();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        // A process keeps the number of its parent after the parent has ended.
+        let query = format!("Get-CimInstance Win32_Process -Filter 'ParentProcessId={pid}' | ForEach-Object {{ $_.ProcessId }}");
+        let gates = Command::new("powershell").args(["-NoProfile", "-Command", &query]).output().unwrap();
+        for gate in String::from_utf8_lossy(&gates.stdout).split_whitespace() {
+            Command::new("taskkill").args(["/T", "/F", "/PID", gate]).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
+        }
+    }
+
     /// Waits up to 10 minutes until git has an open merge in the checkout. The limit only guards a
     /// hang; the gate of the caller runs longer.
     fn wait_for_merge_head(project: &Project) {
@@ -15599,9 +15613,7 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
         set_merge_gate(cwd.clone(), "ping -n 900 127.0.0.1 >nul\n".to_string()).unwrap();
         let mut child = spawn_merge(&project, &fake, "t-1");
         wait_for_merge_head(&project);
-        // A plain kill leaves the cmd.exe of the gate alive: the whole tree goes.
-        Command::new("taskkill").args(["/T", "/F", "/PID", &child.id().to_string()]).stdout(Stdio::null()).stderr(Stdio::null()).status().unwrap();
-        child.wait().unwrap();
+        kill_merge_script(&mut child);
         assert!(git(&project.root, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_some(), "the kill left the merge open");
 
         let branch = listed_branch(&project, "t-1");
