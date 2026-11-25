@@ -1158,17 +1158,17 @@
               <label class="mode-card">
                 <input type="radio" name="work-mode" value="local" />
                 <b>This PC does the work</b>
-                <span>Everything runs in this window on this PC. Your phone and other computers cannot connect.</span>
+                <span>Everything runs in this window on this PC. When you close the window, its terminals close and no new work starts. Your phone and other computers cannot reach this PC.</span>
               </label>
               <label class="mode-card">
                 <input type="radio" name="work-mode" value="hosts" />
                 <b>Use hosts</b>
-                <span>This window only shows and controls hosts. A host is the Dispatch host program on this PC or on another computer; its work goes on when this window closes.</span>
+                <span>A host is the Dispatch host program on a computer: this PC or another one. The hosts do the work; this window only shows and controls them. The work goes on when you close this window. Your phone and other computers can reach each host.</span>
               </label>
               <label class="mode-card">
                 <input type="radio" name="work-mode" value="mixed" />
                 <b>This PC and hosts</b>
-                <span>This window does its own work on this PC and also controls the hosts in the list. The row of this PC's host is skipped.</span>
+                <span>This window does the work of this PC and also controls the hosts in the list. Work of this PC stops when you close the window; the hosts go on. Your phone and other computers reach the hosts, not this PC.</span>
               </label>
             </div>
             <section id="host-section" hidden>
