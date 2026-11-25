@@ -305,4 +305,13 @@ test("main.ts, index.html and styles.css: the editor offers Show, the step opens
   assert.match(HTML, /id="actions-new" title="[^"]*a window that shows a file/);
   assert.match(CSS, /#viewer-body > \.viewer-html,\n#viewer-body > \.viewer-folder \{/);
   assert.match(CSS, /\.viewer-folder button,/);
+  // A web address as the source (ticket a-web-address-as-the-source-of-a-show).
+  for (const part of ["A web address", "30 s", "50 MB"]) assert.ok(help.includes(part), part);
+  assert.ok(MAIN.includes('"A file or folder of the project, a web address, or {output} for the output of the step before"'));
+  const title = MAIN.slice(MAIN.indexOf("function shownTitle("), MAIN.indexOf("async function actionCall("));
+  assert.match(title, /https\?:[^\n]*return step\.text\.trim\(\);/);
+  const FILES = read("../src/files.ts");
+  const html = FILES.slice(FILES.indexOf("function htmlView("), FILES.indexOf("async function renderContent("));
+  assert.match(html, /new URL\(value, base\)\.href/);
+  assert.match(FILES, /renderContent\(step\.view, step\.target, await readFile\(host, step\.target\), web\)/);
 });

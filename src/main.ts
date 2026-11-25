@@ -10451,6 +10451,7 @@ function openNewShown(key: string, record: ProjectTasks): void {
 
 /** The title of the viewer of a show step: the shown file or folder, or the step whose output it shows. */
 function shownTitle(step: ActionRun["steps"][number], index: number): string {
+  if (/^https?:\/\//i.test(step.text.trim())) return step.text.trim();
   return step.target || `Output of step ${index}`;
 }
 
@@ -10835,7 +10836,7 @@ function stepEditor(steps: Step[], at: number, step: Step, redraw: () => void): 
     const source = mapElement("input");
     source.type = "text";
     source.value = step.source;
-    source.placeholder = "A file or folder of the project, or {output} for the output of the step before";
+    source.placeholder = "A file or folder of the project, a web address, or {output} for the output of the step before";
     source.addEventListener("input", () => (step.source = source.value));
     const sourceRow = mapElement("label", "action-row");
     sourceRow.append(mapElement("span", "", "Source"), source);

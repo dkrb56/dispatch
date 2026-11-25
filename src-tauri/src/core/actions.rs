@@ -2,8 +2,9 @@
 //! has a name and one or more steps. A step is a command on the computer of the project in the
 //! project folder, or a Claude task: a brief that goes through the pipeline as a ticket (plan run,
 //! work run, report) without the triage chat, or a show step: the viewer of Dispatch shows a file
-//! or a folder of the project, or the output of the step before (ticket
-//! actions-a-step-that-opens-a-viewer). A click on Run starts the first step; the driver
+//! or a folder of the project, the output of the step before (ticket
+//! actions-a-step-that-opens-a-viewer), or a web address that the host loads into a copy file
+//! (ticket a-web-address-as-the-source-of-a-show). A click on Run starts the first step; the driver
 //! window calls `action_step` when a step ended well, and the chain stops at the first step that
 //! fails. Nothing here runs at a start or on a timer.
 //!
@@ -43,6 +44,12 @@ const COMMITS_MAX: usize = 200;
 const ORPHAN_NOTE: &str = "Dispatch ended while the command ran";
 /// The note of a Claude step that waits for Resume.
 const HELD_NOTE: &str = "held: the project is paused";
+/// The time limit of the load of a web address, in seconds.
+const FETCH_SECONDS: u64 = 30;
+/// The largest body of a web address: the limit of `file_read` (`MAX_VIEW_BYTES` in info.rs).
+const FETCH_BYTES: u64 = 50 * 1024 * 1024;
+/// The note of a show step whose web address loaded when Dispatch ended.
+const FETCH_ORPHAN_NOTE: &str = "Dispatch ended while the page loaded";
 
 /// One step of an action, as the definitions file and the editor write it.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -64,7 +71,8 @@ pub enum Step {
         auto: bool,
     },
     /// The viewer of the window that clicked Run shows a source: a file or folder of the project
-    /// (relative to the project folder, or absolute), or `{output}`, the output of the step before.
+    /// (relative to the project folder, or absolute), `{output}`, the output of the step before,
+    /// or a web address (`http://` or `https://`).
     Show { source: String },
 }
 
@@ -108,7 +116,7 @@ pub struct RunStep {
     output: String,
     /// Why the step failed or waits, in words; empty else.
     note: String,
-    /// The process of Dispatch that runs the command, while it runs.
+    /// The process of Dispatch that runs the command or loads the web address, while it runs.
     owner: Option<u32>,
     /// The run whose result this step shows, when a start at a later step copied it; empty when
     /// the step ran in this run.
@@ -165,7 +173,7 @@ impl ActionList {
     }
 }
 
-/// The command steps that this process runs now, by the path of their run file.
+/// The command steps and the web loads that this process runs now, by the path of their run file.
 static RUNNING: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 fn now() -> u64 {
@@ -282,15 +290,16 @@ fn alive(pid: u32) -> bool {
     crate::core::info::parent_pids().contains_key(&pid)
 }
 
-/// Marks a command step `failed` whose process ended with Dispatch: this process does not run it,
-/// and the process of Dispatch that started it ended. Writes the changed run files.
+/// Marks a command step or the load of a web address `failed` whose process ended with Dispatch:
+/// this process does not run it, and the process of Dispatch that started it ended. Writes the
+/// changed run files.
 fn mark_orphans(project: &Project, runs: &mut [ActionRun]) {
     let own = std::process::id();
     let running = RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
     for run in runs.iter_mut().filter(|run| run.state == "running") {
         let path = run_path(project, &run.id);
         let Some(step) = run.steps.get_mut(run.step) else { continue };
-        if step.kind != "command" || step.state != "running" {
+        if !matches!(step.kind.as_str(), "command" | "show") || step.state != "running" {
             continue;
         }
         let orphan = match step.owner {
@@ -302,13 +311,14 @@ fn mark_orphans(project: &Project, runs: &mut [ActionRun]) {
             continue;
         }
         let at = now();
+        let note = if step.kind == "show" { FETCH_ORPHAN_NOTE } else { ORPHAN_NOTE };
         step.state = "failed".to_string();
         step.ended = Some(at);
         step.owner = None;
-        step.note = ORPHAN_NOTE.to_string();
+        step.note = note.to_string();
         run.state = "failed".to_string();
         run.ended = Some(at);
-        run.note = format!("step {}: {ORPHAN_NOTE}", run.step + 1);
+        run.note = format!("step {}: {note}", run.step + 1);
         if let Err(error) = write_run(project, run) {
             eprintln!("action run not marked failed: {error}");
         }
@@ -408,7 +418,8 @@ pub fn action_save(cwd: String, action: Action) -> Result<ActionList, String> {
     Ok(list(&project))
 }
 
-/// Deletes an action and its run files. Refused while a run of it runs or waits.
+/// Deletes an action, its run files and the copies of their web addresses. Refused while a run of
+/// it runs or waits.
 pub fn action_delete(cwd: String, id: String) -> Result<ActionList, String> {
     let project = Project::find(&cwd)?;
     let lock = pipeline::read_lock(&project.root);
@@ -423,6 +434,7 @@ pub fn action_delete(cwd: String, id: String) -> Result<ActionList, String> {
     write_definitions(&project, actions)?;
     for run in runs.iter().filter(|run| run.action == id) {
         let _ = fs::remove_file(run_path(&project, &run.id));
+        let _ = fs::remove_dir_all(web_dir(&project).join(&run.id));
     }
     Ok(list(&project))
 }
@@ -621,6 +633,8 @@ enum Todo {
     Claude(usize),
     /// A show step: `advance` resolves it at once, under the lock.
     Show(usize),
+    /// A show step with a web address: it loads in a thread, without the lock.
+    Fetch(usize),
 }
 
 fn advance(cwd: &str, run_id: &str, start: Start) -> Result<ActionRun, String> {
@@ -697,6 +711,10 @@ fn advance(cwd: &str, run_id: &str, start: Start) -> Result<ActionRun, String> {
             spawn_command(&project, &run, index);
             Ok(run)
         }
+        Todo::Fetch(index) => {
+            spawn_fetch(&project, &run, index);
+            Ok(run)
+        }
         Todo::Claude(index) => match start_claude(&project, &run, index, start) {
             Ok(()) => Ok(run),
             Err(error) => {
@@ -745,6 +763,10 @@ fn start_next(project: &Project, run: &mut ActionRun, at: u64) -> Todo {
         step.owner = Some(std::process::id());
         RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(path);
         Todo::Command(index)
+    } else if step.kind == "show" && is_web(&step.text) {
+        step.owner = Some(std::process::id());
+        RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).push(path);
+        Todo::Fetch(index)
     } else if step.kind == "show" {
         Todo::Show(index)
     } else {
@@ -759,8 +781,12 @@ const FOLDER_LINES: usize = 1000;
 /// done or failed, and settles the run as `finish_command` does. A file stat and a folder listing
 /// are quick, so no thread runs it.
 fn settle_show(project: &Project, run: &mut ActionRun, index: usize) {
-    let at = now();
     let result = resolve_show(project, run, index);
+    settle_step(run, index, result, now());
+}
+
+/// Marks a show step done or failed by its result, and settles the run as `finish_command` does.
+fn settle_step(run: &mut ActionRun, index: usize, result: Result<(), String>, at: u64) {
     let last = index + 1 == run.steps.len();
     let Some(step) = run.steps.get_mut(index) else { return };
     step.ended = Some(at);
@@ -834,8 +860,8 @@ fn resolve_show(project: &Project, run: &mut ActionRun, index: usize) -> Result<
             }
             _ => return Err("the step before it is a show step".to_string()),
         }
-    } else if source.starts_with("http://") || source.starts_with("https://") {
-        return Err("a web address as a source comes with the part \"A web address as the source of a show step\"; today the window shows files, folders and the output of the step before".to_string());
+    } else if is_web(&source) {
+        return Err("a web address loads in its own thread".to_string());
     } else {
         let given = PathBuf::from(&source);
         let path = if given.is_absolute() { given } else { project.root.join(given) };
@@ -853,6 +879,169 @@ fn resolve_show(project: &Project, run: &mut ActionRun, index: usize) -> Result<
         step.output = output;
     }
     Ok(())
+}
+
+/// Whether the source of a show step is a web address: `http://` or `https://`, without case.
+fn is_web(source: &str) -> bool {
+    let source = source.trim().to_ascii_lowercase();
+    source.starts_with("http://") || source.starts_with("https://")
+}
+
+/// The folder of the copies of the web addresses of the show steps: one folder per run.
+fn web_dir(project: &Project) -> PathBuf {
+    project.actions_dir().join("web")
+}
+
+/// An error and its causes in one line.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut cause = error.source();
+    while let Some(next) = cause {
+        let part = next.to_string();
+        if !text.contains(&part) {
+            text = format!("{text}: {part}");
+        }
+        cause = next.source();
+    }
+    text
+}
+
+/// Loads a web address with a time limit of `seconds` and at most `most` bytes. Gives the content
+/// type without its parameters, in lower case, and the body. Redirects are followed; an answer
+/// that is not a success is an error (user decision 2).
+fn fetch(url: &str, seconds: u64, most: u64) -> Result<(String, Vec<u8>), String> {
+    use std::io::Read;
+    let timeout = format!("the address did not answer within {seconds} s");
+    let larger = if most >= 1024 * 1024 { format!("the page is larger than {} MB", most / (1024 * 1024)) } else { format!("the page is larger than {most} bytes") };
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(seconds))
+        .user_agent(concat!("Dispatch/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| format!("no web client: {}", error_chain(&error)))?;
+    let response = client.get(url).send().map_err(|error| if error.is_timeout() { timeout.clone() } else { format!("could not load {url}: {}", error_chain(&error.without_url())) })?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("the address answered {} {}", status.as_u16(), status.canonical_reason().unwrap_or("")).trim_end().to_string());
+    }
+    if response.content_length().is_some_and(|length| length > most) {
+        return Err(larger);
+    }
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().unwrap_or("").trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let mut body = Vec::new();
+    response.take(most + 1).read_to_end(&mut body).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::TimedOut || error.to_string().contains("timed out") {
+            timeout.clone()
+        } else {
+            format!("could not load {url}: {}", error_chain(&error))
+        }
+    })?;
+    if body.len() as u64 > most {
+        return Err(larger);
+    }
+    Ok((content_type, body))
+}
+
+/// The file extension of a picture by the part of its content type after `image/`, or by the
+/// extension of its path.
+fn image_extension(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "png" => "png",
+        "jpeg" | "jpg" => "jpg",
+        "gif" => "gif",
+        "webp" => "webp",
+        "bmp" => "bmp",
+        "svg+xml" | "svg" => "svg",
+        "x-icon" | "vnd.microsoft.icon" | "ico" => "ico",
+        _ => return None,
+    })
+}
+
+/// The view and the file extension of the copy of a web address, by its content type; an empty
+/// type goes by the extension of the path of the address.
+fn web_view(content_type: &str, url: &str) -> Result<(&'static str, &'static str), String> {
+    let path = reqwest::Url::parse(url).map(|url| url.path().to_ascii_lowercase()).unwrap_or_default();
+    let markdown_path = path.ends_with(".md") || path.ends_with(".markdown");
+    let picture = content_type.strip_prefix("image/").and_then(image_extension);
+    match content_type {
+        "text/html" | "application/xhtml+xml" => Ok(("html", "html")),
+        "text/markdown" | "text/x-markdown" => Ok(("markdown", "md")),
+        "text/plain" if markdown_path => Ok(("markdown", "md")),
+        "application/json" | "application/xml" => Ok(("text", "txt")),
+        kind if kind.starts_with("text/") => Ok(("text", "txt")),
+        _ if picture.is_some() => Ok(("image", picture.unwrap_or("png"))),
+        "" => {
+            let extension = Path::new(&path).extension().map(|extension| extension.to_string_lossy().into_owned()).unwrap_or_default();
+            Ok(match view_of(Path::new(&path)) {
+                "image" => ("image", image_extension(&extension).unwrap_or("png")),
+                "markdown" => ("markdown", "md"),
+                "html" => ("html", "html"),
+                _ => ("text", "txt"),
+            })
+        }
+        kind => Err(format!("the address gives {kind}, which the window cannot show")),
+    }
+}
+
+/// Loads the web address of a show step in a thread without the lock, writes the body to its copy
+/// file `web/<run-id>/<step number>.<extension>`, and writes the end of the step under the lock.
+fn spawn_fetch(project: &Project, run: &ActionRun, index: usize) {
+    let cwd = project.root.to_string_lossy().into_owned();
+    let folder = web_dir(project).join(&run.id);
+    let run_id = run.id.clone();
+    let url = run.steps[index].text.trim().to_string();
+    let thread = std::thread::Builder::new().name(format!("action {run_id}")).spawn(move || {
+        let result = fetch(&url, FETCH_SECONDS, FETCH_BYTES).and_then(|(content_type, body)| {
+            let (view, extension) = web_view(&content_type, &url)?;
+            let copy = folder.join(format!("{}.{extension}", index + 1));
+            fs::create_dir_all(&folder).map_err(|error| format!("the folder {} could not be made: {error}", folder.display()))?;
+            fs::write(&copy, body).map_err(|error| format!("the copy {} could not be written: {error}", copy.display()))?;
+            Ok((view.to_string(), copy.display().to_string()))
+        });
+        finish_fetch(&cwd, &run_id, index, result);
+    });
+    if let Err(error) = thread {
+        finish_fetch(&project.root.to_string_lossy(), &run.id, index, Err(format!("no thread: {error}")));
+    }
+}
+
+/// Writes the end of the load of a web address: the view and the copy of the step, or the reason
+/// why it failed; then deletes the copies of runs that have no run file.
+fn finish_fetch(cwd: &str, run_id: &str, index: usize, result: Result<(String, String), String>) {
+    let Ok(project) = Project::find(cwd) else { return };
+    let path = run_path(&project, run_id);
+    let lock = pipeline::read_lock(&project.root);
+    let _held = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match read_run(&project, run_id) {
+        Ok(mut run) => {
+            if let Some(step) = run.steps.get_mut(index) {
+                step.owner = None;
+                if let Ok((view, target)) = &result {
+                    step.view = view.clone();
+                    step.target = target.clone();
+                    step.output = String::new();
+                }
+            }
+            settle_step(&mut run, index, result.map(|_| ()), now());
+            if let Err(error) = write_run(&project, &run) {
+                eprintln!("action run not written: {error}");
+            }
+        }
+        Err(error) => eprintln!("action run not read after its web address: {error}"),
+    }
+    if let Ok(entries) = fs::read_dir(web_dir(&project)) {
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if entry.path().is_dir() && !run_path(&project, &name).exists() {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    RUNNING.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).retain(|known| *known != path);
 }
 
 /// Starts the task of a Claude step: opens its ticket in In progress, writes the brief and starts
@@ -1440,11 +1629,8 @@ mod tests {
         assert_eq!((run.state.as_str(), run.steps[0].state.as_str(), run.note.as_str()), ("failed", "failed", "step 1 failed"), "{run:?}");
         assert!(run.steps[0].note.starts_with("no file or folder ") && run.steps[0].note.contains("none.md"), "{run:?}");
         assert!(!root.join("never.txt").exists());
-        // A web address comes with a later part.
-        save(&cwd, "web", vec![show("https://example.com/")]);
-        let run = action_run(cwd.clone(), "web".to_string()).unwrap();
-        assert_eq!(run.state, "failed");
-        assert!(run.steps[0].note.contains("a web address as a source comes with the part"), "{run:?}");
+        // A web address loads in its own thread (show_step_loads_a_web_address).
+        assert!(is_web("https://example.com/") && is_web(" HTTP://x") && !is_web("docs/x.md"));
         // The output of the step before, as step 1.
         save(&cwd, "first", vec![show("{output}")]);
         let run = action_run(cwd.clone(), "first".to_string()).unwrap();
@@ -1455,6 +1641,112 @@ mod tests {
         assert!(refused("a\nb").contains("more than one line"));
         let text = fs::read_to_string(project.actions_file()).unwrap();
         assert!(text.contains("\"kind\": \"show\"") && text.contains("\"source\": \"docs\""), "{text}");
+        clean(&project);
+    }
+
+    /// A local web server for the show tests: it answers each request by the path of its request
+    /// line, and runs until the test process ends.
+    fn web_server() -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().map_while(Result::ok) {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap_or(0) == 1 {
+                    head.push(byte[0]);
+                }
+                let head = String::from_utf8_lossy(&head).into_owned();
+                let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let (code, kind, body) = match path.as_str() {
+                    "/page" => ("200 OK", "text/html; charset=utf-8", "<h1>A page</h1>"),
+                    "/notes.md" => ("200 OK", "text/plain", "# Notes\n"),
+                    "/file.pdf" => ("200 OK", "application/pdf", "%PDF-1.4"),
+                    "/twenty" => ("200 OK", "text/plain", "twenty bytes of text"),
+                    _ => ("404 Not Found", "text/html", "<p>no page</p>"),
+                };
+                let answer = format!("HTTP/1.1 {code}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                let _ = stream.write_all(answer.as_bytes());
+            }
+        });
+        address
+    }
+
+    #[test]
+    fn show_step_loads_a_web_address() {
+        let project = git_scratch("actions-web");
+        let cwd = cwd_of(&project);
+        let base = web_server();
+        let show = |source: &str| Step::Show { source: source.to_string() };
+        // An HTML page: the step runs in a thread, then the run ends done with a copy of the body.
+        save(&cwd, "page", vec![show(&format!("{base}/page"))]);
+        let run = action_run(cwd.clone(), "page".to_string()).unwrap();
+        let run = wait_step(&cwd, &run.id, 0);
+        assert_eq!((run.state.as_str(), run.steps[0].state.as_str(), run.steps[0].view.as_str()), ("done", "done", "html"), "{run:?}");
+        let copy = PathBuf::from(&run.steps[0].target);
+        assert!(copy.starts_with(project.actions_dir().join("web").join(&run.id)), "{run:?}");
+        assert_eq!(fs::read_to_string(&copy).unwrap(), "<h1>A page</h1>");
+        assert_eq!(run.steps[0].owner, None);
+        // Plain text at a path that ends in .md: Markdown.
+        save(&cwd, "notes", vec![show(&format!("{base}/notes.md"))]);
+        let run = action_run(cwd.clone(), "notes".to_string()).unwrap();
+        let run = wait_step(&cwd, &run.id, 0);
+        assert_eq!((run.state.as_str(), run.steps[0].view.as_str()), ("done", "markdown"), "{run:?}");
+        assert!(run.steps[0].target.ends_with("1.md"), "{run:?}");
+        // An error answer fails the step and names the answer.
+        save(&cwd, "missing", vec![show(&format!("{base}/missing"))]);
+        let run = action_run(cwd.clone(), "missing".to_string()).unwrap();
+        let run = wait_step(&cwd, &run.id, 0);
+        assert_eq!((run.state.as_str(), run.steps[0].state.as_str(), run.note.as_str()), ("failed", "failed", "step 1 failed"), "{run:?}");
+        assert!(run.steps[0].note.contains("404"), "{run:?}");
+        // A content type that the window cannot show.
+        save(&cwd, "pdf", vec![show(&format!("{base}/file.pdf"))]);
+        let run = action_run(cwd.clone(), "pdf".to_string()).unwrap();
+        let run = wait_step(&cwd, &run.id, 0);
+        assert_eq!(run.state, "failed");
+        assert!(run.steps[0].note.contains("cannot show"), "{run:?}");
+        // An address that does not answer.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        save(&cwd, "none", vec![show(&format!("http://127.0.0.1:{port}/"))]);
+        let run = action_run(cwd.clone(), "none".to_string()).unwrap();
+        let run = wait_step(&cwd, &run.id, 0);
+        assert_eq!(run.state, "failed");
+        assert!(run.steps[0].note.starts_with("could not load"), "{run:?}");
+        // A body above the limit.
+        assert!(fetch(&format!("{base}/twenty"), 30, 10).unwrap_err().contains("larger than"));
+        assert_eq!(web_view("image/svg+xml", "https://example.com/logo").unwrap(), ("image", "svg"));
+        assert_eq!(web_view("", "https://example.com/a.PNG").unwrap(), ("image", "png"));
+        // A show step that loaded when Dispatch ended: failed at the next list.
+        let mut orphan = read_run(&Project::find(&cwd).unwrap(), &run.id).unwrap();
+        orphan.id = "page-orphan".to_string();
+        orphan.state = "running".to_string();
+        orphan.ended = None;
+        orphan.note.clear();
+        orphan.steps[0].state = "running".to_string();
+        orphan.steps[0].owner = None;
+        write_run(&Project::find(&cwd).unwrap(), &orphan).unwrap();
+        let listed = list(&Project::find(&cwd).unwrap());
+        let orphan = listed.runs.iter().find(|run| run.id == "page-orphan").unwrap();
+        assert_eq!((orphan.state.as_str(), orphan.steps[0].note.as_str()), ("failed", FETCH_ORPHAN_NOTE), "{orphan:?}");
+        // The copies go with their action.
+        let page = listed.runs.iter().find(|run| run.action == "page").unwrap().id.clone();
+        assert!(project.actions_dir().join("web").join(&page).is_dir());
+        action_delete(cwd.clone(), "page".to_string()).unwrap();
+        assert!(!project.actions_dir().join("web").join(&page).exists());
+        clean(&project);
+    }
+
+    #[test]
+    #[ignore = "needs the internet"]
+    fn a_real_web_address_loads() {
+        let project = git_scratch("actions-web-real");
+        let cwd = cwd_of(&project);
+        save(&cwd, "real", vec![Step::Show { source: "https://example.com/".to_string() }]);
+        let run = action_run(cwd.clone(), "real".to_string()).unwrap();
+        let run = wait_step(&cwd, &run.id, 0);
+        assert_eq!((run.state.as_str(), run.steps[0].view.as_str()), ("done", "html"), "{run:?}");
+        assert!(fs::read_to_string(&run.steps[0].target).unwrap().contains("Example Domain"), "{run:?}");
         clean(&project);
     }
 

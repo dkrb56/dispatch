@@ -224,18 +224,34 @@ function linkedText(text: string): HTMLElement {
 /**
  * An HTML page without its scripts and forms (user decision 1): the sanitizer keeps the look (its
  * `style` tags too, with `FORCE_BODY`), and a shadow root keeps the styles of the page inside and
- * the styles of Dispatch outside.
+ * the styles of Dispatch outside. A page of a web address has `base`: its relative pictures and
+ * links then point to its site (ticket a-web-address-as-the-source-of-a-show, user decision 3).
  */
-function htmlView(text: string): HTMLElement {
+function htmlView(text: string, base: string): HTMLElement {
   const host = document.createElement("div");
   host.className = "viewer-html";
   const root = host.attachShadow({ mode: "open" });
   root.innerHTML = DOMPurify.sanitize(text, { FORCE_BODY: true, FORBID_TAGS: ["form"] });
+  if (/^https?:\/\//i.test(base)) {
+    for (const [selector, attribute] of [["a[href]", "href"], ["img[src]", "src"]]) {
+      for (const element of root.querySelectorAll(selector)) {
+        const value = element.getAttribute(attribute) ?? "";
+        try {
+          element.setAttribute(attribute, new URL(value, base).href);
+        } catch {
+          // A value that does not parse stays as it is.
+        }
+      }
+    }
+  }
   return host;
 }
 
-/** The content of the viewer for the bytes of a file: an image, a Markdown file, an HTML page or a text. */
-async function renderContent(kind: string, path: string, bytes: ArrayBuffer): Promise<HTMLElement> {
+/**
+ * The content of the viewer for the bytes of a file: an image, a Markdown file, an HTML page or a
+ * text. `base` is the web address of a loaded page, else empty.
+ */
+async function renderContent(kind: string, path: string, bytes: ArrayBuffer, base = ""): Promise<HTMLElement> {
   if (kind === "image") {
     const image = new Image();
     image.src = imageUrl({ path } as FileEntry, bytes);
@@ -254,7 +270,7 @@ async function renderContent(kind: string, path: string, bytes: ArrayBuffer): Pr
     if (files) content.prepend(files);
     return content;
   }
-  if (kind === "html") return htmlView(text);
+  if (kind === "html") return htmlView(text, base);
   return linkedText(text);
 }
 
@@ -296,8 +312,10 @@ export async function openViewer(entry: FileEntry, list: FileEntry[] = []): Prom
 export interface ShownStep {
   /** `text`, `markdown`, `image`, `html` or `folder`. */
   view: string;
-  /** The absolute path of the file or folder on the host; empty for the output of a command step. */
+  /** The absolute path of the file or folder on the host, or of the copy of a web address; empty for the output of a command step. */
   target: string;
+  /** The source of the step: a path, `{output}` or a web address. */
+  text: string;
   /** The folder listing, or the output of the command step before. */
   output: string;
 }
@@ -336,19 +354,21 @@ function folderView(host: HostId, folder: string, listing: string): HTMLElement 
 
 /**
  * Shows the result of a show step of an action (ticket actions-a-step-that-opens-a-viewer): a file
- * of the host by its view, a folder as a list, or the output of the command step before it.
+ * of the host by its view, a folder as a list, the output of the command step before it, or the
+ * copy of a web address that the host loaded.
  */
 export async function openShown(host: HostId, step: ShownStep, title: string): Promise<void> {
   const kind = step.view === "image" || step.view === "markdown" ? step.view : "other";
   const entry: FileEntry = { path: step.target || title, kind, modified: 0, size: 0, host };
+  const web = /^https?:\/\//i.test(step.text.trim()) ? step.text.trim() : "";
   viewerList = [];
-  startViewer(entry, title, host === LOCAL && step.target !== "" && step.view !== "folder");
+  startViewer(entry, title, host === LOCAL && step.target !== "" && step.view !== "folder" && !web);
 
   let content: HTMLElement;
   try {
     if (step.view === "folder") content = folderView(host, step.target, step.output);
     else if (!step.target) content = linkedText(step.output);
-    else content = await renderContent(step.view, step.target, await readFile(host, step.target));
+    else content = await renderContent(step.view, step.target, await readFile(host, step.target), web);
   } catch (error) {
     content = document.createElement("p");
     content.textContent = `Could not show the file: ${error}`;
