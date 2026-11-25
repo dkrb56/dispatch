@@ -829,7 +829,7 @@ dependencies = [
 
 [[package]]
 name = "dispatch"
-version = "0.1.97"
+version = "0.1.98"
 dependencies = [
  "argon2",
  "base64 0.22.1",

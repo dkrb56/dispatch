@@ -2,6 +2,10 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.98 (2026-11-25)
+- Clearer texts on the three Where the work runs cards.
+- A newer running run hides the old waiting state of the report row.
+
 ## 0.1.97 (2026-11-25)
 - No merge before the work run reports done or while an answer waits; a new work run skips the folder of a task that waits for an answer.
 - Topic group boxes are as wide as their title bar; a dragged group keeps a slot of its normal size, so its resize moves no other group.

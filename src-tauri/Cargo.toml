@@ -1,6 +1,6 @@
 [package]
 name = "dispatch"
-version = "0.1.97"
+version = "0.1.98"
 description = "Run Claude Code as a team: one triage chat, background workers, and you deciding"
 authors = ["dkrb56"]
 license = "Apache-2.0"
