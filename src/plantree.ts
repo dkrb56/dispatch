@@ -416,6 +416,119 @@ export function withGroupInSection(groups: readonly PlanGroup[], groupId: string
   });
 }
 
+/** One live section of the board (ticket group-everything-inside-a-selection-box). */
+export interface PlanSection {
+  group: PlanGroup;
+  /** Its direct live members: topic group ids and section ids, in its order. */
+  members: string[];
+  /** The ids of all topic groups inside it at any depth, in order. */
+  topics: string[];
+  /** The ids of the sections that hold it, the outermost first; empty for a section of the board. */
+  path: string[];
+}
+
+/**
+ * The live sections of the list with the rules of the save of the host: list order, a member in the
+ * first section only, never the section itself and never a section that holds this section at any
+ * depth. A member is a topic id of `present` or a live section; a section lives while it holds a live
+ * member. The outer sections come first; `holder` maps each member to the id of its section.
+ */
+export function planSections(groups: readonly PlanGroup[], present: ReadonlySet<string>): { sections: PlanSection[]; holder: Map<string, string> } {
+  const sectionIds = new Set(groups.filter(isSection).map((group) => group.id));
+  const links = new Map<string, string[]>();
+  const held = new Set<string>();
+  const reaches = (from: string, to: string): boolean => {
+    const stack = [from];
+    const seen = new Set<string>();
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      if (id === to) return true;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      stack.push(...(links.get(id) ?? []));
+    }
+    return false;
+  };
+  const byId = new Map<string, PlanGroup>();
+  for (const group of groups) {
+    if (!isSection(group) || links.has(group.id)) continue;
+    byId.set(group.id, group);
+    const members: string[] = [];
+    for (const id of group.groups ?? []) {
+      const fits = present.has(id) || (sectionIds.has(id) && id !== group.id && !reaches(id, group.id));
+      if (fits && !held.has(id)) {
+        held.add(id);
+        members.push(id);
+      }
+    }
+    links.set(group.id, members);
+  }
+  // A section without a live member goes, and leaves its holder; again until nothing changes.
+  for (;;) {
+    const dead = [...links].filter(([, members]) => members.length === 0).map(([id]) => id);
+    if (dead.length === 0) break;
+    for (const id of dead) links.delete(id);
+    for (const [id, members] of links) links.set(id, members.filter((one) => !dead.includes(one)));
+  }
+  const holder = new Map<string, string>();
+  for (const [id, members] of links) for (const one of members) holder.set(one, id);
+  const pathOf = (id: string): string[] => {
+    const path: string[] = [];
+    for (let up = holder.get(id); up !== undefined; up = holder.get(up)) path.unshift(up);
+    return path;
+  };
+  const topicsOf = (id: string): string[] => (links.get(id) ?? []).flatMap((one) => (links.has(one) ? topicsOf(one) : [one]));
+  const sections = [...links].map(([id, members]) => ({ group: byId.get(id)!, members, topics: topicsOf(id), path: pathOf(id) }));
+  sections.sort((a, b) => a.path.length - b.path.length);
+  return { sections, holder };
+}
+
+/**
+ * The list after "Make a section" (ticket group-everything-inside-a-selection-box). When every member
+ * has the same holder, the new section takes the slot of the first member in that holder and the
+ * members leave it; else each member leaves its holder. A member section opens; a topic group without
+ * a place gets its place of `places`, so nothing moves (user decisions 3 and 4). The new section stands first.
+ */
+export function withNewSection(
+  groups: readonly PlanGroup[],
+  members: readonly string[],
+  section: PlanGroup,
+  places: ReadonlyMap<string, { x: number; y: number }>,
+): PlanGroup[] {
+  const chosen = new Set(members);
+  const holderOf = (id: string) => groups.find((group) => isSection(group) && (group.groups ?? []).includes(id))?.id ?? null;
+  const holders = new Set(members.map(holderOf));
+  const shared = holders.size === 1 ? [...holders][0] : null;
+  let list: PlanGroup[];
+  if (shared !== null) {
+    list = groups.map((group) => {
+      if (group.id !== shared) return group;
+      const own = group.groups ?? [];
+      const first = own.findIndex((id) => chosen.has(id));
+      return { ...group, groups: own.flatMap((id, at) => (at === first ? [section.id] : chosen.has(id) ? [] : [id])) };
+    });
+  } else list = members.reduce<PlanGroup[]>((now, id) => withGroupInSection(now, id, null), [...groups]);
+  list = list.map((group) => {
+    if (isSection(group)) return chosen.has(group.id) ? { ...group, collapsed: false } : group;
+    const place = places.get(group.id);
+    return group.auto && !group.place && place ? { ...group, place: { x: place.x, y: place.y } } : group;
+  });
+  return [{ ...section, groups: [...members] }, ...list];
+}
+
+/** The list without the section `id`; when another section held it, its members take its slot there, so Remove keeps the groups. */
+export function withoutSection(groups: readonly PlanGroup[], id: string): PlanGroup[] {
+  const gone = groups.find((group) => group.id === id);
+  const inner = gone?.groups ?? [];
+  let moved = false;
+  return groups.flatMap((group) => {
+    if (group.id === id) return [];
+    if (moved || !isSection(group) || !(group.groups ?? []).includes(id)) return [group];
+    moved = true;
+    return [{ ...group, groups: (group.groups ?? []).flatMap((one) => (one === id ? inner.filter((member) => member !== group.id) : [one])) }];
+  });
+}
+
 /** The node id of a collapsed group in the tree; the prefix keeps it apart from every ticket id. */
 export const GROUP_PREFIX = "group:";
 
@@ -862,6 +975,12 @@ export interface PlanBlocks {
  * section) stand next to each other at the place of the first of them. A set starts a new line, the
  * block after it starts a new line too, and the first line of a set is one grid row lower, so the
  * title bar of the section box (`setBoxes`) overlaps no other box.
+ *
+ * Ticket group-everything-inside-a-selection-box: `sets` is the chain of sections of a block, the
+ * outermost first (`set` means `[set]`). The blocks with the same first set stand together, and inside
+ * them the blocks with the same next set, at any depth. A line holds the blocks of one chain only, and
+ * a line whose chain starts k sets that the line above has not stands k grid rows lower, one for each
+ * title bar of a new section box.
  */
 export function planBlocks(
   blocks: readonly {
@@ -872,6 +991,7 @@ export function planBlocks(
     subs?: readonly { title: string; ids: readonly string[] }[];
     free?: boolean;
     set?: string;
+    sets?: readonly string[];
   }[],
   layout: PlanLayout,
   perRow = 4,
@@ -882,14 +1002,22 @@ export function planBlocks(
   if (blocks.length === 0) return { layout, blocks: [] };
   const steps = planSteps(size);
   const across = Math.max(1, Math.floor(perRow));
-  // The blocks of one set follow the first of them.
-  const sets = new Set<string>();
-  const ordered = blocks.flatMap((block) => {
-    if (block.set === undefined) return [block];
-    if (sets.has(block.set)) return [];
-    sets.add(block.set);
-    return blocks.filter((one) => one.set === block.set);
-  });
+  // The blocks of one set follow the first of them, at each depth of the chain.
+  const chainOf = (block: (typeof blocks)[number]): readonly string[] => block.sets ?? (block.set !== undefined ? [block.set] : []);
+  const together = (list: readonly (typeof blocks)[number][], depth: number): (typeof blocks)[number][] => {
+    const done = new Set<string>();
+    return list.flatMap((block) => {
+      const set = chainOf(block)[depth];
+      if (set === undefined) return [block];
+      if (done.has(set)) return [];
+      done.add(set);
+      return together(
+        list.filter((one) => chainOf(one)[depth] === set),
+        depth + 1,
+      );
+    });
+  };
+  const ordered = together(blocks, 0);
   const sized = ordered.map((block) => {
     const subs = (block.subs ?? []).filter((sub) => sub.ids.length > 0);
     const columns = Math.max(1, Math.min(across, Math.max(block.shown.length, ...subs.map((sub) => sub.ids.length))));
@@ -906,18 +1034,22 @@ export function planBlocks(
     // block (with a saved place) keeps a slot of its automatic size, so its saved size moves no block.
     const slotWidth = block.free ? autoWidth : boxWidth;
     const span = Math.max(columns, Math.ceil((slotWidth - 2 * PLAN_BOX_PAD - size.width) / steps.column) + 1);
-    return { ...block, subs, columns, rows, autoWidth, aboutAuto, boxWidth, slotWidth, span };
+    return { ...block, subs, columns, rows, autoWidth, aboutAuto, boxWidth, slotWidth, span, chain: chainOf(block) };
   });
-  // The lines: as many blocks as fit side by side; a line holds the blocks of one set or of none.
+  // The lines: as many blocks as fit side by side; a line holds the blocks of one chain of sets.
   const lines: (typeof sized)[] = [];
-  // The lines that start a set: they stand one grid row lower.
-  const setStarts = new Set<number>();
+  // The grid rows that each line stands lower: one per set that its chain starts.
+  const setStarts = new Map<number, number>();
+  const sameChain = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((id, at) => b[at] === id);
   for (const block of sized) {
     const line = lines[lines.length - 1];
     const used = line ? line.reduce((sum, one) => sum + one.span, 0) : across;
-    if (line && used + block.span <= across && line[0].set === block.set) line.push(block);
+    if (line && used + block.span <= across && sameChain(line[0].chain, block.chain)) line.push(block);
     else {
-      if (block.set !== undefined && (!line || line[0].set !== block.set)) setStarts.add(lines.length);
+      const above = line ? line[0].chain : [];
+      let shared = 0;
+      while (shared < above.length && shared < block.chain.length && above[shared] === block.chain[shared]) shared += 1;
+      if (block.chain.length > shared) setStarts.set(lines.length, block.chain.length - shared);
       lines.push([block]);
     }
   }
@@ -926,7 +1058,7 @@ export function planBlocks(
   const slots: PlanRect[] = [];
   let top = Math.ceil((layout.height - PLAN_PAD + PLAN_GRID) / PLAN_GRID) * PLAN_GRID;
   for (const [index, line] of lines.entries()) {
-    if (setStarts.has(index)) top += PLAN_GRID;
+    top += (setStarts.get(index) ?? 0) * PLAN_GRID;
     const width = line.reduce((sum, one) => sum + one.span, 0);
     let left = snap(layout.root.x - ((width - 1) / 2) * steps.column);
     let bottom = top;
@@ -1065,15 +1197,50 @@ export function placeTopicBlocks(
  * without a placed topic group has no box.
  */
 export function setBoxes(blocks: readonly PlanBlockPlace[], sets: readonly { id: string; members: readonly string[] }[]): { id: string; box: PlanRect }[] {
-  return sets.flatMap((set) => {
-    const boxes = blocks.filter((block) => set.members.includes(block.id)).map((block) => block.box);
-    if (boxes.length === 0) return [];
-    const x1 = Math.min(...boxes.map((box) => box.x));
-    const y1 = Math.min(...boxes.map((box) => box.y));
-    const x2 = Math.max(...boxes.map((box) => box.x + box.width));
-    const y2 = Math.max(...boxes.map((box) => box.y + box.height));
-    return [{ id: set.id, box: { x: x1 - PLAN_BOX_PAD, y: y1 - PLAN_BOX_PAD - PLAN_BOX_TITLE, width: x2 - x1 + 2 * PLAN_BOX_PAD, height: y2 - y1 + 2 * PLAN_BOX_PAD + PLAN_BOX_TITLE } }];
-  });
+  // Ticket group-everything-inside-a-selection-box: a member may be another set of the list; its box counts.
+  const setOf = new Map(sets.map((set) => [set.id, set]));
+  const boxOf = new Map<string, PlanRect | null>();
+  const busy = new Set<string>();
+  const compute = (id: string): PlanRect | null => {
+    if (boxOf.has(id)) return boxOf.get(id)!;
+    const set = setOf.get(id);
+    if (!set || busy.has(id)) return null;
+    busy.add(id);
+    const boxes = set.members.flatMap((member) => {
+      if (setOf.has(member)) {
+        const inner = compute(member);
+        return inner ? [inner] : [];
+      }
+      return blocks.filter((block) => block.id === member).map((block) => block.box);
+    });
+    busy.delete(id);
+    let box: PlanRect | null = null;
+    if (boxes.length > 0) {
+      const x1 = Math.min(...boxes.map((one) => one.x));
+      const y1 = Math.min(...boxes.map((one) => one.y));
+      const x2 = Math.max(...boxes.map((one) => one.x + one.width));
+      const y2 = Math.max(...boxes.map((one) => one.y + one.height));
+      box = { x: x1 - PLAN_BOX_PAD, y: y1 - PLAN_BOX_PAD - PLAN_BOX_TITLE, width: x2 - x1 + 2 * PLAN_BOX_PAD, height: y2 - y1 + 2 * PLAN_BOX_PAD + PLAN_BOX_TITLE };
+    }
+    boxOf.set(id, box);
+    return box;
+  };
+  // The outer boxes first, so an inner box draws on top of its holder.
+  const holder = new Map<string, string>();
+  for (const set of sets) for (const member of set.members) if (setOf.has(member) && !holder.has(member) && member !== set.id) holder.set(member, set.id);
+  const depth = (id: string) => {
+    let count = 0;
+    const seen = new Set([id]);
+    for (let up = holder.get(id); up !== undefined && !seen.has(up); up = holder.get(up)) {
+      seen.add(up);
+      count += 1;
+    }
+    return count;
+  };
+  return sets
+    .map((set, at) => ({ id: set.id, box: compute(set.id), depth: depth(set.id), at }))
+    .sort((a, b) => a.depth - b.depth || a.at - b.at)
+    .flatMap(({ id, box }) => (box ? [{ id, box }] : []));
 }
 
 /** The ids that a ticket comes after, by the arrows of the list. */
@@ -1110,6 +1277,27 @@ export function toggleSelection(selected: ReadonlySet<string>, id: string, exten
   if (next.has(id)) next.delete(id);
   else next.add(id);
   return next;
+}
+
+/**
+ * The ids whose whole box stands inside the selection box (ticket group-everything-inside-a-selection-box,
+ * user decision 1); the selection box may be drawn in any direction. An id goes when its holder at any
+ * depth (`holder`) is also in the result: the holder brings it.
+ */
+export function boxesInside(boxes: readonly { id: string; box: PlanRect }[], rect: PlanRect, holder: ReadonlyMap<string, string>): string[] {
+  const left = Math.min(rect.x, rect.x + rect.width);
+  const right = Math.max(rect.x, rect.x + rect.width);
+  const top = Math.min(rect.y, rect.y + rect.height);
+  const bottom = Math.max(rect.y, rect.y + rect.height);
+  const inside = boxes
+    .filter(({ box }) => box.x >= left && box.x + box.width <= right && box.y >= top && box.y + box.height <= bottom)
+    .map(({ id }) => id);
+  const caught = new Set(inside);
+  const heldInside = (id: string) => {
+    for (let up = holder.get(id); up !== undefined; up = holder.get(up)) if (caught.has(up)) return true;
+    return false;
+  };
+  return [...new Set(inside)].filter((id) => !heldInside(id));
 }
 
 /** The ids whose card touches the selection box; the box may be drawn in any direction. */

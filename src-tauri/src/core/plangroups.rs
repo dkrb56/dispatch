@@ -48,9 +48,10 @@ pub struct PlanGroup {
     /// (ticket issue-ticket-panel-is-only-resizable). None keeps the automatic size.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<PlanSize>,
-    /// A section (ticket i-need-an-option-to-create-group-of): the ids of its topic groups, which it
-    /// holds as one box on the Plan board; `collapsed` folds it. Empty: not a section. An old file
-    /// without the field reads empty, and a group that is no section writes no field.
+    /// A section (ticket i-need-an-option-to-create-group-of): the ids of its topic groups and
+    /// sections (ticket group-everything-inside-a-selection-box), which it holds as one box on the
+    /// Plan board; `collapsed` folds it. Empty: not a section. An old file without the field reads
+    /// empty, and a group that is no section writes no field.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
 }
@@ -110,23 +111,22 @@ fn save(project: &Project, groups: Vec<PlanGroup>) -> Result<PlanGroups, String>
 
 /// Trims the titles, keeps the colour in 0..3, drops empty and double ticket ids, and drops a
 /// group without an id or with the id of an earlier group. A section keeps only the ids of topic
-/// groups of the list, each in the first section only, and has no tickets, place or size; a section
-/// that lost its last topic group goes.
+/// groups and sections of the list (`section_members`) and has no tickets, place or size; a section
+/// that another section holds is open; a section that lost its last member goes.
 fn normalize(groups: Vec<PlanGroup>) -> Vec<PlanGroup> {
     let mut ids = HashSet::new();
-    let topics: HashSet<String> = groups.iter().filter(|g| g.auto && g.groups.is_empty()).map(|g| g.id.trim().to_string()).collect();
-    let mut held = HashSet::new();
+    let mut sections = section_members(&groups);
+    let held: HashSet<String> = sections.values().flatten().cloned().collect();
     groups
         .into_iter()
         .filter_map(|group| {
             if group.groups.is_empty() {
                 return Some(group);
             }
-            let members: Vec<String> = group.groups.iter().map(|g| g.trim().to_string()).filter(|g| topics.contains(g) && held.insert(g.clone())).collect();
-            if members.is_empty() {
-                return None;
-            }
-            Some(PlanGroup { auto: false, tickets: Vec::new(), description: String::new(), unfolded: false, place: None, size: None, groups: members, ..group })
+            let id = group.id.trim().to_string();
+            let members = sections.remove(&id)?;
+            let collapsed = group.collapsed && !held.contains(&id);
+            Some(PlanGroup { auto: false, tickets: Vec::new(), description: String::new(), unfolded: false, place: None, size: None, collapsed, groups: members, ..group })
         })
         .filter_map(|group| {
             let id = group.id.trim().to_string();
@@ -156,6 +156,56 @@ fn normalize(groups: Vec<PlanGroup>) -> Vec<PlanGroup> {
             })
         })
         .collect()
+}
+
+/// The members of each live section, by section id (ticket group-everything-inside-a-selection-box).
+/// A member is a topic group or another section, trimmed, in list order, in the first section only,
+/// never the section itself and never a section that holds this section at any depth (no loop). A
+/// section lives while it holds a live member; a dead section also leaves its holder.
+fn section_members(groups: &[PlanGroup]) -> HashMap<String, Vec<String>> {
+    let mut first = HashSet::new();
+    let unique: Vec<&PlanGroup> = groups.iter().filter(|g| !g.id.trim().is_empty() && first.insert(g.id.trim().to_string())).collect();
+    let topics: HashSet<String> = unique.iter().filter(|g| g.auto && g.groups.is_empty()).map(|g| g.id.trim().to_string()).collect();
+    let order: Vec<&PlanGroup> = unique.into_iter().filter(|g| !g.groups.is_empty()).collect();
+    let ids: HashSet<String> = order.iter().map(|g| g.id.trim().to_string()).collect();
+    let mut held = HashSet::new();
+    let mut links: HashMap<String, Vec<String>> = HashMap::new();
+    for section in order {
+        let id = section.id.trim().to_string();
+        let mut members = Vec::new();
+        for member in section.groups.iter().map(|m| m.trim().to_string()) {
+            let fits = topics.contains(&member) || (ids.contains(&member) && member != id && !reaches(&links, &member, &id));
+            if fits && held.insert(member.clone()) {
+                members.push(member);
+            }
+        }
+        links.insert(id, members);
+    }
+    loop {
+        let dead: HashSet<String> = links.iter().filter(|(_, m)| m.is_empty()).map(|(id, _)| id.clone()).collect();
+        if dead.is_empty() {
+            return links;
+        }
+        links.retain(|id, _| !dead.contains(id));
+        for members in links.values_mut() {
+            members.retain(|m| !dead.contains(m));
+        }
+    }
+}
+
+/// Whether the section `from` holds `to` at any depth through `links`.
+fn reaches(links: &HashMap<String, Vec<String>>, from: &str, to: &str) -> bool {
+    let mut stack = vec![from.to_string()];
+    let mut seen = HashSet::new();
+    while let Some(id) = stack.pop() {
+        if id == to {
+            return true;
+        }
+        if seen.insert(id.clone()) {
+            stack.extend(links.get(&id).into_iter().flatten().cloned());
+        }
+    }
+    false
 }
 
 /// The model, the effort and the time limit in seconds of the Claude call of Auto group.
@@ -788,10 +838,67 @@ mod tests {
         let saved = save(&project, groups).unwrap().groups;
         let ids: Vec<&str> = saved.iter().map(|g| g.id.as_str()).collect();
         assert_eq!(ids, vec!["s-1", "s-2", "auto-x-1", "auto-x-2", "auto-x-3", "g-1"], "a section without a topic group of its own goes: {saved:?}");
-        assert_eq!(saved[0].groups, vec!["auto-x-1".to_string(), "auto-x-2".to_string()], "only topic groups, trimmed, once, no section: {saved:?}");
+        assert_eq!(saved[0].groups, vec!["auto-x-1".to_string(), "s-2".to_string(), "auto-x-2".to_string()], "only topic groups and sections, trimmed, once: {saved:?}");
         assert!(saved[0].tickets.is_empty() && !saved[0].auto && saved[0].description.is_empty());
         assert_eq!((saved[0].place.clone(), saved[0].size.clone()), (None, None));
         assert_eq!(saved[1].groups, vec!["auto-x-3".to_string()], "a topic group stays in the first section only");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_nested_section_reads_back_the_same_and_open() {
+        // Ticket group-everything-inside-a-selection-box: a section holds topic groups and sections.
+        let (project, base) = scratch("section-nested");
+        let groups = vec![
+            PlanGroup { collapsed: true, ..section("s-1", &["auto-x-1", "s-2"]) },
+            section("s-2", &["auto-x-2", "auto-x-3"]),
+            PlanGroup { auto: true, ..group("auto-x-1", &["a"]) },
+            PlanGroup { auto: true, ..group("auto-x-2", &["b"]) },
+            PlanGroup { auto: true, ..group("auto-x-3", &["c"]) },
+        ];
+        let saved = save(&project, groups.clone()).unwrap().groups;
+        assert_eq!(saved, groups);
+        assert_eq!(load(&project).unwrap().groups, saved);
+        // A held section that comes folded is opened: only the outer section folds (user decision 3).
+        let mut folded = groups.clone();
+        folded[1].collapsed = true;
+        let saved = save(&project, folded).unwrap().groups;
+        assert!(saved[0].collapsed && !saved[1].collapsed, "{saved:?}");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_loop_of_sections_keeps_only_the_first_link() {
+        let (project, base) = scratch("section-loop");
+        let groups = vec![
+            section("s-1", &["auto-x-1", "s-2"]),
+            section("s-2", &["auto-x-2", "s-1", "s-2"]),
+            section("s-3", &["s-3", "auto-x-3", "s-1"]),
+            PlanGroup { auto: true, ..group("auto-x-1", &["a"]) },
+            PlanGroup { auto: true, ..group("auto-x-2", &["b"]) },
+            PlanGroup { auto: true, ..group("auto-x-3", &["c"]) },
+        ];
+        let saved = save(&project, groups).unwrap().groups;
+        assert_eq!(saved[0].groups, vec!["auto-x-1".to_string(), "s-2".to_string()]);
+        assert_eq!(saved[1].groups, vec!["auto-x-2".to_string()], "no loop and never itself: {saved:?}");
+        assert_eq!(saved[2].groups, vec!["auto-x-3".to_string(), "s-1".to_string()], "s-1 had no holder yet: {saved:?}");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn an_emptied_inner_section_goes_with_its_empty_holder() {
+        let (project, base) = scratch("section-empty");
+        let groups = vec![
+            section("s-1", &["s-2"]),
+            section("s-2", &["gone"]),
+            section("s-3", &["auto-x-1", "s-4"]),
+            section("s-4", &["gone"]),
+            PlanGroup { auto: true, ..group("auto-x-1", &["a"]) },
+        ];
+        let saved = save(&project, groups).unwrap().groups;
+        let ids: Vec<&str> = saved.iter().map(|g| g.id.as_str()).collect();
+        assert_eq!(ids, vec!["s-3", "auto-x-1"], "{saved:?}");
+        assert_eq!(saved[0].groups, vec!["auto-x-1".to_string()], "no dead id stays in the holder");
         let _ = fs::remove_dir_all(base);
     }
 

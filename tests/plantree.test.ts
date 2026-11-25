@@ -63,6 +63,10 @@ import {
   setBoxes,
   isSection,
   withGroupInSection,
+  planSections,
+  boxesInside,
+  withNewSection,
+  withoutSection,
   runningAfter,
   standLine,
   startsEarly,
@@ -1475,4 +1479,182 @@ test("the page makes, fills, folds, moves and removes a section", () => {
   assert.match(main, /planChangeGroup\(section\.id, \{ collapsed: true \}\);/, "the fold button");
   assert.match(main, /head\(isSectionGroup \? "Section"/);
   assert.match(css, /\.plan-set \{[^}]*border-style: dashed/);
+});
+
+// Ticket group-everything-inside-a-selection-box: the selection box catches topic groups and sections,
+// and "Make a section" puts them into one new section; a section can hold sections.
+
+test("the live sections: nested, first holder, no loop, never itself; a dead chain goes", () => {
+  const topic = (id: string): PlanGroup => ({ ...g(id, [id], false, id), auto: true });
+  const section = (id: string, groups: string[]): PlanGroup => ({ ...g(id, [], false, "Section"), groups });
+  const groups = [section("s-1", ["t1", "s-2"]), section("s-2", ["t2", "s-1", "s-2"]), section("s-3", ["gone"]), section("s-4", ["s-3"]), section("s-5", ["t1", "t3"]), topic("t1"), topic("t2"), topic("t3")];
+  const { sections, holder } = planSections(groups, new Set(["t1", "t2", "t3"]));
+  assert.deepEqual(
+    sections.map((one) => [one.group.id, one.members, one.topics, one.path]),
+    [
+      ["s-1", ["t1", "s-2"], ["t1", "t2"], []],
+      ["s-5", ["t3"], ["t3"], []],
+      ["s-2", ["t2"], ["t2"], ["s-1"]],
+    ],
+    "outer sections first; s-3 and s-4 hold nothing live",
+  );
+  assert.deepEqual([...holder].sort(), [
+    ["s-2", "s-1"],
+    ["t1", "s-1"],
+    ["t2", "s-2"],
+    ["t3", "s-5"],
+  ]);
+});
+
+test("the selection box catches a box only when the whole box is inside; a held box comes with its holder", () => {
+  const boxes = [
+    { id: "A", box: { x: 0, y: 0, width: 100, height: 100 } },
+    { id: "B", box: { x: 10, y: 10, width: 20, height: 20 } },
+    { id: "C", box: { x: 200, y: 0, width: 50, height: 50 } },
+    { id: "D", box: { x: 120, y: 120, width: 50, height: 50 } },
+  ];
+  const holder = new Map([["B", "A"]]);
+  assert.deepEqual(boxesInside(boxes, { x: 150, y: 150, width: -160, height: -160 }, holder), ["A"], "drawn in any direction; D sticks out; B comes with A");
+  assert.deepEqual(boxesInside(boxes, { x: 5, y: 5, width: 30, height: 30 }, holder), ["B"], "B alone when A is not caught");
+  assert.deepEqual(boxesInside(boxes, { x: 0, y: 0, width: 99, height: 99 }, holder), ["B"], "a box one px too big is not caught");
+});
+
+test("Make a section: a shared holder keeps the new section in the slot; else each member leaves its holder", () => {
+  const topic = (id: string, place?: { x: number; y: number }): PlanGroup => ({ ...g(id, [id], false, id), auto: true, ...(place ? { place } : {}) });
+  const section = (id: string, groups: string[], collapsed = false): PlanGroup => ({ ...g(id, [], collapsed, "Section"), groups });
+  const fresh: PlanGroup = { ...g("n", [], false, "Section"), groups: [] };
+  const places = new Map([
+    ["t2", { x: 300, y: 400 }],
+    ["t3", { x: 900, y: 900 }],
+  ]);
+  const shared = withNewSection([section("s", ["t1", "t2", "t3"]), topic("t1"), topic("t2"), topic("t3", { x: 50, y: 60 })], ["t3", "t2"], fresh, places);
+  assert.deepEqual(
+    shared.map((one) => [one.id, one.groups ?? null]),
+    [
+      ["n", ["t3", "t2"]],
+      ["s", ["t1", "n"]],
+      ["t1", null],
+      ["t2", null],
+      ["t3", null],
+    ],
+    "the new section first, at the slot of the first member inside the holder",
+  );
+  assert.deepEqual(shared.find((one) => one.id === "t2")!.place, { x: 300, y: 400 }, "a group without a place keeps where it stood");
+  assert.deepEqual(shared.find((one) => one.id === "t3")!.place, { x: 50, y: 60 }, "a dragged group keeps its own place");
+  const mixed = withNewSection([section("s-1", ["t1", "t2"]), section("s-2", ["t3"], true), topic("t1"), topic("t2"), topic("t3"), topic("t4")], ["t2", "s-2", "t4"], fresh, new Map());
+  assert.deepEqual(
+    mixed.map((one) => [one.id, one.groups ?? null, one.collapsed]),
+    [
+      ["n", ["t2", "s-2", "t4"], false],
+      ["s-1", ["t1"], false],
+      ["s-2", ["t3"], false],
+      ["t1", null, false],
+      ["t2", null, false],
+      ["t3", null, false],
+      ["t4", null, false],
+    ],
+    "each member leaves its holder; a caught section stays a section and opens",
+  );
+});
+
+test("Remove of an inner section puts its members into its slot in the outer section", () => {
+  const section = (id: string, groups: string[]): PlanGroup => ({ ...g(id, [], false, "Section"), groups });
+  const groups = [section("o", ["t1", "i", "t3"]), section("i", ["t2", "t4"])];
+  assert.deepEqual(
+    withoutSection(groups, "i").map((one) => [one.id, one.groups]),
+    [["o", ["t1", "t2", "t4", "t3"]]],
+  );
+  assert.deepEqual(
+    withoutSection(groups, "o").map((one) => [one.id, one.groups]),
+    [["i", ["t2", "t4"]]],
+    "an outer section goes; the inner section stays",
+  );
+});
+
+test("the page selects boxes with the selection box, makes a section of them with S, and tells it in the Help", () => {
+  const html = read("../index.html");
+  const main = read("../src/main.ts");
+  assert.match(html, /The box also selects each topic group or section that stands wholly inside it; the menu then offers <b>Make a section \(S\)<\/b>/);
+  assert.match(html, /A section can hold sections: draw a selection box around topic groups and sections and press S\./);
+  assert.match(html, /Remove of an inner section keeps its groups in the outer section\./);
+  assert.match(main, /const inside = boxesInside\(planBoxPlaces, rect, planBoxHolders\);/, "the selection box catches the boxes");
+  assert.match(main, /item\("Make a section \(S\)", "Put the selected topic groups and sections into one section box", planMakeSection\)/, "the menu item");
+  assert.match(main, /else if \(key === "s" \|\| key === "S"\) planMakeSection\(\);/, "the key S");
+  assert.match(main, /void planSetGroups\(ref, withNewSection\(groups, members, section, places\)\);/);
+  assert.match(main, /next = withoutSection\(next, group\.id\);/, "Remove of a section keeps its groups");
+  assert.match(main, /const sectionTree = planSections\(groups, new Set\(topicOf\.keys\(\)\)\);/);
+  assert.match(main, /sets: chain,/, "the blocks stand by their chain of sections");
+  assert.match(main, /if \(one\.path\.length === 0\) bar\.append\(fold\);/, "an inner section has no fold button");
+});
+
+test("nested sets stand together; each new title bar has its grid row; nested boxes hold their inner boxes and overlap no other box", () => {
+  const layout = planLayout(TREE);
+  const input = [
+    { id: "one", shown: ["a"], badge: false },
+    { id: "a1", shown: ["b"], badge: false, sets: ["A"] },
+    { id: "b1", shown: ["c", "d"], badge: false, sets: ["A", "B"] },
+    { id: "two", shown: ["e"], badge: false },
+    { id: "b2", shown: ["f"], badge: true, sets: ["A", "B"] },
+    { id: "a2", shown: ["g"], badge: false, sets: ["A"] },
+    { id: "c1", shown: ["h"], badge: false, sets: ["C", "D"] },
+  ];
+  const result = planBlocks(input, layout, 4);
+  assert.deepEqual(
+    result.blocks.map((block) => block.id),
+    ["one", "a1", "b1", "b2", "a2", "two", "c1"],
+  );
+  const at = (id: string) => result.blocks.find((block) => block.id === id)!;
+  for (const block of result.blocks) for (const card of block.cards) assert.equal(card.y % PLAN_GRID, 0, `${card.id} y on the grid`);
+  const lineTop = (id: string) => at(id).cards[0].y - PLAN_GRID - PLAN_ABOUT_HEIGHT;
+  const nextTop = (id: string) => Math.ceil((at(id).box.y + at(id).box.height + PLAN_GRID) / PLAN_GRID) * PLAN_GRID;
+  assert.equal(lineTop("a1"), nextTop("one") + PLAN_GRID, "A starts: one row lower");
+  assert.equal(at("b1").box.y, at("b2").box.y, "b1 and b2 side by side");
+  assert.equal(lineTop("b1"), nextTop("a1") + PLAN_GRID, "B starts inside A: one row lower");
+  assert.equal(lineTop("a2"), nextTop("b2"), "back in A: no new title bar");
+  assert.equal(lineTop("two"), nextTop("a2"));
+  assert.equal(lineTop("c1"), nextTop("two") + 2 * PLAN_GRID, "C and D start together: two rows lower");
+  const boxes = setBoxes(result.blocks, [
+    { id: "B", members: ["b1", "b2"] },
+    { id: "A", members: ["a1", "B", "a2"] },
+    { id: "D", members: ["c1"] },
+    { id: "C", members: ["D"] },
+  ]);
+  assert.deepEqual(
+    boxes.map((one) => one.id),
+    ["A", "C", "B", "D"],
+    "the outer boxes first",
+  );
+  const box = (id: string) => (boxes.find((one) => one.id === id) ?? { box: at(id).box }).box;
+  const holds = (outer: string, inner: string) => {
+    const o = box(outer);
+    const i = box(inner);
+    assert.ok(i.x - PLAN_BOX_PAD >= o.x && i.y - PLAN_BOX_PAD - PLAN_BOX_TITLE >= o.y, `${outer} holds ${inner}`);
+    assert.ok(i.x + i.width + PLAN_BOX_PAD <= o.x + o.width && i.y + i.height + PLAN_BOX_PAD <= o.y + o.height, `${outer} holds ${inner}`);
+  };
+  for (const [outer, inner] of [
+    ["A", "a1"],
+    ["A", "B"],
+    ["A", "a2"],
+    ["B", "b1"],
+    ["B", "b2"],
+    ["C", "D"],
+    ["D", "c1"],
+  ])
+    holds(outer, inner);
+  const apart = (a: string, b: string) => {
+    const one = box(a);
+    const other = box(b);
+    const ok = one.y + one.height <= other.y || one.y >= other.y + other.height || one.x + one.width <= other.x || one.x >= other.x + other.width;
+    assert.ok(ok, `${a} does not overlap ${b}`);
+  };
+  for (const [a, b] of [
+    ["A", "one"],
+    ["A", "two"],
+    ["A", "C"],
+    ["B", "a1"],
+    ["B", "a2"],
+    ["C", "two"],
+  ])
+    apart(a, b);
+  assert.ok(result.layout.height >= box("C").y + box("C").height, "the canvas holds the boxes");
 });
