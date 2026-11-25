@@ -825,6 +825,12 @@ export interface PlanBlocks {
  * badge one sub box per subgroup, with its title bar and its cards in rows of the block columns, every
  * card corner on the grid. The block columns count the largest subgroup too, so the box grows to hold
  * them; the description keeps the rows that it needs without the subgroups, so the other cards stay.
+ *
+ * Ticket groups-are-too-narrow-i-cant-read-the: `titleWidth` gives the px width that the whole title
+ * bar of a block needs; the automatic box width is at least that, at most the line width, and the
+ * line counts the card columns that it covers. A `free` block (it has a saved place) keeps a slot of
+ * its automatic size in its line: its saved size moves no other block and not the bounds of the
+ * layout (user decision 1); its own box still gets the saved size.
  */
 export function planBlocks(
   blocks: readonly {
@@ -833,11 +839,13 @@ export function planBlocks(
     badge: boolean;
     size?: { width: number; height: number };
     subs?: readonly { title: string; ids: readonly string[] }[];
+    free?: boolean;
   }[],
   layout: PlanLayout,
   perRow = 4,
   size: PlanCardSize = PLAN_CARD_DEFAULT,
   aboutHeight?: (id: string, width: number) => number,
+  titleWidth?: (id: string) => number,
 ): PlanBlocks {
   if (blocks.length === 0) return { layout, blocks: [] };
   const steps = planSteps(size);
@@ -846,13 +854,19 @@ export function planBlocks(
     const subs = (block.subs ?? []).filter((sub) => sub.ids.length > 0);
     const columns = Math.max(1, Math.min(across, Math.max(block.shown.length, ...subs.map((sub) => sub.ids.length))));
     const rows = Math.ceil(block.shown.length / columns);
-    const autoWidth = (columns - 1) * steps.column + size.width + 2 * PLAN_BOX_PAD;
+    // The width that the whole title bar needs, at most the line width.
+    const lineWidth = (across - 1) * steps.column + size.width + 2 * PLAN_BOX_PAD;
+    const wanted = titleWidth ? titleWidth(block.id) : 0;
+    const title = Math.min(lineWidth, Number.isFinite(wanted) ? wanted : 0);
+    const autoWidth = Math.max((columns - 1) * steps.column + size.width + 2 * PLAN_BOX_PAD, title);
     // The automatic width without the subgroups: the description takes its rows at this width.
-    const aboutAuto = (Math.max(1, Math.min(across, block.shown.length)) - 1) * steps.column + size.width;
+    const aboutAuto = Math.max((Math.max(1, Math.min(across, block.shown.length)) - 1) * steps.column + size.width, title - 2 * PLAN_BOX_PAD);
     const boxWidth = Math.max(autoWidth, block.size?.width ?? 0);
-    // The card columns that the box covers: the next block of the line starts after them.
-    const span = Math.max(columns, Math.ceil((boxWidth - 2 * PLAN_BOX_PAD - size.width) / steps.column) + 1);
-    return { ...block, subs, columns, rows, autoWidth, aboutAuto, boxWidth, span };
+    // The card columns that the box covers: the next block of the line starts after them. A free
+    // block (with a saved place) keeps a slot of its automatic size, so its saved size moves no block.
+    const slotWidth = block.free ? autoWidth : boxWidth;
+    const span = Math.max(columns, Math.ceil((slotWidth - 2 * PLAN_BOX_PAD - size.width) / steps.column) + 1);
+    return { ...block, subs, columns, rows, autoWidth, aboutAuto, boxWidth, slotWidth, span };
   });
   // The lines: as many blocks as fit side by side.
   const lines: (typeof sized)[] = [];
@@ -863,6 +877,8 @@ export function planBlocks(
     else lines.push([block]);
   }
   const placed: PlanBlockPlace[] = [];
+  // The slot of each placed block: its box, at the automatic size for a free block.
+  const slots: PlanRect[] = [];
   let top = Math.ceil((layout.height - PLAN_PAD + PLAN_GRID) / PLAN_GRID) * PLAN_GRID;
   for (const line of lines) {
     const width = line.reduce((sum, one) => sum + one.span, 0);
@@ -907,7 +923,9 @@ export function planBlocks(
         content = Math.max(content, subBottom);
       }
       const boxTop = firstY - aboutRow - PLAN_BOX_PAD - PLAN_BOX_TITLE;
-      const boxBottom = Math.max(content + PLAN_BOX_PAD, boxTop + (block.size?.height ?? 0));
+      const autoBottom = content + PLAN_BOX_PAD;
+      const boxBottom = Math.max(autoBottom, boxTop + (block.size?.height ?? 0));
+      const slotBottom = block.free ? autoBottom : boxBottom;
       const aboutY = boxTop + PLAN_BOX_TITLE + 4;
       placed.push({
         id: block.id,
@@ -917,7 +935,8 @@ export function planBlocks(
         badge,
         subs,
       });
-      bottom = Math.max(bottom, boxBottom);
+      slots.push({ x: left - PLAN_BOX_PAD, y: boxTop, width: block.slotWidth, height: slotBottom - boxTop });
+      bottom = Math.max(bottom, slotBottom);
       left += block.span * steps.column;
     }
     top = Math.ceil((bottom + PLAN_GRID) / PLAN_GRID) * PLAN_GRID;
@@ -931,8 +950,8 @@ export function planBlocks(
     badge: block.badge ? { x: block.badge.x + shift, y: block.badge.y } : null,
     subs: block.subs.map((sub) => ({ ...sub, box: { ...sub.box, x: sub.box.x + shift }, cards: sub.cards.map((card) => ({ ...card, x: card.x + shift })) })),
   }));
-  const right = Math.max(...moved.map((block) => block.box.x + block.box.width)) + PLAN_PAD;
-  const bottom = Math.max(...moved.map((block) => block.box.y + block.box.height)) + PLAN_PAD;
+  const right = Math.max(...slots.map((slot) => slot.x + shift + slot.width)) + PLAN_PAD;
+  const bottom = Math.max(...slots.map((slot) => slot.y + slot.height)) + PLAN_PAD;
   return {
     layout: {
       ...layout,

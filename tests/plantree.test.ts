@@ -934,6 +934,63 @@ test("a dragged topic block stands at its saved place; the others keep their pla
   assert.deepEqual(placeTopicBlocks([], new Map(), 50, layout), { layout, blocks: [] });
 });
 
+// Ticket groups-are-too-narrow-i-cant-read-the: a box is as wide as its title bar needs.
+
+test("a topic block is at least as wide as its title bar, at most the line width, and the next block starts right of it", () => {
+  const layout = planLayout(TREE);
+  const input = [
+    { id: "long", shown: ["a"], badge: false },
+    { id: "next", shown: ["c"], badge: false },
+  ];
+  const auto = planBlocks(input, layout, 6);
+  const [autoLong, autoNext] = auto.blocks;
+  const wanted = autoLong.box.width + 130;
+  const result = planBlocks(input, layout, 6, undefined, undefined, (id) => (id === "long" ? wanted : 0));
+  const [long, next] = result.blocks;
+  assert.equal(long.box.width, wanted, "the box takes the width of its title bar");
+  assert.equal(long.about.width, wanted - 2 * PLAN_BOX_PAD, "the description takes the width of the box");
+  assert.deepEqual(next.box, { ...autoNext.box, x: next.box.x }, "a short title keeps the automatic size");
+  assert.equal(next.box.y, long.box.y, "the next block stays in the line");
+  assert.ok(next.box.x >= long.box.x + long.box.width, "the next block starts right of the wider box");
+  for (const block of result.blocks) {
+    for (const card of block.cards) assert.ok(card.x % PLAN_GRID === 0 && card.y % PLAN_GRID === 0, `${card.id} on the grid`);
+  }
+  assert.equal(long.cards[0].x - long.box.x, autoLong.cards[0].x - autoLong.box.x, "the card keeps its place in the box");
+  // A title wider than the line: the box is as wide as the line, and the next block goes to the next line.
+  const capped = planBlocks(input, layout, 4, undefined, undefined, (id) => (id === "long" ? 10000 : 0)).blocks;
+  assert.equal(capped[0].box.width, 3 * PLAN_COLUMN_STEP + PLAN_CARD_DEFAULT.width + 2 * PLAN_BOX_PAD);
+  assert.ok(capped[1].box.y >= capped[0].box.y + capped[0].box.height, "the next block stands in the next line");
+  // The description is measured at the wider width.
+  const asked: number[] = [];
+  planBlocks(input, layout, 6, undefined, (id, at) => (id === "long" ? (asked.push(at), 0) : 0), (id) => (id === "long" ? wanted : 0));
+  assert.deepEqual(asked, [wanted - 2 * PLAN_BOX_PAD]);
+  // No function, a bad number or a narrow title: the old result.
+  assert.deepEqual(planBlocks(input, layout, 6, undefined, undefined, () => Number.NaN), auto);
+  assert.deepEqual(planBlocks(input, layout, 6, undefined, undefined, () => 40), auto);
+  assert.deepEqual(planBlocks(input, layout, 6, undefined, undefined, undefined), auto);
+});
+
+test("a free topic block keeps a slot of its automatic size: its saved size moves no other block", () => {
+  const layout = planLayout(TREE);
+  const input = [
+    { id: "first", shown: ["a"], badge: false },
+    { id: "free", shown: ["b"], badge: false, free: true },
+    { id: "right", shown: ["c"], badge: false },
+    { id: "below", shown: ["d", "e", "f"], badge: false },
+  ];
+  const auto = planBlocks(input, layout, 4);
+  const autoFree = auto.blocks[1];
+  const size = { width: autoFree.box.width + 3 * PLAN_COLUMN_STEP, height: autoFree.box.height + 400 };
+  const sized = planBlocks(input.map((block) => (block.id === "free" ? { ...block, size } : block)), layout, 4);
+  assert.deepEqual({ width: sized.blocks[1].box.width, height: sized.blocks[1].box.height }, size, "its own box gets the saved size");
+  assert.deepEqual({ x: sized.blocks[1].box.x, y: sized.blocks[1].box.y }, { x: autoFree.box.x, y: autoFree.box.y });
+  for (const at of [0, 2, 3]) assert.deepEqual(sized.blocks[at], auto.blocks[at], `${input[at].id} does not move`);
+  assert.deepEqual(sized.layout, auto.layout, "the bounds of the layout stay");
+  // Without free the saved size takes its columns, as before.
+  const fixed = planBlocks(input.map((block) => (block.id === "free" ? { ...block, free: false, size } : block)), layout, 4);
+  assert.notDeepEqual(fixed.blocks[2].box, auto.blocks[2].box);
+});
+
 // Ticket count-pill-opens-subgroups-inside-a: a click on the count badge opens subgroups inside the box.
 
 test("a topic block keeps the ids that its badge counts, per kind, in the board order", () => {

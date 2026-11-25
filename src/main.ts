@@ -17024,13 +17024,14 @@ function planCardGrip(key: string, scaled = true): HTMLElement {
  * The drop saves the size in the group. The window follows the pointer from the press, as the title bar
  * drag does: a fast first move leaves the small handle at once.
  */
-function planGroupGrip(key: string, groupId: string, box: HTMLElement, place: PlanBlockPlace, size: PlanCardSize): HTMLElement {
+function planGroupGrip(key: string, groupId: string, box: HTMLElement, place: PlanBlockPlace, size: PlanCardSize, titleWidth = 0): HTMLElement {
   const grip = mapElement("span", "plan-group-grip");
   grip.setAttribute("aria-hidden", "true");
   grip.title = "Drag to make this topic group wider or taller";
-  // The smallest box: the automatic size, as planBlocks makes it without a saved size; with its subgroups.
+  // The smallest box: the automatic size, as planBlocks makes it without a saved size; with its subgroups
+  // and the width of its title bar (ticket groups-are-too-narrow-i-cant-read-the).
   const cards = [...place.cards, ...place.subs.flatMap((sub) => sub.cards)];
-  const fitWidth = Math.max(size.width + 2 * PLAN_BOX_PAD, ...cards.map((card) => card.x + size.width + PLAN_BOX_PAD - place.box.x));
+  const fitWidth = Math.max(size.width + 2 * PLAN_BOX_PAD, titleWidth, ...cards.map((card) => card.x + size.width + PLAN_BOX_PAD - place.box.x));
   const content = Math.max(
     place.about.y + place.about.height + 8,
     ...cards.map((card) => card.y + size.height),
@@ -17107,6 +17108,39 @@ function planAboutHeight(text: string, width: number): number {
   if (planAboutHeights.size > 500) planAboutHeights.clear();
   planAboutHeights.set(cacheKey, height);
   return height;
+}
+/** The hidden title bar that measures the title of a topic group; made once. */
+const planTitleMeter = mapElement("div", "plan-group-title plan-title-meter");
+planTitleMeter.setAttribute("aria-hidden", "true");
+Object.assign(planTitleMeter.style, { position: "absolute", top: "0", left: "-100000px", width: "max-content", visibility: "hidden", pointerEvents: "none" });
+/** The measured widths of the title bars, by title, count, toggle and text size: a render runs every few seconds. */
+const planTitleWidths = new Map<string, number>();
+/**
+ * The width in px that the whole title bar of a topic group box needs, with its padding and the box
+ * border (ticket groups-are-too-narrow-i-cant-read-the): the shown title, the count and the toggle,
+ * no cut. A hidden board gives 0.
+ */
+function planTitleWidth(title: string, count: string, toggle: string): number {
+  if (planBoardEl.clientWidth <= 0) return 0;
+  const scale = document.documentElement.style.getPropertyValue("--text-scale");
+  const cacheKey = `${scale}
+${toggle}
+${count}
+${title}`;
+  const known = planTitleWidths.get(cacheKey);
+  if (known !== undefined) return known;
+  // The meter stands in the board, outside the scaled canvas, so its width is in canvas px.
+  if (planTitleMeter.parentElement !== planBoardEl) planBoardEl.append(planTitleMeter);
+  planTitleMeter.replaceChildren(
+    mapElement("span", "plan-group-name", title),
+    mapElement("span", "plan-group-count", count),
+    mapElement("button", "plan-group-toggle", toggle),
+  );
+  // The box border, at most 2 px on each side, stands around the bar.
+  const width = Math.ceil(planTitleMeter.getBoundingClientRect().width) + 4;
+  if (planTitleWidths.size > 500) planTitleWidths.clear();
+  planTitleWidths.set(cacheKey, width);
+  return width;
 }
 /** The size of the canvas of the last render: a pan keeps part of it inside the board. */
 let planCanvasSize = { width: 0, height: 0 };
@@ -18488,16 +18522,41 @@ function renderPlan(): void {
   // A resized box keeps its saved size, and the description row holds the whole text (ticket
   // issue-ticket-panel-is-only-resizable).
   const aboutOf = new Map(groups.map((group) => [group.id, group.description]));
+  const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+  const planGroupCountText = (list: readonly PlanTicket[], count: number, ids: readonly string[]) => {
+    const percent = groupDonePercent(list, ids);
+    return percent === null ? plural(count, "ticket") : `${plural(count, "ticket")} · ${percent}% done`;
+  };
+  // The width that the whole title bar of each block needs: the same title and count as the bar shows
+  // (ticket groups-are-too-narrow-i-cant-read-the).
+  // A box is at most as wide as a line of blocks, as planBlocks makes it.
+  const planBlockLineWidth = (Math.max(1, Math.floor(perRow)) - 1) * planSteps(size).column + size.width + 2 * PLAN_BOX_PAD;
+  const titleWidthOf = new Map(
+    topics.map((block) => {
+      const group = groups.find((one) => one.id === block.id);
+      const shown = group ? group.title || "Untitled" : "";
+      return [block.id, planTitleWidth(shown, planGroupCountText(tickets, block.members.length, block.members), group?.collapsed ? "▾" : "▴")] as const;
+    }),
+  );
   // An open count badge puts its tickets into subgroups inside the box (ticket count-pill-opens-subgroups-inside-a).
+  // A block that the user dragged keeps a slot of its automatic size, so its saved size moves no other block.
   const blockPlaces = planBlocks(
     topics.map((block) => {
       const group = groups.find((one) => one.id === block.id);
-      return { id: block.id, shown: block.shown, badge: topicFoldText(block.fold) !== "", size: group?.size, subs: group ? topicSubgroups(block, group) : [] };
+      return {
+        id: block.id,
+        shown: block.shown,
+        badge: topicFoldText(block.fold) !== "",
+        size: group?.size,
+        subs: group ? topicSubgroups(block, group) : [],
+        free: Boolean(group?.auto && group.place),
+      };
     }),
     treeLayout,
     perRow,
     size,
     (id, width) => planAboutHeight(aboutOf.get(id) ?? "", width),
+    (id) => titleWidthOf.get(id) ?? 0,
   );
   const shelf = planShelf(looseIds, blockPlaces.layout, perRow, size);
   // A wide shelf moves the tree right; the blocks move with it. A block that the user dragged stands
@@ -18512,11 +18571,6 @@ function renderPlan(): void {
   const lineArrows = planArrows(layoutList);
   const nodeOf = (id: string) => tree.hidden.get(id) ?? id;
   const groupOfNode = new Map(groups.map((group) => [groupNodeId(group.id), group]));
-  const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
-  const planGroupCountText = (list: readonly PlanTicket[], count: number, ids: readonly string[]) => {
-    const percent = groupDonePercent(list, ids);
-    return percent === null ? plural(count, "ticket") : `${plural(count, "ticket")} · ${percent}% done`;
-  };
   const groupError = planGroupsError.get(key);
   planCountEl.textContent = [
     `${plural(flowTickets(flow).length, "ticket")} in the flow`,
@@ -18850,7 +18904,7 @@ function renderPlan(): void {
     });
     bar.append(toggle);
     bar.addEventListener("click", () => planSelect([], null, group.id));
-    el.append(bar, planGroupGrip(key, group.id, el, place, size));
+    el.append(bar, planGroupGrip(key, group.id, el, place, size, Math.min(titleWidthOf.get(group.id) ?? 0, planBlockLineWidth)));
     canvas.append(el);
     // The description under the title bar (user decision 1: only here); a click edits it in place.
     let about: HTMLElement;
