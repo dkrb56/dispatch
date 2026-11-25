@@ -17,7 +17,7 @@ import {
 } from "./backend";
 import { chooseFolder } from "./folderchooser";
 import { initHostMode, initOwnHostBar, reachable, showStrayBar, titleBase } from "./hostmode";
-import { type FolderItem, keyHost, keyPath, mergeLists, pathKey, projectKey, projectLabel, type ProjectRef, readDue, strayItems } from "./hosts";
+import { type FolderItem, keyHost, keyPath, mergeLists, pathKey, projectFolderOf, projectKey, projectLabel, type ProjectRef, readDue, strayItems } from "./hosts";
 import { getCurrentWindow, UserAttentionType } from "@tauri-apps/api/window";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
@@ -5332,7 +5332,7 @@ function announceWorkerChanges(workers: Worker[]): void {
       ticket: workerTask(worker),
       run: RUN_NAME.exec(worker.name ?? worker.id)?.[2] ?? "",
       state: states.get(workerKey(worker)) === DONE_EMPTY ? DONE_EMPTY : (worker.state ?? ""),
-      project: projectName({ host: worker.host, root: worker.cwd ?? "" }),
+      project: projectName({ host: worker.host, root: projectFolderOf(worker.cwd ?? "") }),
       noTriage: projectNoTriage(projectFor(worker.host, worker.cwd)),
       reason: worker.reason ?? "",
       reportState: worker.reportState ?? undefined,
@@ -12842,7 +12842,7 @@ function currentWaits(): { waits: Wait[]; scopes: string[] } {
       scope: "workers",
       name,
       title: ticketTitle(projectTickets(projectFor(worker.host, worker.cwd)), workerTask(worker)),
-      project: projectName({ host: worker.host, root: worker.cwd ?? "" }),
+      project: projectName({ host: worker.host, root: projectFolderOf(worker.cwd ?? "") }),
       text: `waits at a prompt${worker.waitingFor ? `: ${worker.waitingFor}` : ""}`,
     });
   }

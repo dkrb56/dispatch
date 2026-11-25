@@ -224,6 +224,14 @@ export function projectLabel(folderName: string, hostName: string, manyHosts: bo
 }
 
 /**
+ * The project folder of a worker's folder: a work folder `<project>\.dispatch\work\<N>` gives the
+ * project, any other folder comes back unchanged. Both `\` and `/` count, for remote hosts.
+ */
+export function projectFolderOf(cwd: string): string {
+  return cwd.replace(/[\\/]\.dispatch[\\/]work[\\/]\d+[\\/]?$/i, "");
+}
+
+/**
  * The merged list of the replies of every host (`chat_list`, `worker_list`), each item with its
  * host, newest first by `time`. A host whose read failed (null) keeps its items of `previous`, so
  * a lost host does not blank the list.

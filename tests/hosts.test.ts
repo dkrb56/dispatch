@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { completeHosts, IDLE_READ_MS, ownHostToStart, keyHost, keyPath, LOCAL, mergeLists, nightSwitch, parseHostSettings, pathKey, projectKey, projectLabel, windowTitle, workBackends, readDue, UNUSED_AFTER_MS, retriesAtStart, START_WAIT_MS } from "../src/hosts.ts";
+import { completeHosts, IDLE_READ_MS, ownHostToStart, keyHost, keyPath, LOCAL, mergeLists, nightSwitch, parseHostSettings, pathKey, projectFolderOf, projectKey, projectLabel, windowTitle, workBackends, readDue, UNUSED_AFTER_MS, retriesAtStart, START_WAIT_MS } from "../src/hosts.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -99,6 +99,14 @@ test("the host and the path of a key; a key without a host belongs to the first 
 test("the name of a project has its host only when the window has more than one backend", () => {
   assert.equal(projectLabel("proj", "alpha", false), "proj");
   assert.equal(projectLabel("proj", "alpha", true), "proj · alpha");
+});
+
+test("the project folder of a work folder is the project; any other folder stays", () => {
+  assert.equal(projectFolderOf("D:\\p\\Dispatch\\.dispatch\\work\\2"), "D:\\p\\Dispatch");
+  assert.equal(projectFolderOf("/home/u/proj/.dispatch/work/1/"), "/home/u/proj");
+  assert.equal(projectFolderOf("D:\\p\\Dispatch"), "D:\\p\\Dispatch");
+  assert.equal(projectFolderOf("D:\\p\\work\\2"), "D:\\p\\work\\2");
+  assert.equal(projectFolderOf("D:\\p\\.dispatch\\work\\x"), "D:\\p\\.dispatch\\work\\x");
 });
 
 test("the merged list: each item with its host, newest first, and a failed host keeps its last items", () => {
