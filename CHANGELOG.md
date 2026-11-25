@@ -2,6 +2,12 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.99 (2026-11-25)
+- The open Actions panel draws each new task list of its project at once, the poll reads that project, and an older reply cannot bring back running for an ended run.
+- A show step opens the viewer with a file, a folder or the output of the step before; HTML without scripts, links open in the browser.
+- A show step with an http(s) address loads the page on the host into a copy and the viewer shows it by its content type; an error answer, a load error or a page above 50 MB fails the step with the reason.
+- The merge tests stop the script before its gate, so a busy computer no longer lets the script cancel the open merge before it dies.
+
 ## 0.1.98 (2026-11-25)
 - Clearer texts on the three Where the work runs cards.
 - A newer running run hides the old waiting state of the report row.
