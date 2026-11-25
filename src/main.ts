@@ -12419,11 +12419,14 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
     // The plan row is a file, so it has no chip: a chip there read as a second run (task-plan-row-chip).
     // The state of the script stands in the header of the card and in the tooltip of the plan row.
     // The report row carries the report's state, or "answered" after an answer in Dispatch until the new report (ticket report-answered-chip).
+    // A run that started after the report and works now also hides the old waiting state (ticket the-report-row-shows-an-old-needs).
     if (info?.plan) body.append(fileRow("Plan", info.plan, null, info.state || null));
     if (info?.report) {
       const answered = answerStands(answeredReports.get(task.name), info.report.modified, task.workers);
       const live = task.workers.some((worker) => worker.state === "working" || worker.state === "blocked");
-      const chip = reportChip(info.header?.state ?? null, info.header?.needs ?? null, answered, live);
+      const reportAt = info.report.modified;
+      const newerRun = task.workers.some((worker) => (worker.state === "working" || worker.state === "blocked") && worker.startedAt !== null && worker.startedAt > reportAt);
+      const chip = reportChip(info.header?.state ?? null, info.header?.needs ?? null, answered, live, newerRun);
       const report = fileRow("Report", info.report, chip?.text ?? null, null, chip?.title ?? "");
       // A done report whose work run ran no command, or no chosen check, gets a second chip (ticket the-report-check-uses-the-commands-of).
       if (reportUnverified(task)) {

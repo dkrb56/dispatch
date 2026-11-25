@@ -215,14 +215,21 @@ export function fileRowTitle(label: string, path: string, state: string | null):
  * the neutral look, until the worker writes its new report: a new report has a new time, so the
  * answer no longer matches it and the row shows its state again. `live` says that a worker of the
  * task runs; without it the tooltip says that the worker ended without a new report. Without a
- * state the row has no chip.
+ * state the row has no chip. `newerRun` says that a run of the task that started after the report
+ * works now (ticket the-report-row-shows-an-old-needs): the old waiting state then shows as
+ * "answered" too, also when no answer record matches (phone, chat, host, a report file that a
+ * branch switch rewrote).
  */
-export function reportChip(state: string | null, needs: string | null, answered: boolean, live: boolean): RunChip | null {
+export function reportChip(state: string | null, needs: string | null, answered: boolean, live: boolean, newerRun: boolean): RunChip | null {
   const waits = needs === "decision" || needs === "permission" || state === "needs-decision";
   if (answered && waits) {
     const title = live
       ? "You answered this report in Dispatch. The answer went to the worker; this row shows the new report when the worker writes it."
       : "You answered this report in Dispatch. The worker ended without a new report; the run row shows how the run ended.";
+    return { text: "answered", cls: "answered", title };
+  }
+  if (newerRun && waits) {
+    const title = "A new run of the worker works since this report. This row shows the new report when the worker writes it.";
     return { text: "answered", cls: "answered", title };
   }
   if (!state) return null;
