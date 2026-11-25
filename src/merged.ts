@@ -85,6 +85,28 @@ export function autoMergeNote(facts: AutoMergeFacts, base: string): string {
   return "Auto-merge starts when no other work runs in this project.";
 }
 
+/** The facts of a task that decide whether Dispatch offers its Merge (ticket 1). */
+export interface MergeOfferFacts {
+  /** The `state` line of its report, or undefined without a report. */
+  report: string | undefined;
+  /** The task was stopped. */
+  stopped: boolean;
+  /** An answer of the user waits in the queue for its worker. */
+  queued: boolean;
+  /** An answer of the user goes to its worker now. */
+  sending: boolean;
+}
+
+/**
+ * Merge only a finished work run (ticket 1): a report that says done, and no answer of the user in
+ * the queue or on its way. A stopped task keeps its Merge (user decision 1 of ticket 1).
+ */
+export function mergeOffered(facts: MergeOfferFacts): boolean {
+  if (facts.stopped) return true;
+  if (facts.queued || facts.sending) return false;
+  return facts.report === "done";
+}
+
 /** The texts of the merge verb of the worker script: a refusal of the Merge button. */
 const MERGE_REFUSALS = [
   /the checkout has uncommitted changes; commit or stash them first/,

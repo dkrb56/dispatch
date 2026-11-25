@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { autoMergeNote, folderRefusal, mergedWords, mergeParts, missingFileGone, outsideLine, pushWords, refusalGoes } from "../src/merged.ts";
+import { autoMergeNote, folderRefusal, mergedWords, mergeOffered, mergeParts, missingFileGone, outsideLine, pushWords, refusalGoes } from "../src/merged.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -96,7 +96,7 @@ test("the line for triage names the ticket, the branch, the base and the merge c
 });
 
 test("main.ts: the branch row, the task lists and the refusal rule use the module", () => {
-  assert.match(MAIN, /import \{ autoMergeNote, type AutoMergeFacts, folderRefusal, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes \} from "\.\/merged";/);
+  assert.match(MAIN, /import \{ autoMergeNote, type AutoMergeFacts, folderRefusal, mergedWords, mergeOffered, missingFileGone, outsideLine, pushWords, refusalGoes \} from "\.\/merged";/);
   const row = MAIN.slice(MAIN.indexOf("function branchRow("), MAIN.indexOf("function stopRow("));
   assert.match(row, /mergedWords\(branch\.merge\)/);
   const store = MAIN.slice(MAIN.indexOf("function storeProjectTasks("), MAIN.indexOf("/** The last reply of the `task_list` command"));
@@ -225,4 +225,26 @@ test("index.html: the Setup dialog and the Help name Auto-merge finished tasks",
   const help = html.slice(html.indexOf("<h3>Project settings</h3>"), html.indexOf("<h3>The workspace</h3>"));
   assert.ok(help.includes("<b>Auto-merge finished tasks.</b>"));
   assert.ok(help.includes("<b>Auto-merge finished tasks</b> is off at the start"));
+});
+
+// Ticket 1: no merge while the work run has not finished, or while an answer of the user waits.
+test("Merge shows only for a done report with no answer in the queue or on its way", () => {
+  const facts = { report: "done", stopped: false, queued: false, sending: false };
+  assert.equal(mergeOffered(facts), true);
+  for (const report of ["needs-decision", "waiting", "failed", "working", undefined]) {
+    assert.equal(mergeOffered({ ...facts, report }), false, `report ${report}`);
+  }
+  assert.equal(mergeOffered({ ...facts, queued: true }), false, "an answer in the queue holds the merge");
+  assert.equal(mergeOffered({ ...facts, sending: true }), false, "an answer on its way holds the merge");
+  assert.equal(mergeOffered({ ...facts, report: "needs-decision", queued: true }), false, "the Starminer case");
+});
+
+test("a stopped task keeps its Merge (user decision 1 of ticket 1)", () => {
+  assert.equal(mergeOffered({ report: undefined, stopped: true, queued: false, sending: false }), true);
+  assert.equal(mergeOffered({ report: "needs-decision", stopped: true, queued: true, sending: false }), true);
+});
+
+test("main.ts: mergeWaits asks mergeOffered with the queue of answers", () => {
+  const body = MAIN.slice(MAIN.indexOf("function mergeWaits("), MAIN.indexOf("function mergeTryKey("));
+  assert.match(body, /mergeOffered\(\{ report: info\.header\?\.state, stopped: info\.state === "stopped", queued: queuedReplies\.has\(queueKey\(task\)\), sending: replySendingOf\(task\) \}\)/);
 });

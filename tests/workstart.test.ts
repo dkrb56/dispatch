@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type QueuedFacts, sameFiles, sameFilesRefusal, StartLeases, folderUse, folderUseLabel,ticketFolder, type TicketFolderFacts, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts, type WorkRun } from "../src/workstart.ts";
+import { answerFolderNote, type AnswerFolderFacts, chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type QueuedFacts, sameFiles, sameFilesRefusal, StartLeases, folderUse, folderUseLabel,ticketFolder, type TicketFolderFacts, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts, type WorkRun } from "../src/workstart.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -741,4 +741,30 @@ test("ticketFolder: the ticket card and both Plan card loops call the label help
   assert.match(top, /folderLabel\(task\)/);
   const plan = MAIN.slice(MAIN.indexOf("function renderPlan"));
   assert.equal((plan.match(/planTicketTop\(/g) ?? []).length >= 2, true);
+});
+
+// Ticket 1: the plan card says before the start which answer will wait for the new work run.
+const answerFacts = (over: Partial<AnswerFolderFacts>): AnswerFolderFacts => ({ slots: 2, runs: [], merging: null, users: [], waiting: [], task: "t", ...over });
+
+test("answerFolderNote: null while a free folder holds no waiting task", () => {
+  assert.equal(answerFolderNote(answerFacts({ users: ["a", "b"], waiting: ["a"] })), null, "folder 2 holds no waiting task");
+  assert.equal(answerFolderNote(answerFacts({ users: ["a"], waiting: ["a"] })), null, "folder 2 has no record yet: the script makes it");
+  assert.equal(answerFolderNote(answerFacts({ users: ["a", "t"], waiting: ["a"] })), null, "the record of folder 2 names this task");
+  assert.equal(answerFolderNote(answerFacts({ users: ["a", "b"], runs: ["a", "b"], waiting: [] })), null, "no free folder: the run waits anyway");
+});
+
+test("answerFolderNote: the folder and the task when every free folder holds a waiting task", () => {
+  assert.deepEqual(answerFolderNote(answerFacts({ users: ["a", "b"], runs: ["b"], waiting: ["a"] })), { number: 1, task: "a" });
+  assert.deepEqual(answerFolderNote(answerFacts({ users: ["a", "b"], merging: "a", waiting: ["b"] })), { number: 2, task: "b" });
+  assert.deepEqual(answerFolderNote(answerFacts({ users: ["a", "b"], waiting: ["a", "b"] })), { number: 1, task: "a" });
+  assert.deepEqual(answerFolderNote(answerFacts({ slots: 1, users: ["a"], waiting: ["a"] })), { number: 1, task: "a" });
+});
+
+test("main.ts: the plan card shows the folder note", () => {
+  const card = MAIN.slice(MAIN.indexOf("function planCard("), MAIN.indexOf("function planCard(") + 8000);
+  assert.match(card, /const answerFolder = answerFolderOf\(task\);/);
+  assert.match(card, /`Its work run will start in work folder \$\{answerFolder\.number\}, where \$\{answerFolder\.task\} waits for your answer; that answer then waits until this run ends\.`/);
+  const of = MAIN.slice(MAIN.indexOf("function answerFolderOf("), MAIN.indexOf("function folderLabel("));
+  assert.match(of, /if \(!project\?\.workFolders\) return null;/);
+  assert.match(of, /reportWaits\(other\) \|\| !!queuedReplyOf\(other\) \|\| !!mergeWaitOf\(other\)/);
 });

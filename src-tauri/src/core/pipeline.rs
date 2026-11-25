@@ -2390,11 +2390,39 @@ function Folder-Holders([int]$Count) {
   }
 }
 
+# True when the task $Ticket (not this task) waits for an answer of the user (ticket 1): it is not
+# stopped, and a kept reply waits for it, or the header of its report says needs-decision or waiting,
+# or needs a decision, a permission or a merge. The header is lenient as in Dispatch: title lines and
+# empty lines may come first, and it ends at the first empty line after its first key.
+function Waits-Answer([string]$Ticket) {
+  if (-not $Ticket -or $Ticket -eq $Id) { return $false }
+  $state = Join-Path $Reports "$Ticket.state"
+  if ((Test-Path -LiteralPath $state) -and "$(Get-Content -LiteralPath $state -Raw)".Trim() -eq 'stopped') { return $false }
+  if (Test-Path -LiteralPath (Join-Path $Reports "$Ticket.reply")) { return $true }
+  $report = Join-Path $Reports "$Ticket.md"
+  if (-not (Test-Path -LiteralPath $report)) { return $false }
+  $started = $false
+  foreach ($line in @(Get-Content -LiteralPath $report)) {
+    $line = "$line".Trim()
+    if (-not $started -and ($line -eq '' -or $line.StartsWith('#'))) { continue }
+    if ($line -eq '') { break }
+    $started = $true
+    if ($line -notmatch '^([^:]+):(.*)$') { break }
+    $key = $Matches[1].Trim().ToLowerInvariant()
+    $value = $Matches[2].Trim().ToLowerInvariant()
+    if ($key -eq 'state' -and ($value -eq 'needs-decision' -or $value -eq 'waiting')) { return $true }
+    if ($key -eq 'needs' -and ($value -eq 'decision' -or $value -eq 'permission' -or $value -eq 'merge')) { return $true }
+  }
+  $false
+}
+
 # The free work folder for a run of the task without a session folder (approve, a merge, a session
 # that started in the project folder), or 0 when none is free: the folder that has the branch of the
 # task checked out (git checks out a branch in one folder only), else the folder whose record names
 # this ticket, else the lowest free folder that exists, else the lowest number without a folder. A
-# folder above $Count serves only the task of its branch or of its record.
+# free folder whose record names a task that waits for an answer comes last (ticket 1), so the
+# answer does not wait for this run. A folder above $Count serves only the task of its branch or of
+# its record.
 function Pick-Folder($Holders, [int]$Count) {
   $free = @($Holders | Where-Object { -not $_.Holder })
   $info = Read-BranchFile $Id
@@ -2408,7 +2436,13 @@ function Pick-Folder($Holders, [int]$Count) {
     $record = Read-Record $entry.N
     if ($null -ne $record -and $record.ticket -eq $Id) { return $entry.N }
   }
-  foreach ($entry in $free) { if ($entry.Made -and $entry.N -le $Count) { return $entry.N } }
+  $waits = @{}
+  foreach ($entry in $free) {
+    $record = Read-Record $entry.N
+    $waits[$entry.N] = ($null -ne $record) -and (Waits-Answer "$($record.ticket)")
+  }
+  foreach ($entry in $free) { if ($entry.Made -and $entry.N -le $Count -and -not $waits[$entry.N]) { return $entry.N } }
+  foreach ($entry in $free) { if ($entry.N -le $Count -and -not $waits[$entry.N]) { return $entry.N } }
   foreach ($entry in $free) { if ($entry.N -le $Count) { return $entry.N } }
   0
 }
@@ -9068,6 +9102,18 @@ pub fn find_checks(cwd: String, text: String) -> Result<Plan, String> {
 pub fn task_merge(cwd: String, id: String) -> Result<String, String> {
     check_ticket(&id)?;
     let project = Project::find(&cwd)?;
+    // Merge only a finished work run (ticket 1, user decision 3): a report that does not say done or
+    // an answer that waits for the worker refuses the merge, also from a stale card. A stopped task keeps its merge.
+    let stopped = fs::read_to_string(project.reports.join(format!("{id}.state"))).is_ok_and(|text| text.trim() == "stopped");
+    if !stopped {
+        let report = fs::read_to_string(project.reports.join(format!("{id}.md"))).unwrap_or_default();
+        if let Some(state) = report_state(&report).filter(|state| state != "done") {
+            return Err(format!("the report of {id} says {state}; Merge waits until its work run reports done"));
+        }
+        if project.reply_file(&id).exists() {
+            return Err(format!("an answer to {id} waits to go to its worker; Merge waits until that run reports done"));
+        }
+    }
     // A merge that a killed merge script left open would refuse this one (ticket
     // title-auto-merge-left-the-main-checkout); after a failed script, its own open merge goes too.
     cancel_left_merge(&project);
@@ -14461,6 +14507,35 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
             clean(&project);
         }
 
+        /// Ticket 1: the worker of t-1 ended with a question in folder 1, which frees that folder. A new
+        /// work run takes folder 2 (made for it, user decision 2), so the answer to t-1 starts at once.
+        #[test]
+        fn a_new_work_run_skips_the_folder_of_a_task_that_waits_for_an_answer() {
+            let (project, fake, base) = work_project("work-answer");
+            set_work_folder_count(&project, 2);
+            let (one, two) = (project.work_folder_at(1), project.work_folder_at(2));
+            plan_and_approve(&project, &fake, "t-1");
+            assert_eq!(folder_branch(&one), "task/t-1");
+            write_file(&project.reports.join("t-1.md"), "# Report t-1\n\nstate: needs-decision\nneeds: decision\nfiles: none\nplan: p\n\n## Questions\n1. Which way?\n   - This way\n").unwrap();
+
+            plan_only(&project, &fake, "t-2");
+            let (code, out) = run_script_env(&project, &fake, "done", &["approve", "t-2"], &[("FAKE_NAME", "t-1 [work]")]);
+            assert_eq!(code, 0, "{out}");
+            assert!(same_folder(&read(&fake.join("cwd.txt")), &two), "{}", read(&fake.join("cwd.txt")));
+            assert_eq!((folder_branch(&one), folder_branch(&two)), ("task/t-1".to_string(), "task/t-2".to_string()));
+
+            // The work run of t-2 runs in folder 2; the answer to t-1 starts in folder 1 at once.
+            write_folder_record(&project, 2, "t-2", "work", std::process::id());
+            let one_text = one.to_string_lossy().into_owned();
+            fs::remove_file(fake.join("cwd.txt")).unwrap();
+            let (code, out) = run_script_env(&project, &fake, "done", &["reply", "t-1", "Answer to question 1: This way"], &[("FAKE_NAME", "t-1 [work]"), ("FAKE_CWD", one_text.as_str())]);
+            assert_eq!(code, 0, "{out}");
+            assert!(last_call(&fake)[0].starts_with("Answer to question 1: This way"), "{:?}", last_call(&fake));
+            assert!(same_folder(&read(&fake.join("cwd.txt")), &one), "{}", read(&fake.join("cwd.txt")));
+            assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+            clean(&project);
+        }
+
         /// User decision 1: a reply and a check run go into the folder where the session of the work run
         /// of the task runs, not into a free folder with a lower number; while another task uses that
         /// folder, they wait for it.
@@ -15419,6 +15494,35 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
         assert_eq!(seen.trim(), format!("t-1|{}", project.task_checks_file("t-1").display()), "{seen}");
         assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
         assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    /// Ticket 1: a report that does not say done, or an answer that waits for the worker, refuses the
+    /// merge, also when a stale card or a second window asks for it; the base does not move.
+    #[test]
+    fn a_merge_is_refused_while_the_report_is_not_done() {
+        let (project, fake, base) = branch_project("branch-not-done");
+        let cwd = project.root.to_string_lossy().into_owned();
+        plan_and_approve(&project, &fake, "t-1");
+        let report = project.reports.join("t-1.md");
+        for state in ["needs-decision", "waiting", "failed"] {
+            write_file(&report, &format!("state: {state}\nneeds: decision\nfiles: work.txt\nplan: p\n\nA question.\n")).unwrap();
+            let refused = task_merge(cwd.clone(), "t-1".to_string()).unwrap_err();
+            assert_eq!(refused, format!("the report of t-1 says {state}; Merge waits until its work run reports done"));
+            assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_none(), "the work merged at {state}");
+        }
+        write_report(&project, "t-1");
+        // The task read switches the checkout back to the base after a done report.
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        write_file(&project.reply_file("t-1"), "{\"text\":\"Answer to question 1: Yes\",\"at\":1,\"report\":1}\n").unwrap();
+        let refused = task_merge(cwd.clone(), "t-1".to_string()).unwrap_err();
+        assert_eq!(refused, "an answer to t-1 waits to go to its worker; Merge waits until that run reports done");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_none(), "the work merged with a kept reply");
+
+        fs::remove_file(project.reply_file("t-1")).unwrap();
+        let merged = task_merge(cwd, "t-1".to_string()).unwrap();
+        assert!(merged.starts_with("merged task/t-1"), "{merged}");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_some());
         clean(&project);
     }
 

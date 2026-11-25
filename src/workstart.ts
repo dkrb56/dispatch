@@ -134,6 +134,42 @@ export function ticketFolder(facts: TicketFolderFacts): number | null {
   return facts.legacyUser === facts.task && facts.users.length === 0 ? 1 : null;
 }
 
+/** The facts of `answerFolderNote`. */
+export interface AnswerFolderFacts {
+  /** The number of work folders of the project. */
+  slots: number;
+  /** The names of the tasks whose work runs edit now. */
+  runs: readonly string[];
+  /** The task whose merge runs, or null. */
+  merging: string | null;
+  /** The ticket of the record of each work folder, from folder 1. */
+  users: readonly (string | null)[];
+  /** The names of the tasks that wait for an answer of the user. */
+  waiting: readonly string[];
+  /** The name of the task that starts. */
+  task: string;
+}
+
+/**
+ * The work folder where the work run of a task will start on top of a task that waits for an answer
+ * (ticket 1), or null: when every free folder 1..slots has a record that names a waiting task, the
+ * lowest one with that task; the answer then waits for this run. A folder without a record counts as
+ * free and not reserved; with no free folder the run waits anyway.
+ */
+export function answerFolderNote(facts: AnswerFolderFacts): { number: number; task: string } | null {
+  const slots = Number.isFinite(facts.slots) ? Math.max(1, Math.floor(facts.slots)) : 1;
+  const busy = new Set(facts.runs);
+  if (facts.merging !== null) busy.add(facts.merging);
+  let first: { number: number; task: string } | null = null;
+  for (let number = 1; number <= slots; number++) {
+    const user = facts.users[number - 1] ?? null;
+    if (user !== null && busy.has(user)) continue;
+    if (user === null || user === facts.task || !facts.waiting.includes(user)) return null;
+    first ??= { number, task: user };
+  }
+  return first;
+}
+
 /** The facts of `folderUse`. */
 export interface FolderUseFacts {
   workFolders: boolean;

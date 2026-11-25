@@ -151,10 +151,10 @@ import { HOLD_NOTE, holdWait } from "./holdstep";
 import { showTriage, triageCard, triagePanesToClose, withoutTriage, type ProjectLoad } from "./notriage";
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
 import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
-import { chooseNightMerge, chooseQueued, chooseStart, folderUse, folderUseLabel, mergeRefusal, nightPlan, projectBusy, type ReadTimes, ticketFolder, sameFiles, sameFilesRefusal, StartLeases, type WorkRun } from "./workstart";
+import { answerFolderNote, chooseNightMerge, chooseQueued, chooseStart, folderUse, folderUseLabel, mergeRefusal, nightPlan, projectBusy, type ReadTimes, ticketFolder, sameFiles, sameFilesRefusal, StartLeases, type WorkRun } from "./workstart";
 import { type Action, type ActionList, type ActionResume, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, resumeButtonText, resumeStep, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, takenText, uniqueId } from "./actions";
 import { failLines, freshOnly, type GateRefusal, gateRefusal, logName, refusalHeadline } from "./mergefail";
-import { autoMergeNote, type AutoMergeFacts, folderRefusal, mergedWords, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
+import { autoMergeNote, type AutoMergeFacts, folderRefusal, mergedWords, mergeOffered, missingFileGone, outsideLine, pushWords, refusalGoes } from "./merged";
 import { type ContextBlock, TLDR_LABEL, contextBlocks, formatLines, tldrBlock } from "./decisions-context";
 import {
   type CheckInfo,
@@ -5527,6 +5527,30 @@ function sessionFolder(task: Task): number | null {
 }
 
 /**
+ * The work folder where the work run of a task will start on top of a task that waits for an answer
+ * of the user, with that task, or null (ticket 1): only with Work folder on, when every free work
+ * folder holds such a task. A waiting task is not stopped, has no working or blocked worker, and has
+ * an open question, a queued answer or a wait for a merge.
+ */
+function answerFolderOf(task: Task): { number: number; task: string } | null {
+  const project = task.project;
+  if (!project?.workFolders) return null;
+  const tasks = projectTaskList(project, false);
+  const waiting = tasks
+    .filter((other) => other.info?.state !== "stopped" && !other.workers.some((worker) => worker.state === "working" || worker.state === "blocked"))
+    .filter((other) => reportWaits(other) || !!queuedReplyOf(other) || !!mergeWaitOf(other))
+    .map((other) => other.name);
+  return answerFolderNote({
+    slots: slotsOf(project),
+    runs: workRuns(tasks).map((run) => run.name),
+    merging: project.merging ?? null,
+    users: project.workFolderUsers,
+    waiting,
+    task: task.name,
+  });
+}
+
+/**
  * The label "Folder N" of a ticket card while the work run or the merge of its task runs in work
  * folder N, else null (ticket show-the-work-folder-of-a-ticket-on-its).
  */
@@ -6048,6 +6072,13 @@ function planCard(task: Task): HTMLElement {
     actions.append(cancel);
   }
   card.append(actions);
+  const answerFolder = answerFolderOf(task);
+  if (answerFolder) {
+    const note = document.createElement("div");
+    note.className = "card-reason";
+    note.textContent = `Its work run will start in work folder ${answerFolder.number}, where ${answerFolder.task} waits for your answer; that answer then waits until this run ends.`;
+    card.append(note);
+  }
   if (cancelArmed) {
     const row = document.createElement("div");
     row.className = "task-stop";
@@ -8347,6 +8378,8 @@ function mergeWaits(task: Task): boolean {
   if (!info || !branch?.exists || branch.merge) return false;
   if (!info.report && info.state !== "stopped") return false;
   if (planReady(task) || reportWaits(task)) return false;
+  // Merge only a done report with no answer in the queue or on its way (ticket 1): a queued answer makes `reportWaits` false.
+  if (!mergeOffered({ report: info.header?.state, stopped: info.state === "stopped", queued: queuedReplies.has(queueKey(task)), sending: replySendingOf(task) })) return false;
   // A work run that waits for the merge of other tasks has nothing to merge yet (ticket a-task-that-waits-for-the-merge-of).
   if (info.header?.needs === "merge") return false;
   // The picked checks run at the merge: the merge waits for the pick (ticket test-picker-an-agent-picks-the-checks).
