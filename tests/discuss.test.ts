@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { ASK_FIRST, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS, askAbout, askBlocked, askChatLine, askLine, questionPending, reviseReason } from "../src/discuss.ts";
+import { ASK_FIRST, CHAT_ASK_HINT, CHAT_ASK_LABEL, DISCUSS_LABEL, discussLine, FOOTER_HINTS, FOOTER_LABELS, askAbout, askBlocked, askChatLine, askLine, questionPending, reviseReason } from "../src/discuss.ts";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const MAIN = read("../src/main.ts");
@@ -165,4 +165,23 @@ test("reviseReason: choices only, words only, both, a decision named, newlines c
 test("the Revise click sends the box text and clears it only on success", () => {
   assert.match(MAIN, /reviseReason\(decisionLines\(decisionAnswers\(task\)\), askBoxText\(\), askDecision\)/);
   assert.match(MAIN, /if \(done\) \{\s*clearAskBox\(\);\s*askDecision = undefined;/);
+});
+
+// Ticket add-an-option-to-discuss-on-the-ticket: the Discuss button of a ticket card.
+test("discussLine names the ticket, its files and asks for talk only", () => {
+  const line = discussLine({ id: "t-1", task: "t-task", title: "  A  title\n here " });
+  assert.ok(line.startsWith("Discussion of ticket t-1 (A title here)"));
+  assert.ok(!line.startsWith("Ticket "));
+  assert.match(line, /\.dispatch\/briefs\/t-1\.md/);
+  assert.match(line, /\.dispatch\/plans\/t-task\.md/);
+  assert.match(line, /\.dispatch\/t-task\.md/);
+  assert.match(line, /Change no file\. Start no task\./);
+  assert.doesNotMatch(discussLine({ id: "t-1", title: "x" }), /t-task/);
+  assert.match(discussLine({ id: "t-1", task: "", title: "x" }), /\.dispatch\/plans\/t-1\.md.*\.dispatch\/t-1\.md/);
+});
+
+test("ticketCard appends the Discuss button and discussTicket opens a plain Chat", () => {
+  assert.equal(DISCUSS_LABEL, "Discuss");
+  assert.match(MAIN, /ticketButton\(DISCUSS_LABEL, DISCUSS_TITLE, \(\) => void discussTicket\(project, ticket\)\)/);
+  assert.match(MAIN, /async function discussTicket[\s\S]*?openProjectChat\(\{ host, root: cwd \}\)/);
 });

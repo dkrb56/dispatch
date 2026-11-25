@@ -155,7 +155,7 @@ import { autoContinueLine, autoContinueQueued, countsMerged, goOnLine, isAutoCon
 import { HOLD_NOTE, holdWait } from "./holdstep";
 import { showTriage, triageCard, triagePanesToClose, withoutTriage, type ProjectLoad } from "./notriage";
 import { addToTrail, afterAttach, hostOutput, isTerminalReport, isWindowsPath, leaveJoined, mayDriveChat, maySendTicket, OUTSIDE_NOTE, repaintSizes, type Trail, type TriageStart, triagePlace, triageStart } from "./triageowner";
-import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
+import { ASK_FIRST, type AskDecision, askAbout, askBlocked, questionPending, reviseReason, askChatLine, askLine, CHAT_ASK_HINT, CHAT_ASK_LABEL, DISCUSS_LABEL, DISCUSS_TITLE, discussLine, FOOTER_HINTS, FOOTER_LABELS } from "./discuss";
 import { answerFolderNote, chooseNightMerge, chooseQueued, chooseStart, folderUse, folderUseLabel, mergeRefusal, nightPlan, projectBusy, type ReadTimes, ticketFolder, sameFiles, sameFilesRefusal, StartLeases, type WorkRun } from "./workstart";
 import { type Action, type ActionList, type ActionResume, type ActionRun, actionsButtonText, checkAction, EMPTY_ACTIONS, expandPlaceholders, lastRun, lastRunText, PLACEHOLDERS, RELEASE_EXAMPLE, resumeButtonText, resumeStep, runButtonState, runningCount, runReady, runStateWord, shortTime, type Step, stepSummary, type StepTask, stepWord, takenText, uniqueId } from "./actions";
 import { failLines, freshOnly, type GateRefusal, gateRefusal, logName, refusalHeadline } from "./mergefail";
@@ -6723,6 +6723,28 @@ async function askInChat(task: Task, text: string): Promise<void> {
   if (decisionsTask === task) updateDecisionsFooter();
 }
 
+/**
+ * Discuss on a ticket card: opens a new plain Chat in the project, waits until its session is idle,
+ * then pastes the Discuss line and presses Enter. A terminal that is not ready in time gets nothing.
+ */
+async function discussTicket(key: string, ticket: Ticket): Promise<void> {
+  if (ticketsDialog.open) ticketsDialog.close();
+  const { host, cwd } = projectCwd(key);
+  const id = await openProjectChat({ host, root: cwd });
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  for (const until = Date.now() + CHAT_READY_MS; Date.now() < until; await pause(1000)) {
+    const pane = panes.get(id);
+    if (!pane) return;
+    const info = await call<PaneInfo>(pane.host, "pane_info", { id: pane.id, cwd: pane.cwd }).catch(() => null);
+    if (info?.session?.status !== "idle") continue;
+    pane.term.paste(discussLine(ticket));
+    await pause(RC_ENTER_WAIT_MS);
+    await call(pane.host, "pty_write", { id: pane.id, data: KEY_ENTER });
+    return;
+  }
+  console.error(`Discuss ${ticket.id}: the terminal was not ready in time; nothing was sent.`);
+}
+
 /** The answers of the window: the selected option of each decision, or the text under Other. */
 function decisionAnswers(task: Task): DecisionAnswer[] {
   const answers: DecisionAnswer[] = [];
@@ -12080,6 +12102,7 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
   // A waiting part keeps its form on the board (user decision 4); another waiting ticket opens the Edit ticket window.
   const editable = !waitingPart && !inFlight && (ticket.status === "backlog" || ticket.status === "new");
   tools.append(
+    ticketButton(DISCUSS_LABEL, DISCUSS_TITLE, () => void discussTicket(project, ticket)),
     waitingPart
       ? ticketButton("✎", "Edit the part: title, goal, type, level and fields", () => openPartForm("edit", ticket))
       : editable

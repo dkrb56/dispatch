@@ -63,6 +63,27 @@ export function askChatLine(ticket: string, question: string, decision?: AskDeci
   );
 }
 
+/** The Discuss button of a ticket card and its tooltip. */
+export const DISCUSS_LABEL = "Discuss";
+export const DISCUSS_TITLE = "Open a terminal of this project to talk about this ticket. Nothing changes.";
+
+/**
+ * The text that Dispatch types into a new plain Chat when the user clicks Discuss on a ticket card.
+ * It never starts with `Ticket ` (that form is a new ticket in a triage chat). It names the files of
+ * the ticket and asks for a summary only: the Chat changes no file and starts or approves no task.
+ */
+export function discussLine(ticket: { id: string; task?: string; title: string }): string {
+  const task = ticket.task || ticket.id;
+  const title = ticket.title.trim().replace(/\s+/g, " ");
+  return (
+    `Discussion of ticket ${ticket.id} (${title}), from the tickets board of Dispatch. ` +
+    `Read the files that exist: the brief .dispatch/briefs/${ticket.id}.md, the plan .dispatch/plans/${task}.md, ` +
+    `the report .dispatch/${task}.md and the entry of the ticket in .dispatch/tickets.jsonl. ` +
+    "Give a short summary in plain words, then wait for my questions. " +
+    "Change no file. Start no task. Do not approve, revise or reject a plan; I decide in Dispatch."
+  );
+}
+
 /** The line over the Ask box: what the question is about. */
 export function askAbout(decision?: AskDecision): string {
   return decision ? `Your question or change to decision ${decision.number}: ${decision.name}` : "Your question or change to this plan";
