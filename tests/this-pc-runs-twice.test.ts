@@ -106,8 +106,8 @@ test("a tab on a host is misplaced when its folder is on this PC and the user di
 
 test("the window reads the key of this PC before it connects, and only when a row can be its row", () => {
   const init = body(BACKEND, "export async function initBackend");
-  assert.match(init, /completeHosts\(settings, await ownHostKey\(\)\)/);
-  const read = body(BACKEND, "async function ownHostKey");
+  assert.match(init, /const own = await ownHost\(\);[\s\S]*completeHosts\(settings, own\.key\)/);
+  const read = body(BACKEND, "async function ownHost(");
   assert.match(read, /"host_run_status"/);
   assert.match(read, /isLoopback/);
   assert.match(read, /catch/);

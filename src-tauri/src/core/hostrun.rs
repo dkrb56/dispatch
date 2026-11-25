@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -14,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::core::info::{self, NoWindow};
-use crate::core::{err, phonepin, Core};
+use crate::core::{err, phonepin, tickets, Core};
 
 /// The default port of the host (the same as in `host/main.rs`).
 pub const DEFAULT_PORT: u16 = 7470;
@@ -24,14 +25,14 @@ const KEY_FILE: &str = "host-key.txt";
 /// The key of the phone page: it opens only the phone calls of the host (`host/phone.rs`).
 pub const PHONE_KEY_FILE: &str = "phone-key.txt";
 const LOG_FILE: &str = "host.log";
+/// Above this size the host log starts new at the next start; else each start appends.
+const LOG_MAX: u64 = 256 * 1024;
 /// Written by the update when it stopped a host; the next start of the app starts it again.
 const AFTER_UPDATE: &str = "host-after-update";
 /// How long a start waits for the host to listen.
 const START_WAIT: Duration = Duration::from_secs(15);
 /// How long a stop waits for the host to end.
 const STOP_WAIT: Duration = Duration::from_secs(5);
-/// At a sign-in start the host waits this long for the Tailscale address (user decision 6).
-const SIGN_IN_WAIT_SECONDS: u32 = 60;
 #[cfg(windows)]
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 
@@ -271,21 +272,47 @@ fn status_in(dir: &Path) -> HostRun {
     }
 }
 
-/// Starts the host of the data folder `dir` on `port`. With `wait_address` the host waits that
-/// many seconds for the Tailscale address. With `wait` this waits until the host listens and gives
-/// the end of its log when it stopped first.
-fn start_in(dir: &Path, port: u16, wait_address: Option<u32>, wait: bool) -> Result<u32, String> {
+/// Who starts the host. The header line of each start in the host log names it.
+#[derive(Clone, Copy)]
+enum StartBy {
+    SignIn,
+    Window,
+    Update,
+}
+
+impl StartBy {
+    fn name(self) -> &'static str {
+        match self {
+            StartBy::SignIn => "sign-in",
+            StartBy::Window => "window",
+            StartBy::Update => "update",
+        }
+    }
+}
+
+/// Opens the host log for one more start and writes its header line. The log keeps the lines of
+/// the earlier starts, so a failed sign-in start stays readable after a later start; above
+/// `LOG_MAX` it starts new.
+fn open_log(dir: &Path, by: StartBy) -> Result<fs::File, String> {
+    let path = dir.join(LOG_FILE);
+    let big = fs::metadata(&path).is_ok_and(|meta| meta.len() > LOG_MAX);
+    let mut log = fs::OpenOptions::new().create(true).write(true).append(!big).truncate(big).open(&path).map_err(err)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |time| time.as_millis() as u64);
+    writeln!(log, "--- start {} by {}", tickets::iso(now), by.name()).map_err(err)?;
+    Ok(log)
+}
+
+/// Starts the host of the data folder `dir` on `port`. With `wait` this waits until the host
+/// listens and gives the end of its log when it stopped first.
+fn start_in(dir: &Path, port: u16, by: StartBy, wait: bool) -> Result<u32, String> {
     if let Some(pid) = running_host(dir) {
         return Err(format!("a host already runs (process {pid})"));
     }
     let program = host_program()?;
     fs::create_dir_all(dir).map_err(err)?;
-    let log = fs::File::create(dir.join(LOG_FILE)).map_err(err)?;
+    let log = open_log(dir, by)?;
     let mut command = Command::new(&program);
     command.arg("--data-dir").arg(dir).args(["--port", &port.to_string()]);
-    if let Some(seconds) = wait_address {
-        command.args(["--wait-address", &seconds.to_string()]);
-    }
     command.stdin(Stdio::null()).stdout(log.try_clone().map_err(err)?).stderr(log).no_window();
     let mut child = command.spawn().map_err(|e| format!("could not start {}: {e}", program.display()))?;
     let pid = child.id();
@@ -351,7 +378,7 @@ pub fn host_run_status(core: &Core) -> HostRun {
 /// Starts the host on `port` (default 7470) and waits until it listens.
 pub fn host_run_start(core: &Core, port: Option<u16>) -> Result<HostRun, String> {
     let dir = core.app_data_dir()?;
-    start_in(&dir, port.unwrap_or(DEFAULT_PORT), None, true)?;
+    start_in(&dir, port.unwrap_or(DEFAULT_PORT), StartBy::Window, true)?;
     Ok(status_in(&dir))
 }
 
@@ -371,7 +398,7 @@ pub fn host_run_new_key(core: &Core, port: Option<u16>) -> Result<HostRun, Strin
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(err(e)),
         _ => {}
     }
-    start_in(&dir, ran.or(port).unwrap_or(DEFAULT_PORT), None, true)?;
+    start_in(&dir, ran.or(port).unwrap_or(DEFAULT_PORT), StartBy::Window, true)?;
     Ok(status_in(&dir))
 }
 
@@ -423,7 +450,8 @@ pub fn host_run_autostart(_core: &Core, _on: bool, _port: Option<u16>) -> Result
 }
 
 /// `dispatch --start-host --data-dir <folder> --port <port>`: the start of the sign-in entry. It
-/// starts the host, which waits for Tailscale, and gives the exit code of this program.
+/// starts the host, which listens on 127.0.0.1 at once and adds the Tailscale address when Tailscale
+/// has one, and gives the exit code of this program.
 pub fn start_from_args(args: &[String]) -> i32 {
     let mut dir = None;
     let mut port = DEFAULT_PORT;
@@ -439,7 +467,7 @@ pub fn start_from_args(args: &[String]) -> i32 {
         }
     }
     let Some(dir) = dir else { return 2 };
-    match start_in(&dir, port, Some(SIGN_IN_WAIT_SECONDS), false) {
+    match start_in(&dir, port, StartBy::SignIn, false) {
         Ok(_) => 0,
         Err(_) => 1,
     }
@@ -461,7 +489,7 @@ pub fn resume_after_update(core: &Core) -> Result<(), String> {
     let Ok(text) = fs::read_to_string(&marker) else { return Ok(()) };
     let port = text.trim().parse().unwrap_or(DEFAULT_PORT);
     fs::remove_file(&marker).map_err(err)?;
-    start_in(&dir, port, None, false).map(|_| ())
+    start_in(&dir, port, StartBy::Update, false).map(|_| ())
 }
 
 #[cfg(test)]
@@ -511,6 +539,27 @@ mod tests {
         assert!(!status.running && status.pid.is_none());
         assert_eq!(stop_in(&dir).unwrap(), None);
         assert!(!dir.join(HOST_FILE).exists(), "the stale file is gone");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn each_start_keeps_the_log_of_the_earlier_starts() {
+        let dir = scratch("log");
+        drop(open_log(&dir, StartBy::SignIn).unwrap());
+        fs::OpenOptions::new().append(true).open(dir.join(LOG_FILE)).unwrap().write_all(b"no address
+").unwrap();
+        drop(open_log(&dir, StartBy::Window).unwrap());
+        let text = fs::read_to_string(dir.join(LOG_FILE)).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 3, "{text}");
+        assert!(lines[0].starts_with("--- start ") && lines[0].ends_with(" by sign-in"), "{text}");
+        assert_eq!(lines[1], "no address");
+        assert!(lines[2].ends_with(" by window"), "{text}");
+        // A log above the limit starts new.
+        fs::write(dir.join(LOG_FILE), vec![b'x'; LOG_MAX as usize + 1]).unwrap();
+        drop(open_log(&dir, StartBy::Update).unwrap());
+        let text = fs::read_to_string(dir.join(LOG_FILE)).unwrap();
+        assert!(text.starts_with("--- start ") && text.trim_end().ends_with(" by update") && text.lines().count() == 1, "{text}");
         fs::remove_dir_all(&dir).unwrap();
     }
 

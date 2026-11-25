@@ -9,7 +9,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke, type InvokeArgs } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { cleanAddress, completeHosts, type HostEntry, type HostId, type HostSettings, isLoopback, LOCAL, parseHostSettings, retriesAtStart, workBackends } from "./hosts";
+import { cleanAddress, completeHosts, type HostEntry, type HostId, type HostSettings, isLoopback, LOCAL, ownHostToStart, parseHostSettings, retriesAtStart, workBackends } from "./hosts";
 
 export { cleanAddress, LOCAL, type HostEntry, type HostId, type HostSettings };
 
@@ -105,14 +105,18 @@ function setConnection(link: Link, next: Connection): void {
   for (const handler of connectionHandlers) handler(link.entry.id, next);
 }
 
-/** The key of the host of this PC when a row of the list can be its row, else null (ticket this-pc-runs-twice). It exists also while no host runs. */
-async function ownHostKey(): Promise<string | null> {
-  if (settings.mode === "local" || !settings.hosts.some((entry) => isLoopback(entry.address))) return null;
+/**
+ * The key of the host of this PC when a row of the list can be its row, else null (ticket
+ * this-pc-runs-twice), and whether that host runs. The key exists also while no host runs.
+ */
+async function ownHost(): Promise<{ key: string | null; running: boolean }> {
+  if (settings.mode === "local" || !settings.hosts.some((entry) => isLoopback(entry.address))) return { key: null, running: false };
   try {
-    return (await invoke<{ key: string | null }>("host_run_status")).key;
+    const run = await invoke<{ key: string | null; running: boolean }>("host_run_status");
+    return { key: run.key, running: run.running };
   } catch (error) {
     console.warn("the key of the host of this PC could not be read", error);
-    return null;
+    return { key: null, running: false };
   }
 }
 
@@ -127,7 +131,14 @@ export async function initBackend(): Promise<void> {
   } catch (error) {
     console.error("host settings could not be read", error);
   }
-  const entries = completeHosts(settings, await ownHostKey());
+  const own = await ownHost();
+  // A host of this PC that did not start at the Windows sign-in starts now (ticket
+  // computer-restarted-in-the-middle-of-the). The link waits for it with its start wait.
+  const toStart = ownHostToStart(settings, own.key, own.running);
+  if (toStart) {
+    invoke("host_run_start", { port: toStart.port }).catch((error) => console.warn("the host of this PC could not be started", error));
+  }
+  const entries = completeHosts(settings, own.key);
   if (entries.length === 0) return;
   try {
     appVersion = await getVersion();

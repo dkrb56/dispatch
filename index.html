@@ -1062,8 +1062,8 @@
           <summary>Details</summary>
           <ul>
             <li>A change of the mode or the hosts applies at the next start of Dispatch.</li>
-            <li><b>This PC does the work</b>: Dispatch runs the terminals, Claude Code and the workers here, and nothing listens on the network. <b>Use hosts</b>: the hosts run the program <code>dispatch-host</code>, and nothing runs on this computer. <b>This PC and hosts</b>: no host program runs on this computer.</li>
-            <li><b>Start the host</b>: the host listens on the Tailscale address of this computer and on 127.0.0.1, never on all addresses. Dispatch adds the row 127.0.0.1 with the name "This PC", switches this window to Use hosts and starts again. On Windows, <b>Start the host at each Windows sign-in</b> starts it after each sign-in.</li>
+            <li><b>This PC does the work</b>: everything runs in this window on this PC, and nothing listens on the network. <b>Use hosts</b>: this window only shows and controls hosts; the host of this PC can be one of them, and the work of a host goes on when this window closes. <b>This PC and hosts</b>: this window does its own work on this PC and also controls the hosts in the list; it skips the row of the host of this PC.</li>
+            <li><b>Start the host</b>: the host listens on the Tailscale address of this computer and on 127.0.0.1, never on all addresses. Dispatch adds the row 127.0.0.1 with the name "This PC", switches this window to Use hosts and starts again. On Windows, <b>Start the host when I sign in to Windows</b> starts it after each sign-in. In the mode Use hosts, Dispatch also starts the host of this PC when the window opens and the host is not running. When Tailscale is not ready yet, the host starts on 127.0.0.1 at once and adds the Tailscale address when Tailscale has one.</li>
             <li>The row has Name, Address, Port, Key and Remove. Address: the Tailscale name (<code>name.tailnet.ts.net</code>) or the <code>100.x</code> address. Port: empty is 7470. Key: copy it from the Key box, or from <code>host-key.txt</code> in the data folder of the host.</li>
             <li>The window connects to every host of the list. The title says "Dispatch · host &lt;name&gt;" with one host and "Dispatch · hosts &lt;name&gt;, &lt;name&gt;" with more. The workspace of a host folder opens on that host.</li>
             <li><b>Several hosts.</b> One window shows the projects of every host. With more than one host, each project name gets " · &lt;host name&gt;" after it, so two projects with the same folder name stay apart. With one host the names do not change.</li>
@@ -1157,17 +1157,17 @@
               <label class="mode-card">
                 <input type="radio" name="work-mode" value="local" />
                 <b>This PC does the work</b>
-                <span>Dispatch runs the terminals, Claude Code and the workers on this computer, as before.</span>
+                <span>Everything runs in this window on this PC. Your phone and other computers cannot connect.</span>
               </label>
               <label class="mode-card">
                 <input type="radio" name="work-mode" value="hosts" />
                 <b>Use hosts</b>
-                <span>Dispatch shows and controls one or more <code>dispatch-host</code> programs on other computers over Tailscale, or on this one. Nothing runs here.</span>
+                <span>This window only shows and controls hosts. A host is the Dispatch host program on this PC or on another computer; its work goes on when this window closes.</span>
               </label>
               <label class="mode-card">
                 <input type="radio" name="work-mode" value="mixed" />
                 <b>This PC and hosts</b>
-                <span>Dispatch runs the terminals, Claude Code and the workers on this computer and shows and controls the hosts of the list too. No host program runs on this computer.</span>
+                <span>This window does its own work on this PC and also controls the hosts in the list. The row of this PC's host is skipped.</span>
               </label>
             </div>
             <section id="host-section" hidden>
@@ -1197,7 +1197,7 @@
           </fieldset>
           <fieldset id="host-run" data-tab-panel="host">
             <legend>Run the host on this PC</legend>
-            <p>Run dispatch-host here, so another window or your phone can reach this PC.</p>
+            <p>The host is a background program that does the work of Dispatch. While it runs, your phone and your other computers can connect to this PC.</p>
             <div class="card-box">
               <div class="host-state-row">
                 <span id="host-run-dot" class="state-dot" aria-hidden="true"></span>
@@ -1215,16 +1215,16 @@
               </div>
               <label id="host-run-autostart-row" class="switch-row" hidden>
                 <input type="checkbox" id="host-run-autostart" />
-                <span><b>Start the host at each Windows sign-in</b></span>
+                <span><b>Start the host when I sign in to Windows</b> <small>Dispatch also starts it when this window opens and it is not running.</small></span>
               </label>
               <p id="host-run-error" hidden></p>
             </div>
             <section class="what-list">
               <h4>What Start and Stop do</h4>
               <ul>
-                <li>Start runs dispatch-host from the folder of Dispatch, adds or updates the row 127.0.0.1 of this PC in the host list, switches this window to Use hosts (also from This PC and hosts) and restarts Dispatch; the terminals of this window end.</li>
-                <li>Stop ends the host and its terminals, removes that row and restarts Dispatch; with an empty list this window goes back to This PC does the work, and with other hosts in the list it goes to This PC and hosts.</li>
-                <li>New key restarts the host with a new key; every other window needs the new key.</li>
+                <li><b>Start</b> starts the host, switches this window to Use hosts and restarts Dispatch. The open terminals of this window close.</li>
+                <li><b>Stop</b> stops the host and its terminals and restarts Dispatch. This window then does its own work again.</li>
+                <li><b>New key</b> restarts the host with a new key. Other windows need the new key.</li>
               </ul>
             </section>
           </fieldset>

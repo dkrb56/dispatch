@@ -130,6 +130,16 @@ export function completeHosts(settings: HostSettings, ownKey: string | null = nu
   return [...complete.filter((entry) => isOwnHostRow(entry, ownKey)), ...others];
 }
 
+/**
+ * The row of the host of this PC that the window starts at its own start (ticket
+ * computer-restarted-in-the-middle-of-the, decision 1): in the mode `hosts`, when the host does not
+ * run. A failed sign-in start then needs no click on Start. Else null.
+ */
+export function ownHostToStart(settings: HostSettings, ownKey: string | null | undefined, running: boolean): HostEntry | null {
+  if (settings.mode !== "hosts" || running) return null;
+  return settings.hosts.find((entry) => isOwnHostRow(entry, ownKey)) ?? null;
+}
+
 /** The mode after Stop the host of this PC: this PC does its own work, next to the hosts that are left (ticket this-pc-runs-twice, decision 4). */
 export function modeAfterHostStop(hostsLeft: number): "local" | "mixed" {
   return hostsLeft === 0 ? "local" : "mixed";

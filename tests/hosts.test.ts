@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { completeHosts, IDLE_READ_MS, keyHost, keyPath, LOCAL, mergeLists, nightSwitch, parseHostSettings, pathKey, projectKey, projectLabel, windowTitle, workBackends, readDue, UNUSED_AFTER_MS, retriesAtStart, START_WAIT_MS } from "../src/hosts.ts";
+import { completeHosts, IDLE_READ_MS, ownHostToStart, keyHost, keyPath, LOCAL, mergeLists, nightSwitch, parseHostSettings, pathKey, projectKey, projectLabel, windowTitle, workBackends, readDue, UNUSED_AFTER_MS, retriesAtStart, START_WAIT_MS } from "../src/hosts.ts";
 
 const HTML = readFileSync(new URL("../index.html", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -219,4 +219,17 @@ test("a failed first try at the start tries again only for the host of this PC a
   assert.equal(retriesAtStart("::1", 1000, 1000 + 500), true);
   assert.equal(retriesAtStart("127.0.0.1", 1000, 1000 + START_WAIT_MS), false, "after the wait the error shows as before");
   assert.equal(retriesAtStart("100.64.0.7", 1000, 1000 + 500), false, "a host on another computer does not wait");
+});
+
+test("the window starts the host of this PC when it uses it and the host does not run (computer-restarted-in-the-middle-of-the)", () => {
+  const own = { id: "own", name: "This PC", address: "127.0.0.1", port: 7470, key: "mine" };
+  const other = { id: "o", name: "other", address: "100.64.0.7", port: null, key: "k" };
+  const hosts = [other, own];
+  assert.equal(ownHostToStart({ mode: "hosts", window: "w", hosts }, "mine", false)?.port, 7470, "host off: its port");
+  assert.equal(ownHostToStart({ mode: "hosts", window: "w", hosts }, "mine", true), null, "host on: no start");
+  assert.equal(ownHostToStart({ mode: "mixed", window: "w", hosts }, "mine", false), null, "this PC works itself");
+  assert.equal(ownHostToStart({ mode: "local", window: "w", hosts }, "mine", false), null);
+  const test = { id: "t", name: "test", address: "127.0.0.1", port: 7479, key: "another" };
+  assert.equal(ownHostToStart({ mode: "hosts", window: "w", hosts: [other, test] }, "mine", false), null, "a 127.0.0.1 row with another key is a normal host");
+  assert.equal(ownHostToStart({ mode: "hosts", window: "w", hosts }, null, false), null, "no key of this PC");
 });

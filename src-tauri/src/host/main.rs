@@ -16,7 +16,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use dispatch_lib::core::{hostrun, pty, Core, EventSink};
 
@@ -34,20 +34,20 @@ struct Flags {
     port: u16,
     address: Option<IpAddr>,
     data_dir: Option<PathBuf>,
-    /// How long the start waits for the Tailscale address (the sign-in start of the app).
-    wait_address: u64,
 }
 
 fn parse_flags(mut args: impl Iterator<Item = String>) -> Result<Flags, String> {
-    let mut flags = Flags { port: DEFAULT_PORT, address: None, data_dir: None, wait_address: 0 };
+    let mut flags = Flags { port: DEFAULT_PORT, address: None, data_dir: None };
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or(format!("{flag} needs a value"));
         match flag.as_str() {
             "--port" => flags.port = value()?.parse().map_err(|_| "--port needs a number from 1 to 65535".to_string())?,
             "--address" => flags.address = Some(value()?.parse().map_err(|_| "--address needs an IP address".to_string())?),
             "--data-dir" => flags.data_dir = Some(PathBuf::from(value()?)),
+            // Older sign-in entries pass this flag. The host no longer waits for Tailscale before it
+            // listens on 127.0.0.1, so the value has no effect.
             "--wait-address" => {
-                flags.wait_address = value()?.parse().map_err(|_| "--wait-address needs a number of seconds".to_string())?
+                value()?.parse::<u64>().map_err(|_| "--wait-address needs a number of seconds".to_string())?;
             }
             other => return Err(format!("unknown flag: {other}")),
         }
@@ -68,18 +68,17 @@ fn tailscale_address() -> Option<IpAddr> {
     String::from_utf8_lossy(&output.stdout).lines().find_map(|line| line.trim().parse::<Ipv4Addr>().ok()).map(IpAddr::V4)
 }
 
-/// The Tailscale address, tried every 2 s for up to `wait` seconds: at a Windows sign-in the
-/// Tailscale service can come up after the host.
-fn wait_for_tailscale(wait: u64) -> Option<IpAddr> {
-    let end = Instant::now() + Duration::from_secs(wait);
+/// How often the host asks again for the Tailscale address while Tailscale has none.
+const LATE_ADDRESS_EVERY: Duration = Duration::from_secs(10);
+
+/// The first address that `source` gives, asked every `every` without end: at a Windows sign-in
+/// the Tailscale service can come up minutes after the host.
+fn late_address(mut source: impl FnMut() -> Option<IpAddr>, every: Duration) -> IpAddr {
     loop {
-        if let Some(address) = tailscale_address() {
-            return Some(address);
+        if let Some(address) = source() {
+            return address;
         }
-        if Instant::now() >= end {
-            return None;
-        }
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(every);
     }
 }
 
@@ -129,12 +128,11 @@ fn main() {
     let key = pairing_key(&data_dir).unwrap_or_else(|e| fail(&e));
     hostrun::ensure_phone_key(&data_dir).unwrap_or_else(|e| fail(&e));
 
-    let tailnet = flags.address.or_else(|| wait_for_tailscale(flags.wait_address)).unwrap_or_else(|| {
-        fail("`tailscale ip -4` gave no address; start Tailscale or name the address with --address <ip>")
-    });
-    // User decision 1 (remote-host): the window on this computer reaches the host on 127.0.0.1.
-    let mut addresses = vec![SocketAddr::new(tailnet, flags.port)];
+    // The window on this computer needs only 127.0.0.1, so the host listens there at once. When
+    // Tailscale has no address yet (a sign-in start), a thread asks again and adds it later.
+    let tailnet = flags.address.or_else(tailscale_address);
     let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), flags.port);
+    let mut addresses: Vec<SocketAddr> = tailnet.map(|address| SocketAddr::new(address, flags.port)).into_iter().collect();
     if !addresses.contains(&loopback) {
         addresses.push(loopback);
     }
@@ -160,6 +158,11 @@ fn main() {
         .build()
         .unwrap_or_else(|e| fail(&format!("no runtime: {e}")));
     let host = Arc::new(Host { core, clients, version: version.clone(), data_dir: data_dir.clone(), unlocks: unlock::Unlocks::new() });
+    let handle = runtime.handle().clone();
+    let late_host = host.clone();
+    let late_dir = data_dir.clone();
+    let late_version = version.clone();
+    let port = flags.port;
     runtime.block_on(async move {
         let mut listeners = Vec::new();
         for address in &addresses {
@@ -179,11 +182,40 @@ fn main() {
         println!("data folder: {}", data_dir.display());
         println!("key file: {}", data_dir.join(KEY_FILE).display());
         println!("Ctrl+C stops the host and its terminals.");
+        if tailnet.is_none() {
+            println!("`tailscale ip -4` gave no address; the host asks again every {} s", LATE_ADDRESS_EVERY.as_secs());
+            std::thread::spawn(move || {
+                add_tailscale_later(handle, late_host, late_dir, port, listening, late_version);
+            });
+        }
         let tasks: Vec<_> = listeners.into_iter().map(|listener| tokio::spawn(server::serve(listener, host.clone()))).collect();
         for task in tasks {
             let _ = task.await;
         }
     });
+}
+
+/// Waits for the Tailscale address, listens on it, serves it like the other addresses and writes
+/// `host.json` again with all addresses. A failed listen is tried again after the same pause.
+fn add_tailscale_later(handle: tokio::runtime::Handle, host: Arc<Host>, dir: PathBuf, port: u16, mut listening: Vec<String>, version: String) {
+    loop {
+        let address = SocketAddr::new(late_address(tailscale_address, LATE_ADDRESS_EVERY), port);
+        match handle.block_on(tokio::net::TcpListener::bind(address)) {
+            Ok(listener) => {
+                listening.insert(0, address.to_string());
+                if let Err(e) = hostrun::write_host_file(&dir, port, &listening, &version) {
+                    eprintln!("dispatch-host: cannot write {}: {e}", dir.join(hostrun::HOST_FILE).display());
+                }
+                println!("listening on ws://{address}");
+                handle.spawn(server::serve(listener, host));
+                return;
+            }
+            Err(e) => {
+                eprintln!("dispatch-host: cannot listen on {address}: {e}; the host tries again");
+                std::thread::sleep(LATE_ADDRESS_EVERY);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -198,13 +230,26 @@ mod tests {
     fn the_flags() {
         let parsed = flags(&["--port", "7471", "--address", "100.64.0.1", "--data-dir", "x", "--wait-address", "60"]).unwrap();
         assert_eq!((parsed.port, parsed.address, parsed.data_dir), (7471, Some("100.64.0.1".parse().unwrap()), Some("x".into())));
-        assert_eq!(parsed.wait_address, 60);
         assert_eq!(flags(&[]).unwrap().port, DEFAULT_PORT);
-        assert_eq!(flags(&[]).unwrap().wait_address, 0);
         assert!(flags(&["--wait-address", "soon"]).is_err());
         assert!(flags(&["--port"]).is_err());
         assert!(flags(&["--port", "high"]).is_err());
         assert!(flags(&["--other"]).is_err());
         assert!(flags(&["--address", "0.0.0.0"]).unwrap().address.unwrap().is_unspecified());
+    }
+
+    #[test]
+    fn a_late_tailscale_address() {
+        // Tailscale has no address for the first two questions, then one.
+        let mut asked = 0;
+        let address = late_address(
+            || {
+                asked += 1;
+                (asked == 3).then(|| "100.64.0.7".parse().unwrap())
+            },
+            Duration::from_millis(1),
+        );
+        assert_eq!(address, "100.64.0.7".parse::<IpAddr>().unwrap());
+        assert_eq!(asked, 3);
     }
 }
