@@ -85,6 +85,8 @@ import {
   boxesInside,
   withNewSection,
   withoutSection,
+  withTicketOutOfSections,
+  placeCards as placePlanCards,
   type PlanRect,
   planCentre,
   planJoin,
@@ -16882,6 +16884,13 @@ let planSelectedBoxes = new Set<string>();
 let planBoxPlaces: { id: string; box: PlanRect }[] = [];
 /** The section that holds each topic group or section of the last render, by id. */
 let planBoxHolders = new Map<string, string>();
+/**
+ * The section or comment that holds each card of the last render, by card id; a card in two comments:
+ * the first of the list (ticket tickets-and-comments-join-a-section-on).
+ */
+let planCardHolders = new Map<string, string>();
+/** The card ids that each comment or stacked group of the last render stands for: `group:<id>` when collapsed, else its tree cards. */
+let planGroupNodes = new Map<string, string[]>();
 /** The comments and groups of each project, by project key. */
 const planGroups = new Map<string, PlanGroup[]>();
 /** The projects whose comments and groups are known: read once (with success or failure), saved or auto grouped. Until then the board shows a spinner. */
@@ -17902,10 +17911,12 @@ function planGroupMenu(event: MouseEvent, ref: ProjectRef, group: PlanGroup): vo
     one.setAttribute("role", "separator");
     return one;
   };
-  if (group.auto) {
+  // A comment or a stacked group leaves its section too (ticket tickets-and-comments-join-a-section-on).
+  if (!isSection(group)) {
     const holder = planGroupsOf(ref).find((one) => isSection(one) && (one.groups ?? []).includes(group.id));
-    if (holder) menu.append(menuItem(`Take out of "${holder.title || "Untitled"}"`, "This topic group leaves its section and keeps its tickets", () => planMoveToSection(group.id, null)), menuLine());
-    else menu.append(menuItem("New section with this group", "Make a section box around this topic group; drag other topic groups onto it", () => planNewSection(group.id)), menuLine());
+    const kind = group.auto ? "topic group" : group.collapsed ? "group" : "comment";
+    if (holder) menu.append(menuItem(`Take out of "${holder.title || "Untitled"}"`, `This ${kind} leaves its section and keeps its tickets`, () => planMoveToSection(group.id, null)), menuLine());
+    else if (group.auto) menu.append(menuItem("New section with this group", "Make a section box around this topic group; drag other topic groups onto it", () => planNewSection(group.id)), menuLine());
   }
   // A section inside another section leaves it (ticket group-everything-inside-a-selection-box).
   if (isSection(group)) {
@@ -18067,22 +18078,53 @@ function planNewSection(groupId: string): void {
  * Make a section (S) of the topic groups and sections that the selection box caught (ticket
  * group-everything-inside-a-selection-box): first in the list, in the colour of the first of them,
  * selected with its title ready to type. A caught section stays a section inside it (user decision 2),
- * and each topic group inside keeps the place where it stands (user decision 4).
+ * and each topic group inside keeps the place where it stands (user decision 4). Ticket
+ * tickets-and-comments-join-a-section-on: caught comments and stacked group cards join too (user
+ * decision 4), and the caught tickets that nothing caught holds; each card keeps its place as a spot
+ * of the section. Tickets alone make no section (user decision 3).
  */
 function planMakeSection(): void {
   const ref = planProject();
   if (!ref) return;
   const groups = planGroupsOf(ref);
-  const members = [...planSelectedBoxes].filter((id) => groups.some((one) => one.id === id));
-  if (members.length === 0) return;
-  const chosen = new Set(members);
-  const inside = (id: string) => {
-    for (let up: string | undefined = id; up !== undefined; up = planBoxHolders.get(up)) if (chosen.has(up)) return true;
+  const known = (id: string) => groups.some((one) => one.id === id);
+  if (![...planSelectedBoxes].some(known)) return;
+  const picked = [...new Set([...planSelectedBoxes, ...[...planSelected].flatMap((id) => (id.startsWith(GROUP_PREFIX) ? [id.slice(GROUP_PREFIX.length)] : []))])].filter(known);
+  const pickedSet = new Set(picked);
+  /** Whether a chosen id holds `id` at any depth, through its holder chain; `self` counts the id itself. */
+  const heldBy = (id: string, ids: ReadonlySet<string>, self: boolean) => {
+    const seen = new Set<string>();
+    for (let up: string | undefined = self ? id : (planCardHolders.get(id) ?? planBoxHolders.get(id)); up !== undefined && !seen.has(up); up = planBoxHolders.get(up)) {
+      seen.add(up);
+      if (ids.has(up)) return true;
+    }
     return false;
   };
+  // A member less when a chosen box holds it already, at any depth.
+  const members = picked.filter((id) => !heldBy(id, pickedSet, false));
+  const chosen = new Set(members);
+  const inside = (id: string) => heldBy(id, chosen, true);
   const places = new Map(planBoxPlaces.filter((one) => inside(one.id)).map((one) => [one.id, { x: one.box.x, y: one.box.y }] as const));
+  const cardAt = new Map(planPlaces.map((card) => [card.id, card]));
+  const own = [...planSelected].filter((id) => !id.startsWith(GROUP_PREFIX) && cardAt.has(id) && !heldBy(id, chosen, false));
+  const spots: Record<string, { x: number; y: number }> = {};
+  for (const id of [...own, ...members.flatMap((member) => planGroupNodes.get(member) ?? [])]) {
+    const card = cardAt.get(id);
+    if (card) spots[id] = { x: card.x, y: card.y };
+  }
   const first = groups.find((one) => one.id === members[0]);
-  const section: PlanGroup = { id: `s-${Date.now().toString(36)}`, title: "Section", color: first?.color ?? 0, collapsed: false, tickets: [], auto: false, description: "", unfolded: false, groups: [] };
+  const section: PlanGroup = {
+    id: `s-${Date.now().toString(36)}`,
+    title: "Section",
+    color: first?.color ?? 0,
+    collapsed: false,
+    tickets: own,
+    auto: false,
+    description: "",
+    unfolded: false,
+    groups: [],
+    ...(Object.keys(spots).length > 0 ? { spots } : {}),
+  };
   planSelected = new Set();
   planSelectedBoxes = new Set();
   planSelectedArrow = null;
@@ -18674,26 +18716,50 @@ function renderPlan(): void {
   // names, a topic block in the first section only. A folded section stands as one block for them.
   // A section can hold sections (ticket group-everything-inside-a-selection-box): `members` are the
   // direct ones, `topics` the topic groups at any depth; only a section of the board folds (user decision 3).
-  const sectionTree = planSections(groups, new Set(topicOf.keys()));
+  // A section also holds comments, stacked groups and the cards of the tree and the shelf (ticket
+  // tickets-and-comments-join-a-section-on): `boxes` and `cards` of each section.
+  const looseIds = notInFlow(flow).flatMap((one) => (byId.has(one.id) && !inTree.has(one.id) && !inBlock.has(one.id) ? [one.id] : []));
+  const boardBoxes = new Set(
+    groups.flatMap((group) => {
+      if (group.auto || isSection(group)) return [];
+      const drawn = group.collapsed ? inTree.has(groupNodeId(group.id)) : group.tickets.some((id) => inTree.has(tree.hidden.get(id) ?? id));
+      return drawn ? [group.id] : [];
+    }),
+  );
+  const sectionTree = planSections(groups, new Set(topicOf.keys()), { boxes: boardBoxes, cards: new Set([...inTree, ...looseIds]) });
   const groupById = new Map(groups.map((group) => [group.id, group]));
   const sectionOf = new Map<string, PlanGroup>();
   for (const [member, holder] of sectionTree.holder) {
     const group = groupById.get(holder);
     if (group) sectionOf.set(member, group);
   }
-  const sections = sectionTree.sections.map((one) => ({ ...one, tickets: one.topics.flatMap((id) => topicOf.get(id)?.members ?? []) }));
+  /** The comments and stacked groups and the cards of a section at any depth. */
+  const deepOf = (id: string): { boxes: string[]; cards: string[] } => {
+    const one = sectionTree.sections.find((other) => other.group.id === id);
+    if (!one) return { boxes: [], cards: [] };
+    const inner = one.members.filter((member) => sectionTree.sections.some((other) => other.group.id === member)).map(deepOf);
+    return { boxes: [...one.boxes, ...inner.flatMap((part) => part.boxes)], cards: [...one.cards, ...inner.flatMap((part) => part.cards)] };
+  };
+  const sections = sectionTree.sections.map((one) => {
+    const deep = deepOf(one.group.id);
+    const boxTickets = deep.boxes.flatMap((id) => groupById.get(id)?.tickets ?? []).filter((id) => byId.has(id));
+    return {
+      ...one,
+      tickets: [...new Set([...one.topics.flatMap((id) => topicOf.get(id)?.members ?? []), ...boxTickets, ...deep.cards])],
+      inside: deep.boxes.length + deep.cards.length,
+    };
+  });
   const sectionById = new Map(sections.map((one) => [one.group.id, one]));
-  /** A section is folded: only a section of the board, never one inside another. */
+  /** A section is folded: only a section of the board, never one inside another, and never one with a card or a comment inside (user decision 1). */
   const sectionFolded = (id: string) => {
     const one = sectionById.get(id);
-    return Boolean(one && one.path.length === 0 && one.group.collapsed);
+    return Boolean(one && one.path.length === 0 && one.group.collapsed && one.inside === 0);
   };
   /** The chain of sections of a topic group or section, the outermost first. */
   const chainOf = (id: string) => {
     const holder = sectionTree.holder.get(id);
     return holder === undefined ? [] : [...(sectionById.get(holder)?.path ?? []), holder];
   };
-  const looseIds = notInFlow(flow).flatMap((one) => (byId.has(one.id) && !inTree.has(one.id) && !inBlock.has(one.id) ? [one.id] : []));
   const perRow = boardSize.width > 0 ? Math.floor((boardSize.width - 2 * PLAN_PAD) / planSteps(size).column) : 4;
   // A resized box keeps its saved size, and the description row holds the whole text (ticket
   // issue-ticket-panel-is-only-resizable).
@@ -18704,7 +18770,9 @@ function renderPlan(): void {
     return percent === null ? plural(count, "ticket") : `${plural(count, "ticket")} · ${percent}% done`;
   };
   // A section counts its topic groups and the tickets of all of them; a folded one lists their titles.
-  const sectionCountText = (one: { topics: readonly string[]; tickets: readonly string[] }) => `${plural(one.topics.length, "group")} · ${planGroupCountText(tickets, one.tickets.length, one.tickets)}`;
+  // A section without a topic group shows only its tickets (ticket tickets-and-comments-join-a-section-on).
+  const sectionCountText = (one: { topics: readonly string[]; tickets: readonly string[] }) =>
+    `${one.topics.length > 0 ? `${plural(one.topics.length, "group")} · ` : ""}${planGroupCountText(tickets, one.tickets.length, one.tickets)}`;
   const sectionNames = (one: { members: readonly string[] }) => one.members.map((id) => groups.find((group) => group.id === id)?.title || "Untitled").join(" · ");
   for (const one of sections) aboutOf.set(one.group.id, sectionNames(one));
   // The width that the whole title bar of each block needs: the same title and count as the bar shows
@@ -18767,24 +18835,70 @@ function renderPlan(): void {
     if (spot) savedPlaces.set(one.group.id, spot);
   }
   const topicPlaces = placeTopicBlocks(blockPlaces.blocks, savedPlaces, blockShift, shelf.layout);
-  // The box of an open section stands around its topic groups and its sections, and the canvas grows to hold it.
-  // The outer boxes come first, so an inner box draws on top.
+  // Ticket tickets-and-comments-join-a-section-on: the cards that each comment or stacked group of the
+  // canvas stands for, and the cards that each section moves (its own cards and those of its comments
+  // and stacked groups). A moved card stands at the spot of its section, the outer section first.
+  const groupNodes = new Map<string, string[]>();
+  for (const id of boardBoxes) {
+    const group = groupById.get(id);
+    if (group) groupNodes.set(id, group.collapsed ? [groupNodeId(id)] : [...new Set(group.tickets.filter((one) => inTree.has(one)))]);
+  }
+  const movedBy = new Map(sections.map((one) => [one.group.id, [...new Set([...one.cards, ...one.boxes.flatMap((id) => groupNodes.get(id) ?? [])])]] as const));
+  const spotMap = new Map<string, { x: number; y: number }>();
+  for (const one of sections) {
+    for (const card of movedBy.get(one.group.id) ?? []) {
+      const spot = one.group.spots?.[card];
+      if (spot && !spotMap.has(card)) spotMap.set(card, spot);
+    }
+  }
+  const cardPlaces = placePlanCards(topicPlaces.layout, shelf.cards, spotMap, size);
+  const shelfCards = cardPlaces.shelf;
+  const cardAt = new Map([...cardPlaces.layout.cards, ...shelfCards].map((card) => [card.id, card]));
+  const cardBox = (id: string): PlanRect | null => {
+    const card = cardAt.get(id);
+    return card ? { x: card.x, y: card.y, width: size.width, height: size.height } : null;
+  };
+  // The open comments with a box around their tree cards at their places.
+  const commentBoxes = new Map<string, PlanRect>();
+  for (const group of groups) {
+    if (group.collapsed || group.auto || isSection(group)) continue;
+    const box = groupBox(cardPlaces.layout.cards, group.tickets, tree.hidden, size);
+    if (box) commentBoxes.set(group.id, box);
+  }
+  // The box of an open section stands around its topic groups, its sections, its comments, its stacked
+  // groups and its cards, and the canvas grows to hold it. The outer boxes come first, so an inner box draws on top.
+  const memberBoxes = sections.flatMap((one) => [
+    ...one.cards.flatMap((id) => {
+      const box = cardBox(id);
+      return box ? [{ id, box }] : [];
+    }),
+    ...one.boxes.flatMap((id) => {
+      const box = groupById.get(id)?.collapsed ? cardBox(groupNodeId(id)) : (commentBoxes.get(id) ?? null);
+      return box ? [{ id, box }] : [];
+    }),
+  ]);
   const sectionBoxes = setBoxes(
-    topicPlaces.blocks,
-    sections.filter((one) => !sectionFolded(one.path[0] ?? one.group.id)).map((one) => ({ id: one.group.id, members: one.members })),
+    [...topicPlaces.blocks.map((place) => ({ id: place.id, box: place.box })), ...memberBoxes],
+    sections.filter((one) => !sectionFolded(one.path[0] ?? one.group.id)).map((one) => ({ id: one.group.id, members: [...one.members, ...one.cards] })),
   );
   const layout = {
-    ...topicPlaces.layout,
-    width: Math.max(topicPlaces.layout.width, ...sectionBoxes.map((one) => one.box.x + one.box.width + PLAN_PAD)),
-    height: Math.max(topicPlaces.layout.height, ...sectionBoxes.map((one) => one.box.y + one.box.height + PLAN_PAD)),
+    ...cardPlaces.layout,
+    width: Math.max(cardPlaces.layout.width, ...sectionBoxes.map((one) => one.box.x + one.box.width + PLAN_PAD)),
+    height: Math.max(cardPlaces.layout.height, ...sectionBoxes.map((one) => one.box.y + one.box.height + PLAN_PAD)),
   };
   // A topic group dropped on one of these boxes joins that section (user decision 2).
   const sectionTargets: { id: string; box: PlanRect }[] = [...sectionBoxes, ...topicPlaces.blocks.filter((place) => sectionFolded(place.id)).map((place) => ({ id: place.id, box: place.box }))];
-  planPlaces = layout.cards;
-  // The selection box catches the topic boxes, the folded sections and the open section boxes
-  // (ticket group-everything-inside-a-selection-box).
-  planBoxPlaces = [...topicPlaces.blocks.map((place) => ({ id: place.id, box: place.box })), ...sectionBoxes];
+  // The selection box touches the cards of the tree and of the shelf (ticket tickets-and-comments-join-a-section-on).
+  planPlaces = [...layout.cards, ...shelfCards];
+  // The selection box catches the topic boxes, the folded sections, the open section boxes (ticket
+  // group-everything-inside-a-selection-box) and the comment boxes.
+  planBoxPlaces = [...topicPlaces.blocks.map((place) => ({ id: place.id, box: place.box })), ...sectionBoxes, ...[...commentBoxes].map(([id, box]) => ({ id, box }))];
   planBoxHolders = sectionTree.holder;
+  // A card held by a section, else by the first comment or stacked group that stands for it.
+  planCardHolders = new Map();
+  for (const one of sections) for (const card of one.cards) planCardHolders.set(card, one.group.id);
+  for (const [id, cards] of groupNodes) for (const card of cards) if (!planCardHolders.has(card)) planCardHolders.set(card, id);
+  planGroupNodes = groupNodes;
   const badges = planBadges(flow);
   const ticketArrows = planArrows(flow);
   const lineArrows = planArrows(layoutList);
@@ -18839,7 +18953,7 @@ function renderPlan(): void {
   }
 
   // The selection keeps only what the tree still shows.
-  const shown = new Set([...layout.cards, ...shelf.cards, ...topicPlaces.blocks.flatMap((block) => block.cards)].map((card) => card.id));
+  const shown = new Set([...layout.cards, ...shelfCards, ...topicPlaces.blocks.flatMap((block) => block.cards)].map((card) => card.id));
   planSelected = new Set([...planSelected].filter((id) => shown.has(id)));
   if (planSelectedGroup !== null && !groups.some((group) => group.id === planSelectedGroup)) planSelectedGroup = null;
   const drawnBoxes = new Set(planBoxPlaces.map((one) => one.id));
@@ -18947,12 +19061,146 @@ function renderPlan(): void {
   root.title = ref.root;
   root.append(mapElement("span", "plan-root-name", projectName(ref)), mapElement("span", "plan-state", plural(tickets.length, "ticket")), planCardGrip(key));
   canvas.append(root);
+  // The parts of each topic block, which the drag of its section moves too.
+  const partsOf = new Map<string, HTMLElement[]>();
+  // The element of each card of the tree and of the shelf, and of each comment box: the drag of a
+  // section moves those that it holds (ticket tickets-and-comments-join-a-section-on).
+  const cardEls = new Map<string, HTMLElement>();
+  const commentEls = new Map<string, HTMLElement>();
+  // The open sections (ticket i-need-an-option-to-create-group-of): a box behind their topic blocks
+  // with a title bar; a drag of the title bar moves the section with all its topic groups.
+  // The element of each open section box: a drag of a section moves the boxes of the sections inside it too.
+  const sectionEls = new Map<string, HTMLElement>();
+  for (const { id, box } of sectionBoxes) {
+    const one = sectionById.get(id);
+    if (!one) continue;
+    const section = one.group;
+    const el = mapElement("div", `plan-group-box plan-set plan-color-${section.color}${planSelectedGroup === section.id || planSelectedBoxes.has(section.id) ? " selected" : ""}`);
+    sectionEls.set(section.id, el);
+    el.dataset.group = section.id;
+    el.style.left = `${box.x}px`;
+    el.style.top = `${box.y}px`;
+    el.style.width = `${box.width}px`;
+    el.style.height = `${box.height}px`;
+    const bar = mapElement("div", "plan-group-title");
+    bar.style.height = `${PLAN_BOX_TITLE}px`;
+    bar.title = "Select this section; drag to move it with its groups";
+    bar.append(planGroupName(section), mapElement("span", "plan-group-count", sectionCountText(one)));
+    const fold = mapElement("button", "plan-group-toggle", "▴");
+    fold.type = "button";
+    fold.title = "Fold: show only the title of the section";
+    fold.setAttribute("aria-label", "Fold");
+    fold.addEventListener("click", (event) => {
+      event.stopPropagation();
+      planChangeGroup(section.id, { collapsed: true });
+    });
+    // A section inside another section does not fold (user decision 3), nor one with a card or a
+    // comment inside (ticket tickets-and-comments-join-a-section-on, user decision 1).
+    if (one.path.length === 0 && one.inside === 0) bar.append(fold);
+    bar.addEventListener("click", () => planSelect([], null, section.id));
+    el.append(bar);
+    canvas.append(el);
+    // The drag moves the box, the boxes of the sections inside it and every part of its topic blocks at
+    // any depth; the drop moves each topic group by the same whole grid steps and saves its place, so
+    // they keep their places to each other. The cards and the comment boxes that it and its inner
+    // sections hold move too; the drop saves the new place of each card as a spot of its section.
+    let swallow = false;
+    bar.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      if (event.target instanceof Element && event.target.closest(".plan-group-toggle, input, textarea")) return;
+      const begin = { pointer: event.pointerId, x: event.clientX, y: event.clientY, zoom: planZoom(key) };
+      const innerSections = sections.filter((other) => other.path.includes(section.id));
+      const inner = innerSections.flatMap((other) => sectionEls.get(other.group.id) ?? []);
+      const carriers = [one, ...innerSections];
+      const carried = [...new Set(carriers.flatMap((other) => movedBy.get(other.group.id) ?? []))];
+      const comments = carriers.flatMap((other) => other.boxes.flatMap((member) => commentEls.get(member) ?? []));
+      const moving = [el, ...inner, ...one.topics.flatMap((member) => partsOf.get(member) ?? []), ...carried.flatMap((card) => cardEls.get(card) ?? []), ...comments];
+      let moved = false;
+      const move = (next: PointerEvent) => {
+        if (next.pointerId !== begin.pointer) return;
+        const dx = next.clientX - begin.x;
+        const dy = next.clientY - begin.y;
+        if (!moved) {
+          if (Math.hypot(dx, dy) < 4) return;
+          moved = true;
+          planGroupDragging = true;
+          planBoardEl.classList.add("plan-group-dragging");
+        }
+        for (const part of moving) part.style.transform = `translate(${dx / begin.zoom}px, ${dy / begin.zoom}px)`;
+      };
+      const finish = (last: PointerEvent, cancel: boolean) => {
+        if (last.pointerId !== begin.pointer) return;
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", stop);
+        if (!moved) return;
+        planBoardEl.classList.remove("plan-group-dragging");
+        if (cancel) {
+          planGroupDragging = false;
+          renderPlan();
+          return;
+        }
+        // Whole grid steps, and never so far that the box of the section leaves the board at the top or the left.
+        const boxes = topicPlaces.blocks.filter((place) => one.topics.includes(place.id)).map((place) => ({ id: place.id, box: place.box }));
+        const step = (value: number) => Math.round(value / PLAN_GRID) * PLAN_GRID;
+        const dx = Math.max(step((last.clientX - begin.x) / begin.zoom), Math.ceil(-box.x / PLAN_GRID) * PLAN_GRID);
+        const dy = Math.max(step((last.clientY - begin.y) / begin.zoom), Math.ceil(-box.y / PLAN_GRID) * PLAN_GRID);
+        const spots = new Map(boxes.map((member) => [member.id, { x: member.box.x + dx, y: member.box.y + dy }]));
+        // Each section of the drag gets the new spot of every card that it moves, also of a card that had none yet.
+        const cardSpots = new Map(
+          carriers.map((other) => [
+            other.group.id,
+            Object.fromEntries(
+              (movedBy.get(other.group.id) ?? []).flatMap((card) => {
+                const at = cardAt.get(card);
+                return at ? [[card, { x: at.x + dx, y: at.y + dy }] as const] : [];
+              }),
+            ),
+          ]),
+        );
+        swallow = true;
+        window.setTimeout(() => {
+          swallow = false;
+          planGroupDragging = false;
+          if (dx === 0 && dy === 0) {
+            renderPlan();
+            return;
+          }
+          void planSetGroups(
+            ref,
+            planGroupsOf(ref).map((group) => {
+              const spot = spots.get(group.id);
+              const moved = cardSpots.get(group.id);
+              const next = moved && Object.keys(moved).length > 0 ? { ...group, spots: { ...(group.spots ?? {}), ...moved } } : group;
+              return spot ? { ...next, place: spot } : next;
+            }),
+          );
+        }, 0);
+      };
+      const up = (last: PointerEvent) => finish(last, false);
+      const stop = (last: PointerEvent) => finish(last, true);
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", stop);
+    });
+    bar.addEventListener(
+      "click",
+      (event) => {
+        if (!swallow) return;
+        swallow = false;
+        event.stopPropagation();
+        event.preventDefault();
+      },
+      true,
+    );
+  }
   // The open comments and groups: a box around their cards, behind them, with a title bar above.
   for (const group of groups) {
     if (group.collapsed || group.auto || isSection(group)) continue;
     const box = groupBox(layout.cards, group.tickets, tree.hidden, size);
     if (!box) continue;
-    const el = mapElement("div", `plan-group-box plan-color-${group.color}${planSelectedGroup === group.id ? " selected" : ""}`);
+    const el = mapElement("div", `plan-group-box plan-color-${group.color}${planSelectedGroup === group.id || planSelectedBoxes.has(group.id) ? " selected" : ""}`);
+    commentEls.set(group.id, el);
     el.dataset.group = group.id;
     el.style.left = `${box.x}px`;
     el.style.top = `${box.y}px`;
@@ -19017,6 +19265,7 @@ function renderPlan(): void {
         }
         planSelect(toggleSelection(planSelected, card.id, event.shiftKey || event.ctrlKey || event.metaKey));
       });
+      cardEls.set(card.id, el);
       canvas.append(el);
       continue;
     }
@@ -19036,6 +19285,7 @@ function renderPlan(): void {
       const line = mapElement("div", "plan-state", "Backlog · ");
       line.append(mapElement("span", "plan-mark new", "new"));
       el.append(top, line, plusButton(card.id), planCardGrip(key));
+      cardEls.set(card.id, el);
       canvas.append(el);
       continue;
     }
@@ -19062,6 +19312,7 @@ function renderPlan(): void {
     if (badge === "next" || badge === "early") el.append(mapElement("span", `plan-badge ${badge}`, PLAN_BADGE_TEXT[badge]));
     if (draft) el.append(plusButton(ticket.id));
     el.append(planCardGrip(key));
+    cardEls.set(card.id, el);
     canvas.append(el);
   }
   // A card of the shelf or of a topic block: a ticket that is not in the tree. `sub`: a card of a
@@ -19100,115 +19351,6 @@ function renderPlan(): void {
   // The topic blocks (ticket i-need-an-autogrouping-function-in-the): a box with a title bar, the
   // cards of its Scheduled and Working tickets, and one count badge for the rest (user decision 2: a
   // click on the badge opens the group in the side panel).
-  // The parts of each topic block, which the drag of its section moves too.
-  const partsOf = new Map<string, HTMLElement[]>();
-  // The open sections (ticket i-need-an-option-to-create-group-of): a box behind their topic blocks
-  // with a title bar; a drag of the title bar moves the section with all its topic groups.
-  // The element of each open section box: a drag of a section moves the boxes of the sections inside it too.
-  const sectionEls = new Map<string, HTMLElement>();
-  for (const { id, box } of sectionBoxes) {
-    const one = sectionById.get(id);
-    if (!one) continue;
-    const section = one.group;
-    const el = mapElement("div", `plan-group-box plan-set plan-color-${section.color}${planSelectedGroup === section.id || planSelectedBoxes.has(section.id) ? " selected" : ""}`);
-    sectionEls.set(section.id, el);
-    el.dataset.group = section.id;
-    el.style.left = `${box.x}px`;
-    el.style.top = `${box.y}px`;
-    el.style.width = `${box.width}px`;
-    el.style.height = `${box.height}px`;
-    const bar = mapElement("div", "plan-group-title");
-    bar.style.height = `${PLAN_BOX_TITLE}px`;
-    bar.title = "Select this section; drag to move it with its groups";
-    bar.append(planGroupName(section), mapElement("span", "plan-group-count", sectionCountText(one)));
-    const fold = mapElement("button", "plan-group-toggle", "▴");
-    fold.type = "button";
-    fold.title = "Fold: show only the title of the section";
-    fold.setAttribute("aria-label", "Fold");
-    fold.addEventListener("click", (event) => {
-      event.stopPropagation();
-      planChangeGroup(section.id, { collapsed: true });
-    });
-    // A section inside another section does not fold (user decision 3).
-    if (one.path.length === 0) bar.append(fold);
-    bar.addEventListener("click", () => planSelect([], null, section.id));
-    el.append(bar);
-    canvas.append(el);
-    // The drag moves the box, the boxes of the sections inside it and every part of its topic blocks at
-    // any depth; the drop moves each topic group by the same whole grid steps and saves its place, so
-    // they keep their places to each other.
-    let swallow = false;
-    bar.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
-      if (event.target instanceof Element && event.target.closest(".plan-group-toggle, input, textarea")) return;
-      const begin = { pointer: event.pointerId, x: event.clientX, y: event.clientY, zoom: planZoom(key) };
-      const inner = sections.filter((other) => other.path.includes(section.id)).flatMap((other) => sectionEls.get(other.group.id) ?? []);
-      const moving = [el, ...inner, ...one.topics.flatMap((member) => partsOf.get(member) ?? [])];
-      let moved = false;
-      const move = (next: PointerEvent) => {
-        if (next.pointerId !== begin.pointer) return;
-        const dx = next.clientX - begin.x;
-        const dy = next.clientY - begin.y;
-        if (!moved) {
-          if (Math.hypot(dx, dy) < 4) return;
-          moved = true;
-          planGroupDragging = true;
-          planBoardEl.classList.add("plan-group-dragging");
-        }
-        for (const part of moving) part.style.transform = `translate(${dx / begin.zoom}px, ${dy / begin.zoom}px)`;
-      };
-      const finish = (last: PointerEvent, cancel: boolean) => {
-        if (last.pointerId !== begin.pointer) return;
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", up);
-        window.removeEventListener("pointercancel", stop);
-        if (!moved) return;
-        planBoardEl.classList.remove("plan-group-dragging");
-        if (cancel) {
-          planGroupDragging = false;
-          renderPlan();
-          return;
-        }
-        // Whole grid steps, and never so far that the box of the section leaves the board at the top or the left.
-        const boxes = topicPlaces.blocks.filter((place) => one.topics.includes(place.id)).map((place) => ({ id: place.id, box: place.box }));
-        const step = (value: number) => Math.round(value / PLAN_GRID) * PLAN_GRID;
-        const dx = Math.max(step((last.clientX - begin.x) / begin.zoom), Math.ceil(-box.x / PLAN_GRID) * PLAN_GRID);
-        const dy = Math.max(step((last.clientY - begin.y) / begin.zoom), Math.ceil(-box.y / PLAN_GRID) * PLAN_GRID);
-        const spots = new Map(boxes.map((member) => [member.id, { x: member.box.x + dx, y: member.box.y + dy }]));
-        swallow = true;
-        window.setTimeout(() => {
-          swallow = false;
-          planGroupDragging = false;
-          if (dx === 0 && dy === 0) {
-            renderPlan();
-            return;
-          }
-          void planSetGroups(
-            ref,
-            planGroupsOf(ref).map((group) => {
-              const spot = spots.get(group.id);
-              return spot ? { ...group, place: spot } : group;
-            }),
-          );
-        }, 0);
-      };
-      const up = (last: PointerEvent) => finish(last, false);
-      const stop = (last: PointerEvent) => finish(last, true);
-      window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", up);
-      window.addEventListener("pointercancel", stop);
-    });
-    bar.addEventListener(
-      "click",
-      (event) => {
-        if (!swallow) return;
-        swallow = false;
-        event.stopPropagation();
-        event.preventDefault();
-      },
-      true,
-    );
-  }
   for (const place of topicPlaces.blocks) {
     const group = groups.find((one) => one.id === place.id);
     const section = sectionById.get(place.id);
@@ -19425,9 +19567,12 @@ function renderPlan(): void {
     heading.style.left = `${shelf.title.x}px`;
     heading.style.top = `${shelf.title.y}px`;
     shelfEl.append(heading);
-    for (const card of shelf.cards) {
+    for (const card of shelfCards) {
       const ticket = byId.get(card.id);
-      if (ticket) shelfEl.append(looseCard(ticket, card));
+      if (!ticket) continue;
+      const cardEl = looseCard(ticket, card);
+      cardEls.set(card.id, cardEl);
+      shelfEl.append(cardEl);
     }
     canvas.append(shelfEl);
   }
@@ -19553,8 +19698,9 @@ function renderPlan(): void {
       swatches.append(swatch);
     });
     top.append(input, swatches);
-    // A topic group or a section names its section (tickets i-need-an-option-to-create-group-of and group-everything-inside-a-selection-box).
-    const holder = group.auto || isSectionGroup ? sectionOf.get(group.id) : undefined;
+    // A topic group, a section, a comment or a group names its section (tickets i-need-an-option-to-create-group-of,
+    // group-everything-inside-a-selection-box and tickets-and-comments-join-a-section-on).
+    const holder = sectionOf.get(group.id);
     if (holder) top.append(mapElement("p", "plan-side-sub", `In ${holder.title || "Untitled"}`));
     const one = isSectionGroup ? sectionById.get(group.id) : undefined;
     if (isSectionGroup) {
@@ -19568,8 +19714,8 @@ function renderPlan(): void {
       count("Done", done);
       count("In work", ids.filter((id) => byId.get(id)?.status === "in-progress").length);
       const actions = mapElement("div", "plan-side-actions");
-      // A section inside another section does not fold (user decision 3).
-      if ((one?.path.length ?? 0) === 0) {
+      // A section inside another section does not fold (user decision 3), nor one with a card or a comment inside.
+      if ((one?.path.length ?? 0) === 0 && (one?.inside ?? 0) === 0) {
         actions.append(
           group.collapsed
             ? sideButton("Open", "Show the groups of this section", () => planChangeGroup(group.id, { collapsed: false }))
@@ -19594,11 +19740,13 @@ function renderPlan(): void {
         dot.setAttribute("aria-hidden", "true");
         const ticketCount = topicOf.get(topic.id)?.members.length ?? 0;
         const inner = sectionById.get(topic.id);
-        row.append(dot, mapElement("span", "plan-name", topic.title || "Untitled"), mapElement("span", "plan-side-state", inner ? plural(inner.topics.length, "group") : plural(ticketCount, "ticket")));
+        const state = inner ? plural(inner.topics.length, "group") : topic.auto ? plural(ticketCount, "ticket") : topic.collapsed ? "group" : "comment";
+        row.append(dot, mapElement("span", "plan-name", topic.title || "Untitled"), mapElement("span", "plan-side-state", state));
         row.addEventListener("click", () => planSelect([], null, topic.id));
         groupList.append(row);
       }
-      parts.push(top, groupList);
+      // The cards of the tree and of Not in the flow that the section holds (ticket tickets-and-comments-join-a-section-on).
+      parts.push(top, groupList, list("Its tickets", known(one?.cards ?? []), "No ticket of its own.", true));
     } else {
       const counts = groupCounts(flow, group);
       const table = mapElement("dl", "plan-counts");
@@ -19720,6 +19868,13 @@ function renderPlan(): void {
       const top = ticket ? head(ticket.id, ticket.title) : head("New ticket", added?.text ?? id);
       const word = ticket ? planCardState(ticket, queueIds, record).word : "Opens in Backlog at Confirm";
       top.append(mapElement("p", "plan-side-state-line", `${word} · ${standLine(flow, id)}`));
+      // A ticket of a section names it and leaves it (ticket tickets-and-comments-join-a-section-on).
+      const cardHolder = sectionById.get(planCardHolders.get(id) ?? "")?.group;
+      if (cardHolder) {
+        const leave = mapElement("div", "plan-side-actions");
+        leave.append(sideButton("Take out of the section", "This ticket leaves the section and goes back to its usual place", () => void planSetGroups(ref, withTicketOutOfSections(groups, id))));
+        top.append(mapElement("p", "plan-side-sub", `In ${cardHolder.title || "Untitled"}`), leave);
+      }
       parts.push(
         top,
         arrowList("Comes after", comesAfter(flow, id), "No ticket before it.", (other) => ({ from: other, to: id })),

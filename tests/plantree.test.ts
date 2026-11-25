@@ -67,6 +67,8 @@ import {
   boxesInside,
   withNewSection,
   withoutSection,
+  withTicketOutOfSections,
+  placeCards,
   runningAfter,
   standLine,
   startsEarly,
@@ -1574,7 +1576,7 @@ test("Remove of an inner section puts its members into its slot in the outer sec
 test("the page selects boxes with the selection box, makes a section of them with S, and tells it in the Help", () => {
   const html = read("../index.html");
   const main = read("../src/main.ts");
-  assert.match(html, /The box also selects each topic group or section that stands wholly inside it; the menu then offers <b>Make a section \(S\)<\/b>/);
+  assert.match(html, /The box also selects each topic group, section or comment box that stands wholly inside it; the menu then offers <b>Make a section \(S\)<\/b>/);
   assert.match(html, /A section can hold sections: draw a selection box around topic groups and sections and press S\./);
   assert.match(html, /Remove of an inner section keeps its groups in the outer section\./);
   assert.match(main, /const inside = boxesInside\(planBoxPlaces, rect, planBoxHolders\);/, "the selection box catches the boxes");
@@ -1582,9 +1584,9 @@ test("the page selects boxes with the selection box, makes a section of them wit
   assert.match(main, /else if \(key === "s" \|\| key === "S"\) planMakeSection\(\);/, "the key S");
   assert.match(main, /void planSetGroups\(ref, withNewSection\(groups, members, section, places\)\);/);
   assert.match(main, /next = withoutSection\(next, group\.id\);/, "Remove of a section keeps its groups");
-  assert.match(main, /const sectionTree = planSections\(groups, new Set\(topicOf\.keys\(\)\)\);/);
+  assert.match(main, /const sectionTree = planSections\(groups, new Set\(topicOf\.keys\(\)\), \{ boxes: boardBoxes, cards: new Set\(\[\.\.\.inTree, \.\.\.looseIds\]\) \}\);/);
   assert.match(main, /sets: chain,/, "the blocks stand by their chain of sections");
-  assert.match(main, /if \(one\.path\.length === 0\) bar\.append\(fold\);/, "an inner section has no fold button");
+  assert.match(main, /if \(one\.path\.length === 0 && one\.inside === 0\) bar\.append\(fold\);/, "an inner section has no fold button");
 });
 
 test("nested sets stand together; each new title bar has its grid row; nested boxes hold their inner boxes and overlap no other box", () => {
@@ -1657,4 +1659,155 @@ test("nested sets stand together; each new title bar has its grid row; nested bo
   ])
     apart(a, b);
   assert.ok(result.layout.height >= box("C").y + box("C").height, "the canvas holds the boxes");
+});
+
+// Ticket tickets-and-comments-join-a-section-on: a section also holds tickets of the tree, tickets of
+// "Not in the flow", comments and stacked groups, and keeps the places of their cards.
+
+test("a section card stands at its spot; the other cards, the root and the arrows stay; the canvas grows", () => {
+  const layout = planLayout(TREE);
+  const shelf = planShelf(["f"], layout).cards;
+  const spots = new Map([
+    ["b", { x: 1500, y: 2000 }],
+    ["f", { x: 100, y: 1200 }],
+    ["gone", { x: 5000, y: 5000 }],
+  ]);
+  const placed = placeCards(layout, shelf, spots, PLAN_CARD_DEFAULT);
+  const at = (id: string) => [...placed.layout.cards, ...placed.shelf].find((card) => card.id === id)!;
+  assert.deepEqual([at("b").x, at("b").y], [1500, 2000]);
+  assert.deepEqual([at("f").x, at("f").y], [100, 1200], "a shelf card moves too");
+  assert.equal(at("b").row, layout.cards.find((card) => card.id === "b")!.row, "it keeps its row");
+  for (const card of layout.cards.filter((one) => one.id !== "b")) assert.deepEqual(at(card.id), card, `${card.id} stays`);
+  assert.deepEqual(placed.layout.root, layout.root);
+  assert.deepEqual(placed.layout.arrows, layout.arrows);
+  assert.equal(placed.layout.width, 1500 + PLAN_CARD_WIDTH + PLAN_PAD);
+  assert.equal(placed.layout.height, 2000 + PLAN_CARD_HEIGHT + PLAN_PAD);
+  const none = placeCards(layout, shelf, new Map(), PLAN_CARD_DEFAULT);
+  assert.equal(none.layout, layout, "no spot: the same layout");
+});
+
+test("the live sections with comments and cards: a card in the first section only; cards keep a section alive", () => {
+  const topic = (id: string): PlanGroup => ({ ...g(id, [id], false, id), auto: true });
+  const section = (id: string, groups: string[], tickets: string[] = []): PlanGroup => ({ ...g(id, tickets, false, "Section"), groups });
+  const groups = [
+    section("s-1", ["t1", "c-1", "s-2"], ["a", "b", "gone"]),
+    section("s-2", ["k-1", "c-1"], ["b", "e"]),
+    section("s-3", ["unknown"], ["d"]),
+    section("s-4", ["unknown"]),
+    topic("t1"),
+  ];
+  const { sections, holder } = planSections(groups, new Set(["t1"]), { boxes: new Set(["c-1", "k-1"]), cards: new Set(["a", "b", "d", "e"]) });
+  assert.deepEqual(
+    sections.map((one) => [one.group.id, one.members, one.topics, one.boxes, one.cards, one.path]),
+    [
+      ["s-1", ["t1", "c-1", "s-2"], ["t1"], ["c-1"], ["a", "b"], []],
+      ["s-3", [], [], [], ["d"], []],
+      ["s-2", ["k-1"], [], ["k-1"], ["e"], ["s-1"]],
+    ],
+    "a comment is a member; a card stands in its first section; s-3 lives by its card; s-4 goes",
+  );
+  assert.equal(holder.get("a"), "s-1");
+  assert.equal(holder.get("e"), "s-2");
+  assert.equal(holder.get("c-1"), "s-1");
+  assert.equal(holder.get("d"), "s-3");
+});
+
+test("Make a section with tickets: they leave every other section with their spots; a shared holder counts them", () => {
+  const topic = (id: string): PlanGroup => ({ ...g(id, [id], false, id), auto: true });
+  const section = (id: string, groups: string[], tickets: string[] = [], spots?: Record<string, { x: number; y: number }>): PlanGroup => ({ ...g(id, tickets, false, "Section"), groups, ...(spots ? { spots } : {}) });
+  const fresh: PlanGroup = { ...g("n", ["a", "b"], false, "Section"), groups: [], spots: { a: { x: 100, y: 200 }, b: { x: 300, y: 200 } } };
+  const groups = [section("s", ["t1", "t2"], ["a", "b", "c"], { a: { x: 50, y: 50 }, c: { x: 0, y: 0 } }), topic("t1"), topic("t2")];
+  const shared = withNewSection(groups, ["t2"], fresh, new Map());
+  assert.deepEqual(
+    shared.map((one) => [one.id, one.groups ?? null, one.tickets, one.spots ?? null]),
+    [
+      ["n", ["t2"], ["a", "b"], { a: { x: 100, y: 200 }, b: { x: 300, y: 200 } }],
+      ["s", ["t1", "n"], ["c"], { c: { x: 0, y: 0 } }],
+      ["t1", null, ["t1"], null],
+      ["t2", null, ["t2"], null],
+    ],
+    "the new section in the slot of t2; a and b leave s with the spot of a",
+  );
+  // A ticket of another section: the holders differ, so the members leave their holder.
+  const other = withNewSection([section("s", ["t1", "t2"]), section("r", ["t3"], ["a"]), topic("t1"), topic("t2"), topic("t3")], ["t2"], fresh, new Map());
+  assert.deepEqual(
+    other.map((one) => [one.id, one.groups ?? null, one.tickets]),
+    [
+      ["n", ["t2"], ["a", "b"]],
+      ["s", ["t1"], []],
+      ["r", ["t3"], []],
+      ["t1", null, ["t1"]],
+      ["t2", null, ["t2"]],
+      ["t3", null, ["t3"]],
+    ],
+  );
+});
+
+test("Remove of a section: a holder takes its tickets and spots; without a holder they go", () => {
+  const section = (id: string, groups: string[], tickets: string[] = [], spots?: Record<string, { x: number; y: number }>): PlanGroup => ({ ...g(id, tickets, false, "Section"), groups, ...(spots ? { spots } : {}) });
+  const groups = [section("o", ["t1", "i"], ["a"], { a: { x: 0, y: 0 }, b: { x: 10, y: 10 } }), section("i", ["t2"], ["b", "c"], { b: { x: 500, y: 500 }, c: { x: 600, y: 500 } })];
+  assert.deepEqual(
+    withoutSection(groups, "i").map((one) => [one.id, one.groups, one.tickets, one.spots]),
+    [["o", ["t1", "t2"], ["a", "b", "c"], { a: { x: 0, y: 0 }, b: { x: 10, y: 10 }, c: { x: 600, y: 500 } }]],
+    "the holder's own spot of b wins",
+  );
+  assert.deepEqual(
+    withoutSection(groups, "o").map((one) => [one.id, one.tickets]),
+    [["i", ["b", "c"]]],
+    "the tickets of a section of the board go with it",
+  );
+});
+
+test("a ticket leaves every section with its spot; the section stays while it has a group", () => {
+  const section = (id: string, groups: string[], tickets: string[] = [], spots?: Record<string, { x: number; y: number }>): PlanGroup => ({ ...g(id, tickets, false, "Section"), groups, ...(spots ? { spots } : {}) });
+  const groups = [section("s-1", ["c-1"], ["a", "b"], { a: { x: 50, y: 50 }, b: { x: 100, y: 50 } }), section("s-2", ["t1"], ["a"], { a: { x: 0, y: 0 } }), g("c-1", ["x"], false, "Comment")];
+  const out = withTicketOutOfSections(groups, "a");
+  assert.deepEqual(
+    out.map((one) => [one.id, one.tickets, one.spots ?? null]),
+    [
+      ["s-1", ["b"], { b: { x: 100, y: 50 } }],
+      ["s-2", [], null],
+      ["c-1", ["x"], null],
+    ],
+  );
+  assert.ok(!("spots" in out[1]), "no spot left: no key");
+});
+
+test("a section box holds the boxes of its cards and comments", () => {
+  const card = (id: string, x: number, y: number) => ({ id, box: { x, y, width: PLAN_CARD_WIDTH, height: PLAN_CARD_HEIGHT } });
+  const comment = { id: "c-1", box: { x: 600, y: 300, width: 300, height: 200 } };
+  const [box] = setBoxes([card("a", 100, 100), card("b", 400, 500), comment], [{ id: "s", members: ["c-1", "a", "b"] }]);
+  assert.deepEqual(box.box, {
+    x: 100 - PLAN_BOX_PAD,
+    y: 100 - PLAN_BOX_PAD - PLAN_BOX_TITLE,
+    width: 900 - 100 + 2 * PLAN_BOX_PAD,
+    height: 500 + PLAN_CARD_HEIGHT - 100 + 2 * PLAN_BOX_PAD + PLAN_BOX_TITLE,
+  });
+});
+
+test("the host reply keeps the spots with two finite numbers; none gives no key", () => {
+  const read = parsePlanGroups({
+    groups: [
+      { id: "s", groups: ["a"], spots: { x: { x: 100, y: 50 }, y: { x: "1", y: 2 }, z: null, w: { x: 1 } } },
+      { id: "t", groups: ["a"], spots: { y: { x: Infinity, y: 2 } } },
+      { id: "u", spots: [] },
+    ],
+  });
+  assert.deepEqual(read[0].spots, { x: { x: 100, y: 50 } });
+  for (const group of read.slice(1)) assert.ok(!("spots" in group), `${group.id} has no spots key`);
+});
+
+test("the page catches cards of the shelf and comment boxes, moves them with the section, and tells it in the Help", () => {
+  const html = read("../index.html");
+  const main = read("../src/main.ts");
+  assert.match(html, /every card of the tree and of Not in the flow that it touches is selected/);
+  assert.match(html, /A section can also hold tickets and comments: the drag of its title bar moves them too, and their arrows follow\./);
+  assert.match(html, /A section with tickets or comments inside does not fold\./);
+  assert.match(html, /A ticket leaves its section in its side panel with <b>Take out of the section<\/b>\./);
+  assert.match(main, /planPlaces = \[\.\.\.layout\.cards, \.\.\.shelfCards\];/, "the selection box touches the shelf cards");
+  assert.match(main, /\.\.\.sectionBoxes, \.\.\.\[\.\.\.commentBoxes\]\.map\(\(\[id, box\]\) => \(\{ id, box \}\)\)\];/, "the selection box catches the comment boxes");
+  assert.match(main, /const cardPlaces = placePlanCards\(topicPlaces\.layout, shelf\.cards, spotMap, size\);/, "the cards stand at the spots of their sections");
+  assert.match(main, /sideButton\("Take out of the section", [^\n]*withTicketOutOfSections\(groups, id\)/, "a ticket leaves its section");
+  assert.match(main, /if \(!isSection\(group\)\) \{\n    const holder = planGroupsOf\(ref\)\.find/, "a comment or a group leaves its section in its menu");
+  assert.match(main, /spots: \{ \.\.\.\(group\.spots \?\? \{\}\), \.\.\.moved \}/, "the drop of a section saves the spots of its cards");
 });

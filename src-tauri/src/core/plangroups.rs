@@ -6,7 +6,7 @@
 //! An auto group (ticket i-need-an-autogrouping-function-in-the) is a topic group that Claude made
 //! from the titles and words of the tickets: it has a description and stands as its own block.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -49,11 +49,19 @@ pub struct PlanGroup {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<PlanSize>,
     /// A section (ticket i-need-an-option-to-create-group-of): the ids of its topic groups and
-    /// sections (ticket group-everything-inside-a-selection-box), which it holds as one box on the
-    /// Plan board; `collapsed` folds it. Empty: not a section. An old file without the field reads
-    /// empty, and a group that is no section writes no field.
+    /// sections (ticket group-everything-inside-a-selection-box), and of its comments and groups
+    /// (ticket tickets-and-comments-join-a-section-on), which it holds as one box on the Plan board;
+    /// `collapsed` folds it. Empty: not a section. An old file without the field reads empty, and a
+    /// group that is no section writes no field. The `tickets` of a section are the cards of the
+    /// tree and of "Not in the flow" that it holds.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
+    /// The place of each card that a section moves, by the id of the card (a ticket id, or
+    /// `group:<id>` of a stacked group card), top left in canvas px (ticket
+    /// tickets-and-comments-join-a-section-on). A ticket has no place of its own: a card that
+    /// leaves every section stands at its usual place again. A group that is no section writes none.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub spots: BTreeMap<String, PlanSpot>,
 }
 
 /// A place on the Plan board in canvas px.
@@ -110,23 +118,46 @@ fn save(project: &Project, groups: Vec<PlanGroup>) -> Result<PlanGroups, String>
 }
 
 /// Trims the titles, keeps the colour in 0..3, drops empty and double ticket ids, and drops a
-/// group without an id or with the id of an earlier group. A section keeps only the ids of topic
-/// groups and sections of the list (`section_members`) and has no tickets, place or size; a section
-/// that another section holds is open; a section that lost its last member goes.
+/// group without an id or with the id of an earlier group. A section keeps only the ids of the
+/// groups of the list that it may hold (`section_members`), has no place or size, and keeps its
+/// tickets (a ticket in the first section only) and the spots of the cards that it moves: its
+/// tickets, `group:<id>` of a member, and the tickets of a member that is no section. A section
+/// that another section holds is open; a section that lost its last member goes. A group that is
+/// no section has no spots.
 fn normalize(groups: Vec<PlanGroup>) -> Vec<PlanGroup> {
     let mut ids = HashSet::new();
     let mut sections = section_members(&groups);
     let held: HashSet<String> = sections.values().flatten().cloned().collect();
+    let mut first = HashSet::new();
+    let plain: HashMap<String, Vec<String>> = groups
+        .iter()
+        .filter(|g| g.groups.is_empty() && !g.id.trim().is_empty() && first.insert(g.id.trim().to_string()))
+        .map(|g| (g.id.trim().to_string(), g.tickets.iter().map(|t| t.trim().to_string()).collect()))
+        .collect();
+    let mut placed = HashSet::new();
     groups
         .into_iter()
         .filter_map(|group| {
             if group.groups.is_empty() {
-                return Some(group);
+                return Some(PlanGroup { spots: BTreeMap::new(), ..group });
             }
             let id = group.id.trim().to_string();
             let members = sections.remove(&id)?;
             let collapsed = group.collapsed && !held.contains(&id);
-            Some(PlanGroup { auto: false, tickets: Vec::new(), description: String::new(), unfolded: false, place: None, size: None, collapsed, groups: members, ..group })
+            let tickets: Vec<String> = group.tickets.iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty() && placed.insert(t.clone())).collect();
+            let mut cards: HashSet<String> = tickets.iter().cloned().collect();
+            for member in &members {
+                cards.insert(format!("group:{member}"));
+                cards.extend(plain.get(member).into_iter().flatten().cloned());
+            }
+            let spots = group
+                .spots
+                .into_iter()
+                .map(|(key, spot)| (key.trim().to_string(), spot))
+                .filter(|(key, spot)| cards.contains(key) && spot.x.is_finite() && spot.y.is_finite())
+                .map(|(key, spot)| (key, PlanSpot { x: spot.x.max(0.0), y: spot.y.max(0.0) }))
+                .collect();
+            Some(PlanGroup { auto: false, tickets, description: String::new(), unfolded: false, place: None, size: None, collapsed, groups: members, spots, ..group })
         })
         .filter_map(|group| {
             let id = group.id.trim().to_string();
@@ -153,19 +184,22 @@ fn normalize(groups: Vec<PlanGroup>) -> Vec<PlanGroup> {
                 // A size that is not finite or not positive is dropped: the box keeps its automatic size.
                 size: group.size.filter(|s| s.width.is_finite() && s.height.is_finite() && s.width > 0.0 && s.height > 0.0),
                 groups: group.groups,
+                spots: group.spots,
             })
         })
         .collect()
 }
 
 /// The members of each live section, by section id (ticket group-everything-inside-a-selection-box).
-/// A member is a topic group or another section, trimmed, in list order, in the first section only,
-/// never the section itself and never a section that holds this section at any depth (no loop). A
-/// section lives while it holds a live member; a dead section also leaves its holder.
+/// A member is a group that is no section (a topic group, a comment or a stacked group, ticket
+/// tickets-and-comments-join-a-section-on) or another section, trimmed, in list order, in the
+/// first section only, never the section itself and never a section that holds this section at
+/// any depth (no loop). A section lives while it holds a live member; its tickets do not keep it,
+/// because its list of members marks it as a section. A dead section also leaves its holder.
 fn section_members(groups: &[PlanGroup]) -> HashMap<String, Vec<String>> {
     let mut first = HashSet::new();
     let unique: Vec<&PlanGroup> = groups.iter().filter(|g| !g.id.trim().is_empty() && first.insert(g.id.trim().to_string())).collect();
-    let topics: HashSet<String> = unique.iter().filter(|g| g.auto && g.groups.is_empty()).map(|g| g.id.trim().to_string()).collect();
+    let plain: HashSet<String> = unique.iter().filter(|g| g.groups.is_empty()).map(|g| g.id.trim().to_string()).collect();
     let order: Vec<&PlanGroup> = unique.into_iter().filter(|g| !g.groups.is_empty()).collect();
     let ids: HashSet<String> = order.iter().map(|g| g.id.trim().to_string()).collect();
     let mut held = HashSet::new();
@@ -174,7 +208,7 @@ fn section_members(groups: &[PlanGroup]) -> HashMap<String, Vec<String>> {
         let id = section.id.trim().to_string();
         let mut members = Vec::new();
         for member in section.groups.iter().map(|m| m.trim().to_string()) {
-            let fits = topics.contains(&member) || (ids.contains(&member) && member != id && !reaches(&links, &member, &id));
+            let fits = plain.contains(&member) || (ids.contains(&member) && member != id && !reaches(&links, &member, &id));
             if fits && held.insert(member.clone()) {
                 members.push(member);
             }
@@ -496,6 +530,7 @@ fn merge(mut groups: Vec<PlanGroup>, proposals: Vec<Proposal>, stamp: &str) -> V
             place: None,
             size: None,
             groups: Vec::new(),
+            spots: BTreeMap::new(),
         });
         colour += 1;
     }
@@ -675,7 +710,7 @@ mod tests {
     fn a_second_run_keeps_titles_and_manual_groups() {
         let (project, base) = scratch("auto-again");
         let manual = PlanGroup { tickets: vec!["c".into()], ..group("g-1", &["c"]) };
-        let topic = PlanGroup { id: "auto-x-1".into(), title: "My login".into(), description: "Mine.".into(), auto: true, color: 2, collapsed: true, tickets: vec!["a".into()], unfolded: true, place: Some(PlanSpot { x: 300.0, y: 450.0 }), size: Some(PlanSize { width: 600.0, height: 400.0 }), groups: Vec::new() };
+        let topic = PlanGroup { id: "auto-x-1".into(), title: "My login".into(), description: "Mine.".into(), auto: true, color: 2, collapsed: true, tickets: vec!["a".into()], unfolded: true, place: Some(PlanSpot { x: 300.0, y: 450.0 }), size: Some(PlanSize { width: 600.0, height: 400.0 }), groups: Vec::new(), spots: BTreeMap::new() };
         save(&project, vec![manual.clone(), topic.clone()]).unwrap();
         let asked = std::cell::RefCell::new(String::new());
         let answer = r#"[{"group":"auto-x-1","title":"Other title","description":"Other.","tickets":["b","a"]},{"group":"","title":"Looks","tickets":["c","d"]}]"#;
@@ -838,8 +873,9 @@ mod tests {
         let saved = save(&project, groups).unwrap().groups;
         let ids: Vec<&str> = saved.iter().map(|g| g.id.as_str()).collect();
         assert_eq!(ids, vec!["s-1", "s-2", "auto-x-1", "auto-x-2", "auto-x-3", "g-1"], "a section without a topic group of its own goes: {saved:?}");
-        assert_eq!(saved[0].groups, vec!["auto-x-1".to_string(), "s-2".to_string(), "auto-x-2".to_string()], "only topic groups and sections, trimmed, once: {saved:?}");
-        assert!(saved[0].tickets.is_empty() && !saved[0].auto && saved[0].description.is_empty());
+        assert_eq!(saved[0].groups, vec!["auto-x-1".to_string(), "g-1".to_string(), "s-2".to_string(), "auto-x-2".to_string()], "only groups of the list, trimmed, once: {saved:?}");
+        assert_eq!(saved[0].tickets, vec!["z".to_string()], "a section keeps its tickets: {saved:?}");
+        assert!(!saved[0].auto && saved[0].description.is_empty());
         assert_eq!((saved[0].place.clone(), saved[0].size.clone()), (None, None));
         assert_eq!(saved[1].groups, vec!["auto-x-3".to_string()], "a topic group stays in the first section only");
         let _ = fs::remove_dir_all(base);
@@ -864,6 +900,67 @@ mod tests {
         folded[1].collapsed = true;
         let saved = save(&project, folded).unwrap().groups;
         assert!(saved[0].collapsed && !saved[1].collapsed, "{saved:?}");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_section_with_tickets_comments_and_spots_reads_back_without_stale_spots() {
+        // Ticket tickets-and-comments-join-a-section-on: a section holds tickets, a comment and the
+        // places of the cards that it moves.
+        let (project, base) = scratch("section-spots");
+        let spot = |x: f64, y: f64| PlanSpot { x, y };
+        let kept: BTreeMap<String, PlanSpot> = [("t-1".to_string(), spot(100.0, 50.0)), ("group:g-1".to_string(), spot(300.0, 0.0)), ("d".to_string(), spot(450.0, 200.0)), ("t-2".to_string(), spot(0.0, 0.0))].into_iter().collect();
+        let mut sent = kept.clone();
+        sent.insert("stale".into(), spot(10.0, 10.0));
+        sent.insert("group:auto-x-1".into(), spot(f64::NAN, 10.0));
+        sent.insert("e".into(), spot(-50.0, 20.0));
+        let groups = vec![
+            PlanGroup { tickets: vec!["t-1".into(), " t-2 ".into(), "t-1".into()], spots: sent, ..section("s-1", &["auto-x-1", "g-1"]) },
+            PlanGroup { auto: true, ..group("auto-x-1", &["a"]) },
+            PlanGroup { spots: [("a".to_string(), spot(1.0, 1.0))].into_iter().collect(), ..group("g-1", &["d", "e"]) },
+        ];
+        let saved = save(&project, groups).unwrap().groups;
+        assert_eq!(saved[0].groups, vec!["auto-x-1".to_string(), "g-1".to_string()], "a comment is a member: {saved:?}");
+        assert_eq!(saved[0].tickets, vec!["t-1".to_string(), "t-2".to_string()]);
+        let mut expected = kept.clone();
+        expected.insert("e".into(), spot(0.0, 20.0));
+        assert_eq!(saved[0].spots, expected, "the stale and the non-finite spot go, a negative one is 0");
+        assert!(saved[2].spots.is_empty(), "a group that is no section has no spots");
+        assert_eq!(load(&project).unwrap().groups, saved);
+        let text = fs::read_to_string(project.reports.join(FILE)).unwrap();
+        assert_eq!(text.matches("\"spots\"").count(), 1, "a group that is no section writes no spots: {text}");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_section_with_tickets_but_no_live_member_goes() {
+        let (project, base) = scratch("section-tickets-only");
+        let groups = vec![
+            PlanGroup { tickets: vec!["t-1".into()], ..section("s-1", &["gone"]) },
+            PlanGroup { tickets: vec!["t-2".into()], ..section("s-2", &["auto-x-1", "s-3"]) },
+            PlanGroup { tickets: vec!["t-3".into()], ..section("s-3", &["gone"]) },
+            PlanGroup { auto: true, ..group("auto-x-1", &["a"]) },
+        ];
+        let saved = save(&project, groups).unwrap().groups;
+        let ids: Vec<&str> = saved.iter().map(|g| g.id.as_str()).collect();
+        assert_eq!(ids, vec!["s-2", "auto-x-1"], "tickets alone keep no section: {saved:?}");
+        assert_eq!(saved[0].groups, vec!["auto-x-1".to_string()]);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_ticket_stands_in_the_first_section_only() {
+        let (project, base) = scratch("section-ticket-once");
+        let groups = vec![
+            PlanGroup { tickets: vec!["t-1".into(), "t-2".into()], ..section("s-1", &["auto-x-1"]) },
+            PlanGroup { tickets: vec!["t-2".into(), "t-3".into()], spots: [("t-2".to_string(), PlanSpot { x: 50.0, y: 50.0 })].into_iter().collect(), ..section("s-2", &["auto-x-2"]) },
+            PlanGroup { auto: true, ..group("auto-x-1", &["a"]) },
+            PlanGroup { auto: true, ..group("auto-x-2", &["b"]) },
+        ];
+        let saved = save(&project, groups).unwrap().groups;
+        assert_eq!(saved[0].tickets, vec!["t-1".to_string(), "t-2".to_string()]);
+        assert_eq!(saved[1].tickets, vec!["t-3".to_string()], "{saved:?}");
+        assert!(saved[1].spots.is_empty(), "the spot of a ticket of another section goes: {saved:?}");
         let _ = fs::remove_dir_all(base);
     }
 

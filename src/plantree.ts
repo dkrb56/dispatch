@@ -392,13 +392,21 @@ export interface PlanGroup {
    */
   size?: { width: number; height: number };
   /**
-   * A section (ticket i-need-an-option-to-create-group-of): the ids of its topic groups, which stand
-   * together in one box with its title; `collapsed` folds it to that title. No key: not a section.
+   * A section (ticket i-need-an-option-to-create-group-of): the ids of its topic groups, sections,
+   * comments and stacked groups, which stand together in one box with its title; `collapsed` folds it
+   * to that title. No key: not a section. The `tickets` of a section are the cards of the tree and of
+   * "Not in the flow" that it holds (ticket tickets-and-comments-join-a-section-on).
    */
   groups?: string[];
+  /**
+   * The place of each card that a section moves, by card id (a ticket id or `group:<id>` of a stacked
+   * group card), top left in canvas px (ticket tickets-and-comments-join-a-section-on). A card without
+   * a spot stands at its usual place; no key: no spot.
+   */
+  spots?: Record<string, { x: number; y: number }>;
 }
 
-/** A section holds topic groups and no tickets (ticket i-need-an-option-to-create-group-of). */
+/** A section has a list of groups; it may also hold tickets (ticket i-need-an-option-to-create-group-of). */
 export function isSection(group: PlanGroup): boolean {
   return (group.groups?.length ?? 0) > 0;
 }
@@ -425,15 +433,27 @@ export interface PlanSection {
   topics: string[];
   /** The ids of the sections that hold it, the outermost first; empty for a section of the board. */
   path: string[];
+  /** Its direct members that are comments or stacked groups of the board (the `boxes` of the input), in its order. */
+  boxes: string[];
+  /** Its tickets that have a card on the board (the `cards` of the input), in its order; a card in the first section only. */
+  cards: string[];
 }
 
 /**
  * The live sections of the list with the rules of the save of the host: list order, a member in the
  * first section only, never the section itself and never a section that holds this section at any
- * depth. A member is a topic id of `present` or a live section; a section lives while it holds a live
- * member. The outer sections come first; `holder` maps each member to the id of its section.
+ * depth. A member is a topic id of `present`, a comment or stacked group id of `extra.boxes`, or a
+ * live section; a card is a ticket of the section in `extra.cards` (ticket
+ * tickets-and-comments-join-a-section-on). A section lives while it holds a live member or a card.
+ * The outer sections come first; `holder` maps each member and each card to the id of its section.
  */
-export function planSections(groups: readonly PlanGroup[], present: ReadonlySet<string>): { sections: PlanSection[]; holder: Map<string, string> } {
+export function planSections(
+  groups: readonly PlanGroup[],
+  present: ReadonlySet<string>,
+  extra: { boxes?: ReadonlySet<string>; cards?: ReadonlySet<string> } = {},
+): { sections: PlanSection[]; holder: Map<string, string> } {
+  const boxIds = extra.boxes ?? new Set<string>();
+  const cardIds = extra.cards ?? new Set<string>();
   const sectionIds = new Set(groups.filter(isSection).map((group) => group.id));
   const links = new Map<string, string[]>();
   const held = new Set<string>();
@@ -450,44 +470,65 @@ export function planSections(groups: readonly PlanGroup[], present: ReadonlySet<
     return false;
   };
   const byId = new Map<string, PlanGroup>();
+  const cardsOf = new Map<string, string[]>();
+  const carded = new Set<string>();
   for (const group of groups) {
     if (!isSection(group) || links.has(group.id)) continue;
     byId.set(group.id, group);
     const members: string[] = [];
     for (const id of group.groups ?? []) {
-      const fits = present.has(id) || (sectionIds.has(id) && id !== group.id && !reaches(id, group.id));
+      const fits = present.has(id) || boxIds.has(id) || (sectionIds.has(id) && id !== group.id && !reaches(id, group.id));
       if (fits && !held.has(id)) {
         held.add(id);
         members.push(id);
       }
     }
     links.set(group.id, members);
+    const cards: string[] = [];
+    for (const id of group.tickets) {
+      if (cardIds.has(id) && !carded.has(id)) {
+        carded.add(id);
+        cards.push(id);
+      }
+    }
+    cardsOf.set(group.id, cards);
   }
-  // A section without a live member goes, and leaves its holder; again until nothing changes.
+  // A section without a live member and without a card goes, and leaves its holder; again until nothing changes.
   for (;;) {
-    const dead = [...links].filter(([, members]) => members.length === 0).map(([id]) => id);
+    const dead = [...links].filter(([id, members]) => members.length === 0 && (cardsOf.get(id) ?? []).length === 0).map(([id]) => id);
     if (dead.length === 0) break;
     for (const id of dead) links.delete(id);
     for (const [id, members] of links) links.set(id, members.filter((one) => !dead.includes(one)));
   }
   const holder = new Map<string, string>();
   for (const [id, members] of links) for (const one of members) holder.set(one, id);
+  for (const id of links.keys()) for (const card of cardsOf.get(id) ?? []) holder.set(card, id);
   const pathOf = (id: string): string[] => {
     const path: string[] = [];
     for (let up = holder.get(id); up !== undefined; up = holder.get(up)) path.unshift(up);
     return path;
   };
-  const topicsOf = (id: string): string[] => (links.get(id) ?? []).flatMap((one) => (links.has(one) ? topicsOf(one) : [one]));
-  const sections = [...links].map(([id, members]) => ({ group: byId.get(id)!, members, topics: topicsOf(id), path: pathOf(id) }));
+  const topicsOf = (id: string): string[] => (links.get(id) ?? []).flatMap((one) => (links.has(one) ? topicsOf(one) : present.has(one) ? [one] : []));
+  const sections = [...links].map(([id, members]) => ({
+    group: byId.get(id)!,
+    members,
+    topics: topicsOf(id),
+    path: pathOf(id),
+    boxes: members.filter((one) => !links.has(one) && !present.has(one) && boxIds.has(one)),
+    cards: cardsOf.get(id) ?? [],
+  }));
   sections.sort((a, b) => a.path.length - b.path.length);
   return { sections, holder };
 }
 
 /**
  * The list after "Make a section" (ticket group-everything-inside-a-selection-box). When every member
- * has the same holder, the new section takes the slot of the first member in that holder and the
- * members leave it; else each member leaves its holder. A member section opens; a topic group without
- * a place gets its place of `places`, so nothing moves (user decisions 3 and 4). The new section stands first.
+ * and every ticket of `section.tickets` has the same holder, the new section takes the slot of the
+ * first member in that holder and the members leave it; else each member leaves its holder. A member
+ * section opens; a topic group without a place gets its place of `places`, so nothing moves (user
+ * decisions 3 and 4). The caller fills `section.tickets` and `section.spots` (ticket
+ * tickets-and-comments-join-a-section-on); each of its tickets leaves the tickets and the spots of
+ * every other section. The new section stands first.
  */
 export function withNewSection(
   groups: readonly PlanGroup[],
@@ -496,8 +537,10 @@ export function withNewSection(
   places: ReadonlyMap<string, { x: number; y: number }>,
 ): PlanGroup[] {
   const chosen = new Set(members);
+  const own = new Set(section.tickets);
   const holderOf = (id: string) => groups.find((group) => isSection(group) && (group.groups ?? []).includes(id))?.id ?? null;
-  const holders = new Set(members.map(holderOf));
+  const ticketHolderOf = (id: string) => groups.find((group) => isSection(group) && group.tickets.includes(id))?.id ?? null;
+  const holders = new Set([...members.map(holderOf), ...section.tickets.map(ticketHolderOf)]);
   const shared = holders.size === 1 ? [...holders][0] : null;
   let list: PlanGroup[];
   if (shared !== null) {
@@ -509,14 +552,21 @@ export function withNewSection(
     });
   } else list = members.reduce<PlanGroup[]>((now, id) => withGroupInSection(now, id, null), [...groups]);
   list = list.map((group) => {
-    if (isSection(group)) return chosen.has(group.id) ? { ...group, collapsed: false } : group;
+    if (isSection(group)) {
+      const left = own.size === 0 ? group : withoutTickets(group, own);
+      return chosen.has(group.id) ? { ...left, collapsed: false } : left;
+    }
     const place = places.get(group.id);
     return group.auto && !group.place && place ? { ...group, place: { x: place.x, y: place.y } } : group;
   });
   return [{ ...section, groups: [...members] }, ...list];
 }
 
-/** The list without the section `id`; when another section held it, its members take its slot there, so Remove keeps the groups. */
+/**
+ * The list without the section `id`; when another section held it, its members take its slot there,
+ * so Remove keeps the groups, and its tickets and spots join that section (its own spots win; ticket
+ * tickets-and-comments-join-a-section-on). Without a holder its tickets go back to their usual place.
+ */
 export function withoutSection(groups: readonly PlanGroup[], id: string): PlanGroup[] {
   const gone = groups.find((group) => group.id === id);
   const inner = gone?.groups ?? [];
@@ -525,7 +575,35 @@ export function withoutSection(groups: readonly PlanGroup[], id: string): PlanGr
     if (group.id === id) return [];
     if (moved || !isSection(group) || !(group.groups ?? []).includes(id)) return [group];
     moved = true;
-    return [{ ...group, groups: (group.groups ?? []).flatMap((one) => (one === id ? inner.filter((member) => member !== group.id) : [one])) }];
+    const next: PlanGroup = { ...group, groups: (group.groups ?? []).flatMap((one) => (one === id ? inner.filter((member) => member !== group.id) : [one])) };
+    const tickets = [...new Set([...group.tickets, ...(gone?.tickets ?? [])])];
+    if (tickets.length > group.tickets.length) next.tickets = tickets;
+    const spots = { ...(gone?.spots ?? {}), ...(group.spots ?? {}) };
+    if (Object.keys(spots).length > 0) next.spots = spots;
+    return [next];
+  });
+}
+
+/** The section without the tickets of `ids` in its tickets and its spots; no spot left: no key. */
+function withoutTickets(group: PlanGroup, ids: ReadonlySet<string>): PlanGroup {
+  const next: PlanGroup = { ...group, tickets: group.tickets.filter((one) => !ids.has(one)) };
+  delete next.spots;
+  const spots = Object.entries(group.spots ?? {}).filter(([key]) => !ids.has(key));
+  if (spots.length > 0) next.spots = Object.fromEntries(spots);
+  return next;
+}
+
+/**
+ * The groups after the ticket left every section (ticket tickets-and-comments-join-a-section-on): it
+ * leaves their tickets and their spots, so its card stands at its usual place again. A section with no
+ * group and no ticket left goes, as in `withGroupInSection`.
+ */
+export function withTicketOutOfSections(groups: readonly PlanGroup[], ticketId: string): PlanGroup[] {
+  const ids = new Set([ticketId]);
+  return groups.flatMap((group) => {
+    if (!isSection(group)) return [group];
+    const next = withoutTickets(group, ids);
+    return (next.groups ?? []).length > 0 || next.tickets.length > 0 ? [next] : [];
   });
 }
 
@@ -576,6 +654,14 @@ export function parsePlanGroups(value: unknown): PlanGroup[] {
     // The key only for a list of ids, as a section has it.
     const members = Array.isArray(raw.groups) ? [...new Set(raw.groups.filter((one): one is string => typeof one === "string" && one !== ""))] : [];
     if (members.length > 0) group.groups = members;
+    // The key only when at least one spot has two finite numbers (ticket tickets-and-comments-join-a-section-on).
+    const rawSpots = raw.spots && typeof raw.spots === "object" && !Array.isArray(raw.spots) ? (raw.spots as Record<string, unknown>) : null;
+    const spots: Record<string, { x: number; y: number }> = {};
+    for (const [key, one] of Object.entries(rawSpots ?? {})) {
+      const spot = one && typeof one === "object" ? (one as Record<string, unknown>) : null;
+      if (spot && typeof spot.x === "number" && Number.isFinite(spot.x) && typeof spot.y === "number" && Number.isFinite(spot.y)) spots[key] = { x: spot.x, y: spot.y };
+    }
+    if (Object.keys(spots).length > 0) group.spots = spots;
     groups.push(group);
   }
   return groups;
@@ -1192,11 +1278,39 @@ export function placeTopicBlocks(
 }
 
 /**
- * The boxes of the sections (ticket i-need-an-option-to-create-group-of): around the placed boxes of
- * their topic groups, also a dragged one, with the padding of a box and a title bar above. A section
- * without a placed topic group has no box.
+ * The cards of the tree and of the shelf at the spots of their sections (ticket
+ * tickets-and-comments-join-a-section-on): a card whose id has a spot takes it as its top left; the
+ * others, the root and the arrows of the layout stay. The canvas grows to hold every moved card.
  */
-export function setBoxes(blocks: readonly PlanBlockPlace[], sets: readonly { id: string; members: readonly string[] }[]): { id: string; box: PlanRect }[] {
+export function placeCards(
+  layout: PlanLayout,
+  shelf: readonly PlanPlace[],
+  spots: ReadonlyMap<string, { x: number; y: number }>,
+  size: PlanCardSize,
+): { layout: PlanLayout; shelf: PlanPlace[] } {
+  const moved: PlanPlace[] = [];
+  const place = (card: PlanPlace): PlanPlace => {
+    const spot = spots.get(card.id);
+    if (!spot) return card;
+    const next = { ...card, x: spot.x, y: spot.y };
+    moved.push(next);
+    return next;
+  };
+  const cards = layout.cards.map(place);
+  const shelfCards = shelf.map(place);
+  if (moved.length === 0) return { layout, shelf: shelfCards };
+  const right = Math.max(...moved.map((card) => card.x)) + size.width + PLAN_PAD;
+  const bottom = Math.max(...moved.map((card) => card.y)) + size.height + PLAN_PAD;
+  return { layout: { ...layout, cards, width: Math.max(layout.width, right), height: Math.max(layout.height, bottom) }, shelf: shelfCards };
+}
+
+/**
+ * The boxes of the sections (ticket i-need-an-option-to-create-group-of): around the placed boxes of
+ * their members (topic groups, sections, comments and cards; ticket
+ * tickets-and-comments-join-a-section-on), also a dragged one, with the padding of a box and a title
+ * bar above. A section without a placed member has no box.
+ */
+export function setBoxes(blocks: readonly { id: string; box: PlanRect }[], sets: readonly { id: string; members: readonly string[] }[]): { id: string; box: PlanRect }[] {
   // Ticket group-everything-inside-a-selection-box: a member may be another set of the list; its box counts.
   const setOf = new Map(sets.map((set) => [set.id, set]));
   const boxOf = new Map<string, PlanRect | null>();
