@@ -6606,6 +6606,10 @@ pub struct TaskInfo {
     /// The pictures that the report names (ticket show-the-pictures-that-a-report-names-on): paths
     /// and bare names from a text parse; the call `report_pictures` finds the files.
     pictures: Vec<String>,
+    /// The small task files of the task that are empty or zero-filled (`damaged_task_file`, ticket
+    /// damaged-task-files-no-commit-and-a), as `.dispatch/<ticket>.<kind>`, sorted. Dispatch does
+    /// not commit them, and the task card names them.
+    damaged: Vec<String>,
 }
 
 /// A reply that the worker script kept for a busy project (`<ticket>.reply`): the text, the time of
@@ -7474,6 +7478,9 @@ pub struct TaskList {
     gate: String,
     /// The actions of the Actions panel and their last runs (ticket project-actions).
     actions: crate::core::actions::ActionList,
+    /// The `HEAD` file of the git folder is empty or zero-filled (`head_damaged`, ticket
+    /// damaged-task-files-no-commit-and-a): the card of a failed task names it.
+    head_damaged: bool,
 }
 
 /// The files with an extension in a folder: the name without the extension, the path, the entry.
@@ -7610,12 +7617,14 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             approved: None,
             kept: None,
             pictures: Vec::new(),
+            damaged: Vec::new(),
         });
         tasks.len() - 1
     }
     for (name, path, _) in files_with(&project.reports, "state") {
         let at = task_at(&mut tasks, &name);
-        tasks[at].state = fs::read_to_string(&path).unwrap_or_default().trim().to_string();
+        // A damaged state file reads as no state: the card shows no zero bytes.
+        tasks[at].state = if damaged_task_file(&path) { String::new() } else { fs::read_to_string(&path).unwrap_or_default().trim().to_string() };
     }
     let check_list = project.checks();
     for (name, path, entry) in files_with(&project.plans(), "md") {
@@ -7868,6 +7877,17 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
         }
         task.log = file_entry(&path);
     }
+    // The damaged small task files of each task (ticket damaged-task-files-no-commit-and-a): the
+    // commit below leaves them out, and the card names them.
+    for task in tasks.iter_mut() {
+        task.damaged = DAMAGE_KINDS
+            .iter()
+            .map(|kind| format!("{}.{kind}", task.name))
+            .filter(|name| damaged_task_file(&project.reports.join(name)))
+            .map(|name| format!("{TASKS_DIR}/{name}"))
+            .collect();
+        task.damaged.sort();
+    }
     // Dispatch commits the task files, but not while a work run may commit itself: a task approved
     // or working without a report. A run of another computer does not hold the commit (ticket
     // second-computer). A failure (an index lock of a git command of the user, no git
@@ -7954,6 +7974,7 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
             work_folder_users: project.work_folder_users(),
             gate: project.merge_gate(),
             actions,
+            head_damaged: head_damaged(project),
         },
         moved,
     ))
@@ -8350,6 +8371,31 @@ fn ticket_plan_with(project: &Project, id: &str, start: &dyn Fn(&Project, &[&str
 
 /// The kinds of the files `<id>.<kind>` of a task in the task folder.
 const TASK_FILE_KINDS: [&str; 10] = ["md", "state", "session", "models", "branch", "taken", "checks", "picked", "checked", "approved"];
+
+/// The kinds of the small task files that a crash can leave empty or zero-filled (ticket
+/// damaged-task-files-no-commit-and-a).
+const DAMAGE_KINDS: [&str; 5] = ["state", "models", "checks", "session", "branch"];
+
+/// A small task file `<ticket>.<kind>` of `DAMAGE_KINDS` is damaged: empty or only zero bytes. An
+/// empty `.checks` is the normal file of a task without chosen checks (user decision 1): only a
+/// non-empty zero-filled one counts. False for a missing file or another kind.
+fn damaged_task_file(path: &Path) -> bool {
+    let Some(kind) = path.extension().and_then(|ext| ext.to_str()) else { return false };
+    if !DAMAGE_KINDS.contains(&kind) {
+        return false;
+    }
+    let Ok(bytes) = fs::read(path) else { return false };
+    let zeros = bytes.iter().all(|byte| *byte == 0);
+    if kind == "checks" { !bytes.is_empty() && zeros } else { zeros }
+}
+
+/// The `HEAD` file of the git folder of the project is empty or only zero bytes (ticket
+/// damaged-task-files-no-commit-and-a): a crash damaged it, and no git command works. False
+/// outside git.
+fn head_damaged(project: &Project) -> bool {
+    let Some(repo) = project.repo() else { return false };
+    fs::read(repo.git_dir.join("HEAD")).is_ok_and(|bytes| bytes.iter().all(|byte| *byte == 0))
+}
 
 /// Moves the files of the task `id` into `old/<id>-<yyyyMMdd-HHmmss>/` of the task folder (UTC): its
 /// files `<id>.<kind>`, its brief, its plan and its measure folder, each under its own folder name.
@@ -8856,6 +8902,11 @@ fn keep_tasks_committed(project: &Project) -> Result<usize, String> {
     if !project.in_git || project.options().ignore_tasks {
         return Ok(0);
     }
+    // A zero-filled `HEAD` (ticket damaged-task-files-no-commit-and-a): no git command works, so
+    // no try and no error line at each read. The task card names the file.
+    if head_damaged(project) {
+        return Ok(0);
+    }
     // `git add --all` would stage a conflicted task file with its markers as resolved (ticket
     // board-in-progress, the commit "Dispatch: 86 task files" of Starminer).
     if unfinished_git(project) {
@@ -8875,17 +8926,26 @@ fn keep_tasks_committed(project: &Project) -> Result<usize, String> {
     let paths: Vec<&str> = status.lines().filter_map(|line| line.get(3..)).map(|path| path.trim().trim_matches('"')).filter(|path| !path.is_empty()).collect();
     // `git add` of an ignored untracked path fails, so only the notes that the status listed go in.
     let notes: Vec<&str> = NOTES_WITH_TASKS.iter().copied().filter(|note| paths.contains(note)).collect();
-    let tasks = paths.len() - notes.len();
+    // An empty or zero-filled small task file is not committed (ticket
+    // damaged-task-files-no-commit-and-a): a crash left it, and the task card names it. A rename
+    // counts by its new path.
+    let new_path = |path: &str| path.rsplit(" -> ").next().unwrap_or(path).trim().trim_matches('"').to_string();
+    let damaged: Vec<&str> = paths.iter().copied().filter(|path| !notes.contains(path) && damaged_task_file(&project.root.join(new_path(path)))).collect();
+    let task_paths: Vec<&str> = paths.iter().copied().filter(|path| !notes.contains(path) && !damaged.contains(path)).collect();
+    let tasks = task_paths.len();
     let changed = tasks + notes.len();
     if changed == 0 {
         return Ok(0);
     }
+    // `git add --all` and `git commit -- <paths>` both take the content of the disk: both get the
+    // exclusions.
+    let exclusions: Vec<String> = if tasks > 0 { damaged.iter().map(|path| format!(":(exclude){}", new_path(path))).collect() } else { Vec::new() };
     let mut pathspec: Vec<&str> = if tasks > 0 { vec![TASKS_DIR] } else { Vec::new() };
     pathspec.extend(&notes);
+    pathspec.extend(exclusions.iter().map(String::as_str));
     let mut add = vec!["add", "--all", "--"];
     add.extend(&pathspec);
     run_git(&project.root, &add)?;
-    let task_paths: Vec<&str> = paths.iter().copied().filter(|path| !notes.contains(path)).collect();
     let message = tasks_message(&task_paths, notes.len());
     // A commit with paths takes only these paths.
     let mut commit = vec!["commit", "-m", &message, "--"];
@@ -10889,6 +10949,7 @@ Blockers: none
             approved: None,
             kept: None,
             pictures: Vec::new(),
+            damaged: Vec::new(),
         };
         let planning = task("t-plan", "planning");
         let ready = TaskInfo { plan: entry(), hold: true, ..task("t-ready", "planning") };
@@ -12532,6 +12593,80 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
         assert!(git(&["show", "--name-only", "--format=", "HEAD"]).lines().any(|file| file == ".dispatch/briefs/t-2.md"));
         assert_eq!(git(&["status", "--porcelain", "--", ".dispatch"]), "");
         assert!(git(&["status", "--porcelain"]).contains("A  staged.txt"));
+        clean(&project);
+    }
+
+    #[test]
+    fn a_damaged_task_file_is_not_committed_and_named() {
+        let project = git_scratch("damaged-task-file");
+        let root = project.root.clone();
+        let git = |args: &[&str]| run_git(&root, args).unwrap();
+        let cwd = root.to_string_lossy().into_owned();
+        apply(&project, &[]).unwrap();
+        write_file(&project.briefs().join("t-1.md"), "brief\n").unwrap();
+        write_file(&project.plans().join("t-1.md"), "# Plan t-1: one\n").unwrap();
+        // A crash left zero bytes: a state file of 9, an empty models file, a checks file of 20.
+        fs::write(project.reports.join("t-1.state"), [0u8; 9]).unwrap();
+        fs::write(project.reports.join("t-1.models"), b"").unwrap();
+        fs::write(project.reports.join("t-1.checks"), [0u8; 20]).unwrap();
+        write_file(&project.reports.join("t-1.session"), "plan sess-1\n").unwrap();
+        // An empty checks file beside a normal state file is a task without chosen checks (user
+        // decision 1): not damaged, and committed.
+        write_file(&project.reports.join("t-2.state"), "planning\n").unwrap();
+        fs::write(project.reports.join("t-2.checks"), b"").unwrap();
+
+        let list = task_list(cwd.clone()).unwrap();
+        assert!(git(&["log", "-1", "--format=%s"]).starts_with("Dispatch: brief and plan of t-1"), "{}", git(&["log", "-1", "--format=%s"]));
+        let files = git(&["show", "--name-only", "--format=", "HEAD"]);
+        let files: Vec<&str> = files.lines().filter(|line| !line.is_empty()).collect();
+        for file in [".dispatch/briefs/t-1.md", ".dispatch/plans/t-1.md", ".dispatch/t-1.session", ".dispatch/t-2.state", ".dispatch/t-2.checks"] {
+            assert!(files.contains(&file), "{file} missing: {files:?}");
+        }
+        for file in [".dispatch/t-1.state", ".dispatch/t-1.models", ".dispatch/t-1.checks"] {
+            assert!(!files.contains(&file), "{file} committed: {files:?}");
+        }
+        let status = git(&["status", "--porcelain", "--", ".dispatch"]);
+        let mut left: Vec<&str> = status.lines().map(|line| line.get(3..).unwrap_or_default().trim()).collect();
+        left.sort();
+        assert_eq!(left, vec![".dispatch/t-1.checks", ".dispatch/t-1.models", ".dispatch/t-1.state"], "{status}");
+        let one = list.tasks.iter().find(|task| task.name == "t-1").unwrap();
+        assert_eq!(one.damaged, vec![".dispatch/t-1.checks", ".dispatch/t-1.models", ".dispatch/t-1.state"]);
+        assert_eq!(one.state, "");
+        let two = list.tasks.iter().find(|task| task.name == "t-2").unwrap();
+        assert!(two.damaged.is_empty(), "{:?}", two.damaged);
+        assert_eq!(two.state, "planning");
+        assert!(!list.head_damaged);
+        // Nothing else changed: no commit of the damaged files at the next try.
+        assert_eq!(keep_tasks_committed(&project), Ok(0));
+        clean(&project);
+    }
+
+    #[test]
+    fn a_zero_filled_head_is_named_on_a_failed_task() {
+        let project = git_scratch("damaged-head");
+        let root = project.root.clone();
+        let git = |args: &[&str]| run_git(&root, args).unwrap();
+        let cwd = root.to_string_lossy().into_owned();
+        apply(&project, &[]).unwrap();
+        task_list(cwd.clone()).unwrap();
+        let branch = git(&["symbolic-ref", "--short", "HEAD"]).trim().to_string();
+        write_file(&project.reports.join("t-1.md"), "state: failed\nneeds: nothing\nfiles: none\nplan: none\n\n## What changed\nnothing\n").unwrap();
+        let head = project.repo().unwrap().git_dir.join("HEAD");
+        fs::write(&head, [0u8; 41]).unwrap();
+
+        assert_eq!(keep_tasks_committed(&project), Ok(0));
+        let list = task_list(cwd.clone()).unwrap();
+        assert!(list.head_damaged);
+        let task = list.tasks.iter().find(|task| task.name == "t-1").unwrap();
+        assert!(task.damaged.is_empty(), "{:?}", task.damaged);
+        assert_eq!(task.header.as_ref().map(|header| header.state.as_str()), Some("failed"));
+
+        // HEAD written back: the next read commits the report.
+        fs::write(&head, format!("ref: refs/heads/{branch}\n")).unwrap();
+        let list = task_list(cwd.clone()).unwrap();
+        assert!(!list.head_damaged);
+        assert!(git(&["ls-files", "--", ".dispatch/t-1.md"]).contains(".dispatch/t-1.md"));
+        assert_eq!(git(&["status", "--porcelain", "--", ".dispatch"]), "");
         clean(&project);
     }
 

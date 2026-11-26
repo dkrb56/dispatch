@@ -2489,6 +2489,8 @@ interface TaskInfo {
   checked?: CheckRunInfo | null;
   /** The task waits for its checks: no pick yet, a run that did not end, or a failed check. Absent from an older host. */
   checksOpen?: boolean;
+  /** The small task files that are empty or zero-filled, as `.dispatch/<ticket>.<kind>`: Dispatch does not commit them (ticket damaged-task-files-no-commit-and-a). Absent from an older host. */
+  damaged?: string[];
 }
 
 /** One part of the section Parts of a plan (ticket subtickets). */
@@ -2622,6 +2624,8 @@ interface TaskListReply {
   actions?: ActionList;
   /** What the read repaired in task files with git conflict markers, one note per file (ticket board-in-progress). Absent from an older host. */
   repairs?: string[];
+  /** The `HEAD` file of the git folder is empty or zero-filled (ticket damaged-task-files-no-commit-and-a). Absent from an older host. */
+  headDamaged?: boolean;
 }
 
 /** The repair notes of a task list reply go into one line of the triage chat of the project (ticket board-in-progress, user decision 4). */
@@ -2674,6 +2678,8 @@ interface ProjectTasks {
   gate: string;
   /** The actions of the Actions panel and their last runs (ticket project-actions). */
   actions: ActionList;
+  /** The `HEAD` file of the git folder is empty or zero-filled: the card of a failed task names it (ticket damaged-task-files-no-commit-and-a). */
+  headDamaged: boolean;
 }
 
 /** The record of a project of a host from a reply of `task_list`. */
@@ -2703,6 +2709,7 @@ function tasksRecord(host: HostId, cwd: string, reply: TaskListReply): ProjectTa
     workFolderUsers: reply.workFolderUsers ?? [],
     gate: reply.gate ?? "",
     actions: reply.actions ?? EMPTY_ACTIONS,
+    headDamaged: reply.headDamaged ?? false,
   };
 }
 
@@ -9287,6 +9294,28 @@ function continueParts(task: Task, run: "plan" | "work"): HTMLElement[] {
 }
 
 /**
+ * The row that names the damaged files of a task, or null (ticket damaged-task-files-no-commit-and-a):
+ * its empty or zero-filled small task files, and `.git/HEAD` when it is zero-filled and the task
+ * failed (user decision 2). A failed task says that a crash may have damaged them.
+ */
+function damagedRow(task: Task): HTMLElement | null {
+  const info = task.info;
+  const failed = taskStatus(task).kind === "failed" || info?.header?.state === "failed";
+  const names = [...(info?.damaged ?? [])];
+  if (failed && task.project?.headDamaged) names.push(".git/HEAD");
+  if (names.length === 0) return null;
+  const row = document.createElement("div");
+  row.className = "task-stop";
+  const reason = document.createElement("div");
+  reason.className = "card-reason";
+  reason.textContent = failed
+    ? `The files of this task were damaged, maybe by a crash: ${names.join(", ")}`
+    : `Not committed, empty or zero-filled: ${names.join(", ")}`;
+  row.append(reason);
+  return row;
+}
+
+/**
  * The Continue row of a task whose work run ended without a report or stopped at an error, or null
  * (tickets a-work-run-that-ended-without-a-report and a-run-that-stopped-at-a-login-or-limit). A
  * reply that goes out or waits in the queue hides the row, so a second click sends nothing. The
@@ -12519,6 +12548,9 @@ function taskElement(task: Task, alwaysOpen = false): HTMLElement {
       card.append(...refusalBlock(task, before, old));
       body.append(card);
     }
+    // The damaged task files (ticket damaged-task-files-no-commit-and-a).
+    const damaged = damagedRow(task);
+    if (damaged) body.append(damaged);
     // Stop stands under the runs that it stops.
     const stop = stopRow(task);
     if (stop) body.append(stop);
