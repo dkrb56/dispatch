@@ -203,6 +203,19 @@ test("autoMergeNote: all work folders in use names the tasks, before the one-fol
   assert.match(autoMergeNote({ ...AUTO, folders: [] }, "main"), /starts when no other work runs/);
 });
 
+// Ticket the-merge-card-says-that-a-pause-holds: a paused project says so on the merge card.
+test("autoMergeNote: a paused project says that the pause holds the merge", () => {
+  const pause = "The project is paused, so auto-merge waits. It starts when you turn Run queue on again.";
+  assert.equal(autoMergeNote({ ...AUTO, paused: true }, "main"), pause);
+  assert.equal(autoMergeNote({ ...AUTO, paused: true, held: true, folder: "t-1" }, "main"), pause);
+  assert.equal(autoMergeNote({ ...AUTO, paused: true, folders: ["t-1", "t-2"] }, "main"), pause);
+  assert.match(autoMergeNote({ ...AUTO, paused: true, tried: true }, "main"), /did not go through/);
+  assert.match(autoMergeNote({ ...AUTO, paused: true, gate: false }, "main"), /needs a gate command/);
+  assert.match(autoMergeNote({ ...AUTO, paused: true, done: false }, "main"), /takes only a done report/);
+  assert.equal(autoMergeNote({ ...AUTO, paused: true, on: false }, "main"), "");
+  assert.match(autoMergeNote({ ...AUTO, paused: false }, "main"), /starts when no other work runs/);
+});
+
 test("main.ts: a refusal for the work folder is no try of auto-merge", () => {
   const body = MAIN.slice(MAIN.indexOf("async function mergeTask("), MAIN.indexOf("function mergeCard("));
   assert.match(body, /const holders = folderRefusal\(String\(error\)\);/);

@@ -62,6 +62,8 @@ export interface AutoMergeFacts {
    * the-page-lets-more-than-one-work-run); absent or empty while a folder is free.
    */
   folders?: readonly string[];
+  /** The user paused the project with Run queue; auto-merge does not start. */
+  paused?: boolean;
 }
 
 /** The names as `a`, `a and b` or `a, b and c`. */
@@ -79,6 +81,7 @@ export function autoMergeNote(facts: AutoMergeFacts, base: string): string {
   if (!facts.gate) return "Auto-merge needs a gate command, so this branch waits for your Merge click.";
   if (!facts.done) return "Auto-merge takes only a done report, so this branch waits for your Merge click.";
   if (facts.tried) return "The automatic merge did not go through. Fix the cause, or click Merge.";
+  if (facts.paused) return "The project is paused, so auto-merge waits. It starts when you turn Run queue on again.";
   if (facts.folders && facts.folders.length > 0) return `Auto-merge waits for a work folder: ${joinNames(facts.folders)} use them. It tries again when one is free.`;
   if (facts.folder) return `Auto-merge waits for the work folder, which ${facts.folder} uses, and tries again when it is free.`;
   if (facts.held) return `Auto-merge waits until the checkout is on ${base} and the files of this task have no uncommitted changes.`;

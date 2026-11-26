@@ -8482,6 +8482,7 @@ function autoMergeFacts(task: Task): AutoMergeFacts {
     held: mergeHeld(task),
     folder: holders.length === 1 ? holders[0] : null,
     folders: holders.length > 1 ? holders : [],
+    paused: task.project?.paused ?? projectTasks.get(tasksFolder)?.paused ?? false,
   };
 }
 
