@@ -269,6 +269,71 @@ test("several work folders: every short line has 12 words at most, also with fou
   assert.equal(cases[0]?.short, "Waits for a work folder: a-long-ticket-name-one, a-long-ticket-name-two, a-long-ticket-name-three and a-long-ticket-name-four use them.");
 });
 
+test("answerWait: an approval clicked earlier names the task whose work run starts first (ticket question-possible-bug-a-waiting-task)", () => {
+  assert.deepEqual(answerWait({ editing: null, dirty: [], approval: "t-2" }), {
+    short: "Your answers wait: the approved plan of t-2 starts first.",
+    full: "The plan of t-2 was approved before this reply came, so its work run starts first. Then your answers go to the worker.",
+  });
+  assert.equal(answerWait({ editing: null, dirty: [], approval: null }), null);
+  assert.equal(waitReason({ editing: null, dirty: [], approval: "t-2" }), null, "the earlier approval holds only an answer");
+});
+
+test("answerWait: the scheduled full run of all checks holds the answer (ticket question-possible-bug-a-waiting-task)", () => {
+  assert.deepEqual(answerWait({ editing: null, dirty: [], fullRun: true }), {
+    short: "Your answers wait for the full run of all checks.",
+    full: "Your answers go to the worker when the scheduled full run of all checks of the project ends.",
+  });
+  assert.equal(answerWait({ editing: null, dirty: [], fullRun: false }), null);
+});
+
+test("answerWait: the automatic Continue gets texts about Continue, not about your answers (ticket question-possible-bug-a-waiting-task)", () => {
+  const sessionFolder = { number: 1, task: "the-late-joiner-s-loading-screen-did-not" };
+  assert.deepEqual(answerWait({ editing: null, dirty: [], sessionFolder, autoContinue: true }), {
+    short: "Continue waits for work folder 1, which the-late-joiner-s-loading-screen-did-not uses.",
+    full: "Dispatch sends Continue to the worker when the work run of the-late-joiner-s-loading-screen-did-not ends and work folder 1, where the session of this task runs, is free.",
+  });
+  assert.deepEqual(answerWait({ editing: null, dirty: [], approval: "t-2", autoContinue: true }), {
+    short: "Continue waits: the approved plan of t-2 starts first.",
+    full: "The plan of t-2 was approved before this Continue came, so its work run starts first. Then Dispatch sends Continue to the worker.",
+  });
+  assert.equal(answerWait({ editing: null, dirty: [], paused: true, autoContinue: true })?.short, "Paused: Continue goes out at Resume.");
+  assert.equal(answerWait({ editing: null, dirty: [], fullRun: true, autoContinue: true })?.short, "Continue waits for the full run of all checks.");
+  assert.equal(answerWait({ editing: null, dirty: [], autoContinue: true }), null, "the flag alone holds nothing");
+});
+
+test("answerWait: the reasons keep the order of the holds of the queue (ticket question-possible-bug-a-waiting-task)", () => {
+  const all = {
+    editing: "t-run",
+    dirty: [],
+    paused: true,
+    merging: "t-merge",
+    fullRun: true,
+    sessionFolder: { number: 1, task: "t-folder" },
+    sameFiles: { task: "t-files", files: ["a.ts"] },
+    checkout: { task: "t-out", branch: "task/t-out", base: "main", note: "" },
+    approval: "t-approved",
+  };
+  assert.match(answerWait(all)?.short ?? "", /^Paused/);
+  assert.match(answerWait({ ...all, paused: false })?.short ?? "", /merge of t-merge/);
+  assert.match(answerWait({ ...all, paused: false, merging: null })?.short ?? "", /full run of all checks/, "the full run holds the queue before the reply is chosen");
+  assert.match(answerWait({ ...all, paused: false, merging: null, fullRun: false })?.short ?? "", /work folder 1, which t-folder/);
+  assert.match(answerWait({ ...all, paused: false, merging: null, fullRun: false, sessionFolder: null })?.short ?? "", /t-files, which works on the same files/);
+  assert.match(answerWait({ ...all, paused: false, merging: null, fullRun: false, sessionFolder: null, sameFiles: null, editing: null })?.short ?? "", /checkout on the branch of t-out/);
+  assert.match(answerWait({ ...all, paused: false, merging: null, fullRun: false, sessionFolder: null, sameFiles: null, editing: null, checkout: null })?.short ?? "", /approved plan of t-approved starts first/, "the earlier approval comes last, as in chooseQueued");
+  const long = "a-long-ticket-name-with-many-parts";
+  for (const reason of [
+    answerWait({ editing: null, dirty: [], approval: long }),
+    answerWait({ editing: null, dirty: [], approval: long, autoContinue: true }),
+    answerWait({ editing: null, dirty: [], fullRun: true, autoContinue: true }),
+    answerWait({ editing: null, dirty: [], sessionFolder: { number: 4, task: long }, autoContinue: true }),
+    answerWait({ editing: null, dirty: [], folders: ["a-long-ticket-name-one", "a-long-ticket-name-two", "a-long-ticket-name-three", "a-long-ticket-name-four"], autoContinue: true }),
+  ]) {
+    assert.ok(reason);
+    assert.ok(words(reason.short) <= 12, reason.short);
+    assert.doesNotMatch(reason.short, /\n/);
+  }
+});
+
 test("the Help and the README name Work folder (ticket moving-a-project)", () => {
   const help = HTML.slice(HTML.indexOf("<h3>Project settings</h3>"), HTML.indexOf("<h3>The workspace</h3>"));
   assert.ok(help.includes("<b>Work folder.</b>"));

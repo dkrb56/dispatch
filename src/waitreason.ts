@@ -31,6 +31,15 @@ export interface WaitFacts {
   sameFiles?: { task: string; files: readonly string[] } | null;
   /** For an answer: the work folder where the session of this task runs and the other task that uses it now, or null. */
   sessionFolder?: { number: number; task: string } | null;
+  /** The scheduled full run of every check runs in the project now (ticket scheduled-full-run-of-all-checks). */
+  fullRun?: boolean;
+  /**
+   * For an answer: the other task whose plan the user approved before this reply came, which starts
+   * first (`chooseQueued`), or null.
+   */
+  approval?: string | null;
+  /** For an answer: the reply is the Continue that Dispatch sends by itself after the merges (ticket a-task-that-waits-for-the-merge-of). */
+  autoContinue?: boolean;
 }
 
 /** The names as `a`, `a and b` or `a, b and c`. */
@@ -118,21 +127,31 @@ export function waitReason(facts: WaitFacts): WaitReason | null {
 /**
  * Why a reply of the user to a worker waits in the queue (ticket an-answer-waits-in-the-queue-while):
  * answers, a Confirm of a check result or a Continue that came while the checkout was on the branch of
- * another task. The same order as `waitReason` (pause, merge, work folders, same files, work run,
- * checkout), with texts about the reply; the folder of the session of the task comes first of the
- * folders. Uncommitted changes hold no reply. Null when nothing holds it: it goes out at the next poll.
+ * another task. The order of the holds of `approvePlans` and `chooseQueued` (pause, merge, full run of
+ * the checks, work folders, same files, work run, checkout, an approval clicked earlier), with texts
+ * about the reply; the folder of the session of the task comes first of the folders. The Continue
+ * that Dispatch sends by itself (`autoContinue`) gets texts about Continue. Uncommitted changes hold
+ * no reply. Null when nothing holds it: it goes out at the next poll.
  */
 export function answerWait(facts: WaitFacts): WaitReason | null {
+  const waits = facts.autoContinue ? "Continue waits" : "Your answers wait";
+  const goes = facts.autoContinue ? "Dispatch sends Continue to the worker" : "Your answers go to the worker";
   if (facts.paused) {
     return {
-      short: "Paused: your answers go out at Resume.",
-      full: "The project is paused. Your answers go to the worker when you resume the project.",
+      short: facts.autoContinue ? "Paused: Continue goes out at Resume." : "Paused: your answers go out at Resume.",
+      full: `The project is paused. ${goes} when you resume the project.`,
     };
   }
   if (facts.merging) {
     return {
-      short: `Your answers wait for the merge of ${facts.merging}.`,
-      full: `Your answers go to the worker when the merge of ${facts.merging} ends.`,
+      short: `${waits} for the merge of ${facts.merging}.`,
+      full: `${goes} when the merge of ${facts.merging} ends.`,
+    };
+  }
+  if (facts.fullRun) {
+    return {
+      short: `${waits} for the full run of all checks.`,
+      full: `${goes} when the scheduled full run of all checks of the project ends.`,
     };
   }
   // With several work folders (ticket the-page-lets-more-than-one-work-run) an answer goes to the
@@ -140,41 +159,47 @@ export function answerWait(facts: WaitFacts): WaitReason | null {
   if (facts.sessionFolder) {
     const { number, task } = facts.sessionFolder;
     return {
-      short: `Your answers wait for work folder ${number}, which ${task} uses.`,
-      full: `Your answers go to the worker when the work run of ${task} ends and work folder ${number}, where the session of this task runs, is free.`,
+      short: `${waits} for work folder ${number}, which ${task} uses.`,
+      full: `${goes} when the work run of ${task} ends and work folder ${number}, where the session of this task runs, is free.`,
     };
   }
   if (facts.folders && facts.folders.length > 0) {
     const names = joinNames(facts.folders);
     return {
-      short: `Your answers wait: ${names} use all work folders.`,
-      full: `Your answers go to the worker when a work folder is free. All work folders of the project are in use: ${names}.`,
+      short: `${waits}: ${names} use all work folders.`,
+      full: `${goes} when a work folder is free. All work folders of the project are in use: ${names}.`,
     };
   }
   if (facts.folder) {
     return {
-      short: `Your answers wait for the work folder, which ${facts.folder} uses.`,
-      full: `Your answers go to the worker when the work run of ${facts.folder} ends and the work folder is free.`,
+      short: `${waits} for the work folder, which ${facts.folder} uses.`,
+      full: `${goes} when the work run of ${facts.folder} ends and the work folder is free.`,
     };
   }
   if (facts.sameFiles) {
     const { task, files } = facts.sameFiles;
     return {
-      short: `Your answers wait for ${task}, which works on the same files.`,
-      full: `Your answers go to the worker when the work run of ${task} ends. Both plans change these files:\n${fileLines(files)}`,
+      short: `${waits} for ${task}, which works on the same files.`,
+      full: `${goes} when the work run of ${task} ends. Both plans change these files:\n${fileLines(files)}`,
     };
   }
   if (facts.editing) {
     return {
-      short: `Your answers wait for the work run of ${facts.editing}.`,
-      full: `Your answers go to the worker when the work run of ${facts.editing} ends and the checkout is back on the base.`,
+      short: `${waits} for the work run of ${facts.editing}.`,
+      full: `${goes} when the work run of ${facts.editing} ends and the checkout is back on the base.`,
     };
   }
   if (facts.checkout) {
     const { task, branch, base, note } = facts.checkout;
     return {
-      short: `Your answers wait for the checkout on the branch of ${task}.`,
-      full: `Your answers go to the worker when Dispatch switches the checkout back from ${branch} (the branch of ${task}) to ${base}.${note ? ` Dispatch waits for this:\n${note}` : ""}`,
+      short: `${waits} for the checkout on the branch of ${task}.`,
+      full: `${goes} when Dispatch switches the checkout back from ${branch} (the branch of ${task}) to ${base}.${note ? ` Dispatch waits for this:\n${note}` : ""}`,
+    };
+  }
+  if (facts.approval) {
+    return {
+      short: `${waits}: the approved plan of ${facts.approval} starts first.`,
+      full: `The plan of ${facts.approval} was approved before this ${facts.autoContinue ? "Continue" : "reply"} came, so its work run starts first. Then ${facts.autoContinue ? goes : "your answers go to the worker"}.`,
     };
   }
   return null;

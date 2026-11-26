@@ -156,7 +156,7 @@ import { pasteSkipsPane } from "./chattabs";
 import { autoSwitch, holdPause, PAUSED_NEW_EMPTY, pausedCountText, pauseLine } from "./pause";
 import { type Tldr, type TaskPhase, taskTldr, tldrTitle } from "./tldr";
 import { countdownText, keepDeadline, promptKey } from "./permissionprompt";
-import { answerWait, type WaitFacts, waitReason } from "./waitreason";
+import { answerWait, type WaitFacts, type WaitReason, waitReason } from "./waitreason";
 import { autoContinueLine, autoContinueQueued, countsMerged, goOnLine, isAutoContinue, type MergeWait, mergeWait, mergeWaitLines, mergeWaitShort, mergeWaitText, mergeWaitTitle, stopLine, type WaitTask } from "./mergewait";
 import { HOLD_NOTE, holdWait } from "./holdstep";
 import { showTriage, triageCard, triagePanesToClose, withoutTriage, type ProjectLoad } from "./notriage";
@@ -6451,13 +6451,17 @@ function waitFacts(task: Task): WaitFacts {
   // Only the changes in files of the task hold it (ticket leftover-files-block-tasks); an older host gives the whole project.
   const dirty = task.info?.leftovers ?? task.project?.dirty ?? dirtyLines;
   const checkout = otherCheckout(tasks, task.name);
+  // The scheduled full run of the checks and an approval clicked earlier hold a waiting reply too
+  // (`approvePlans`, `chooseQueued`; ticket question-possible-bug-a-waiting-task).
+  const fullRun = fullRuns.has(projectKey(taskHost(task), taskCwd(task)));
+  const approval = earlierApproval(task, tasks);
   if (!task.project || slotsOf(task.project) < 2) {
     const editing = workRuns(tasks)[0]?.name ?? leased;
     // The work folder of the project (ticket work-run-in-the-work-folder): its user holds it while that
     // user's work run runs; a stale record gives no wait.
     const user = task.project?.workFolders ? task.project.workFolderUser : null;
     const folder = user && user !== task.name && editing === user ? user : null;
-    return { editing: editing && editing !== task.name ? editing : null, folder, dirty, merging, paused, checkout };
+    return { editing: editing && editing !== task.name ? editing : null, folder, dirty, merging, paused, checkout, fullRun, approval };
   }
   // Several work folders (ticket the-page-lets-more-than-one-work-run): a running work run holds the
   // task only when every folder is in use, when it uses the folder of the session of the task, or when
@@ -6474,7 +6478,30 @@ function waitFacts(task: Task): WaitFacts {
     merging,
     paused,
     checkout,
+    fullRun,
+    approval,
   };
+}
+
+/**
+ * The other task whose plan the user approved before the waiting reply of this task came, so that
+ * its work run starts first, or null (ticket question-possible-bug-a-waiting-task). The test of
+ * `chooseQueued` for its approval: the queued plan of `approvePlans`, not held by the checkout and,
+ * with several work folders, not on the same files as a running work run.
+ */
+function earlierApproval(task: Task, tasks: Task[]): string | null {
+  const project = task.project;
+  const reply = queuedReplyOf(task);
+  if (!project || !reply) return null;
+  const { runs, slots } = runFacts(project, tasks);
+  if (projectBusy({ merging: project.merging, runs, slots, leased: startHolder(project.host, project.cwd), paused: project.paused })) return null;
+  const queued = nextQueued(project, tasks);
+  if (!queued || queued.name === task.name) return null;
+  const checkout = otherCheckout(tasks)?.task ?? null;
+  if (checkout && checkout !== queued.name) return null;
+  const files = queued.info?.planFiles ?? [];
+  if (slots >= 2 && runs.some((run) => run.task !== queued.name && sameFiles(files, run.files).length > 0)) return null;
+  return (queuedApprovalTimes.get(queueKey(queued)) ?? 0) <= reply.at ? queued.name : null;
 }
 
 /** Fills a text box with one child per part of the lines (headings, labels, numbers, bullets, gaps). */
@@ -7557,7 +7584,18 @@ function queuedReplyOf(task: Task): QueuedReply | undefined {
 
 /** Why the waiting reply of a task does not go out yet, in full. Uncommitted changes hold no reply. */
 function replyWait(task: Task): string {
-  return answerWait({ ...waitFacts(task), dirty: [] })?.full ?? "Your answers go to the worker at the next check of the project.";
+  return replyReason(task)?.full ?? (autoContinueOf(task) ? "Dispatch sends Continue to the worker at the next check of the project." : "Your answers go to the worker at the next check of the project.");
+}
+
+/** The waiting reply of a task is the Continue that Dispatch sends by itself after the merges. */
+function autoContinueOf(task: Task): boolean {
+  const reply = queuedReplyOf(task);
+  return !!reply && isAutoContinue(reply.line);
+}
+
+/** Why the waiting reply of a task does not go out yet, in two lengths, or null. */
+function replyReason(task: Task): WaitReason | null {
+  return answerWait({ ...waitFacts(task), dirty: [], autoContinue: autoContinueOf(task) });
 }
 
 /** Take back: the reply leaves the queue, and the questions show again with the choices of the user. */
@@ -7579,7 +7617,10 @@ function waitingReplyCard(task: Task, reply: QueuedReply): HTMLElement {
   card.className = "task-card";
   const title = document.createElement("div");
   title.className = "card-title";
-  title.textContent = reply.record.questions.length > 0 ? "Your answers wait to go to the worker" : "Your reply waits to go to the worker";
+  // The automatic Continue is not a reply of the user (ticket question-possible-bug-a-waiting-task).
+  title.textContent = isAutoContinue(reply.line)
+    ? "Dispatch sends Continue by itself when the reason below is gone"
+    : reply.record.questions.length > 0 ? "Your answers wait to go to the worker" : "Your reply waits to go to the worker";
   const text = document.createElement("div");
   text.className = "card-result";
   text.textContent = reply.text;
@@ -9353,7 +9394,14 @@ const taskOpenChoice = new Map<string, boolean>();
 /** The state of a task in one word group, for its header: what waits, what runs, or how it ended. */
 function taskStatus(task: Task): { kind: "waits" | "working" | "failed" | "done"; text: string } {
   if (approvalQueued(task)) return { kind: "done", text: "approved · starts when the project is free" };
-  if (queuedReplyOf(task)) return { kind: "done", text: "answered · goes out when the project is free for it" };
+  // The row names the rule that holds a waiting reply, so a waiting Continue does not look stuck
+  // (ticket question-possible-bug-a-waiting-task).
+  if (queuedReplyOf(task)) {
+    const auto = autoContinueOf(task);
+    const why = replyReason(task)?.short.replace(/\.$/, "");
+    if (!why) return { kind: "done", text: auto ? "tasks merged · Continue goes out at the next check" : "answered · goes out when the project is free for it" };
+    return { kind: "done", text: `${auto ? "tasks merged" : "answered"} · ${why}` };
+  }
   if (replySendingOf(task)) return { kind: "working", text: SENDING_STATUS };
   const night = nightPlanOf(task);
   if (night?.approves) return { kind: "done", text: `plan ready · ${night.text}` };
