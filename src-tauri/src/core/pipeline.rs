@@ -405,6 +405,10 @@ pub struct Step {
     /// The rules that the step can add, one checkbox each. Only the step "Working rules" has them.
     #[serde(skip_serializing_if = "Option::is_none")]
     rules: Option<Vec<&'static str>>,
+    /// Why the step waits: a worker of the project runs, or git does not work in the folder (ticket
+    /// five-problems-seen-today-in-setup). `done` is false then, and Apply skips the step.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocked: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -454,6 +458,10 @@ struct GitSets {
     ignored: Vec<String>,
     /// The tracked files among the local settings file and the task folder, from the top folder.
     tracked: Vec<String>,
+    /// The first error of git while it read the two lists: git does not work in the folder (a crash
+    /// zero-filled `.git/HEAD`, for example). The lists are then empty and say nothing (ticket
+    /// five-problems-seen-today-in-setup).
+    error: Option<String>,
 }
 
 impl GitSets {
@@ -683,7 +691,8 @@ impl Project {
         paths.extend(NOTES_FILES);
         let ignored = gitfiles::ignored(repo, &paths);
         let tracked = gitfiles::tracked(repo, &[LOCAL_SETTINGS, TASKS_DIR]);
-        GitSets { in_git: true, ignored, tracked }
+        let error = ignored.as_ref().err().or(tracked.as_ref().err()).cloned();
+        GitSets { in_git: true, ignored: ignored.unwrap_or_default(), tracked: tracked.unwrap_or_default(), error }
     }
 
     /// The root `.gitignore` has the mark of the notes block of Dispatch.
@@ -4248,11 +4257,25 @@ fn plan(project: &Project) -> Result<Plan, String> {
     // A saved list stays as it is, also an empty one: the user turned the checks off with it.
     let checks_saved = project.checks_file().exists();
     let found_checks = if checks_saved { String::new() } else { found_checks_text(project) };
+    // A worker of the project may use the files of the old folder: the move waits for the end of its
+    // run (ticket five-problems-seen-today-in-setup, user decisions 1 and 2). The list of workers is
+    // read only while the old folder exists.
+    let tasks_blocked = old_reports.as_ref().and_then(|old| match running_worker(project) {
+        Ok(None) => None,
+        Ok(Some(run)) => Some(format!("Waits: {run} is running. Apply moves the folder {} after the run has ended.", old.display())),
+        Err(error) => Some(format!(
+            "Waits: Dispatch cannot read the list of workers ({error}). Apply moves the folder {} when the list shows that no worker of this project runs.",
+            old.display()
+        )),
+    });
+    // A failed git says nothing about the ignore and tracked facts: the steps that ask git wait.
+    let git_blocked = sets.error.as_ref().filter(|_| project.in_git).map(|error| format!("git does not work in this folder: {error}"));
     let steps = vec![
         Step {
             title: "Task files",
             target: show(project.reports.clone()),
-            done: old_reports.is_none()
+            done: tasks_blocked.is_none()
+                && old_reports.is_none()
                 && project.briefs().is_dir()
                 && project.plans().is_dir()
                 && plan_flags_current(project)
@@ -4280,13 +4303,15 @@ fn plan(project: &Project) -> Result<Plan, String> {
                     .unwrap_or_default()
             ),
             rules: None,
+            blocked: tasks_blocked,
         },
         Step {
             title: "Allow rules",
             target: show(project.local_settings()),
-            done: changes.none() && private,
+            done: git_blocked.is_none() && changes.none() && private,
             detail: rules_detail,
             rules: None,
+            blocked: git_blocked.clone(),
         },
         Step {
             title: "Worktree isolation off",
@@ -4294,6 +4319,7 @@ fn plan(project: &Project) -> Result<Plan, String> {
             done: isolation_is_off(&read_settings(&project.settings())?),
             detail: "\"worktree\": { \"bgIsolation\": \"none\" }".to_string(),
             rules: None,
+            blocked: None,
         },
         Step {
             title: "Section in CLAUDE.md",
@@ -4302,6 +4328,7 @@ fn plan(project: &Project) -> Result<Plan, String> {
             done: section_done(project),
             detail: project.section(),
             rules: None,
+            blocked: None,
         },
         Step {
             title: "Working rules",
@@ -4310,6 +4337,7 @@ fn plan(project: &Project) -> Result<Plan, String> {
             // A done step shows the full section. A step to do shows the heading and the checkboxes.
             detail: if rules_done { rules_section(&(0..RULES.len()).collect::<Vec<_>>()) } else { rules_section(&[]) },
             rules: if rules_done { None } else { Some(RULES.to_vec()) },
+            blocked: None,
         },
         Step {
             title: "Worker script",
@@ -4317,6 +4345,7 @@ fn plan(project: &Project) -> Result<Plan, String> {
             done: script_done,
             detail: WORKER_SCRIPT.to_string(),
             rules: None,
+            blocked: None,
         },
         Step {
             title: "Triage role",
@@ -4325,11 +4354,12 @@ fn plan(project: &Project) -> Result<Plan, String> {
             done: project.triage_prompt_text().as_deref() == Some(role.as_str()),
             detail: role,
             rules: None,
+            blocked: None,
         },
         measure_step(project, options.measure_before_plan)?,
         branches_step(project, options.task_branches),
-        ignore_step(project, options.ignore_tasks, &sets),
-        notes_step(project, options.notes_in_git, &sets),
+        with_blocked(ignore_step(project, options.ignore_tasks, &sets), git_blocked.clone()),
+        with_blocked(notes_step(project, options.notes_in_git, &sets), git_blocked),
         checks_step(project, checks_saved, &found_checks),
         // Last, so the positions that `apply` reads stay as they were.
         work_folders_step(project, options.work_folders && options.task_branches),
@@ -4340,6 +4370,15 @@ fn plan(project: &Project) -> Result<Plan, String> {
     let checks = if checks_saved { fs::read_to_string(project.checks_file()).unwrap_or_default().replace("\r\n", "\n") } else { found_checks };
     let checks_all = fs::read_to_string(project.checks_all_file()).unwrap_or_default().replace("\r\n", "\n");
     Ok(Plan { root: show(project.root.clone()), git: project.in_git, options, steps, measure_commands, merge_gate, work_setup, checks, checks_all, full_checks: read_full_run(project) })
+}
+
+/// The step with the reason why it waits, when there is one: it is then not done, and Apply skips it.
+fn with_blocked(mut step: Step, blocked: Option<String>) -> Step {
+    if blocked.is_some() {
+        step.done = false;
+        step.blocked = blocked;
+    }
+    step
 }
 
 /// The tests that Dispatch finds in the files of the project, as lines of the list of checks.
@@ -4356,7 +4395,7 @@ fn checks_step(project: &Project, saved: bool, found: &str) -> Step {
     } else {
         format!("Dispatch found these tests in the files of the project. Apply saves them as the checks of the project; each plan then recommends some, and you tick them on the task card. The box Checks on the tab Branches and checks changes the list.\n\n{found}")
     };
-    Step { title: "Checks", target: project.checks_file().to_string_lossy().into_owned(), done: saved || found.is_empty(), detail, rules: None }
+    Step { title: "Checks", target: project.checks_file().to_string_lossy().into_owned(), done: saved || found.is_empty(), detail, rules: None, blocked: None }
 }
 
 /// The step "Task branches" (ticket task-branches). Off, it is done and changes nothing. On, it is
@@ -4370,6 +4409,7 @@ fn branches_step(project: &Project, on: bool) -> Step {
             done: true,
             detail: "Off. A worker works on the current branch of the main checkout, as today.".to_string(),
             rules: None,
+            blocked: None,
         };
     }
     let reports = project.reports_text();
@@ -4384,6 +4424,7 @@ fn branches_step(project: &Project, on: bool) -> Step {
             limit = project.merge_gate_limit(),
         ),
         rules: None,
+        blocked: None,
     }
 }
 
@@ -4399,6 +4440,7 @@ fn work_folders_step(project: &Project, on: bool) -> Step {
             done: true,
             detail: "Off. The work run works in the main checkout, as today.".to_string(),
             rules: None,
+            blocked: None,
         };
     }
     let reports = project.reports_text();
@@ -4421,6 +4463,7 @@ fn work_folders_step(project: &Project, on: bool) -> Step {
                 "The work run of a task works in one of the {count} work folders {reports}/work/1 to {reports}/work/{count}, git worktrees of the project that Dispatch makes when a task first needs one and keeps. Up to {count} tasks are in their work run at the same time, one per folder; a further task waits until a folder is free. Each folder holds its own build output, so each costs disk space and one first build. {setup} Approve, a reply, a resume and Run checks check out the task branch in a folder; a reply, a resume and Run checks go into the folder where the session of the task runs and wait for it. A task whose plan names a file of the plan of a task in another folder waits until that task has ended. The project folder stays on the base. The record {reports}/work/<n>.record names the task that uses folder <n>. A folder above the number stays on the disk and still serves the task whose session runs there. Apply adds the line {WORK_IGNORE} to {reports}/.gitignore. The section in CLAUDE.md says so. Merge builds the merge commit in a free folder, runs the checks and the gate there, and moves the base in one step; one merge at a time. A task that started before the switch keeps its branch: Dispatch switches the project folder back to the base when its run has ended, an answer to its worker starts a new worker in a work folder that reads the brief, the plan and the report, and its Merge works as for a new task."
             ),
             rules: None,
+            blocked: None,
         };
     }
     let setup = if setup.is_empty() {
@@ -4436,6 +4479,7 @@ fn work_folders_step(project: &Project, on: bool) -> Step {
             "The work run of a task works in the work folder {reports}/work/1, a git worktree of the project that Dispatch makes at the first Approve and keeps. {setup} Approve, a reply, a resume and Run checks check out the task branch there; the project folder stays on the base. The record {reports}/work/1.record names the task that uses the folder; a second task waits. Apply adds the line {WORK_IGNORE} to {reports}/.gitignore. The section in CLAUDE.md says so. Merge builds the merge commit there, runs the checks and the gate there, and moves the base in one step. A task that started before the switch keeps its branch: Dispatch switches the project folder back to the base when its run has ended, an answer to its worker starts a new worker in the work folder that reads the brief, the plan and the report, and its Merge works as for a new task."
         ),
         rules: None,
+        blocked: None,
     }
 }
 
@@ -4451,7 +4495,7 @@ fn ignore_step(project: &Project, on: bool, sets: &GitSets) -> Step {
         } else {
             "Off. Git tracks the folder .dispatch; Dispatch commits its files itself.".to_string()
         };
-        return Step { title: "Task files in git", target, done: !ours, detail, rules: None };
+        return Step { title: "Task files in git", target, done: !ours, detail, rules: None, blocked: None };
     }
     let mut detail = format!(
         "Git ignores the folder .dispatch: tickets, briefs, plans, reports, logs and the other task files stay on this computer, and a clone has none. Apply adds the line {ROOT_TASKS_IGNORE} with a comment line to .gitignore of the project"
@@ -4462,7 +4506,7 @@ fn ignore_step(project: &Project, on: bool, sets: &GitSets) -> Step {
         ));
     }
     detail.push_str(". Commit to git then commits .gitignore. Off again, Apply puts the folder back into git.");
-    Step { title: "Task files in git", target, done: project.root_ignores_tasks() && !sets.tasks_tracked(), detail, rules: None }
+    Step { title: "Task files in git", target, done: project.root_ignores_tasks() && !sets.tasks_tracked(), detail, rules: None, blocked: None }
 }
 
 /// Adds the line of Dispatch with its mark to the root `.gitignore` when no line `.dispatch/` is
@@ -4476,8 +4520,13 @@ fn add_root_ignore(project: &Project) -> Result<(), String> {
 
 /// Adds a mark line of Dispatch and its ignore line at the end of the root `.gitignore`, and makes
 /// the file when it is absent.
+/// The file stays as it is when a line of it is `line` already, whatever git says (ticket
+/// five-problems-seen-today-in-setup: a broken git made each Apply add the pair again).
 fn add_ignore_pair(project: &Project, mark: &str, line: &str) -> Result<(), String> {
     let mut text = fs::read_to_string(project.root_ignore()).unwrap_or_default();
+    if text.lines().any(|existing| existing.trim() == line) {
+        return Ok(());
+    }
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
@@ -4522,13 +4571,13 @@ fn notes_step(project: &Project, on: bool, sets: &GitSets) -> Step {
         } else {
             "Off. The notes of Claude in .claude stay as they are.".to_string()
         };
-        return Step { title: NOTES_STEP, target, done: !ours, detail, rules: None };
+        return Step { title: NOTES_STEP, target, done: !ours, detail, rules: None, blocked: None };
     }
     let detail = format!(
         "Git tracks the notes of Claude for this project: {files}. A clone has them. When git ignores one of them, Apply adds these lines under a comment line at the end of .gitignore of the project: {}. Your own line .claude/ stays. {LOCAL_SETTINGS} and .claude/state stay on this computer. Commit to git then commits .gitignore and the notes. Dispatch commits later changes of memory.md, mistakes.md and agents-override.md with the task files.",
         notes_block_lines().join(", ")
     );
-    Step { title: NOTES_STEP, target, done: !sets.notes_ignored(), detail, rules: None }
+    Step { title: NOTES_STEP, target, done: !sets.notes_ignored(), detail, rules: None, blocked: None }
 }
 
 /// Removes an old notes block of Dispatch and adds the block at the end of the root `.gitignore`,
@@ -4650,6 +4699,7 @@ fn measure_step(project: &Project, on: bool) -> Result<Step, String> {
             done: true,
             detail: "Off. The plan run reads the code and runs three git commands that only read.".to_string(),
             rules: None,
+            blocked: None,
         });
     }
     let commands = project.measure_commands();
@@ -4669,6 +4719,7 @@ fn measure_step(project: &Project, on: bool) -> Result<Step, String> {
             limit = project.measure_limit(),
         ),
         rules: None,
+        blocked: None,
     })
 }
 
@@ -7155,6 +7206,73 @@ fn worker_runs_in(json: &str, root: &Path, ticket: &str) -> Option<bool> {
     }))
 }
 
+/// The run of a worker of the project that runs now, from the JSON of `claude agents --json --all`
+/// (ticket five-problems-seen-today-in-setup): the newest session named `<ticket> [plan]` or
+/// `<ticket> [work]` whose folder is the project root or a folder under it (a work folder), in the
+/// state `working`, or `blocked` with the status `waiting`. It gives "the plan run of <ticket>" or
+/// "the work run of <ticket>". A session without a folder does not count: the list holds the sessions
+/// of every project. No such worker: `Some(None)`. Bad JSON: None.
+fn running_worker_in(json: &str, root: &Path) -> Option<Option<String>> {
+    let sessions: Vec<Value> = serde_json::from_str(json).ok()?;
+    let folder = |path: &str| {
+        let path = path.replace('\\', "/").to_lowercase();
+        let path = path.strip_prefix("//?/").unwrap_or(&path);
+        path.trim_end_matches('/').to_string()
+    };
+    let root = folder(&root.to_string_lossy());
+    let text = |session: &Value, key: &str| session.get(key).and_then(Value::as_str).map(str::to_string);
+    let runs = |session: &Value| match text(session, "state").as_deref() {
+        Some("working") => true,
+        Some("blocked") => text(session, "status").as_deref() == Some("waiting"),
+        _ => false,
+    };
+    let newest = sessions
+        .iter()
+        .filter(|session| text(session, "cwd").is_some_and(|cwd| {
+            let cwd = folder(&cwd);
+            cwd == root || cwd.strip_prefix(&root).is_some_and(|rest| rest.starts_with('/'))
+        }))
+        .filter(|session| runs(session))
+        .filter_map(|session| {
+            let name = text(session, "name")?;
+            let (ticket, run) = name.strip_suffix(" [plan]").map(|ticket| (ticket, "plan")).or_else(|| name.strip_suffix(" [work]").map(|ticket| (ticket, "work")))?;
+            Some((session.get("startedAt").and_then(Value::as_u64).unwrap_or(0), format!("the {run} run of {ticket}")))
+        })
+        .max_by_key(|(started, _)| *started);
+    Some(newest.map(|(_, run)| run))
+}
+
+/// The run of a worker of the project that runs now (`running_worker_in`), from one
+/// `claude agents --json --all`. An error when Dispatch cannot read the list.
+#[cfg(not(test))]
+fn running_worker(project: &Project) -> Result<Option<String>, String> {
+    let output = crate::core::info::claude_command()
+        .args(["agents", "--json", "--all"])
+        .stdin(Stdio::null())
+        .no_window()
+        .output()
+        .map_err(|error| format!("claude agents does not start: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("claude agents failed: {}", stderr.lines().next().unwrap_or_default()));
+    }
+    running_worker_in(&String::from_utf8_lossy(&output.stdout), &project.root).ok_or_else(|| "claude agents gave a list that Dispatch cannot read".to_string())
+}
+
+/// The tests never run the real `claude`: they set the answer per project root. No answer: no
+/// worker runs.
+#[cfg(test)]
+fn running_worker(project: &Project) -> Result<Option<String>, String> {
+    running_worker_override().lock().map_err(|_| "the override is poisoned".to_string())?.get(&project.root).cloned().unwrap_or(Ok(None))
+}
+
+/// The answers of `running_worker` in the tests, by project root.
+#[cfg(test)]
+fn running_worker_override() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, Result<Option<String>, String>>> {
+    static RUNS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, Result<Option<String>, String>>>> = std::sync::OnceLock::new();
+    RUNS.get_or_init(Default::default)
+}
+
 /// The branch of a task for the task list, after the return to the base when its work run has ended.
 /// With `check_merged`, a branch that waits for Merge but that the base already holds (the user
 /// merged it with git, ticket merged-outside) gets the merge line `outside <what> <time>` in its
@@ -8332,7 +8450,11 @@ pub fn pipeline_plan(cwd: String) -> Result<Plan, String> {
 /// working rules. With no checked rule, the step "Working rules" adds nothing.
 fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
     let before = plan(project)?;
-    let done = |index: usize| before.steps[index].done;
+    // A step that waits (ticket five-problems-seen-today-in-setup) counts as done here: Apply skips it.
+    let done = |index: usize| before.steps[index].done || before.steps[index].blocked.is_some();
+    // While the move of the old folder waits, Apply writes no file into the task folder: a file there
+    // that the old folder also has would stop the move after the run.
+    let moving = before.steps[0].blocked.is_some();
     let mut rules: Vec<usize> = rules.iter().copied().filter(|&index| index < RULES.len()).collect();
     rules.sort_unstable();
     rules.dedup();
@@ -8351,7 +8473,7 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
         }
     }
     // After the move of the old folder, which may hold a list. The new list changes the section below.
-    let checks_added = !done(11) && !project.checks_file().exists();
+    let checks_added = !done(11) && !moving && !project.checks_file().exists();
     if checks_added {
         write_file(&project.checks_file(), &found_checks_text(project))?;
     }
@@ -8375,23 +8497,23 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
     if !done(4) && !rules.is_empty() {
         add_section(project, &rules_section(&rules))?;
     }
-    if !done(5) {
+    if !done(5) && !moving {
         write_file(&project.script(), WORKER_SCRIPT)?;
     }
     if !done(6) {
         write_file(&project.triage_prompt(), &triage_prompt(project.options(), &project.reports_text()))?;
     }
     // Off, the step is done, so an old project gets no new file.
-    if !done(7) {
+    if !done(7) && !moving {
         ignore_line(project, MEASURE_IGNORE)?;
     }
-    if !done(8) {
+    if !done(8) && !moving {
         ignore_line(project, MERGE_IGNORE)?;
     }
     // The logs of the check runs (ticket test-picker-an-agent-picks-the-checks) stay out of git like
     // the gate logs. A project with a list gets the line; `task_run_checks` adds it too, because an
     // old project has every step done and no Apply.
-    if !project.checks().is_empty() {
+    if !project.checks().is_empty() && !moving {
         ignore_line(project, CHECKS_IGNORE)?;
     }
     // "Task files local only" (ticket ignore-tasks). On: the line, then the task files leave git in
@@ -8417,7 +8539,7 @@ fn apply(project: &Project, rules: &[usize]) -> Result<(), String> {
         }
     }
     // "Work folder" (ticket work-run-in-the-work-folder): off, the step is done and writes nothing.
-    if !done(12) {
+    if !done(12) && !moving {
         ignore_line(project, WORK_IGNORE)?;
     }
     Ok(())
@@ -16313,6 +16435,131 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
         set_work_run_runs(&project, false);
         assert!(!listed_branch(&project, "t-1").checked_out);
         assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        clean(&project);
+    }
+
+    /// Ticket five-problems-seen-today-in-setup, problem 1: while a worker of the project runs, the
+    /// step "Task files" waits and Apply leaves the old folder; after the run, Apply moves it.
+    #[test]
+    fn setup_waits_while_a_worker_runs() {
+        let project = scratch("waits");
+        let old = old_layout(&project);
+        let before = count_files(&old);
+        let set = |answer: Option<Result<Option<String>, String>>| {
+            let mut map = running_worker_override().lock().unwrap();
+            match answer {
+                Some(answer) => map.insert(project.root.clone(), answer),
+                None => map.remove(&project.root),
+            };
+        };
+        set(Some(Ok(Some("the work run of t-1".to_string()))));
+        let first = plan(&project).unwrap();
+        let reason = first.steps[0].blocked.clone().unwrap_or_default();
+        assert!(!first.steps[0].done && reason.contains("the work run of t-1 is running"), "{reason}");
+        let shown = serde_json::to_value(&first.steps[0]).unwrap();
+        assert_eq!(shown["blocked"], json!(reason), "the window gets the reason");
+        assert!(serde_json::to_value(&first.steps[2]).unwrap().get("blocked").is_none(), "a step that does not wait has no reason");
+        apply(&project, &[]).unwrap();
+        assert!(old.is_dir(), "the old folder stays");
+        assert_eq!(count_files(&old), before, "every file stays in the old folder");
+        assert!(!project.reports.join("t-1.state").exists(), "nothing moved");
+        // A list that Dispatch cannot read: the step waits too (user decision 2).
+        set(Some(Err("claude agents failed: no list".to_string())));
+        let unread = plan(&project).unwrap();
+        let reason = unread.steps[0].blocked.clone().unwrap_or_default();
+        assert!(reason.contains("cannot read the list of workers") && reason.contains("no list"), "{reason}");
+        apply(&project, &[]).unwrap();
+        assert_eq!(count_files(&old), before, "every file stays in the old folder");
+        // The run has ended: the step is allowed again, and Apply moves the folder.
+        set(None);
+        let after = plan(&project).unwrap();
+        assert!(after.steps[0].blocked.is_none(), "{:?}", after.steps[0].blocked);
+        apply(&project, &[]).unwrap();
+        assert!(!old.exists(), "the old folder moved");
+        assert_eq!(read(&project.reports.join("t-1.state")), "working\n");
+        assert_eq!(read(&project.briefs().join("t-2.md")), "brief two\n");
+        clean(&project);
+    }
+
+    /// Ticket five-problems-seen-today-in-setup: the running worker of a project, from the list.
+    #[test]
+    fn running_worker_in_reads_the_list() {
+        let root = Path::new(r"D:\Projects\Starminer");
+        let list = |workers: Value| running_worker_in(&workers.to_string(), root);
+        let one = |name: &str, state: &str, status: Option<&str>, cwd: Option<&str>| {
+            let mut worker = json!({ "id": "bg-1", "name": name, "state": state, "startedAt": 5 });
+            if let Some(status) = status {
+                worker["status"] = json!(status);
+            }
+            if let Some(cwd) = cwd {
+                worker["cwd"] = json!(cwd);
+            }
+            worker
+        };
+        let runs = |text: &str| Some(Some(text.to_string()));
+        let here = Some("d:/projects/starminer/");
+        assert_eq!(list(json!([one("t-1 [work]", "working", None, here)])), runs("the work run of t-1"));
+        assert_eq!(list(json!([one("t-2 [plan]", "blocked", Some("waiting"), Some(r"\\?\D:\Projects\Starminer"))])), runs("the plan run of t-2"));
+        assert_eq!(list(json!([one("t-3 [work]", "working", None, Some(r"D:\Projects\Starminer\.dispatch\work\2"))])), runs("the work run of t-3"), "a work folder");
+        assert_eq!(list(json!([one("t-1 [work]", "working", None, Some(r"D:\Projects\Other"))])), Some(None), "another project");
+        assert_eq!(list(json!([one("t-1 [work]", "working", None, Some(r"D:\Projects\Starminer2"))])), Some(None), "a folder with a longer name");
+        assert_eq!(list(json!([one("t-1 [work]", "done", None, here)])), Some(None), "an ended worker");
+        assert_eq!(list(json!([one("t-1 [work]", "blocked", Some("idle"), here)])), Some(None), "a worker at its question");
+        assert_eq!(list(json!([one("t-1 [work]", "working", None, None)])), Some(None), "a worker without a folder");
+        assert_eq!(list(json!([one("Triage", "working", None, here)])), Some(None), "a chat");
+        // The newest running worker counts.
+        let mut older = one("t-1 [plan]", "working", None, here);
+        older["startedAt"] = json!(1);
+        assert_eq!(list(json!([older, one("t-4 [work]", "working", None, here)])), runs("the work run of t-4"));
+        assert_eq!(list(json!([])), Some(None));
+        assert_eq!(running_worker_in("not json", root), None);
+    }
+
+    /// Ticket five-problems-seen-today-in-setup, problem 2: a zero-filled `.git/HEAD` shows the
+    /// error of git on the steps that ask git, and Apply writes nothing for them.
+    #[test]
+    fn a_broken_git_shows_its_error_on_the_git_steps() {
+        let project = git_scratch("broken-git");
+        let head = project.root.join(".git").join("HEAD");
+        let good = fs::read(&head).unwrap();
+        let ignore = project.root_ignore();
+        let ignore_before = fs::read(&ignore).ok();
+        fs::write(&head, [0u8; 41]).unwrap();
+        let find = |plan: &Plan, title: &str| plan.steps.iter().find(|step| step.title == title).map(|step| (step.done, step.blocked.clone())).unwrap_or_else(|| panic!("{title}"));
+        let broken = plan(&project).unwrap();
+        for title in ["Allow rules", "Task files in git", NOTES_STEP] {
+            let (done, blocked) = find(&broken, title);
+            let reason = blocked.unwrap_or_default();
+            assert!(!done && reason.starts_with("git does not work in this folder: ") && reason.contains("not a git repository"), "{title}: {reason}");
+        }
+        for _ in 0..3 {
+            apply(&project, &[]).unwrap();
+        }
+        assert_eq!(fs::read(&ignore).ok(), ignore_before, ".gitignore stays byte-equal");
+        // git works again: the steps are allowed, and one Apply adds the line once.
+        fs::write(&head, &good).unwrap();
+        let repaired = plan(&project).unwrap();
+        assert_eq!(find(&repaired, "Allow rules").1, None);
+        apply(&project, &[]).unwrap();
+        apply(&project, &[]).unwrap();
+        let text = read(&ignore);
+        assert_eq!(text.lines().filter(|line| line.trim() == LOCAL_SETTINGS).count(), 1, "{text}");
+        clean(&project);
+    }
+
+    /// Ticket five-problems-seen-today-in-setup: a `.gitignore` with the line gets no second copy.
+    #[test]
+    fn apply_adds_an_ignore_line_once() {
+        let project = scratch("ignore-once");
+        write_file(&project.root_ignore(), &format!("# mine\n  {LOCAL_SETTINGS}  \n")).unwrap();
+        let before = read(&project.root_ignore());
+        add_ignore_pair(&project, LOCAL_SETTINGS_MARK, LOCAL_SETTINGS).unwrap();
+        assert_eq!(read(&project.root_ignore()), before, "the line is there already");
+        add_ignore_pair(&project, TASKS_IGNORE_MARK, ROOT_TASKS_IGNORE).unwrap();
+        let after = read(&project.root_ignore());
+        assert_eq!(after, format!("{before}{TASKS_IGNORE_MARK}\n{ROOT_TASKS_IGNORE}\n"));
+        add_ignore_pair(&project, TASKS_IGNORE_MARK, ROOT_TASKS_IGNORE).unwrap();
+        assert_eq!(read(&project.root_ignore()), after, "no second copy");
         clean(&project);
     }
 

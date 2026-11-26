@@ -15,6 +15,8 @@ interface Step {
   detail: string;
   /** The rules that the step can add, one checkbox each. Only the step "Working rules" has them. */
   rules?: string[];
+  /** Why the step waits: a worker of the project runs, or git does not work in the folder. Apply skips it. */
+  blocked?: string;
 }
 
 /** The settings of a project. */
@@ -295,10 +297,10 @@ function rulesElement(rules: string[]): HTMLElement {
  */
 function stepElement(step: Step, root: string): HTMLElement {
   const item = document.createElement("details");
-  item.className = step.done ? "done" : "todo";
+  item.className = step.done ? "done" : step.blocked ? "waits" : "todo";
   item.open = !step.done;
   const summary = document.createElement("summary");
-  summary.title = `${step.done ? "Done" : "To do"}: ${step.title}`;
+  summary.title = `${step.done ? "Done" : step.blocked ? "Waits" : "To do"}: ${step.title}`;
   const title = document.createElement("span");
   title.className = "step-title";
   title.textContent = step.title;
@@ -312,7 +314,8 @@ function stepElement(step: Step, root: string): HTMLElement {
   const body = document.createElement("div");
   body.className = "step-body";
   const detail = document.createElement("pre");
-  detail.textContent = step.detail;
+  // The reason why the step waits stands first, above what the step adds.
+  detail.textContent = step.blocked ? `${step.blocked}\n\n${step.detail}` : step.detail;
   body.append(detail);
   if (step.rules) body.append(rulesElement(step.rules));
   item.append(summary, body);
@@ -422,10 +425,16 @@ function show(plan: Plan): void {
   barEl.style.width = plan.steps.length ? `${Math.round((done / plan.steps.length) * 100)}%` : "0";
   dotEl.hidden = false;
   dotEl.classList.toggle("done", allDone);
-  applyEl.disabled = allDone;
+  // Apply skips a step that waits; with only such steps open, it has nothing to do.
+  const onlyWaits = !allDone && plan.steps.every((step) => step.done || Boolean(step.blocked));
+  applyEl.disabled = allDone || onlyWaits;
   commitEl.disabled = !(allDone && plan.git);
   commitEl.title = plan.git ? commitTitle : "The project is not a git repository";
-  messageEl.textContent = allDone ? "All steps are done. Commit to git commits the setup files." : "Apply changes the files of the steps that are not done.";
+  messageEl.textContent = allDone
+    ? "All steps are done. Commit to git commits the setup files."
+    : onlyWaits
+      ? "The steps that are not done wait; the step says why."
+      : "Apply changes the files of the steps that are not done.";
 }
 
 /** Asks the backend for the steps, or to do them, and shows the result. */

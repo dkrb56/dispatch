@@ -332,16 +332,21 @@ pub(crate) fn unmerged(repo: &Repo, path: &str) -> bool {
 
 /// The tracked files under `paths`, from the top folder, as `git ls-files -- <paths>` lists them
 /// (an unmerged file once per stage): from the index file, or from one `git ls-files -z` when the
-/// reader does not take the file (kept with the index stamp then).
-pub(crate) fn tracked(repo: &Repo, paths: &[&str]) -> Vec<String> {
+/// reader does not take the file (kept with the index stamp then). A failed `git ls-files` gives
+/// the first line of its error, and that answer is not kept (ticket five-problems-seen-today-in-setup).
+pub(crate) fn tracked(repo: &Repo, paths: &[&str]) -> Result<Vec<String>, String> {
     if let Some(entries) = index_entries(repo) {
-        return entries.iter().filter(|entry| paths.iter().any(|spec| under(&entry.path, spec))).map(|entry| entry.path.clone()).collect();
+        return Ok(entries.iter().filter(|entry| paths.iter().any(|spec| under(&entry.path, spec))).map(|entry| entry.path.clone()).collect());
     }
-    static TRACKED: Cache<Vec<String>> = OnceLock::new();
-    with_stamp(&TRACKED, repo.index_stamp(), (repo.git_dir.clone(), paths.join("\n")), || {
+    static TRACKED: Cache<Result<Vec<String>, String>> = OnceLock::new();
+    with_stamp_ok(&TRACKED, repo.index_stamp(), (repo.git_dir.clone(), paths.join("\n")), || {
         let mut args = vec!["ls-files", "-z", "--"];
         args.extend(paths);
-        git(&repo.top, &args).unwrap_or_default().split('\0').filter(|path| !path.is_empty()).map(str::to_string).collect()
+        let (code, out, err) = git_answer(&repo.top, &args)?;
+        if code != Some(0) {
+            return Err(git_error(code, &err));
+        }
+        Ok(out.split('\0').filter(|path| !path.is_empty()).map(str::to_string).collect())
     })
 }
 
@@ -373,14 +378,59 @@ fn ignore_stamp(repo: &Repo) -> Stamp {
 /// The paths among `paths` that an ignore rule of the repository names: the output of one
 /// `git check-ignore --no-index` (it prints the ignored paths and exits 1 with no output when none is
 /// ignored; `--no-index`: a rule counts also while git still tracks the file), kept while the ignore
-/// files did not change.
-pub(crate) fn ignored(repo: &Repo, paths: &[&str]) -> Vec<String> {
-    static IGNORED: Cache<Vec<String>> = OnceLock::new();
-    with_stamp(&IGNORED, ignore_stamp(repo), (repo.top.clone(), paths.join("\n")), || {
+/// files did not change. Exit 1 with no error text is "none ignored"; any other failed end gives the
+/// first line of the error of git, and that answer is not kept: a cached "not ignored" of a broken
+/// git made Apply add the same lines again on each click (ticket five-problems-seen-today-in-setup).
+pub(crate) fn ignored(repo: &Repo, paths: &[&str]) -> Result<Vec<String>, String> {
+    static IGNORED: Cache<Result<Vec<String>, String>> = OnceLock::new();
+    with_stamp_ok(&IGNORED, ignore_stamp(repo), (repo.top.clone(), paths.join("\n")), || {
         let mut args = vec!["check-ignore", "--no-index"];
         args.extend(paths);
-        git(&repo.top, &args).unwrap_or_default().lines().map(|line| line.trim().trim_matches('"').to_string()).filter(|line| !line.is_empty()).collect()
+        let (code, out, err) = git_answer(&repo.top, &args)?;
+        match code {
+            Some(0) => Ok(out.lines().map(|line| line.trim().trim_matches('"').to_string()).filter(|line| !line.is_empty()).collect()),
+            Some(1) if err.trim().is_empty() => Ok(Vec::new()),
+            _ => Err(git_error(code, &err)),
+        }
     })
+}
+
+/// As `with_stamp`, but only an `Ok` answer is kept: an error asks again at the next read, so a
+/// repaired git is seen at once.
+fn with_stamp_ok<V: Clone>(cache: &'static Cache<Result<V, String>>, stamp: Stamp, key: (PathBuf, String), ask: impl FnOnce() -> Result<V, String>) -> Result<V, String> {
+    let map = cache.get_or_init(Default::default);
+    if stamp.is_some() {
+        if let Some((known, Ok(value))) = map.lock().ok().and_then(|map| map.get(&key).cloned()) {
+            if known == stamp {
+                return Ok(value);
+            }
+        }
+    }
+    let value = ask();
+    if stamp.is_some() && value.is_ok() {
+        if let Ok(mut map) = map.lock() {
+            map.insert(key, (stamp, value.clone()));
+        }
+    }
+    value
+}
+
+/// Runs a read of git as `info::git` does (`--no-optional-locks`, no window) and gives its exit
+/// code, its output and its error text. A git that does not start gives an error.
+fn git_answer(cwd: &Path, args: &[&str]) -> Result<(Option<i32>, String, String), String> {
+    use crate::core::info::NoWindow;
+    #[cfg(test)]
+    count_start(true, args);
+    let output = git_program().command().arg("--no-optional-locks").arg("-C").arg(cwd).args(args).no_window().output().map_err(|error| format!("git does not start: {error}"))?;
+    Ok((output.status.code(), String::from_utf8_lossy(&output.stdout).into_owned(), String::from_utf8_lossy(&output.stderr).into_owned()))
+}
+
+/// The first line of the error text of git that is not empty, or the exit code when git wrote none.
+fn git_error(code: Option<i32>, err: &str) -> String {
+    match err.lines().map(str::trim).find(|line| !line.is_empty()) {
+        Some(line) => line.to_string(),
+        None => format!("git ended with exit code {}", code.map_or("none".to_string(), |code| code.to_string())),
+    }
 }
 
 /// The short form of a full hash, as `git rev-parse --short` gives it, kept per hash.
@@ -575,7 +625,7 @@ mod tests {
             let mut args = vec!["ls-files", "-z", "--"];
             args.extend(&specs);
             let expected: Vec<String> = ask(top, &args).unwrap_or_default().split('\0').filter(|path| !path.is_empty()).map(str::to_string).collect();
-            assert_eq!(tracked(repo, &specs), expected, "{label}: tracked {specs:?}");
+            assert_eq!(tracked(repo, &specs), Ok(expected), "{label}: tracked {specs:?}");
             for spec in &specs {
                 let expected = ask(top, &["ls-files", "-u", "--", spec]).is_some_and(|text| !text.trim().is_empty());
                 assert_eq!(unmerged(repo, spec), expected, "{label}: unmerged {spec}");
@@ -585,7 +635,7 @@ mod tests {
         let mut args = vec!["check-ignore", "--no-index"];
         args.extend(paths);
         let expected: Vec<String> = ask(top, &args).unwrap_or_default().lines().map(str::to_string).collect();
-        assert_eq!(ignored(repo, &paths), expected, "{label}: ignored");
+        assert_eq!(ignored(repo, &paths), Ok(expected), "{label}: ignored");
     }
 
     #[test]
@@ -607,12 +657,12 @@ mod tests {
         let repo = same_as_git(&sub, "a folder below the top");
         assert_eq!(repo.top, root);
         // The index stamp changes with `git add`, and `tracked` and `unmerged` follow git.
-        assert_eq!(tracked(&repo, &["one.txt", "deep"]), vec!["one.txt".to_string()]);
+        assert_eq!(tracked(&repo, &["one.txt", "deep"]).unwrap(), vec!["one.txt".to_string()]);
         let stamp = repo.index_stamp();
         fs::write(sub.join("three.txt"), "3").unwrap();
         run(&root, &["add", "--", "deep/er/three.txt"]);
         assert_ne!(repo.index_stamp(), stamp, "git add rewrites the index");
-        assert_eq!(tracked(&repo, &["one.txt", "deep"]), vec!["deep/er/three.txt".to_string(), "one.txt".to_string()]);
+        assert_eq!(tracked(&repo, &["one.txt", "deep"]).unwrap(), vec!["deep/er/three.txt".to_string(), "one.txt".to_string()]);
         run(&root, &["commit", "-q", "-m", "three", "--", "deep/er/three.txt"]);
         assert!(!unmerged(&repo, "."));
         assert_eq!(short_hash(&repo, &repo.head_hash().unwrap()), ask(&root, &["rev-parse", "--short", "HEAD"]));
@@ -681,7 +731,7 @@ mod tests {
         assert_eq!(repo_work.head_branch().as_deref(), Some("task/t-3"));
         assert_eq!(repo.head_branch().as_deref(), Some("main"), "the main checkout keeps its branch");
         assert_eq!(repo.ref_hash("refs/heads/task/t-3"), repo_work.ref_hash("refs/heads/task/t-3"), "both see the new branch");
-        assert_eq!(tracked(&repo_work, &["one.txt"]), vec!["one.txt".to_string()], "the worktree has its own index");
+        assert_eq!(tracked(&repo_work, &["one.txt"]).unwrap(), vec!["one.txt".to_string()], "the worktree has its own index");
         // A sparse checkout.
         run(&work, &["sparse-checkout", "set", "deep"]);
         same_as_git(&work, "a sparse checkout");
@@ -737,7 +787,7 @@ mod tests {
         let paths: Vec<String> = entries.iter().map(|entry| entry.path.clone()).collect();
         assert_eq!(paths.len(), expected.len());
         assert_eq!(paths, expected);
-        assert_eq!(tracked(&repo, &["src-tauri/Cargo.toml", "src"]), ask(&repo.top, &["ls-files", "-z", "--", "src-tauri/Cargo.toml", "src"]).unwrap_or_default().split('\0').filter(|path| !path.is_empty()).map(str::to_string).collect::<Vec<_>>());
+        assert_eq!(tracked(&repo, &["src-tauri/Cargo.toml", "src"]).unwrap(), ask(&repo.top, &["ls-files", "-z", "--", "src-tauri/Cargo.toml", "src"]).unwrap_or_default().split('\0').filter(|path| !path.is_empty()).map(str::to_string).collect::<Vec<_>>());
         assert_eq!(unmerged(&repo, "."), ask(&repo.top, &["ls-files", "-u"]).is_some_and(|text| !text.trim().is_empty()));
     }
 

@@ -5283,6 +5283,12 @@ button.ticket-level {
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M8 12.5l2.8 2.8L16 10'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
+/* A step that waits (a worker runs, or git does not work): a still ring, so it differs from a step to do. */
+.step-card details.waits summary::before {
+  border-style: solid;
+  border-color: var(--wait);
+}
+
 .step-card .step-title {
   flex: 1;
   min-width: 0;
