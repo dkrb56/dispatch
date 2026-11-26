@@ -2004,9 +2004,10 @@ function Lock-Path { Join-Path $Reports 'measure\lock' }
 function Merge-Lock { Join-Path $Reports 'merge\lock' }
 
 # The process $ProcessId runs and is the one that wrote a file at the time $Since. Windows gives the
-# id of an ended process to a new process, so a process that started after $Since (1 s for a time
-# without fractions) is another one. A time that does not parse leaves the id alone to decide; a
-# start time that cannot be read (a process of another user) is another process.
+# id of an ended process to a new process, also within a second on a busy computer, so a process that
+# started after $Since (1 s later only for a time without fractions) is another one. A time that does
+# not parse leaves the id alone to decide; a start time that cannot be read (a process of another
+# user) is another process.
 function Owner-Runs([string]$ProcessId, [string]$Since) {
   $other = 0
   if (-not [int]::TryParse($ProcessId, [ref]$other)) { return $false }
@@ -2017,7 +2018,8 @@ function Owner-Runs([string]$ProcessId, [string]$Since) {
   $started = $null
   try { $started = $process.StartTime } catch { }
   if ($null -eq $started) { return $false }
-  $started.ToUniversalTime() -le $time.UtcDateTime.AddSeconds(1)
+  $slack = if ("$Since" -match 'T\d\d:\d\d:\d\d\.\d') { 0 } else { 1 }
+  $started.ToUniversalTime() -le $time.UtcDateTime.AddSeconds($slack)
 }
 
 # The ticket of a lock whose process still runs, else $null.
