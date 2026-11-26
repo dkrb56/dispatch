@@ -8808,6 +8808,30 @@ function refusalBlock(task: Task, refusal: GateRefusal, old: { logTime: number; 
     lines.push(already);
   }
   lines.push(list, row);
+  // The copy of the gate output and of the files the gate wrote (ticket
+  // a-failed-merge-gate-undoes-the-merge, user decision 1): a click opens the folder in the file manager.
+  if (refusal.copy) {
+    const copyRow = document.createElement("button");
+    copyRow.className = row.className;
+    const copyName = document.createElement("span");
+    copyName.textContent = "Saved copy";
+    copyName.prepend(eyeIcon());
+    const copyWhere = document.createElement("span");
+    copyWhere.className = "when";
+    copyWhere.textContent = logName(refusal.copy);
+    copyRow.append(copyName, copyWhere);
+    const host = taskHost(task);
+    if (host === LOCAL) {
+      copyRow.title = `Open the folder with the gate output and the files it wrote: ${refusal.copy}`;
+      copyRow.addEventListener("click", () => {
+        openPath(refusal.copy).catch((error) => console.error("folder open failed", error));
+      });
+    } else {
+      copyRow.disabled = true;
+      copyRow.title = `The copy is on ${host}: ${refusal.copy}`;
+    }
+    lines.push(copyRow);
+  }
   return lines;
 }
 

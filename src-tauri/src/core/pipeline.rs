@@ -2815,15 +2815,62 @@ function Put-CardFiles($Kept) {
   }
 }
 
+# Undoes the open merge of Merge-Branch after a failed check, gate or merge commit (ticket
+# a-failed-merge-gate-undoes-the-merge). The tracked files outside .dispatch that differ from the index
+# now and not before the checks ($DirtyBefore) are files that the checks or the gate wrote: git merge
+# --abort refuses a merged file with an unstaged change. Their copy and the copy of the log $Log go into
+# .dispatch\merge\<task>-failed (one folder per task, user decision 2: the next failure replaces it),
+# with their paths in files.txt; then the files go back to the merged version, git merge --abort runs,
+# and the checkout must have no open merge, HEAD at $HeadBefore and no staged change. Gives Copy (the
+# folder) and Error: the message of git, or what is still wrong, on one line; '' when the merge is undone.
+function Undo-Merge([string]$HeadBefore, [string[]]$DirtyBefore, [string]$Log) {
+  $written = @(Git-Paths @('diff', '--name-only', '--', '.', ':(exclude).dispatch') | Where-Object { $DirtyBefore -notcontains $_ })
+  $copy = Join-Path $Reports "merge\$Id-failed"
+  if (Test-Path -LiteralPath $copy) { Remove-Item -LiteralPath $copy -Recurse -Force -ErrorAction SilentlyContinue }
+  New-Item -ItemType Directory -Path $copy -Force | Out-Null
+  if ($Log -and (Test-Path -LiteralPath $Log -PathType Leaf)) { Copy-Item -LiteralPath $Log -Destination (Join-Path $copy 'output.log') -Force }
+  $list = ''
+  if ($written.Count -gt 0) { $list = ($written -join "`n") + "`n" }
+  [IO.File]::WriteAllText((Join-Path $copy 'files.txt'), $list)
+  foreach ($file in $written) {
+    $from = Join-Path $Project $file
+    if (-not (Test-Path -LiteralPath $from -PathType Leaf)) { continue }
+    $to = Join-Path (Join-Path $copy 'files') $file.Replace('/', '\')
+    New-Item -ItemType Directory -Path (Split-Path -Parent $to) -Force | Out-Null
+    Copy-Item -LiteralPath $from -Destination $to -Force
+  }
+  if ($written.Count -gt 0) { Invoke-Git (@('checkout', '--') + $written) | Out-Null }
+  $abort = Invoke-Git @('merge', '--abort')
+  $wrong = ''
+  if ($abort.Code -ne 0) {
+    $wrong = ($abort.Text -replace "`r?`n", '; ').Trim()
+    if (-not $wrong) { $wrong = "git merge --abort exited with code $($abort.Code)" }
+  } elseif (Merge-Open $Project) {
+    $wrong = 'the merge is still open'
+  } else {
+    $now = Head-Hash $Project
+    if ($now -ne $HeadBefore) { $wrong = "HEAD moved to $now" }
+    elseif ((Invoke-Git @('diff', '--cached', '--quiet')).Code -ne 0) { $wrong = 'the index has staged changes' }
+  }
+  [pscustomobject]@{ Copy = $copy; Error = $wrong }
+}
+# The sentence of a refusal when Undo-Merge could not undo the merge; '' when it did.
+function Undo-Sentence($Undo) {
+  if (-not $Undo.Error) { return '' }
+  " Dispatch could not undo the merge, so the project folder still has the open merge: $($Undo.Error.TrimEnd('.')). Run git merge --abort there."
+}
+
 # Merges the task branch into the base in the main checkout: git merge --no-ff --no-commit, the gate
 # command on the merged code, then the merge commit, or git merge --abort. A conflict only in the task
 # files of .dispatch takes the version of the base, where Dispatch keeps them current, except the
 # report and the log of this task, which take the branch version; a side with a conflict marker stops
 # the merge (ticket board-in-progress). Gives the
 # reason of a refusal, or '' after the merge; $script:Merged holds the commit then. The verb merge
-# commits the changed task files first.
+# commits the changed task files first. A failed check, gate or merge commit goes through Undo-Merge,
+# which keeps a copy of the output and of the files that they wrote (ticket a-failed-merge-gate-undoes-the-merge).
 function Merge-Branch($Info, [string]$Gate, [int]$Limit) {
   $branch = $Info.branch
+  $headBefore = Head-Hash $Project
   $merge = Invoke-Git @('merge', '--no-ff', '--no-commit', $branch)
   $open = Merge-Open $Project
   if (-not $open) {
@@ -2872,9 +2919,9 @@ function Merge-Branch($Info, [string]$Gate, [int]$Limit) {
     if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder | Out-Null }
     $failed = Run-Checks 'merge' { param($n) Join-Path $Reports "merge\$Id-$n.log" } (Command-Limit 'checks.txt' 14400) -StopAtFailure
     if ($null -ne $failed) {
-      Invoke-Git @('merge', '--abort') | Out-Null
+      $undo = Undo-Merge $headBefore $dirtyBefore $failed.Log
       $tail = if (Test-Path -LiteralPath $failed.Log) { (Get-Content -LiteralPath $failed.Log -Tail 40) -join "`n" } else { '' }
-      return "the check $($failed.Name) failed with exit code $($failed.Code), so nothing was merged ($($failed.Command); the log is $($failed.Log)). Its last 40 lines:`n$tail"
+      return "the check $($failed.Name) failed with exit code $($failed.Code), so nothing was merged ($($failed.Command); the log is $($failed.Log); the copy is $($undo.Copy)).$(Undo-Sentence $undo) Its last 40 lines:`n$tail"
     }
   }
   if ($Gate) {
@@ -2886,15 +2933,15 @@ function Merge-Branch($Info, [string]$Gate, [int]$Limit) {
     $code = Run-Measured $Gate $log $Limit
     Remove-Item Env:DISPATCH_TICKET, Env:DISPATCH_CHECKS -ErrorAction SilentlyContinue
     if ($code -ne 0) {
-      Invoke-Git @('merge', '--abort') | Out-Null
+      $undo = Undo-Merge $headBefore $dirtyBefore $log
       $tail = if (Test-Path -LiteralPath $log) { (Get-Content -LiteralPath $log -Tail 40) -join "`n" } else { '' }
-      return "the gate command failed with exit code $code, so nothing was merged ($Gate; the log is $log). Its last 40 lines:`n$tail"
+      return "the gate command failed with exit code $code, so nothing was merged ($Gate; the log is $log; the copy is $($undo.Copy)).$(Undo-Sentence $undo) Its last 40 lines:`n$tail"
     }
   }
   $commit = Invoke-Git @('commit', '-q', '-m', "Merge $branch into $($Info.base) ($Id)")
   if ($commit.Code -ne 0) {
-    Invoke-Git @('merge', '--abort') | Out-Null
-    return "git could not commit the merge: $($commit.Text)"
+    $undo = Undo-Merge $headBefore $dirtyBefore $(if ($Gate) { Join-Path $Reports "merge\$Id.log" } else { '' })
+    return "git could not commit the merge: $($commit.Text) (the copy is $($undo.Copy)).$(Undo-Sentence $undo)"
   }
   $script:Merged = (Invoke-Git @('rev-parse', '--short', 'HEAD')).Text
   # The tracked files that the checks and the gate changed go into a commit of their own on the base,
@@ -15892,6 +15939,43 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
         clean(&project);
     }
 
+    /// Ticket a-failed-merge-gate-undoes-the-merge: a failed gate that appended a line to a tracked
+    /// file of the merge leaves no open merge and no staged change; the copy folder holds the gate
+    /// output and the file it wrote; the next Merge with a passing gate merges.
+    #[test]
+    fn a_failed_gate_that_wrote_a_merged_file_leaves_no_open_merge() {
+        let (project, fake, base) = branch_project("branch-gate-wrote");
+        let cwd = project.root.to_string_lossy().into_owned();
+        write_file(&project.root.join("logs").join("gate.md"), "# log\n").unwrap();
+        git_out(&project, &["add", "--", "logs/gate.md"]);
+        git_out(&project, &["commit", "-q", "-m", "the log"]);
+        plan_and_approve(&project, &fake, "t-1");
+        write_report(&project, "t-1");
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        branch_commit(&project, "task/t-1", &[("logs/gate.md", "# log\nbranch line\n")]);
+        set_merge_gate(cwd.clone(), "echo gate: FAIL>> logs\\gate.md & echo FAIL & exit 1\n".to_string()).unwrap();
+
+        let refused = task_merge(cwd.clone(), "t-1".to_string()).unwrap_err();
+        assert!(refused.contains("the gate command failed with exit code 1, so nothing was merged"), "{refused}");
+        let head = git_out(&project, &["rev-parse", &base]);
+        assert_no_merge_left(&project);
+        assert_eq!(git_out(&project, &["diff", "--cached", "--name-only"]), "", "the index has staged changes");
+        assert_eq!(git_out(&project, &["rev-parse", "HEAD"]), head);
+        assert_eq!(read(&project.root.join("logs").join("gate.md")).replace("\r\n", "\n"), "# log\n");
+        let copy = project.merge_dir().join("t-1-failed");
+        assert!(refused.contains(&format!("; the copy is {})", copy.display())), "{refused}");
+        assert!(!refused.contains("could not undo the merge"), "{refused}");
+        assert!(read(&copy.join("output.log")).contains("FAIL"));
+        assert_eq!(read(&copy.join("files.txt")).trim(), "logs/gate.md");
+        assert!(read(&copy.join("files").join("logs").join("gate.md")).contains("gate: FAIL"));
+
+        set_merge_gate(cwd.clone(), "cmd /c exit 0\n".to_string()).unwrap();
+        let merged = task_merge(cwd, "t-1".to_string()).unwrap();
+        assert!(merged.starts_with("merged task/t-1"), "{merged}");
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
     /// A process id that never runs on Windows: process ids there are multiples of 4.
     const NO_PROCESS: u32 = 4_000_000_001;
 
@@ -16025,6 +16109,9 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
         let refused = task_merge(cwd.clone(), "t-1".to_string()).unwrap_err();
         assert!(refused.contains("the check two failed with exit code 1, so nothing was merged (cmd /c echo two fails & exit 1; the log is ") && refused.contains("two fails"), "{refused}");
         assert!(refused.contains(&project.merge_dir().join("t-1-2.log").display().to_string()), "{refused}");
+        let copy = project.merge_dir().join("t-1-failed");
+        assert!(refused.contains(&format!("; the copy is {})", copy.display())), "{refused}");
+        assert!(read(&copy.join("output.log")).contains("two fails"));
         assert_eq!(git_out(&project, &["rev-parse", &format!("{base}~1")]), head, "the task files were committed, the code did not move");
         assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_none());
         assert_no_merge_left(&project);

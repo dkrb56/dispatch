@@ -13,9 +13,18 @@ const MAIN = read("../src/main.ts");
 const GATE = "node scripts/merge-check.mjs . --gate auto --merged";
 const LOG = "D:\\projects\\game\\.dispatch\\merge\\t-1.log";
 
-/** The refusal as the worker script writes it to stderr: `Refuse` adds `refused: `, the tail joined with LF. */
-const refusal = (gate: string, lines: readonly string[], code = 1, end = "\n") =>
-  `refused: the gate command failed with exit code ${code}, so nothing was merged (${gate}; the log is ${LOG}). Its last 40 lines:${end}${lines.join(end)}`;
+const COPY = "D:\\projects\\game\\.dispatch\\merge\\t-1-failed";
+const UNDO = "error: Entry 'logs/gate.md' not uptodate. Cannot merge.; fatal: Could not reset index file to revision 'HEAD'";
+
+/**
+ * The refusal as the worker script writes it to stderr: `Refuse` adds `refused: `, the tail joined
+ * with LF. `copy` and `undo` are the parts of ticket a-failed-merge-gate-undoes-the-merge; an older
+ * host writes neither.
+ */
+const refusal = (gate: string, lines: readonly string[], code = 1, end = "\n", parts: { copy?: string; undo?: string } = {}) =>
+  `refused: the gate command failed with exit code ${code}, so nothing was merged (${gate}; the log is ${LOG}${parts.copy ? `; the copy is ${parts.copy}` : ""}).` +
+  `${parts.undo ? ` Dispatch could not undo the merge, so the project folder still has the open merge: ${parts.undo}. Run git merge --abort there.` : ""}` +
+  ` Its last 40 lines:${end}${lines.join(end)}`;
 
 test("the fixture is the 12-line gate log of the screenshot", () => {
   assert.equal(FIXTURE.length, 12);
@@ -49,6 +58,41 @@ test("a gate command with ; and ) inside still gives the right log path", () => 
   const parts = gateRefusal(refusal(gate, FIXTURE));
   assert.ok(parts);
   assert.equal(parts.gate, gate);
+  assert.equal(parts.log, LOG);
+});
+
+test("a refusal with the copy gives the copy folder and the same log path and gate", () => {
+  const gate = "cmd /c (npm test; echo done) & exit 1";
+  const parts = gateRefusal(refusal(gate, FIXTURE, 1, "\n", { copy: COPY }));
+  assert.ok(parts);
+  assert.equal(parts.gate, gate);
+  assert.equal(parts.log, LOG);
+  assert.equal(parts.copy, COPY);
+  assert.equal(parts.undo, "");
+  assert.deepEqual(parts.tail, FIXTURE);
+  assert.equal(logName(parts.copy), "t-1-failed");
+  assert.equal(refusalHeadline(parts), "refused: the gate command failed with exit code 1, so nothing was merged.");
+});
+
+test("a refusal whose undo failed gives git's message, and the headline says so", () => {
+  const parts = gateRefusal(refusal(GATE, FIXTURE, 1, "\n", { copy: COPY, undo: UNDO }));
+  assert.ok(parts);
+  assert.equal(parts.gate, GATE);
+  assert.equal(parts.log, LOG);
+  assert.equal(parts.copy, COPY);
+  assert.equal(parts.undo, UNDO);
+  assert.deepEqual(parts.tail, FIXTURE);
+  assert.equal(
+    refusalHeadline(parts),
+    `refused: the gate command failed with exit code 1, so nothing was merged. Dispatch could not undo the merge, so the project folder still has the open merge: ${UNDO}. Run git merge --abort there.`,
+  );
+});
+
+test("the refusal of an older host has no copy and no undo message", () => {
+  const parts = gateRefusal(refusal(GATE, FIXTURE));
+  assert.ok(parts);
+  assert.equal(parts.copy, "");
+  assert.equal(parts.undo, "");
   assert.equal(parts.log, LOG);
 });
 
@@ -99,6 +143,8 @@ test("the merge card uses the module, and actionError is unchanged", () => {
   assert.match(card, /merge-fails/);
   assert.match(card, /Gate log/);
   assert.match(card, /openViewer\(/);
+  assert.match(card, /Saved copy/);
+  assert.match(card, /openPath\(refusal\.copy\)/);
   const error = MAIN.slice(MAIN.indexOf("function actionError("), MAIN.indexOf("\n}\n", MAIN.indexOf("function actionError(")));
   assert.equal(
     error.replace(/\s+/g, " "),

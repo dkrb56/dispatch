@@ -13,6 +13,10 @@ export interface GateRefusal {
   log: string;
   /** The last lines of the log that the script gave (40 at most), without trailing empty lines. */
   tail: string[];
+  /** The folder with the copy of the gate output and of the files the gate wrote; empty from an older host. */
+  copy: string;
+  /** The message of git when Dispatch could not undo the merge; else empty. */
+  undo: string;
 }
 
 /** One line of the list on the card: the text to show and the whole line for the tooltip. */
@@ -24,8 +28,12 @@ export interface FailLine {
 /** A longer line is cut, so one check does not fill the card (user decision 3 of the plan). */
 export const FAIL_CUT = 200;
 
-const HEAD = /the gate command failed with exit code (-?\d+), so nothing was merged \((.*)\)\. Its last 40 lines:\s*$/;
+// The undo sentence after `).` comes only when Dispatch could not undo the merge (ticket
+// a-failed-merge-gate-undoes-the-merge).
+const HEAD =
+  /the gate command failed with exit code (-?\d+), so nothing was merged \((.*)\)\.(?: Dispatch could not undo the merge, so the project folder still has the open merge: (.*)\. Run git merge --abort there\.)? Its last 40 lines:\s*$/;
 const LOG_MARK = "; the log is ";
+const COPY_MARK = "; the copy is ";
 
 /**
  * The parts of a gate refusal, or null for every other text (a dirty checkout, a conflict, the
@@ -36,17 +44,25 @@ export function gateRefusal(error: string): GateRefusal | null {
   const head = lines.findIndex((line) => HEAD.test(line));
   if (head < 0) return null;
   const match = HEAD.exec(lines[head])!;
-  const inner = match[2];
+  let inner = match[2];
+  const copyAt = inner.lastIndexOf(COPY_MARK);
+  const copy = copyAt < 0 ? "" : inner.slice(copyAt + COPY_MARK.length);
+  if (copyAt >= 0) inner = inner.slice(0, copyAt);
   const at = inner.lastIndexOf(LOG_MARK);
   if (at < 0) return null;
   const tail = lines.slice(head + 1);
   while (tail.length > 0 && tail[tail.length - 1].trim() === "") tail.pop();
-  return { code: Number(match[1]), gate: inner.slice(0, at), log: inner.slice(at + LOG_MARK.length), tail };
+  return { code: Number(match[1]), gate: inner.slice(0, at), log: inner.slice(at + LOG_MARK.length), tail, copy, undo: match[3] ?? "" };
 }
 
-/** The first line of the card for a gate refusal: the exit code, and that nothing was merged. */
+/**
+ * The first line of the card for a gate refusal: the exit code, and that nothing was merged; when
+ * Dispatch could not undo the merge, the sentence that says so with the message of git.
+ */
 export function refusalHeadline(refusal: GateRefusal): string {
-  return `refused: the gate command failed with exit code ${refusal.code}, so nothing was merged.`;
+  const head = `refused: the gate command failed with exit code ${refusal.code}, so nothing was merged.`;
+  if (!refusal.undo) return head;
+  return `${head} Dispatch could not undo the merge, so the project folder still has the open merge: ${refusal.undo}. Run git merge --abort there.`;
 }
 
 /** A line cut at `FAIL_CUT` characters, with the whole line kept. */
