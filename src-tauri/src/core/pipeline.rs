@@ -1680,6 +1680,11 @@ The gate command of merge gets DISPATCH_TICKET (the ticket id) and DISPATCH_CHEC
 With Pick the checks after the work run, Dispatch writes <ticket-id>.picked (the pick of the agent)
 and, after the user's choice, <ticket-id>.checks; the merge runs these checks before the gate, unless
 Checks at the gate gives them to the gate command.
+The gate command also gets DISPATCH_LOG: the session log of the task, a path relative to the folder of
+the gate, or no variable when the task has none. In a project whose ignored file .claude\state\session-log
+names its current log, the merge points that file at the log of the task (the newest file that the task
+branch added in the folder of the log that it names) before the gate, and approve, reply, resume and
+check do so on the task branch; a refused merge puts the file back as it was.
 <ticket-id>.models, when it exists, gives the model and the effort of a run of the task: a line
 `plan <model> <effort>` or `work <model> <effort>` replaces those of the options file.
 work-tools.txt, when it exists, adds one tool name per line to the --tools list of the work run.
@@ -2636,6 +2641,8 @@ function Enter-WorkFolder([string]$Use, $Worker) {
       Copy-Item -LiteralPath (Join-Path $Project ".claude\$name") -Destination (Join-Path $target $name) -Force
     }
   }
+  # The session-log pointer of the work folder names the log of this task (ticket merge-gate-runs-with-the-session-log-of).
+  if ($Use -eq 'work' -or $Use -eq 'check') { Set-LogPointer $folder (Task-Log $folder $info.base $info.branch) }
   Write-Record $Use '-'
   $note
 }
@@ -2747,6 +2754,8 @@ function Enter-TaskBranch {
   $result = if ($exists) { Invoke-Git @('checkout', '-q', $info.branch) } else { Invoke-Git @('checkout', '-q', '-b', $info.branch, $info.base) }
   Put-CardFiles $kept
   if ($result.Code -ne 0) { Refuse "git could not check out $($info.branch): $($result.Text)$why" }
+  # The session-log pointer names the log of this task (ticket merge-gate-runs-with-the-session-log-of).
+  if ($exists) { Set-LogPointer $Project (Task-Log $Project $info.base $info.branch) }
   $current
 }
 
@@ -2860,6 +2869,102 @@ function Undo-Sentence($Undo) {
   " Dispatch could not undo the merge, so the project folder still has the open merge: $($Undo.Error.TrimEnd('.')). Run git merge --abort there."
 }
 
+# The session-log pointer (ticket merge-gate-runs-with-the-session-log-of, user decision 1): a project
+# whose file .claude\state\session-log names its current log (Rockhoppers) keeps that file ignored by
+# git, so a branch switch leaves it naming the log of the task that ran last. Before a gate or a work
+# run on the code of a task, the pointer of the folder that runs names the log of that task: the newest
+# file that the commits of the task added in the folder of the log that the pointer names. A task
+# without such a file leaves the pointer as it is (user decision 2). A project without the file stays as before.
+$script:PointerBefore = $null
+function Log-Pointer([string]$Dir) { Join-Path $Dir '.claude\state\session-log' }
+
+# The pointer of the folder $Dir, else the one of the project folder (a new work folder has none): File
+# (the pointer of $Dir), Rel (the git path of the log that it names), Abs (it holds an absolute path),
+# Sep (its separator) and End (its line end). $null without a pointer, or when it is empty, names a
+# folder or names a path outside the checkout.
+function Read-LogPointer([string]$Dir) {
+  $file = Log-Pointer $Dir
+  $from = $file
+  $root = $Dir
+  if (-not (Test-Path -LiteralPath $from -PathType Leaf)) {
+    if ($Dir -eq $Project) { return $null }
+    $from = Log-Pointer $Project
+    $root = $Project
+    if (-not (Test-Path -LiteralPath $from -PathType Leaf)) { return $null }
+  }
+  $text = [IO.File]::ReadAllText($from)
+  $line = "$(@($text -split "`r?`n" | Where-Object { $_.Trim() }) | Select-Object -First 1)".Trim()
+  if (-not $line) { return $null }
+  $end = if ($text.EndsWith("`r`n")) { "`r`n" } elseif ($text.EndsWith("`n")) { "`n" } else { '' }
+  $sep = if ($line.Contains('\')) { '\' } else { '/' }
+  $abs = [IO.Path]::IsPathRooted($line)
+  $rel = $line.Replace('\', '/')
+  if ($abs) {
+    $prefix = $root.TrimEnd('\').Replace('\', '/') + '/'
+    if (-not $rel.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) { return $null }
+    $rel = $rel.Substring($prefix.Length)
+  }
+  while ($rel.StartsWith('./')) { $rel = $rel.Substring(2) }
+  if (-not $rel -or $rel.EndsWith('/') -or $rel.StartsWith('/') -or @($rel -split '/') -contains '..') { return $null }
+  if (Test-Path -LiteralPath (Join-Path $root $rel) -PathType Container) { return $null }
+  [pscustomobject]@{ File = $file; Rel = $rel; Abs = $abs; Sep = $sep; End = $end }
+}
+
+# The log of the task: the newest file that the commits $BaseRev..$BranchRev added straight in the
+# folder of the log that the pointer of $Dir names, as a git path; '' without a pointer, without such a
+# file, or when the log lies in the top folder of the checkout.
+function Task-Log([string]$Dir, [string]$BaseRev, [string]$BranchRev) {
+  $pointer = Read-LogPointer $Dir
+  if ($null -eq $pointer) { return '' }
+  $cut = $pointer.Rel.LastIndexOf('/')
+  if ($cut -le 0) { return '' }
+  $folder = $pointer.Rel.Substring(0, $cut)
+  $added = Invoke-GitAt $Dir @('-c', 'core.quotePath=false', 'log', '--diff-filter=A', '--name-only', '--format=', "$BaseRev..$BranchRev", '--', "$folder/")
+  if ($added.Code -ne 0) { return '' }
+  "$(@($added.Lines | Where-Object { $_ -and $_.StartsWith("$folder/") -and -not $_.Substring($folder.Length + 1).Contains('/') }) | Select-Object -First 1)"
+}
+
+# Points the pointer of the folder $Dir at the log $Log (a git path), in the form of the old content:
+# relative with its separator, or absolute under $Dir, with its line end. The first change of a run
+# keeps the old bytes of that pointer ($null when it was absent) for Restore-LogPointer. '' changes nothing.
+function Set-LogPointer([string]$Dir, [string]$Log) {
+  if (-not $Log) { return }
+  $pointer = Read-LogPointer $Dir
+  if ($null -eq $pointer) { return }
+  $path = if ($pointer.Abs) { Join-Path $Dir $Log.Replace('/', '\') } else { $Log }
+  $path = if ($pointer.Sep -eq '\') { $path.Replace('/', '\') } else { $path.Replace('\', '/') }
+  $text = "$path$($pointer.End)"
+  $file = $pointer.File
+  $old = $null
+  if (Test-Path -LiteralPath $file -PathType Leaf) {
+    $old = [IO.File]::ReadAllBytes($file)
+    if ([IO.File]::ReadAllText($file) -ceq $text) { return }
+  }
+  if ($null -eq $script:PointerBefore) { $script:PointerBefore = [pscustomobject]@{ File = $file; Bytes = $old } }
+  $folder = Split-Path -Parent $file
+  if (-not (Test-Path -LiteralPath $folder)) { New-Item -ItemType Directory -Path $folder -Force | Out-Null }
+  [IO.File]::WriteAllText($file, $text)
+}
+
+# Writes the pointer back as it was before the first change of this run (a refused merge), or deletes
+# it when this run made it. Nothing when this run changed no pointer.
+function Restore-LogPointer {
+  $before = $script:PointerBefore
+  if ($null -eq $before) { return }
+  $script:PointerBefore = $null
+  if ($null -eq $before.Bytes) { Remove-Item -LiteralPath $before.File -Force -ErrorAction SilentlyContinue }
+  else { [IO.File]::WriteAllBytes($before.File, [byte[]]$before.Bytes) }
+}
+
+# The sentence of a gate refusal when the pointer of $Dir names a log that the merged code lacks ($Rev:
+# the merge commit, or '' for the index of the open merge); '' otherwise.
+function Missing-LogSentence([string]$Dir, [string]$Rev) {
+  $pointer = Read-LogPointer $Dir
+  if ($null -eq $pointer) { return '' }
+  if ((Invoke-GitAt $Dir @('cat-file', '-e', "${Rev}:$($pointer.Rel)")).Code -eq 0) { return '' }
+  " The file .claude\state\session-log names the log $($pointer.Rel), and the merged code has no such file: the task $Id added no log of its own in that folder, so the gate had no log of this task to write into."
+}
+
 # Merges the task branch into the base in the main checkout: git merge --no-ff --no-commit, the gate
 # command on the merged code, then the merge commit, or git merge --abort. A conflict only in the task
 # files of .dispatch takes the version of the base, where Dispatch keeps them current, except the
@@ -2928,14 +3033,19 @@ function Merge-Branch($Info, [string]$Gate, [int]$Limit) {
     $log = Join-Path $Reports "merge\$Id.log"
     # The gate reads the ticket and the checks that the user chose for it (ticket task-checks); the
     # file can be absent: then the user chose no check, or the project has no list.
+    # The session-log pointer names the log of this task (ticket merge-gate-runs-with-the-session-log-of).
+    $taskLog = Task-Log $Project 'HEAD' $branch
+    Set-LogPointer $Project $taskLog
+    $missing = Missing-LogSentence $Project ''
     $env:DISPATCH_TICKET = $Id
     $env:DISPATCH_CHECKS = Join-Path $Reports "$Id.checks"
+    $env:DISPATCH_LOG = $taskLog
     $code = Run-Measured $Gate $log $Limit
-    Remove-Item Env:DISPATCH_TICKET, Env:DISPATCH_CHECKS -ErrorAction SilentlyContinue
+    Remove-Item Env:DISPATCH_TICKET, Env:DISPATCH_CHECKS, Env:DISPATCH_LOG -ErrorAction SilentlyContinue
     if ($code -ne 0) {
       $undo = Undo-Merge $headBefore $dirtyBefore $log
       $tail = if (Test-Path -LiteralPath $log) { (Get-Content -LiteralPath $log -Tail 40) -join "`n" } else { '' }
-      return "the gate command failed with exit code $code, so nothing was merged ($Gate; the log is $log; the copy is $($undo.Copy)).$(Undo-Sentence $undo) Its last 40 lines:`n$tail"
+      return "the gate command failed with exit code $code, so nothing was merged ($Gate; the log is $log; the copy is $($undo.Copy)).$missing$(Undo-Sentence $undo) Its last 40 lines:`n$tail"
     }
   }
   $commit = Invoke-Git @('commit', '-q', '-m', "Merge $branch into $($Info.base) ($Id)")
@@ -2994,14 +3104,19 @@ function Gate-InWorkFolder([string]$Merge, [string]$Gate, [int]$Limit) {
   }
   if ($Gate) {
     $log = Join-Path $Reports "merge\$Id.log"
+    # The session-log pointer of the work folder names the log of this task (ticket merge-gate-runs-with-the-session-log-of).
+    $taskLog = Task-Log $work $parents[0] $parents[1]
+    Set-LogPointer $work $taskLog
+    $missing = Missing-LogSentence $work $Merge
     $env:DISPATCH_TICKET = $Id
     $env:DISPATCH_CHECKS = Join-Path $Reports "$Id.checks"
+    $env:DISPATCH_LOG = $taskLog
     $code = Run-Measured $Gate $log $Limit $work
-    Remove-Item Env:DISPATCH_TICKET, Env:DISPATCH_CHECKS -ErrorAction SilentlyContinue
+    Remove-Item Env:DISPATCH_TICKET, Env:DISPATCH_CHECKS, Env:DISPATCH_LOG -ErrorAction SilentlyContinue
     if ($code -ne 0) {
       Invoke-GitAt $work @('merge', '--abort') | Out-Null
       $tail = if (Test-Path -LiteralPath $log) { (Get-Content -LiteralPath $log -Tail 40) -join "`n" } else { '' }
-      return "the gate command failed with exit code $code, so nothing was merged ($Gate; the log is $log). Its last 40 lines:`n$tail"
+      return "the gate command failed with exit code $code, so nothing was merged ($Gate; the log is $log).$missing Its last 40 lines:`n$tail"
     }
   }
   # A check or a gate that committed or cancelled the open merge stops it (user decision 1): HEAD and
@@ -3894,6 +4009,8 @@ switch ($Verb) {
         # Every way out inside PowerShell (a refusal, an error, Ctrl+C) leaves no open merge.
         Invoke-Git @('merge', '--abort') | Out-Null
       }
+      # A refused merge puts the session-log pointer back as it was (ticket merge-gate-runs-with-the-session-log-of).
+      if (-not $script:Merged) { Restore-LogPointer }
       Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
       Exit-Lock (Merge-Lock)
     }
@@ -15858,6 +15975,164 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
         assert_eq!(last_commit_files(&project, &base), ["logs/gate.md"]);
         assert!(git_out(&project, &["log", "-1", "--format=%s", &format!("{base}~1")]).starts_with("Merge task/t-1 into "));
         assert_eq!(git_out(&project, &["status", "--porcelain", "--untracked-files=no", "--", ".", NOT_TASKS]), "M other.txt");
+        clean(&project);
+    }
+
+    /// The file that names the current session log of a project, as in Rockhoppers (ticket
+    /// merge-gate-runs-with-the-session-log-of).
+    fn session_log_pointer(root: &Path) -> PathBuf {
+        root.join(".claude").join("state").join("session-log")
+    }
+
+    /// The base ignores `.claude/state/`, as Rockhoppers does, in a commit: an untracked pointer would hold the switch.
+    fn ignore_session_log(project: &Project) {
+        let file = project.root.join(".gitignore");
+        let old = fs::read_to_string(&file).unwrap_or_default();
+        let sep = if old.is_empty() || old.ends_with('\n') { "" } else { "\n" };
+        write_file(&file, &format!("{old}{sep}.claude/state/\n")).unwrap();
+        git_out(project, &["add", "--", ".gitignore"]);
+        git_out(project, &["commit", "-q", "-m", "ignore the session-log pointer"]);
+    }
+
+    /// Done tasks whose branches each add their own session log `logs/<ticket>.md` (`with_logs`), with
+    /// the checkout back on the base.
+    fn tasks_with_logs(project: &Project, fake: &Path, tickets: &[&str], with_logs: bool) {
+        ignore_session_log(project);
+        for &ticket in tickets {
+            plan_and_approve(project, fake, ticket);
+            write_report(project, ticket);
+            assert!(!listed_branch(project, ticket).checked_out);
+            if with_logs {
+                branch_commit(project, &format!("task/{ticket}"), &[(&format!("logs/{ticket}.md"), &format!("# the session log of {ticket}\n"))]);
+            }
+        }
+    }
+
+    /// The gate of Rockhoppers in small: it appends its result line to the log that the pointer names.
+    const SESSION_LOG_GATE: &str = "for /f \"usebackq delims=\" %%f in (\".claude\\state\\session-log\") do (echo GATE %DISPATCH_TICKET% %DISPATCH_LOG%)>> \"%%f\"\n";
+
+    /// Ticket merge-gate-runs-with-the-session-log-of: the pointer named the log of another task, so
+    /// the gate wrote its line there. Each merge now points it at the log of its own task first.
+    #[test]
+    fn a_merge_gate_writes_into_the_session_log_of_its_own_task() {
+        let (project, fake, base) = branch_project("session-log-own");
+        let cwd = project.root.to_string_lossy().into_owned();
+        tasks_with_logs(&project, &fake, &["t-1", "t-2"], true);
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        let pointer = session_log_pointer(&project.root);
+        write_file(&pointer, "logs/t-2.md\n").unwrap();
+        set_merge_gate(cwd.clone(), SESSION_LOG_GATE.to_string()).unwrap();
+
+        let merged = task_merge(cwd.clone(), "t-1".to_string()).unwrap();
+        assert!(merged.starts_with("merged task/t-1"), "{merged}");
+        assert!(!project.root.join("logs").join("t-2.md").exists(), "the gate of t-1 wrote into the log of t-2");
+        assert_eq!(read(&project.root.join("logs").join("t-1.md")), "# the session log of t-1\nGATE t-1 logs/t-1.md\n");
+        assert_eq!(read(&pointer), "logs/t-1.md\n");
+
+        let merged = task_merge(cwd, "t-2".to_string()).unwrap();
+        assert!(merged.starts_with("merged task/t-2"), "{merged}");
+        assert_eq!(read(&project.root.join("logs").join("t-2.md")), "# the session log of t-2\nGATE t-2 logs/t-2.md\n");
+        assert_eq!(read(&project.root.join("logs").join("t-1.md")), "# the session log of t-1\nGATE t-1 logs/t-1.md\n");
+        assert_eq!(read(&pointer), "logs/t-2.md\n");
+        assert_eq!(git_out(&project, &["status", "--porcelain", "--", "logs"]), "", "a line of the gate stayed uncommitted");
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    /// The same with Work folder on: the gate runs in the work folder, whose pointer is absent at first;
+    /// the pointer of the project folder gives its form and the folder of the logs.
+    #[test]
+    fn a_merge_gate_in_the_work_folder_writes_into_the_session_log_of_its_own_task() {
+        let (project, fake, base) = work_project("session-log-work");
+        let cwd = project.root.to_string_lossy().into_owned();
+        tasks_with_logs(&project, &fake, &["t-1", "t-2"], false);
+        // The work folder lets go of task/t-2 first: a branch that moves under its checkout looks like
+        // files that the work run deleted, and the next use of the folder commits that.
+        let folder = project.work_folder_at(1);
+        assert!(git(&folder, &["checkout", "-q", "--detach"]).is_some());
+        for ticket in ["t-1", "t-2"] {
+            branch_commit(&project, &format!("task/{ticket}"), &[(&format!("logs/{ticket}.md"), &format!("# the session log of {ticket}\n"))]);
+        }
+        write_file(&session_log_pointer(&project.root), "logs/t-2.md\n").unwrap();
+        set_merge_gate(cwd.clone(), SESSION_LOG_GATE.to_string()).unwrap();
+        let on_base = |file: &str| git(&project.root, &["show", &format!("{base}:{file}")]).map(|text| text.replace("\r\n", "\n"));
+
+        let merged = task_merge(cwd.clone(), "t-1".to_string()).unwrap();
+        assert!(merged.starts_with("merged task/t-1"), "{merged}");
+        assert_eq!(on_base("logs/t-2.md"), None, "the gate of t-1 wrote into the log of t-2");
+        assert_eq!(on_base("logs/t-1.md").as_deref(), Some("# the session log of t-1\nGATE t-1 logs/t-1.md\n"));
+        assert_eq!(read(&session_log_pointer(&folder)), "logs/t-1.md\n");
+
+        let merged = task_merge(cwd, "t-2".to_string()).unwrap();
+        assert!(merged.starts_with("merged task/t-2"), "{merged}");
+        assert_eq!(on_base("logs/t-2.md").as_deref(), Some("# the session log of t-2\nGATE t-2 logs/t-2.md\n"));
+        assert_eq!(on_base("logs/t-1.md").as_deref(), Some("# the session log of t-1\nGATE t-1 logs/t-1.md\n"));
+        assert_eq!(read(&session_log_pointer(&folder)), "logs/t-2.md\n");
+        assert_eq!(read(&session_log_pointer(&project.root)), "logs/t-2.md\n", "the merge changed the pointer of the project folder");
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    /// A refused gate puts the pointer back byte for byte; during the gate it named the log of the task
+    /// in the form of the old content (backslash, CRLF).
+    #[test]
+    fn a_refused_merge_leaves_the_session_log_pointer_as_it_was() {
+        let (project, fake, base) = branch_project("session-log-refused");
+        let cwd = project.root.to_string_lossy().into_owned();
+        tasks_with_logs(&project, &fake, &["t-1"], true);
+        let pointer = session_log_pointer(&project.root);
+        fs::create_dir_all(pointer.parent().unwrap()).unwrap();
+        fs::write(&pointer, b"logs\\t-2.md\r\n").unwrap();
+        set_merge_gate(cwd.clone(), "type .claude\\state\\session-log & exit /b 1\n".to_string()).unwrap();
+
+        let refused = task_merge(cwd, "t-1".to_string()).unwrap_err();
+        assert!(refused.contains("the gate command failed with exit code 1"), "{refused}");
+        assert!(!refused.contains("has no such file"), "{refused}");
+        let log = read(&project.merge_dir().join("t-1.log"));
+        assert!(log.contains("logs\\t-1.md"), "{log}");
+        assert_eq!(fs::read(&pointer).unwrap(), b"logs\\t-2.md\r\n");
+        assert!(git(&project.root, &["cat-file", "-e", &format!("{base}:work-t-1.txt")]).is_none(), "the work merged");
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    /// A task that added no log of its own: the pointer stays, and the refusal of the gate says that the
+    /// merged code lacks the log that the pointer names.
+    #[test]
+    fn a_task_without_a_session_log_gets_a_clear_refusal() {
+        let (project, fake, _base) = branch_project("session-log-missing");
+        let cwd = project.root.to_string_lossy().into_owned();
+        tasks_with_logs(&project, &fake, &["t-1"], false);
+        let pointer = session_log_pointer(&project.root);
+        write_file(&pointer, "logs/t-9.md\n").unwrap();
+        set_merge_gate(cwd.clone(), "type logs\\t-9.md || exit /b 1\n".to_string()).unwrap();
+
+        let refused = task_merge(cwd, "t-1".to_string()).unwrap_err();
+        assert!(refused.contains("the gate command failed with exit code 1"), "{refused}");
+        assert!(refused.contains("The file .claude\\state\\session-log names the log logs/t-9.md, and the merged code has no such file"), "{refused}");
+        assert_eq!(read(&pointer), "logs/t-9.md\n");
+        assert_no_merge_left(&project);
+        clean(&project);
+    }
+
+    /// A reply that switches the checkout to the task branch points the pointer at the log of the task.
+    #[test]
+    fn a_reply_after_a_switch_points_the_session_log_at_its_task() {
+        let (project, fake, base) = branch_project("session-log-reply");
+        ignore_session_log(&project);
+        plan_and_approve(&project, &fake, "t-1");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        write_file(&project.reports.join("t-1.md"), GATE_QUESTION).unwrap();
+        assert!(!listed_branch(&project, "t-1").checked_out);
+        assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+        branch_commit(&project, "task/t-1", &[("logs/t-1.md", "# the session log of t-1\n")]);
+        let pointer = session_log_pointer(&project.root);
+        write_file(&pointer, "logs/t-9.md\n").unwrap();
+
+        let (code, out) = run_script(&project, &fake, "done", &["reply", "t-1", "Answer to question 1: Run the gate now"]);
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(current_branch(&project).as_deref(), Some("task/t-1"));
+        assert_eq!(read(&pointer), "logs/t-1.md\n");
         clean(&project);
     }
 
