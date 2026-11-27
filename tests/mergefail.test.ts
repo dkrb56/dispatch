@@ -14,6 +14,8 @@ const GATE = "node scripts/merge-check.mjs . --gate auto --merged";
 const LOG = "D:\\projects\\game\\.dispatch\\merge\\t-1.log";
 
 const COPY = "D:\\projects\\game\\.dispatch\\merge\\t-1-failed";
+const MISSING =
+  " The file .claude\\state\\session-log names the log logs/t-9.md, and the merged code has no such file: the task t-1 added no log of its own in that folder, so the gate had no log of this task to write into.";
 const UNDO = "error: Entry 'logs/gate.md' not uptodate. Cannot merge.; fatal: Could not reset index file to revision 'HEAD'";
 
 /**
@@ -21,8 +23,9 @@ const UNDO = "error: Entry 'logs/gate.md' not uptodate. Cannot merge.; fatal: Co
  * with LF. `copy` and `undo` are the parts of ticket a-failed-merge-gate-undoes-the-merge; an older
  * host writes neither.
  */
-const refusal = (gate: string, lines: readonly string[], code = 1, end = "\n", parts: { copy?: string; undo?: string } = {}) =>
+const refusal = (gate: string, lines: readonly string[], code = 1, end = "\n", parts: { copy?: string; undo?: string; missing?: boolean } = {}) =>
   `refused: the gate command failed with exit code ${code}, so nothing was merged (${gate}; the log is ${LOG}${parts.copy ? `; the copy is ${parts.copy}` : ""}).` +
+  `${parts.missing ? MISSING : ""}` +
   `${parts.undo ? ` Dispatch could not undo the merge, so the project folder still has the open merge: ${parts.undo}. Run git merge --abort there.` : ""}` +
   ` Its last 40 lines:${end}${lines.join(end)}`;
 
@@ -93,6 +96,7 @@ test("the refusal of an older host has no copy and no undo message", () => {
   assert.ok(parts);
   assert.equal(parts.copy, "");
   assert.equal(parts.undo, "");
+  assert.equal(parts.missing, "");
   assert.equal(parts.log, LOG);
 });
 
@@ -165,4 +169,56 @@ test("main.ts: a fresh-only refusal sends the re-gate reply once per base commit
   assert.ok(card.includes("function refusalBlock("), "refusalBlock stands between mergeCard and branchRow");
   assert.match(card, /Refused before the new gate run/);
   assert.match(card, /Dispatch asked the work run for a new gate run on/);
+});
+
+const HEADLINE = "refused: the gate command failed with exit code 1, so nothing was merged.";
+const GATE2 = "cmd /c (npm test; echo done) & exit 1";
+
+test("the missing-log sentence without copy (Gate-InWorkFolder form)", () => {
+  const parts = gateRefusal(refusal(GATE2, FIXTURE, 1, "\n", { missing: true }));
+  assert.ok(parts);
+  assert.equal(parts.code, 1);
+  assert.equal(parts.gate, GATE2);
+  assert.equal(parts.log, LOG);
+  assert.equal(parts.copy, "");
+  assert.equal(parts.undo, "");
+  assert.equal(parts.missing, MISSING.trim());
+  assert.deepEqual(parts.tail, FIXTURE);
+  assert.equal(refusalHeadline(parts), `${HEADLINE}${MISSING}`);
+});
+
+test("the missing-log sentence with the copy (Merge-Branch form)", () => {
+  const parts = gateRefusal(refusal(GATE2, FIXTURE, 1, "\n", { copy: COPY, missing: true }));
+  assert.ok(parts);
+  assert.equal(parts.gate, GATE2);
+  assert.equal(parts.log, LOG);
+  assert.equal(parts.copy, COPY);
+  assert.equal(parts.undo, "");
+  assert.equal(parts.missing, MISSING.trim());
+  assert.deepEqual(parts.tail, FIXTURE);
+  assert.equal(refusalHeadline(parts), `${HEADLINE}${MISSING}`);
+});
+
+test("the missing-log sentence with the copy and the undo sentence", () => {
+  const parts = gateRefusal(refusal(GATE2, FIXTURE, 1, "\n", { copy: COPY, undo: UNDO, missing: true }));
+  assert.ok(parts);
+  assert.equal(parts.copy, COPY);
+  assert.equal(parts.undo, UNDO);
+  assert.equal(parts.missing, MISSING.trim());
+  assert.equal(
+    refusalHeadline(parts),
+    `${HEADLINE}${MISSING} Dispatch could not undo the merge, so the project folder still has the open merge: ${UNDO}. Run git merge --abort there.`,
+  );
+});
+
+test("a fresh-only tail still gives freshOnly through a refusal with the missing-log sentence", () => {
+  const tail = ["build: ok", "fresh: FAIL main's side of the merge changed 3 files a gate run uses", "FAIL"];
+  const parts = gateRefusal(refusal(GATE2, tail, 1, "\n", { copy: COPY, missing: true }));
+  assert.ok(parts);
+  assert.equal(freshOnly(parts.tail), true);
+});
+
+test("the script still holds the fixed start and end of the missing-log sentence", () => {
+  const rs = read("../src-tauri/src/core/pipeline.rs");
+  assert.ok(rs.includes(' The file .claude\\state\\session-log names the log $($pointer.Rel), and the merged code has no such file: the task $Id added no log of its own in that folder, so the gate had no log of this task to write into."'));
 });

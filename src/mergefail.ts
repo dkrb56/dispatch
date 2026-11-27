@@ -17,6 +17,8 @@ export interface GateRefusal {
   copy: string;
   /** The message of git when Dispatch could not undo the merge; else empty. */
   undo: string;
+  /** The sentence about the missing session log (ticket a-failed-gate-of-a-task-without-a); else empty. */
+  missing: string;
 }
 
 /** One line of the list on the card: the text to show and the whole line for the tooltip. */
@@ -29,9 +31,10 @@ export interface FailLine {
 export const FAIL_CUT = 200;
 
 // The undo sentence after `).` comes only when Dispatch could not undo the merge (ticket
-// a-failed-merge-gate-undoes-the-merge).
+// a-failed-merge-gate-undoes-the-merge). The sentence about the missing session log comes before it
+// (ticket a-failed-gate-of-a-task-without-a).
 const HEAD =
-  /the gate command failed with exit code (-?\d+), so nothing was merged \((.*)\)\.(?: Dispatch could not undo the merge, so the project folder still has the open merge: (.*)\. Run git merge --abort there\.)? Its last 40 lines:\s*$/;
+  /the gate command failed with exit code (-?\d+), so nothing was merged \((.*)\)\.( The file \.claude\\state\\session-log names the log .*?so the gate had no log of this task to write into\.)?(?: Dispatch could not undo the merge, so the project folder still has the open merge: (.*)\. Run git merge --abort there\.)? Its last 40 lines:\s*$/;
 const LOG_MARK = "; the log is ";
 const COPY_MARK = "; the copy is ";
 
@@ -52,7 +55,7 @@ export function gateRefusal(error: string): GateRefusal | null {
   if (at < 0) return null;
   const tail = lines.slice(head + 1);
   while (tail.length > 0 && tail[tail.length - 1].trim() === "") tail.pop();
-  return { code: Number(match[1]), gate: inner.slice(0, at), log: inner.slice(at + LOG_MARK.length), tail, copy, undo: match[3] ?? "" };
+  return { code: Number(match[1]), gate: inner.slice(0, at), log: inner.slice(at + LOG_MARK.length), tail, copy, undo: match[4] ?? "", missing: (match[3] ?? "").trim() };
 }
 
 /**
@@ -61,8 +64,9 @@ export function gateRefusal(error: string): GateRefusal | null {
  */
 export function refusalHeadline(refusal: GateRefusal): string {
   const head = `refused: the gate command failed with exit code ${refusal.code}, so nothing was merged.`;
-  if (!refusal.undo) return head;
-  return `${head} Dispatch could not undo the merge, so the project folder still has the open merge: ${refusal.undo}. Run git merge --abort there.`;
+  const full = refusal.missing ? `${head} ${refusal.missing}` : head;
+  if (!refusal.undo) return full;
+  return `${full} Dispatch could not undo the merge, so the project folder still has the open merge: ${refusal.undo}. Run git merge --abort there.`;
 }
 
 /** A line cut at `FAIL_CUT` characters, with the whole line kept. */
