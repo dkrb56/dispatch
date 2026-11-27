@@ -8,6 +8,7 @@ import { test } from "node:test";
 import {
   addedText,
   bulkIds,
+  canDelete,
   canDrag,
   clampColumnWidth,
   COLUMN_CUSTOM_MAX,
@@ -233,6 +234,17 @@ test("Dispatch never sends a Backlog ticket, and the head buttons move the shown
   assert.match(MAIN, /All → Backlog/);
   assert.match(MAIN, /All → Scheduled/);
   assert.match(CSS, /repeat\(7, minmax\(180px, 1fr\)\)/);
+});
+
+test("a ticket that does not run can be deleted (ticket add-option-to-delete-ticket)", () => {
+  assert.equal(canDelete({ status: "backlog" }, false), true);
+  assert.equal(canDelete({ status: "new" }, false), true);
+  assert.equal(canDelete({ status: "new" }, true), false, "a New ticket in flight stays");
+  assert.equal(canDelete({ status: "in-progress" }, false), false, "a running ticket follows its task");
+  assert.equal(canDelete({ status: "done" }, false), true);
+  assert.equal(canDelete({ status: "canceled" }, false), true);
+  assert.match(MAIN, /ticket_delete/);
+  assert.match(MAIN, /Delete\?/);
 });
 
 test("a drop moves the card on the board at once, by the rule of ticket_move (ticket moving-ticket-from-cancelled-to-done)", () => {

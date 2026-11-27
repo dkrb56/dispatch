@@ -324,6 +324,12 @@ pub fn ticket_move_all(cwd: String, ids: Vec<String>, status: String) -> Result<
     tickets::ticket_move_all(cwd, ids, status)
 }
 
+/// Deletes a ticket that does not run, with its parts (ticket add-option-to-delete-ticket).
+#[tauri::command(async)]
+pub fn ticket_delete(cwd: String, id: String) -> Result<Vec<Ticket>, String> {
+    tickets::ticket_delete(cwd, id)
+}
+
 /// A part at the end of the chain of a parent, in Backlog (ticket subtickets).
 #[tauri::command(async)]
 pub fn ticket_add_part(

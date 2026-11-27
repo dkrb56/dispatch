@@ -201,6 +201,15 @@ export function canDrag(ticket: Pick<Ticket, "status" | "note">, inFlight: boole
 }
 
 /**
+ * A card can be deleted (ticket add-option-to-delete-ticket) when it does not run: a Backlog, Done or
+ * Canceled ticket, and a New one that did not go to triage. A ticket in progress follows its task.
+ */
+export function canDelete(ticket: Pick<Ticket, "status">, inFlight: boolean): boolean {
+  if (ticket.status === "new") return !inFlight;
+  return ticket.status === "backlog" || ticket.status === "done" || ticket.status === "canceled";
+}
+
+/**
  * A move into New from another column (ticket i-cant-dragged-canceled-ticket-back-to): the ticket
  * loses its send marks, so Dispatch can start it again.
  */

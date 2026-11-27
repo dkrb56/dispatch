@@ -136,7 +136,7 @@ import {
   type TokenRow,
   type UsageHistory,
 } from "./tokens";
-import { addedText, boardTickets, inProgressView, bulkIds, canDrag, clampColumnWidth, COLUMN_WIDTHS_KEY, columnWidthsKey, columnTemplate, parseColumnWidths, type BoardColumn, type ColumnWidth, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, heldBy, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketGroups, ticketMatches, ticketMessage, ticketRoute, type InProgressView, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
+import { addedText, boardTickets, inProgressView, bulkIds, canDelete, canDrag, clampColumnWidth, COLUMN_WIDTHS_KEY, columnWidthsKey, columnTemplate, parseColumnWidths, type BoardColumn, type ColumnWidth, keepTickets, movedTickets, columnCards, columnTickets, COLUMNS, countText, DROP_COLUMNS, dropChanges, dropIds, endFailed, endWord, fitBoardSize, fitWindowPlace, goesStraight, heldBy, movedIds, nextPlanTicket, nextTicket, nextType, orphanTasks, taskCopyText, parseBoardSize, parseWindowPlace, queueOrder, reentersNew, repairLine, type Ticket, ticketCounts, ticketGroups, ticketMatches, ticketMessage, ticketRoute, type InProgressView, TICKET_ADD_PLACE_KEY, TICKETS_SIZE_KEY, type TicketStatus, typeName, USER_DONE, FIELDS, goalHint, LEVELS, levelLabel, levelOf, nextLevel, type TicketFields, TYPES, partPlace, partProgress, partsOf, partText, splitImages, withTicket } from "./tickets";
 import { type SignFacts, signLook, signReason, signStamp, signTitle } from "./ticketsign";
 import { type ChatView, createChatView, type RunLine } from "./chatview";
 import { drawPause, DRAW_STALE_MS, type Typed, typedAfter, typingState } from "./typing";
@@ -4253,7 +4253,7 @@ async function ticketAction(project: string, command: string, args: Record<strin
     const reply = await call<unknown>(host, command, { cwd, ...args });
     // A move answers with the tickets of the file (ticket moving-ticket-from-cancelled-to-done): the board
     // shows them at once, and the full task read runs without a wait; an older read keeps them.
-    if (command === "ticket_move" && Array.isArray(reply)) {
+    if ((command === "ticket_move" || command === "ticket_delete") && Array.isArray(reply)) {
       setBoardTickets(project, reply as Ticket[]);
       ticketsChangedAt.set(project, Date.now());
       readProjectTasks(host, cwd).catch((error) => console.warn("task list read failed", error));
@@ -4381,6 +4381,37 @@ ${id}`;
   const moved = await ticketAction(project, "ticket_move", { id, status, ids, note: note ?? null });
   if (!moved) movedBack.delete(movedKey);
   return moved;
+}
+
+/** The ticket whose bin was clicked once (ticket add-option-to-delete-ticket): a second click before `until` deletes it. The poll rebuilds the cards, so it lives here. */
+let ticketDeleteArmed: { key: string; until: number } | null = null;
+
+/**
+ * Deletes a ticket that does not run, with its parts (ticket add-option-to-delete-ticket). A New ticket
+ * takes the claim first, as the start of its plan does, so Dispatch does not start it at the same time.
+ */
+async function deleteTicket(project: string, id: string): Promise<boolean> {
+  const { host, cwd } = projectCwd(project);
+  const current = projectTickets(project).find((ticket) => ticket.id === id);
+  const claim = current?.status === "new";
+  if (claim) {
+    const claimed = await call<boolean>(host, "ticket_claim", { cwd, id, release: false }).catch(() => null);
+    if (claimed === false) {
+      ticketError = "This ticket starts now; it was not deleted";
+      renderTickets();
+      return false;
+    }
+  }
+  const mark = `${project}
+${id}`;
+  sentTickets.delete(mark);
+  toTriage.delete(mark);
+  planErrors.delete(mark);
+  movedBack.delete(mark);
+  for (const one of ticketsToSettle.filter((one) => one.project === project && one.ticket === id)) ticketsToSettle.splice(ticketsToSettle.indexOf(one), 1);
+  const deleted = await ticketAction(project, "ticket_delete", { id });
+  if (claim) await call(host, "ticket_claim", { cwd, id, release: true }).catch(() => {});
+  return deleted;
 }
 
 /** The tickets whose drop still saves, as `<project key>\n<id>`: their card shows a spinner and does not drag. */
@@ -12274,6 +12305,24 @@ function ticketCard(project: string, ticket: Ticket, queueIds: string[], record:
         ? ticketButton("✎", "Edit the ticket: title, goal, images, type, level and fields", () => openEditTicket(project, ticket))
         : ticketButton("✎", "Rename the ticket", rename),
   );
+  // The bin deletes a ticket that does not run, after a second click within 4 s (ticket add-option-to-delete-ticket).
+  if (canDelete(ticket, inFlight) && !saving) {
+    const armKey = `${project}
+${ticket.id}`;
+    const armed = ticketDeleteArmed?.key === armKey && ticketDeleteArmed.until > Date.now();
+    tools.append(
+      ticketButton(armed ? "Delete?" : "🗑", armed ? "Click again to delete this ticket for good" : "Delete this ticket. Click, then click again to confirm", () => {
+        if (armed) {
+          ticketDeleteArmed = null;
+          void deleteTicket(project, ticket.id);
+          return;
+        }
+        ticketDeleteArmed = { key: armKey, until: Date.now() + 4000 };
+        renderTickets();
+        setTimeout(() => renderTickets(), 4100);
+      }),
+    );
+  }
   card.append(top, meta);
   if (chainLine) card.append(chainLine);
   // The task card with its runs, steps, plan, report, checks and buttons, below the ticket lines (user decision 1).

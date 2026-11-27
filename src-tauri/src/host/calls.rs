@@ -232,6 +232,7 @@ pub fn run(
         "ticket_move" => json(tickets::ticket_move(a.req("cwd")?, a.req("id")?, a.req("status")?, a.req("ids")?, a.opt("note")?)?),
         "ticket_claim" => json(tickets::ticket_claim(core, a.req("cwd")?, a.req("id")?, a.opt("release")?.unwrap_or(false))?),
         "ticket_move_all" => json(tickets::ticket_move_all(a.req("cwd")?, a.req("ids")?, a.req("status")?)?),
+        "ticket_delete" => json(tickets::ticket_delete(a.req("cwd")?, a.req("id")?)?),
         "ticket_add_part" => json(tickets::ticket_add_part(
             a.req("cwd")?,
             a.req("parent")?,

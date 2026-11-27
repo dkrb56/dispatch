@@ -4,6 +4,8 @@
 //   {"op":"status","ref":…,"ts":…,"status":"triage"|"backlog"|"in_progress","order":…}
 //   {"op":"close","ref":…,"ts":…,"resolution":"done"|"wontfix","note":…}
 //   {"op":"update","ref":…,"ts":…,"title":…,"type":…,"order":…,"task":…,"renamed":…,"level":…}
+//   {"op":"delete","ref":…,"ts":…}
+// A delete line takes the ticket off the board; its id stays taken, so no new ticket gets it.
 // A ticket is the fold of its lines. A line that is no JSON, an unknown op or an unknown field is
 // skipped, so a file edited by hand still reads. Dispatch is the only writer: a message of the user
 // opens a ticket in New, which is the queue (ticket auto-todo), the board orders, cancels and renames
@@ -278,6 +280,11 @@ pub(crate) fn fold(text: &str) -> Vec<Ticket> {
             continue;
         }
         let Some(id) = text_of("ref").or_else(|| text_of("id")) else { continue };
+        // A deleted ticket leaves the board (ticket add-option-to-delete-ticket).
+        if op == "delete" {
+            tickets.retain(|ticket| ticket.id != id);
+            continue;
+        }
         let Some(ticket) = tickets.iter_mut().find(|ticket| ticket.id == id) else { continue };
         match op.as_str() {
             "status" => {
@@ -486,6 +493,15 @@ fn taken_names(project: &Project, tickets: &[Ticket]) -> HashSet<String> {
     let mut names: HashSet<String> = tickets.iter().map(|ticket| ticket.id.clone()).collect();
     // The verb `check full` of the worker script runs the scheduled full run, never a ticket.
     names.insert("full".to_string());
+    // The id of a deleted ticket stays taken: an old claim, a task file or a commit can carry it.
+    for line in fs::read_to_string(project.tickets_file()).unwrap_or_default().lines() {
+        let Ok(Value::Object(event)) = serde_json::from_str::<Value>(line.trim()) else { continue };
+        if event.get("op").and_then(Value::as_str) == Some("delete") {
+            if let Some(id) = event.get("ref").or_else(|| event.get("id")).and_then(Value::as_str) {
+                names.insert(id.trim().to_string());
+            }
+        }
+    }
     let dir = project.tickets_file().parent().map(Path::to_path_buf).unwrap_or_default();
     for folder in [dir.clone(), dir.join("plans"), dir.join("briefs")] {
         for entry in fs::read_dir(folder).into_iter().flatten().flatten() {
@@ -1333,6 +1349,40 @@ pub fn ticket_move_all(cwd: String, ids: Vec<String>, status: String) -> Result<
         let mut fields = Map::new();
         fields.insert("order".into(), json!(order));
         events.push(event("update", &ticket.id, at, fields));
+    }
+    append(&project, &events)?;
+    Ok(read(&project))
+}
+
+/// Deletes a ticket from the board (ticket add-option-to-delete-ticket): one `delete` line for the
+/// ticket and one for each of its parts, then the lines that close the gap in the queue of New.
+/// Refuses a ticket in progress and a parent with a part in progress. The files of its task stay.
+pub fn ticket_delete(cwd: String, id: String) -> Result<Vec<Ticket>, String> {
+    let project = Project::find(&cwd)?;
+    let tickets = read(&project);
+    let ticket = find(&tickets, &id)?;
+    if ticket.status == IN_PROGRESS {
+        return Err(format!("the ticket {id} runs now; it can be deleted when its task ends"));
+    }
+    let parts = parts_of(&tickets, &id);
+    if let Some(part) = parts.iter().find(|part| part.status == IN_PROGRESS) {
+        return Err(format!("the part {} of the ticket {id} runs now; the ticket can be deleted when it ends", part.id));
+    }
+    let mut gone: Vec<String> = parts.iter().map(|part| part.id.clone()).collect();
+    gone.push(id.clone());
+    let at = now();
+    let mut events: Vec<Value> = gone.iter().map(|one| event("delete", one, at, Map::new())).collect();
+    // The queue of New without the deleted tickets, without gaps.
+    let mut queue: Vec<&Ticket> = tickets.iter().filter(|one| one.status == NEW && !gone.contains(&one.id)).collect();
+    queue.sort_by_key(|one| (one.order.is_none(), one.order, one.created));
+    for (place, one) in queue.iter().enumerate() {
+        let order = place as u32 + 1;
+        if one.order == Some(order) {
+            continue;
+        }
+        let mut fields = Map::new();
+        fields.insert("order".into(), json!(order));
+        events.push(event("update", &one.id, at, fields));
     }
     append(&project, &events)?;
     Ok(read(&project))
@@ -3023,6 +3073,61 @@ mod tests {
         let added = vec![PlanAdded { key: "new-1".into(), text: "From Plan the flow".into(), after: vec![] }];
         plan_confirm(cwd(&project), vec![], vec![], added).unwrap();
         assert_eq!(crate::core::plangroups::queued_new(&project), vec!["from-plan-the-flow".to_string()], "Plan the flow");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_deleted_ticket_leaves_the_board_and_its_id_stays_taken() {
+        let (project, base) = scratch("delete");
+        let a = ticket_add(cwd(&project), "one".into(), None, None, None).unwrap();
+        let b = ticket_add(cwd(&project), "two".into(), None, None, None).unwrap();
+        let c = ticket_add(cwd(&project), "three".into(), None, None, None).unwrap();
+        ticket_move(cwd(&project), c.id.clone(), BACKLOG.into(), vec![a.id.clone(), b.id.clone()], None).unwrap();
+        // A New ticket goes, and the queue of New closes the gap.
+        let after = ticket_delete(cwd(&project), a.id.clone()).unwrap();
+        assert!(!after.iter().any(|t| t.id == a.id));
+        assert_eq!(after.iter().find(|t| t.id == b.id).unwrap().order, Some(1), "the queue closes the gap");
+        // A Backlog ticket goes.
+        let after = ticket_delete(cwd(&project), c.id.clone()).unwrap();
+        assert_eq!(after.iter().map(|t| t.id.clone()).collect::<Vec<_>>(), vec![b.id.clone()]);
+        assert_eq!(read(&project), after);
+        let text = fs::read_to_string(project.tickets_file()).unwrap();
+        assert!(text.lines().any(|line| line.contains(r#""op":"delete""#) && line.contains(&format!(r#""ref":"{}""#, a.id))));
+        // A new ticket with the same title does not take the id of the deleted one.
+        let again = ticket_add(cwd(&project), "one".into(), None, None, None).unwrap();
+        assert_eq!(again.id, format!("{}-2", a.id));
+        assert!(ticket_delete(cwd(&project), a.id.clone()).is_err(), "a deleted ticket is not found again");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_ticket_in_progress_is_not_deleted() {
+        let (project, base) = scratch("delete-running");
+        let a = ticket_add(cwd(&project), "one".into(), None, None, None).unwrap();
+        append(&project, &[move_event(&a.id, now(), IN_PROGRESS, "", None)]).unwrap();
+        let text = || fs::read_to_string(project.tickets_file()).unwrap();
+        let before = text();
+        assert!(ticket_delete(cwd(&project), a.id.clone()).is_err());
+        assert_eq!(text(), before, "a refused delete writes nothing");
+        assert_eq!(find(&read(&project), &a.id).unwrap().status, IN_PROGRESS);
+        // A parent with a part in progress stays too.
+        let (parent, parts) = chain(&project, 2);
+        append(&project, &[move_event(&parts[0].id, now(), IN_PROGRESS, "", None)]).unwrap();
+        let before = text();
+        assert!(ticket_delete(cwd(&project), parent.id.clone()).is_err());
+        assert_eq!(text(), before);
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_parent_is_deleted_with_its_parts() {
+        let (project, base) = scratch("delete-parts");
+        let (parent, parts) = chain(&project, 2);
+        ticket_move(cwd(&project), parts[0].id.clone(), DONE.into(), vec![], None).unwrap();
+        let other = ticket_add(cwd(&project), "other".into(), None, None, None).unwrap();
+        let after = ticket_delete(cwd(&project), parent.id.clone()).unwrap();
+        assert_eq!(after.iter().map(|t| t.id.clone()).collect::<Vec<_>>(), vec![other.id.clone()]);
+        assert_eq!(after[0].order, Some(1));
         let _ = fs::remove_dir_all(base);
     }
 }

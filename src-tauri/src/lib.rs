@@ -86,6 +86,7 @@ pub fn run() {
             commands::ticket_move,
             commands::ticket_claim,
             commands::ticket_move_all,
+            commands::ticket_delete,
             commands::ticket_add_part,
             commands::ticket_edit,
             commands::ticket_parts,
