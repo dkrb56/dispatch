@@ -2013,9 +2013,11 @@ function Measure-Limit { Command-Limit 'measure-commands.txt' 600 }
 
 # The locks of the project: one measuring at a time (projects use fixed test ports), and one merge at
 # a time. A lock file holds the process id, the ticket and the time. A lock whose process is gone is
-# removed.
+# removed. Pick-Lock guards the pick and the claim of a work folder (ticket
+# bug-two-tasks-got-the-same-work-folder); its holder takes no other lock.
 function Lock-Path { Join-Path $Reports 'measure\lock' }
 function Merge-Lock { Join-Path $Reports 'merge\lock' }
+function Pick-Lock { Join-Path $Reports 'work\lock' }
 
 # The process $ProcessId runs and is the one that wrote a file at the time $Since. Windows gives the
 # id of an ended process to a new process, also within a second on a busy computer, so a process that
@@ -2318,8 +2320,9 @@ $script:FolderNo = 1
 function Work-Folder([int]$N = $script:FolderNo) { Join-Path $Reports "work\$N" }
 function Work-Record([int]$N = $script:FolderNo) { Join-Path $Reports "work\$N.record" }
 
-# The record of a work folder (rule 5 of docs/work-folders.md): the lines ticket, use (work, check
-# or merge), pid (of the script that wrote it), job (of the claude run, or -) and since. $null without it.
+# The record of a work folder (rule 5 of docs/work-folders.md): the lines ticket, use (work, check,
+# merge, or start: the claim of a script that prepares the folder), pid (of the script that wrote it),
+# job (of the claude run, or -) and since. $null without it.
 function Read-Record([int]$N = $script:FolderNo) {
   $file = Work-Record $N
   if (-not (Test-Path -LiteralPath $file)) { return $null }
@@ -2345,7 +2348,8 @@ function Listed-Workers {
   $script:Listed
 }
 
-# The ticket that holds a work folder: the script of the record still runs, or the use is work and
+# The ticket that holds a work folder: the script of the record still runs (a record with the use
+# start holds only then), or the use is work and
 # the work run of that ticket still runs, waits at a prompt or is idle with no turn (a follow-up
 # continues it in that folder). Else $null: a stale record is
 # overwritten by the next user. No file time and no reflog decides; the time of the record only
@@ -2511,44 +2515,57 @@ function Work-Job {
 # folder has a plan that names a file of this plan (user decision 2). $script:FolderNo is the folder then.
 function Enter-WorkFolder([string]$Use, $Worker) {
   $count = Folder-Count
-  $session = 0
-  if ($Use -eq 'check' -or ($Use -eq 'work' -and $null -ne $Worker)) { $session = Session-Folder $Worker }
-  $holders = @(Folder-Holders $count)
-  if ($session -gt 0) {
-    $number = $session
-    $holder = Record-Holder $session
-    if ($holder -and $count -eq 1 -and $session -eq 1) { Refuse-Wait "the work folder of this project is in use (task $holder); the run starts when it is free" }
-    if ($holder) { Refuse-Wait "the work folder $session of this project, where the session of this task runs, is in use (task $holder); the run starts when it is free" }
-  } else {
-    $number = Pick-Folder $holders $count
-    if ($number -eq 0 -and $Use -eq 'merge') {
-      $wait = 60
-      $seconds = 0
-      if ([int]::TryParse("$env:DISPATCH_FOLDER_WAIT", [ref]$seconds) -and $seconds -ge 0) { $wait = $seconds }
-      $deadline = (Get-Date).AddSeconds($wait)
-      while ($number -eq 0 -and (Get-Date) -lt $deadline) {
-        Start-Sleep -Seconds 2
-        # A new poll looks at the sessions again.
-        $script:ListedOk = $false
-        $holders = @(Folder-Holders $count)
-        $number = Pick-Folder $holders $count
+  # The pick and the claim happen under one lock (ticket bug-two-tasks-got-the-same-work-folder): the
+  # claim, a record with the use start, holds the folder while this script prepares it, so a second
+  # start in the same moment sees it as held. A refusal (exit 2) releases the lock in the finally.
+  $pick = Pick-Lock
+  try {
+    Enter-Lock $pick 60 'work folder pick'
+    $session = 0
+    if ($Use -eq 'check' -or ($Use -eq 'work' -and $null -ne $Worker)) { $session = Session-Folder $Worker }
+    $holders = @(Folder-Holders $count)
+    if ($session -gt 0) {
+      $number = $session
+      $holder = Record-Holder $session
+      if ($holder -and $count -eq 1 -and $session -eq 1) { Refuse-Wait "the work folder of this project is in use (task $holder); the run starts when it is free" }
+      if ($holder) { Refuse-Wait "the work folder $session of this project, where the session of this task runs, is in use (task $holder); the run starts when it is free" }
+    } else {
+      $number = Pick-Folder $holders $count
+      if ($number -eq 0 -and $Use -eq 'merge') {
+        $wait = 60
+        $seconds = 0
+        if ([int]::TryParse("$env:DISPATCH_FOLDER_WAIT", [ref]$seconds) -and $seconds -ge 0) { $wait = $seconds }
+        $deadline = (Get-Date).AddSeconds($wait)
+        while ($number -eq 0 -and (Get-Date) -lt $deadline) {
+          # The wait does not hold the lock: each poll takes it again.
+          Exit-Lock $pick
+          Start-Sleep -Seconds 2
+          Enter-Lock $pick 60 'work folder pick'
+          # A new poll looks at the sessions again.
+          $script:ListedOk = $false
+          $holders = @(Folder-Holders $count)
+          $number = Pick-Folder $holders $count
+        }
+      }
+      if ($number -eq 0) {
+        $what = if ($Use -eq 'merge') { 'merge' } else { 'run' }
+        if ($count -eq 1) { Refuse-Wait "the work folder of this project is in use (task $(Record-Holder 1)); the $what starts when it is free" }
+        $names = @($holders | Where-Object { $_.N -le $count -and $_.Holder } | ForEach-Object { $_.Holder } | Select-Object -Unique)
+        Refuse-Wait "all $count work folders of this project are in use (tasks $($names -join ', ')); the $what starts when one is free"
       }
     }
-    if ($number -eq 0) {
-      $what = if ($Use -eq 'merge') { 'merge' } else { 'run' }
-      if ($count -eq 1) { Refuse-Wait "the work folder of this project is in use (task $(Record-Holder 1)); the $what starts when it is free" }
-      $names = @($holders | Where-Object { $_.N -le $count -and $_.Holder } | ForEach-Object { $_.Holder } | Select-Object -Unique)
-      Refuse-Wait "all $count work folders of this project are in use (tasks $($names -join ', ')); the $what starts when one is free"
+    if ($Use -eq 'work') {
+      foreach ($entry in $holders) {
+        if (-not $entry.Holder -or $entry.Holder -eq $Id) { continue }
+        $same = @(Same-Files $entry.Holder)
+        if ($same.Count -gt 0) { Refuse-Wait "the task $($entry.Holder) works on the same files ($($same -join ', ')); this work run starts when it has ended" }
+      }
     }
+    $script:FolderNo = $number
+    Write-Record 'start' '-' $number
+  } finally {
+    Exit-Lock $pick
   }
-  if ($Use -eq 'work') {
-    foreach ($entry in $holders) {
-      if (-not $entry.Holder -or $entry.Holder -eq $Id) { continue }
-      $same = @(Same-Files $entry.Holder)
-      if ($same.Count -gt 0) { Refuse-Wait "the task $($entry.Holder) works on the same files ($($same -join ', ')); this work run starts when it has ended" }
-    }
-  }
-  $script:FolderNo = $number
   $folder = Work-Folder
   $info = if ($Use -eq 'merge') { Read-BranchFile $Id } else { Ensure-BranchFile }
   # A task of the old path (ticket moving-a-project): git checks out a branch in one folder only, and
@@ -14926,6 +14943,37 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
             assert_eq!(folder_branch(&one), "task/t-4");
             assert_eq!(folder_branch(&two), "task/t-3");
             assert_eq!(current_branch(&project).as_deref(), Some(base.as_str()));
+            clean(&project);
+        }
+
+        /// Ticket bug-two-tasks-got-the-same-work-folder: the Approve of t-2 comes while the Approve
+        /// of t-1 runs the set-up command of folder 1. The pick and the claim of a folder happen under
+        /// one lock, so t-2 takes folder 2 and the two runs never share a folder.
+        #[test]
+        fn two_approves_at_the_same_moment_take_two_work_folders() {
+            let (project, fake, _base) = work_project("work-same-moment");
+            set_work_folder_count(&project, 2);
+            let (one, two) = (project.work_folder_at(1), project.work_folder_at(2));
+            write_file(&project.work_setup_file(), "# limit 60\nping -n 6 127.0.0.1 >nul\n").unwrap();
+            plan_only(&project, &fake, "t-1");
+            plan_only(&project, &fake, "t-2");
+            let (first, second) = std::thread::scope(|scope| {
+                let first = scope.spawn(|| run_script_env(&project, &fake, "done", &["approve", "t-1"], &[("FAKE_NAME", "t-1")]));
+                // t-1 has made folder 1 and runs its set-up command.
+                let started = std::time::Instant::now();
+                while !one.join(".git").exists() {
+                    assert!(started.elapsed() < std::time::Duration::from_secs(60), "folder 1 was not made");
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                let second = run_script_env(&project, &fake, "done", &["approve", "t-2"], &[("FAKE_NAME", "t-2")]);
+                (first.join().unwrap(), second)
+            });
+            assert_eq!(first.0, 0, "{}", first.1);
+            assert_eq!(second.0, 0, "{}", second.1);
+            assert_eq!(folder_branch(&one), "task/t-1");
+            assert_eq!(folder_branch(&two), "task/t-2");
+            assert!(read(&project.folder_record(1)).starts_with("ticket: t-1\n"), "{}", read(&project.folder_record(1)));
+            assert!(read(&project.folder_record(2)).starts_with("ticket: t-2\n"), "{}", read(&project.folder_record(2)));
             clean(&project);
         }
 

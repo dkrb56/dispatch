@@ -53,7 +53,7 @@ The user's decisions of 2026-11-21: the five rules; one work folder at the start
 - The record of the folder names its user: the ticket, the kind of use (work run or merge) and the id of the job or process. The folder is free when that job or process has ended. A second user waits; its card says "waits for the work folder" and names the task that has it.
 - The switch: `workFolders` in `.dispatch/options.json`, "Work folder" under Task branches in Setup pipeline. It works only with Task branches on.
 - The set-up command: `.dispatch/work-setup.txt`, one command line; a first line `# limit <seconds>` sets its time limit (default 3600).
-- The record: `.dispatch/work/1.record`, with the lines `ticket:`, `use:` (`work`, `check` or `merge`), `pid:`, `job:` and `since:`.
+- The record: `.dispatch/work/1.record`, with the lines `ticket:`, `use:` (`work`, `check`, `merge`, or `start`: the claim while the script prepares the folder), `pid:`, `job:` and `since:`. The script picks a folder and writes its claim under one lock (`.dispatch/work/lock`), so two starts in the same moment never take the same folder.
 - The set-up log: `.dispatch/work/1-setup.log`.
 - The design holds for more than one folder. More folders permit parallel work runs; each costs disk space and one first build. The section "More than one work folder" says how.
 
