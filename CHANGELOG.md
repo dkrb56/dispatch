@@ -2,6 +2,14 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.101 (2026-11-27)
+- The gate refusal parser accepts the missing session log sentence and the card shows it.
+- The step Task files also waits for a running worker with a bare ticket id that has task files.
+- A script removes a lock of an ended process only under a system mutex and only when it is still the lock it read; the pick lock polls every 250 ms.
+- A merge in the project folder puts the session-log pointer back as it was, also after a good merge.
+- The added computers of the phone page come from the storage once it exists, the address only when nothing is stored.
+- The keys of the added computers go after # in the page address, not into the query.
+
 ## 0.1.100 (2026-11-27)
 - Worker alerts name the project, not the work folder number.
 - The merge card says that a pause holds the auto-merge until Run queue is on.
