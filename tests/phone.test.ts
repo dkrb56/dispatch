@@ -746,11 +746,18 @@ test("the hosts of the page come from the address, a stored key or a pasted link
   assert.equal(keyAddress(KEY, []), `/?key=${KEY}`, "no other computer: the old address");
   assert.equal(keyAddress(null), "/");
   const address = keyAddress(KEY, [b]);
-  const search = address.slice(1);
-  assert.equal(keyFromAddress(search, ""), KEY, "the key of the computer of the page stays the first query value");
-  assert.ok(search.startsWith(`?key=${KEY}&`));
-  assert.deepEqual(hostsFromAddress(search), [b], "the address gives the added computer back");
+  const cut = address.indexOf("#");
+  const search = address.slice(1, cut);
+  const hash = address.slice(cut);
+  assert.equal(keyFromAddress(search, hash), KEY, "the key of the computer of the page stays in the query");
+  assert.equal(search, `?key=${KEY}`);
+  assert.ok(!search.includes("hosts"), "the query holds no other key");
+  assert.ok(hash.startsWith("#hosts="), "the other computers sit after #");
+  assert.deepEqual(hostsFromAddress("", hash), [b], "the address gives the added computer back");
   assert.deepEqual(hostsFromAddress(`?key=${KEY}`), [], "an old address has no added computer");
+  assert.deepEqual(hostsFromAddress(`?key=${KEY}&hosts=${encodeURIComponent(`${B}|${OTHER}`)}`, ""), [b], "an older icon holds them in the query");
+  const C = "100.64.0.3:7470";
+  assert.deepEqual(hostsFromAddress(`?hosts=${encodeURIComponent(`${B}|${OTHER}`)}`, `#hosts=${encodeURIComponent(`${C}|${OTHER}`)}`).map((host) => host.id), [C], "the part after # wins");
   assert.deepEqual(hostsFromAddress(`?hosts=${encodeURIComponent(`bad|${OTHER},${B}|short,${B.toUpperCase()}|${OTHER},${B}|${KEY}`)}`), [{ ...b, address: B.toUpperCase() }], "bad items drop out, each computer once");
   // The pasted link of the Phone tab, the address of an icon, a bare key (user decision 4).
   assert.deepEqual(hostFromText(` http://${B}/#key=${OTHER}\n`, HERE), b);
@@ -829,5 +836,6 @@ test("the cards and the boards keep the computer of each project", () => {
   assert.ok(page.includes("new WebSocket(`ws://${link.address}/`)"), "one socket per computer");
   assert.ok(page.includes("localStorage.setItem(HOSTS_STORE, hostsToText("), "the computers stay in the storage");
   assert.ok(page.includes('history.replaceState(null, "", keyAddress('), "and in the address");
+  assert.ok(page.includes("hostsFromAddress(location.search, location.hash)"), "the start reads the part after #");
   assert.ok(!page.includes("ws://${location.host}"), "no socket only to the computer of the page");
 });

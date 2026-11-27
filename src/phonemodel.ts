@@ -391,7 +391,7 @@ export interface PhoneHost {
 
 /** The stored computers of the phone: the host the page came from and the added ones. */
 export const HOSTS_STORE = "dispatch-phone-hosts";
-/** The query value of the address that holds the added computers. */
+/** The name in the part after `#` of the address (older: the query) that holds the added computers. */
 const HOSTS_QUERY = "hosts";
 const ADDRESS = /^[0-9a-z.\-[\]:]+:\d{1,5}$/i;
 
@@ -408,9 +408,13 @@ function oneEach(hosts: readonly PhoneHost[]): PhoneHost[] {
   return hosts.filter((host) => !seen.has(host.id) && Boolean(seen.add(host.id)));
 }
 
-/** The added computers in the query of the address: `hosts=<address>:<port>|<key>,…`. */
-export function hostsFromAddress(search: string): PhoneHost[] {
-  const value = new URLSearchParams(search).get(HOSTS_QUERY) ?? "";
+/**
+ * The added computers in the address: `hosts=<address>:<port>|<key>,…` after `#`, which the browser
+ * never sends. An older address holds them in the query; the part after `#` wins.
+ */
+export function hostsFromAddress(search: string, hash = ""): PhoneHost[] {
+  const fragment = new URLSearchParams(hash.replace(/^#/, "")).get(HOSTS_QUERY);
+  const value = fragment ?? new URLSearchParams(search).get(HOSTS_QUERY) ?? "";
   const hosts: PhoneHost[] = [];
   for (const item of value.split(",")) {
     const bar = item.lastIndexOf("|");
@@ -422,14 +426,21 @@ export function hostsFromAddress(search: string): PhoneHost[] {
 
 /**
  * The address that holds the key after the first load; Add to Home Screen saves this one. With added
- * computers it holds them too, so an icon added later keeps them (user decision 1).
+ * computers it holds them too, so an icon added later keeps them (user decision 1). The own key stays
+ * in the query: it goes only to its own host. The keys of the others go after `#`, which the browser
+ * never sends, so the first computer does not receive them.
  */
 export function keyAddress(key: string | null, others: readonly PhoneHost[] = []): string {
   const query = new URLSearchParams();
   if (key) query.set("key", key);
-  if (others.length > 0) query.set(HOSTS_QUERY, others.map((host) => `${host.address}|${host.key}`).join(","));
   const text = query.toString();
-  return text ? `/?${text}` : "/";
+  let address = text ? `/?${text}` : "/";
+  if (others.length > 0) {
+    const hosts = new URLSearchParams();
+    hosts.set(HOSTS_QUERY, others.map((host) => `${host.address}|${host.key}`).join(","));
+    address += `#${hosts.toString()}`;
+  }
+  return address;
 }
 
 /**

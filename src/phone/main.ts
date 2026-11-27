@@ -32,7 +32,7 @@
 //
 // More than one computer (ticket the-phone-page-shows-the-projects-of): the page connects to the host
 // it came from and to each computer added in Projects, each with its own socket, key, PIN and round.
-// The address and the storage hold every computer, so a Home Screen icon keeps them. A card carries
+// The address (after `#`) and the storage hold every computer, so a Home Screen icon keeps them. A card carries
 // its computer, and each call goes to the computer of its project.
 import "@xterm/xterm/css/xterm.css";
 import { Terminal } from "@xterm/xterm";
@@ -52,6 +52,7 @@ import {
   inChoice,
   keyAddress,
   keyFromAddress,
+  keyFromHash,
   keyFromText,
   oldKeyText,
   type PhoneHost,
@@ -437,12 +438,13 @@ function newLink(address: string, key: string | null, name: string, own: boolean
 const HERE = location.host.toLowerCase();
 
 /**
- * The computers stay in the query of the address and in the storage, so that an icon on the Home
- * Screen carries them: the icon has its own storage and only the address that Add to Home Screen saved.
- * The storage wins once the page wrote it.
+ * The other computers stay after `#` in the address (the browser never sends it, so no computer gets
+ * the key of another) and in the storage, so that an icon on the Home Screen carries them: the icon
+ * has its own storage and only the address that Add to Home Screen saved. The storage wins once the
+ * page wrote it.
  */
 const storedHosts = readStoredHosts();
-const started = startHosts(location.host, keyFromAddress(location.search, location.hash), hostsFromAddress(location.search), storedHosts, readOldKey());
+const started = startHosts(location.host, keyFromAddress(location.search, location.hash), hostsFromAddress(location.search, location.hash), storedHosts, readOldKey());
 const own = newLink(location.host, started.key, (storedHosts ?? []).find((host) => host.id === HERE)?.name ?? "", true);
 let links: Link[] = [own, ...started.others.map((host) => newLink(host.address, host.key, host.name, false))];
 
@@ -458,6 +460,10 @@ function saveHosts(): void {
   history.replaceState(null, "", keyAddress(own.key, hosts.filter((host) => host.id !== own.id)));
 }
 if (own.key || links.length > 1) saveHosts();
+// A change of only the part after `#` does not reload the page: a scanned link `#key=…` must still load.
+window.addEventListener("hashchange", () => {
+  if (keyFromHash(location.hash)) location.reload();
+});
 
 /** The name of a computer: what its host said, else its address. */
 function hostName(link: Link): string {
