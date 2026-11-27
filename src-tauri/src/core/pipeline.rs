@@ -1684,7 +1684,7 @@ The gate command also gets DISPATCH_LOG: the session log of the task, a path rel
 the gate, or no variable when the task has none. In a project whose ignored file .claude\state\session-log
 names its current log, the merge points that file at the log of the task (the newest file that the task
 branch added in the folder of the log that it names) before the gate, and approve, reply, resume and
-check do so on the task branch; a refused merge puts the file back as it was.
+check do so on the task branch; a merge in the project folder puts the file back as it was after the gate, also after a good merge.
 <ticket-id>.models, when it exists, gives the model and the effort of a run of the task: a line
 `plan <model> <effort>` or `work <model> <effort>` replaces those of the options file.
 work-tools.txt, when it exists, adds one tool name per line to the --tools list of the work run.
@@ -2929,6 +2929,7 @@ function Undo-Sentence($Undo) {
 # run on the code of a task, the pointer of the folder that runs names the log of that task: the newest
 # file that the commits of the task added in the folder of the log that the pointer names. A task
 # without such a file leaves the pointer as it is (user decision 2). A project without the file stays as before.
+# A merge in the project folder puts the pointer back as it was after the gate, good merge or refusal.
 $script:PointerBefore = $null
 function Log-Pointer([string]$Dir) { Join-Path $Dir '.claude\state\session-log' }
 
@@ -3000,7 +3001,7 @@ function Set-LogPointer([string]$Dir, [string]$Log) {
   [IO.File]::WriteAllText($file, $text)
 }
 
-# Writes the pointer back as it was before the first change of this run (a refused merge), or deletes
+# Writes the pointer back as it was before the first change of this run (a merge in the project folder, or a refused merge in a work folder), or deletes
 # it when this run made it. Nothing when this run changed no pointer.
 function Restore-LogPointer {
   $before = $script:PointerBefore
@@ -4063,8 +4064,8 @@ switch ($Verb) {
         # Every way out inside PowerShell (a refusal, an error, Ctrl+C) leaves no open merge.
         Invoke-Git @('merge', '--abort') | Out-Null
       }
-      # A refused merge puts the session-log pointer back as it was (ticket merge-gate-runs-with-the-session-log-of).
-      if (-not $script:Merged) { Restore-LogPointer }
+      # A merge in the project folder puts the session-log pointer back as it was, after a good merge too; a refused merge in a work folder does so as well (ticket the-session-log-pointer-stays-on-the-log).
+      if ($folders) { if (-not $script:Merged) { Restore-LogPointer } } else { Restore-LogPointer }
       Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
       Exit-Lock (Merge-Lock)
     }
@@ -16176,7 +16177,8 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
     const SESSION_LOG_GATE: &str = "for /f \"usebackq delims=\" %%f in (\".claude\\state\\session-log\") do (echo GATE %DISPATCH_TICKET% %DISPATCH_LOG%)>> \"%%f\"\n";
 
     /// Ticket merge-gate-runs-with-the-session-log-of: the pointer named the log of another task, so
-    /// the gate wrote its line there. Each merge now points it at the log of its own task first.
+    /// the gate wrote its line there. Each merge now points it at the log of its own task first, and
+    /// puts it back as it was after the gate, also after a good merge.
     #[test]
     fn a_merge_gate_writes_into_the_session_log_of_its_own_task() {
         let (project, fake, base) = branch_project("session-log-own");
@@ -16191,7 +16193,7 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
         assert!(merged.starts_with("merged task/t-1"), "{merged}");
         assert!(!project.root.join("logs").join("t-2.md").exists(), "the gate of t-1 wrote into the log of t-2");
         assert_eq!(read(&project.root.join("logs").join("t-1.md")), "# the session log of t-1\nGATE t-1 logs/t-1.md\n");
-        assert_eq!(read(&pointer), "logs/t-1.md\n");
+        assert_eq!(read(&pointer), "logs/t-2.md\n");
 
         let merged = task_merge(cwd, "t-2".to_string()).unwrap();
         assert!(merged.starts_with("merged task/t-2"), "{merged}");
