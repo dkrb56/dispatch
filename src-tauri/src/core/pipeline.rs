@@ -7396,8 +7396,10 @@ fn worker_runs_in(json: &str, root: &Path, ticket: &str) -> Option<bool> {
 /// `<ticket> [work]` whose folder is the project root or a folder under it (a work folder), in the
 /// state `working`, or `blocked` with the status `waiting`. It gives "the plan run of <ticket>" or
 /// "the work run of <ticket>". A session without a folder does not count: the list holds the sessions
-/// of every project. No such worker: `Some(None)`. Bad JSON: None.
-fn running_worker_in(json: &str, root: &Path) -> Option<Option<String>> {
+/// of every project. A bare ticket id (a worker of an older script) counts when `is_task` says that
+/// the project has task files for it: a chat such as Triage has none. It gives "the worker of
+/// <ticket>". No such worker: `Some(None)`. Bad JSON: None.
+fn running_worker_in(json: &str, root: &Path, is_task: impl Fn(&str) -> bool) -> Option<Option<String>> {
     let sessions: Vec<Value> = serde_json::from_str(json).ok()?;
     let folder = |path: &str| {
         let path = path.replace('\\', "/").to_lowercase();
@@ -7420,8 +7422,12 @@ fn running_worker_in(json: &str, root: &Path) -> Option<Option<String>> {
         .filter(|session| runs(session))
         .filter_map(|session| {
             let name = text(session, "name")?;
-            let (ticket, run) = name.strip_suffix(" [plan]").map(|ticket| (ticket, "plan")).or_else(|| name.strip_suffix(" [work]").map(|ticket| (ticket, "work")))?;
-            Some((session.get("startedAt").and_then(Value::as_u64).unwrap_or(0), format!("the {run} run of {ticket}")))
+            let run = match name.strip_suffix(" [plan]").map(|ticket| (ticket, "plan")).or_else(|| name.strip_suffix(" [work]").map(|ticket| (ticket, "work"))) {
+                Some((ticket, run)) => format!("the {run} run of {ticket}"),
+                None if check_ticket(&name).is_ok() && is_task(&name) => format!("the worker of {name}"),
+                None => return None,
+            };
+            Some((session.get("startedAt").and_then(Value::as_u64).unwrap_or(0), run))
         })
         .max_by_key(|(started, _)| *started);
     Some(newest.map(|(_, run)| run))
@@ -7441,7 +7447,13 @@ fn running_worker(project: &Project) -> Result<Option<String>, String> {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(format!("claude agents failed: {}", stderr.lines().next().unwrap_or_default()));
     }
-    running_worker_in(&String::from_utf8_lossy(&output.stdout), &project.root).ok_or_else(|| "claude agents gave a list that Dispatch cannot read".to_string())
+    // An older script writes the state, the report and the brief of a task into its task files.
+    let is_task = |ticket: &str| {
+        [Some(project.reports.clone()), project.old_reports()].into_iter().flatten().any(|folder| {
+            folder.join(format!("{ticket}.state")).is_file() || folder.join(format!("{ticket}.md")).is_file() || folder.join("briefs").join(format!("{ticket}.md")).is_file()
+        })
+    };
+    running_worker_in(&String::from_utf8_lossy(&output.stdout), &project.root, is_task).ok_or_else(|| "claude agents gave a list that Dispatch cannot read".to_string())
 }
 
 /// The tests never run the real `claude`: they set the answer per project root. No answer: no
@@ -17030,7 +17042,7 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
     #[test]
     fn running_worker_in_reads_the_list() {
         let root = Path::new(r"D:\Projects\Starminer");
-        let list = |workers: Value| running_worker_in(&workers.to_string(), root);
+        let list = |workers: Value| running_worker_in(&workers.to_string(), root, |name| name.starts_with("t-") && name != "t-9");
         let one = |name: &str, state: &str, status: Option<&str>, cwd: Option<&str>| {
             let mut worker = json!({ "id": "bg-1", "name": name, "state": state, "startedAt": 5 });
             if let Some(status) = status {
@@ -17052,12 +17064,16 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
         assert_eq!(list(json!([one("t-1 [work]", "blocked", Some("idle"), here)])), Some(None), "a worker at its question");
         assert_eq!(list(json!([one("t-1 [work]", "working", None, None)])), Some(None), "a worker without a folder");
         assert_eq!(list(json!([one("Triage", "working", None, here)])), Some(None), "a chat");
+        assert_eq!(list(json!([one("t-5", "working", None, here)])), runs("the worker of t-5"), "a bare ticket id");
+        assert_eq!(list(json!([one("t-5", "blocked", Some("waiting"), here)])), runs("the worker of t-5"));
+        assert_eq!(list(json!([one("t-5", "done", None, here)])), Some(None), "an ended bare worker");
+        assert_eq!(list(json!([one("t-9", "working", None, here)])), Some(None), "a bare name without task files");
         // The newest running worker counts.
         let mut older = one("t-1 [plan]", "working", None, here);
         older["startedAt"] = json!(1);
         assert_eq!(list(json!([older, one("t-4 [work]", "working", None, here)])), runs("the work run of t-4"));
         assert_eq!(list(json!([])), Some(None));
-        assert_eq!(running_worker_in("not json", root), None);
+        assert_eq!(running_worker_in("not json", root, |_| true), None);
     }
 
     /// Ticket five-problems-seen-today-in-setup, problem 2: a zero-filled `.git/HEAD` shows the
