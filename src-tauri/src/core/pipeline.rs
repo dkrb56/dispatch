@@ -2038,20 +2038,57 @@ function Owner-Runs([string]$ProcessId, [string]$Since) {
   $started.ToUniversalTime() -le $time.UtcDateTime.AddSeconds($slack)
 }
 
-# The ticket of a lock whose process still runs, else $null.
+# The name of the system mutex that guards the removal of the lock $Lock: a backslash is not permitted
+# in the name, and two scripts can write the path in a different case, so the name has a hash.
+function Lock-Guard([string]$Lock) {
+  $path = [IO.Path]::GetFullPath($Lock).ToLowerInvariant()
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try { $hash = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($path)) } finally { $sha.Dispose() }
+  'Local\dispatch-lock-' + (($hash | ForEach-Object { $_.ToString('x2') }) -join '')
+}
+
+# The ticket of a lock whose process still runs, else $null. A lock whose process is gone is removed
+# under the guard and only when its text is still the text that was read (ticket
+# two-starts-can-both-take-a-lock-after-a): another script can remove it and write its own between
+# the read and the removal.
 function Lock-Holder([string]$Lock) {
   if (-not (Test-Path -LiteralPath $Lock)) { return $null }
-  $holder = "$(Get-Content -LiteralPath $Lock -Raw -ErrorAction SilentlyContinue)".Trim() -split "`t"
+  $text = "$(Get-Content -LiteralPath $Lock -Raw -ErrorAction SilentlyContinue)"
+  $holder = $text.Trim() -split "`t"
   if (Owner-Runs $holder[0] $(if ($holder.Count -gt 2) { $holder[2] } else { '' })) {
     if ($holder.Count -gt 1) { return $holder[1] }
     return 'another task'
   }
-  Remove-Item -LiteralPath $Lock -Force -ErrorAction SilentlyContinue
+  if ($env:DISPATCH_LOCK_PAUSE) {
+    # A test hook: the script stops here until the test removes the file <lock>.paused (60 s maximum).
+    $paused = "$Lock.paused"
+    [IO.File]::WriteAllText($paused, "$PID`n")
+    $until = (Get-Date).AddSeconds(60)
+    while ((Test-Path -LiteralPath $paused) -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 50 }
+  }
+  # Windows releases the mutex of an ended process; the next caller then owns it, with an
+  # AbandonedMutexException (in Windows PowerShell inside a MethodInvocationException). A mutex
+  # belongs to the thread that took it, so this call takes it and releases it. At a timeout nothing
+  # is removed, and the caller looks again.
+  $guard = New-Object Threading.Mutex($false, (Lock-Guard $Lock))
+  try {
+    $owned = $false
+    try { $owned = $guard.WaitOne(10000) } catch {
+      $e = $_.Exception
+      if ($e -is [Threading.AbandonedMutexException] -or $e.InnerException -is [Threading.AbandonedMutexException]) { $owned = $true } else { throw }
+    }
+    if (-not $owned) { return $null }
+    try {
+      $now = "$(Get-Content -LiteralPath $Lock -Raw -ErrorAction SilentlyContinue)"
+      if ($now -ceq $text) { Remove-Item -LiteralPath $Lock -Force -ErrorAction SilentlyContinue }
+    } finally { $guard.ReleaseMutex() }
+  } finally { $guard.Dispose() }
   $null
 }
 
-# Takes a lock. A second caller waits up to $Limit seconds (a check every 5 s), then is refused.
-function Enter-Lock([string]$Lock, [int]$Limit, [string]$What) {
+# Takes a lock. A second caller waits up to $Limit seconds (a check every $Poll ms, 5 s by default),
+# then is refused.
+function Enter-Lock([string]$Lock, [int]$Limit, [string]$What, [int]$Poll = 5000) {
   $dir = Split-Path -Parent $Lock
   if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
   $deadline = (Get-Date).AddSeconds($Limit)
@@ -2067,7 +2104,7 @@ function Enter-Lock([string]$Lock, [int]$Limit, [string]$What) {
       $held = if ($Limit -gt 0) { "; it held the lock for longer than the limit of $Limit s" } else { '' }
       Refuse "another $What of this project runs (task $owner)$held"
     }
-    Start-Sleep -Milliseconds ([int](1000 * [Math]::Min(5, $left)))
+    Start-Sleep -Milliseconds ([int][Math]::Min($Poll, 1000 * $left))
   }
 }
 function Exit-Lock([string]$Lock) {
@@ -2520,7 +2557,7 @@ function Enter-WorkFolder([string]$Use, $Worker) {
   # start in the same moment sees it as held. A refusal (exit 2) releases the lock in the finally.
   $pick = Pick-Lock
   try {
-    Enter-Lock $pick 60 'work folder pick'
+    Enter-Lock $pick 60 'work folder pick' 250
     $session = 0
     if ($Use -eq 'check' -or ($Use -eq 'work' -and $null -ne $Worker)) { $session = Session-Folder $Worker }
     $holders = @(Folder-Holders $count)
@@ -2540,7 +2577,7 @@ function Enter-WorkFolder([string]$Use, $Worker) {
           # The wait does not hold the lock: each poll takes it again.
           Exit-Lock $pick
           Start-Sleep -Seconds 2
-          Enter-Lock $pick 60 'work folder pick'
+          Enter-Lock $pick 60 'work folder pick' 250
           # A new poll looks at the sessions again.
           $script:ListedOk = $false
           $holders = @(Folder-Holders $count)
@@ -14986,6 +15023,73 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
             assert_eq!(folder_branch(&two), "task/t-2");
             assert!(read(&project.folder_record(1)).starts_with("ticket: t-1\n"), "{}", read(&project.folder_record(1)));
             assert!(read(&project.folder_record(2)).starts_with("ticket: t-2\n"), "{}", read(&project.folder_record(2)));
+            clean(&project);
+        }
+
+        /// Ticket two-starts-can-both-take-a-lock-after-a: a start reads a pick lock of an ended
+        /// script, and another script writes its own lock before the start removes the old one. The
+        /// start removes only the lock that it read, so the new lock stays and the start waits for it.
+        #[test]
+        fn a_start_removes_only_the_stale_lock_that_it_read() {
+            let (project, fake, _base) = work_project("work-stale-lock");
+            let one = project.work_folder_at(1);
+            let lock = project.reports.join("work").join("lock");
+            let paused = project.reports.join("work").join("lock.paused");
+            plan_only(&project, &fake, "t-1");
+            write_file(&lock, &format!("{NO_PROCESS}\tt-9\t2026-01-01T00:00:00.0000000+00:00\n")).unwrap();
+            let (result, kept) = std::thread::scope(|scope| {
+                let start = scope.spawn(|| run_script_env(&project, &fake, "done", &["approve", "t-1"], &[("FAKE_NAME", "t-1"), ("DISPATCH_LOCK_PAUSE", "1")]));
+                // The start has read the stale lock and stops before it removes it.
+                let started = std::time::Instant::now();
+                while !paused.exists() {
+                    assert!(started.elapsed() < std::time::Duration::from_secs(60), "the start did not reach the stale lock");
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                // Another script removes the stale lock and takes the lock (here the test process).
+                let mine = format!("{}\tt-other\t{}\n", std::process::id(), now_iso());
+                write_file(&lock, &mine).unwrap();
+                fs::remove_file(&paused).unwrap();
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                let kept = fs::read_to_string(&lock).unwrap_or_default() == mine;
+                let _ = fs::remove_file(&lock);
+                (start.join().unwrap(), kept)
+            });
+            assert!(kept, "the start removed the lock of another script");
+            assert_eq!(result.0, 0, "{}", result.1);
+            assert_eq!(folder_branch(&one), "task/t-1");
+            clean(&project);
+        }
+
+        /// Ticket two-starts-can-both-take-a-lock-after-a: a killed script left its pick lock, and
+        /// two Approves start at the same moment. Only one of them takes the lock at a time, so the
+        /// two tasks get two work folders; either task can win folder 1.
+        #[test]
+        fn two_starts_after_a_killed_script_take_two_work_folders() {
+            let (project, fake, _base) = work_project("work-stale-same-moment");
+            set_work_folder_count(&project, 2);
+            let (one, two) = (project.work_folder_at(1), project.work_folder_at(2));
+            write_file(&project.work_setup_file(), "# limit 60\nping -n 6 127.0.0.1 >nul\n").unwrap();
+            plan_only(&project, &fake, "t-1");
+            plan_only(&project, &fake, "t-2");
+            write_file(&project.reports.join("work").join("lock"), &format!("{NO_PROCESS}\tt-9\t2026-01-01T00:00:00.0000000+00:00\n")).unwrap();
+            let barrier = std::sync::Barrier::new(2);
+            let (first, second) = std::thread::scope(|scope| {
+                let start = |ticket: &'static str| {
+                    let barrier = &barrier;
+                    let (project, fake) = (&project, &fake);
+                    scope.spawn(move || {
+                        barrier.wait();
+                        run_script_env(project, fake, "done", &["approve", ticket], &[("FAKE_NAME", ticket)])
+                    })
+                };
+                let (first, second) = (start("t-1"), start("t-2"));
+                (first.join().unwrap(), second.join().unwrap())
+            });
+            assert_eq!(first.0, 0, "{}", first.1);
+            assert_eq!(second.0, 0, "{}", second.1);
+            let mut branches = vec![folder_branch(&one), folder_branch(&two)];
+            branches.sort();
+            assert_eq!(branches, vec!["task/t-1".to_string(), "task/t-2".to_string()]);
             clean(&project);
         }
 
