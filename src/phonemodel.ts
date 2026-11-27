@@ -468,14 +468,16 @@ export function hostsToText(hosts: readonly PhoneHost[]): string {
 
 /**
  * The computers of the page at its start: the host it came from (`here`) with the key of the address,
- * else its stored key, else the key of an older page (`oldKey`); then the added computers of the
- * address, then the stored ones. A computer in both keeps the key of the address, as a new scan wins.
+ * else its stored key, else the key of an older page (`oldKey`). The added computers come from the
+ * storage once the page wrote it (`stored` is not null), as the user changed them after the address
+ * was saved; with nothing stored yet (`null`) they come from the address.
  */
-export function startHosts(here: string, addressKey: string | null, fromAddress: readonly PhoneHost[], stored: readonly PhoneHost[], oldKey: string | null): { key: string | null; others: PhoneHost[] } {
+export function startHosts(here: string, addressKey: string | null, fromAddress: readonly PhoneHost[], stored: readonly PhoneHost[] | null, oldKey: string | null): { key: string | null; others: PhoneHost[] } {
   const id = here.toLowerCase();
-  const key = addressKey ?? stored.find((host) => host.id === id)?.key ?? oldKey;
-  const names = new Map(stored.map((host) => [host.id, host.name]));
-  const others = oneEach([...fromAddress, ...stored])
+  const list = stored ?? [];
+  const key = addressKey ?? list.find((host) => host.id === id)?.key ?? oldKey;
+  const names = new Map(list.map((host) => [host.id, host.name]));
+  const others = oneEach(stored === null ? fromAddress : stored)
     .filter((host) => host.id !== id)
     .map((host) => ({ ...host, name: host.name || names.get(host.id) || "" }));
   return { key, others };

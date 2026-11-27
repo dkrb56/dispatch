@@ -292,11 +292,12 @@ function readOldKey(): string | null {
   }
 }
 
-function readStoredHosts(): PhoneHost[] {
+function readStoredHosts(): PhoneHost[] | null {
   try {
-    return hostsFromText(localStorage.getItem(HOSTS_STORE));
+    const text = localStorage.getItem(HOSTS_STORE);
+    return text === null ? null : hostsFromText(text);
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -438,10 +439,11 @@ const HERE = location.host.toLowerCase();
 /**
  * The computers stay in the query of the address and in the storage, so that an icon on the Home
  * Screen carries them: the icon has its own storage and only the address that Add to Home Screen saved.
+ * The storage wins once the page wrote it.
  */
 const storedHosts = readStoredHosts();
 const started = startHosts(location.host, keyFromAddress(location.search, location.hash), hostsFromAddress(location.search), storedHosts, readOldKey());
-const own = newLink(location.host, started.key, storedHosts.find((host) => host.id === HERE)?.name ?? "", true);
+const own = newLink(location.host, started.key, (storedHosts ?? []).find((host) => host.id === HERE)?.name ?? "", true);
 let links: Link[] = [own, ...started.others.map((host) => newLink(host.address, host.key, host.name, false))];
 
 /** The computers into the storage and the address (user decision 1); the key of an older page goes. */

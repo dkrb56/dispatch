@@ -769,7 +769,11 @@ test("the hosts of the page come from the address, a stored key or a pasted link
   assert.deepEqual(startHosts(HERE, null, [], [], KEY), { key: KEY, others: [] }, "the key of an older page");
   assert.deepEqual(startHosts(HERE, null, [], [], null), { key: null, others: [] });
   const newer = { ...b, key: KEY };
-  assert.deepEqual(startHosts(HERE, KEY, [newer], [named], null).others, [{ ...newer, name: "ComputerB" }], "the address wins and keeps the stored name");
+  assert.deepEqual(startHosts(HERE, KEY, [b], [{ ...named, key: KEY }], null).others, [{ ...named, key: KEY }], "the stored key wins over the address for an added computer");
+  assert.deepEqual(startHosts(HERE, KEY, [b], [here], null).others, [], "a computer removed after the icon was made stays removed");
+  assert.deepEqual(startHosts(HERE, KEY, [b], [], null).others, [], "an empty storage is stored: nothing comes back");
+  assert.deepEqual(startHosts(HERE, KEY, [b], null, null).others, [b], "nothing stored yet: the computers of the address");
+  assert.deepEqual(startHosts(HERE, KEY, [], [{ ...here, key: OTHER }], null).key, KEY, "the key of the address still wins for the first computer");
   assert.deepEqual(startHosts(HERE, KEY, [], [named], null).others, [named], "an icon keeps the stored computers");
   assert.ok(addedKeyText("ComputerB").includes("ComputerB") && addedKeyText("ComputerB").includes("Add computer"));
 });
