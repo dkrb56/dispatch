@@ -2,6 +2,17 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.1.100 (2026-11-27)
+- Worker alerts name the project, not the work folder number.
+- The merge card says that a pause holds the auto-merge until Run queue is on.
+- Setup waits with the old folder while a worker runs, shows a broken git on its steps, and adds an ignore line once.
+- No commit of an empty or zero-filled task file, and the task card names it.
+- The task row and card of a waiting reply name the rule that holds it, also an earlier approval and the full run; the automatic Continue says so.
+- A failed check or gate keeps a copy of its output and the files it wrote, undoes the merge fully, and the card links the copy.
+- The merge gate and a work run on a task branch point .claude/state/session-log at the log of that task, a refused merge puts it back, and a missing log gets a clear sentence.
+- One phone page connects to several Dispatch hosts, shows the projects of each with its computer name, asks each PIN in its own box, and Projects gets Add computer and Remove.
+- The worker script picks a work folder and claims it with a start record under one lock, so two starts in the same moment never share a folder.
+
 ## 0.1.99 (2026-11-25)
 - The open Actions panel draws each new task list of its project at once, the poll reads that project, and an older reply cannot bring back running for an ended run.
 - A show step opens the viewer with a file, a folder or the output of the step before; HTML without scripts, links open in the browser.
