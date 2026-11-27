@@ -131,6 +131,90 @@ body {
   font-weight: 600;
 }
 
+/* The computer of a project when the page has several (ticket the-phone-page-shows-the-projects-of). */
+.card-host {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+/* The box of a computer in the list of cards: its PIN box, or one line while it connects, is not reachable or refuses the key. */
+.host-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.host-box .pin-note,
+.key-form > .pin-note,
+.add-computer .pin-note {
+  margin: 0;
+  color: var(--text-2);
+}
+
+.host-box .pin-note.pin-error,
+.add-computer .pin-note.pin-error {
+  color: var(--danger);
+}
+
+.host-box.host-line {
+  padding: 10px 12px;
+}
+
+/* The Projects panel: a head per computer with its state and Remove, then Add computer. */
+.computer-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.computer-head:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+.computer-titles {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.computer-name {
+  font-weight: 600;
+}
+
+.computer-state {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.add-computer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.add-computer .answer-question,
+.add-computer .none {
+  margin: 0;
+}
+
+.add-computer button {
+  min-height: 44px;
+}
+
 .arrow {
   flex: none;
   color: var(--muted);

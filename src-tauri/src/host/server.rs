@@ -43,6 +43,8 @@ pub struct Host {
     pub core: Arc<Core>,
     pub clients: Arc<Clients>,
     pub version: String,
+    /// The name of this computer, sent in the hello reply; empty when it is not known.
+    pub name: String,
     /// The data folder: it holds the phone key and the PIN file, which can change while the host runs.
     pub data_dir: PathBuf,
     /// The unlock tokens of the phones that entered the PIN.
@@ -173,7 +175,7 @@ async fn connection(mut stream: TcpStream, peer: SocketAddr, host: Arc<Host>) {
 
     let (mut write, read) = socket.split();
     let (tx, mut rx) = unbounded_channel::<Out>();
-    let serial = host.clients.register(&window, tx.clone(), &host.version);
+    let serial = host.clients.register(&window, tx.clone(), &host.version, &host.name);
     println!("{peer}: window {window} connected");
     let writer = tokio::spawn(async move {
         while let Some(out) = rx.recv().await {

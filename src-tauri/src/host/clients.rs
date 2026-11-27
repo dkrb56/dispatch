@@ -122,7 +122,7 @@ impl Clients {
     /// Registers a connection for `window` and sends it the hello reply, then one `pty-exit` for
     /// each of its terminals that ended while it was away. An earlier connection with the same
     /// window id gets `REPLACED` and ends. Gives the serial of this connection.
-    pub fn register(&self, window: &str, tx: Sender, app: &str) -> u64 {
+    pub fn register(&self, window: &str, tx: Sender, app: &str, name: &str) -> u64 {
         let mut inner = self.lock();
         inner.serial += 1;
         let serial = inner.serial;
@@ -143,7 +143,7 @@ impl Clients {
         }
         alive.sort();
         ended.sort();
-        let _ = tx.send(Out::Text(protocol::hello(app, &alive)));
+        let _ = tx.send(Out::Text(protocol::hello(app, &alive, name)));
         for id in ended {
             inner.terminals.remove(&id);
             let _ = tx.send(Out::Text(protocol::event(PTY_EXIT, &Value::String(id))));
@@ -518,7 +518,7 @@ mod tests {
     fn the_output_of_a_window_that_is_away_waits_for_the_attach() {
         let clients = Clients::new("k".into());
         let (tx, mut rx) = unbounded_channel();
-        let serial = clients.register("w-1", tx, "0.0.0");
+        let serial = clients.register("w-1", tx, "0.0.0", "");
         assert_eq!(texts(&mut rx).len(), 1, "the hello reply");
         assert_eq!(clients.spawn("w-1", "t-1"), Ok(Spawn::New));
         clients.emit(PTY_OUTPUT, output("t-1", "live"));
@@ -528,7 +528,7 @@ mod tests {
         clients.emit(PTY_OUTPUT, output("t-1", "kept-2"));
 
         let (tx, mut rx) = unbounded_channel();
-        clients.register("w-1", tx, "0.0.0");
+        clients.register("w-1", tx, "0.0.0", "");
         let hello = texts(&mut rx);
         assert!(hello[0].contains(r#""terminals":["t-1"]"#), "{hello:?}");
         clients.emit(PTY_OUTPUT, output("t-1", " before-attach"));
@@ -543,14 +543,14 @@ mod tests {
     fn a_reattach_knows_the_size_that_the_terminal_kept() {
         let clients = Clients::new("k".into());
         let (tx, _rx) = unbounded_channel();
-        let serial = clients.register("w-1", tx, "0.0.0");
+        let serial = clients.register("w-1", tx, "0.0.0", "");
         assert_eq!(clients.spawn("w-1", "t-1"), Ok(Spawn::New));
         assert_eq!(clients.size_of("t-1"), None, "a new terminal has no size before `sized`");
         clients.sized("t-1", 46, 34);
         clients.unregister("w-1", serial);
 
         let (tx, _rx) = unbounded_channel();
-        clients.register("w-1", tx, "0.0.0");
+        clients.register("w-1", tx, "0.0.0", "");
         assert_eq!(clients.spawn("w-1", "t-1"), Ok(Spawn::Attached));
         assert_eq!(clients.size_of("t-1"), Some((46, 34)), "the page compares this size with its pane");
         assert_eq!(clients.size_of("t-2"), None);
@@ -560,12 +560,12 @@ mod tests {
     fn an_exit_while_the_window_is_away_comes_after_the_next_hello() {
         let clients = Clients::new("k".into());
         let (tx, _rx) = unbounded_channel();
-        let serial = clients.register("w-1", tx, "0.0.0");
+        let serial = clients.register("w-1", tx, "0.0.0", "");
         clients.spawn("w-1", "t-1").unwrap();
         clients.unregister("w-1", serial);
         clients.emit(PTY_EXIT, Value::String("t-1".into()));
         let (tx, mut rx) = unbounded_channel();
-        clients.register("w-1", tx, "0.0.0");
+        clients.register("w-1", tx, "0.0.0", "");
         let frames = texts(&mut rx);
         assert!(frames[0].contains(r#""terminals":[]"#), "{frames:?}");
         assert!(frames[1].contains("pty-exit") && frames[1].contains("t-1"), "{frames:?}");
@@ -577,8 +577,8 @@ mod tests {
         let clients = Clients::new("k".into());
         let (tx1, _rx1) = unbounded_channel();
         let (tx2, _rx2) = unbounded_channel();
-        let serial = clients.register("w-1", tx1, "0.0.0");
-        clients.register("w-2", tx2, "0.0.0");
+        let serial = clients.register("w-1", tx1, "0.0.0", "");
+        clients.register("w-2", tx2, "0.0.0", "");
         clients.spawn("w-1", "t-1").unwrap();
         assert_eq!(clients.find("w-2", "project-terminal:a"), None, "no label yet");
         clients.label("t-1", "project-terminal:a");
@@ -600,7 +600,7 @@ mod tests {
     fn a_claim_by_another_window_fails() {
         let clients = Clients::new("k".into());
         let (tx, _rx) = unbounded_channel();
-        clients.register("w-1", tx, "0.0.0");
+        clients.register("w-1", tx, "0.0.0", "");
         clients.spawn("w-1", "t-1").unwrap();
         assert_eq!(clients.spawn("w-2", "t-1"), Err(OTHER_WINDOW.into()));
         assert_eq!(clients.check_owner("w-2", "t-1"), Err(OTHER_WINDOW.into()));
@@ -613,8 +613,8 @@ mod tests {
         let clients = Clients::new("k".into());
         let (tx1, mut rx1) = unbounded_channel();
         let (tx2, mut rx2) = unbounded_channel();
-        clients.register("w-1", tx1, "0.0.0");
-        clients.register("w-2", tx2, "0.0.0");
+        clients.register("w-1", tx1, "0.0.0", "");
+        clients.register("w-2", tx2, "0.0.0", "");
         texts(&mut rx1);
         texts(&mut rx2);
         assert_eq!(clients.spawn("w-1", "t-1"), Ok(Spawn::New));
@@ -650,8 +650,8 @@ mod tests {
         let clients = Clients::new("k".into());
         let (tx1, _rx1) = unbounded_channel();
         let (tx2, mut rx2) = unbounded_channel();
-        let serial1 = clients.register("w-1", tx1, "0.0.0");
-        clients.register("w-2", tx2, "0.0.0");
+        let serial1 = clients.register("w-1", tx1, "0.0.0", "");
+        clients.register("w-2", tx2, "0.0.0", "");
         clients.spawn("w-1", "t-1").unwrap();
         clients.join("w-2", "t-1").unwrap();
         texts(&mut rx2);
@@ -661,7 +661,7 @@ mod tests {
         assert_eq!(clients.check_writer("w-2", "t-1"), Ok(()));
         // The owner comes back: its terminal is still there, and it attaches with the kept output.
         let (tx1, mut rx1) = unbounded_channel();
-        clients.register("w-1", tx1, "0.0.0");
+        clients.register("w-1", tx1, "0.0.0", "");
         assert!(texts(&mut rx1)[0].contains(r#""terminals":["t-1"]"#));
         assert_eq!(clients.spawn("w-1", "t-1"), Ok(Spawn::Attached));
         assert!(texts(&mut rx1).iter().any(|text| text.contains("after-the-owner")));
@@ -672,8 +672,8 @@ mod tests {
         let clients = Clients::new("k".into());
         let (tx1, _rx1) = unbounded_channel();
         let (tx2, mut rx2) = unbounded_channel();
-        clients.register("w-1", tx1, "0.0.0");
-        let serial2 = clients.register("w-2", tx2, "0.0.0");
+        clients.register("w-1", tx1, "0.0.0", "");
+        let serial2 = clients.register("w-2", tx2, "0.0.0", "");
         clients.spawn("w-1", "t-1").unwrap();
         assert_eq!(clients.join("w-1", "t-1"), Err(OWN_TERMINAL.into()));
         assert_eq!(clients.join("w-2", "t-2"), Err(NO_TERMINAL.into()));
@@ -693,8 +693,8 @@ mod tests {
         let clients = Clients::new("k".into());
         let (tx1, mut rx1) = unbounded_channel();
         let (tx2, mut rx2) = unbounded_channel();
-        clients.register("w-1", tx1, "0.0.0");
-        let serial = clients.register("phone-1", tx2, "0.0.0");
+        clients.register("w-1", tx1, "0.0.0", "");
+        let serial = clients.register("phone-1", tx2, "0.0.0", "");
         texts(&mut rx1);
         texts(&mut rx2);
         assert_eq!(clients.open_labeled("phone-1", "project-terminal:d:\\a"), None, "no terminal yet");
@@ -719,7 +719,7 @@ mod tests {
         clients.unregister("phone-1", serial);
         clients.emit(PTY_OUTPUT, output("p-1", "away"));
         let (tx2, mut rx2) = unbounded_channel();
-        clients.register("phone-1", tx2, "0.0.0");
+        clients.register("phone-1", tx2, "0.0.0", "");
         texts(&mut rx2);
         assert_eq!(clients.open_labeled("phone-1", "project-terminal:d:\\b"), Some(("p-1".into(), (120, 40), true)));
         let attached = texts(&mut rx2);
@@ -736,8 +736,8 @@ mod tests {
         let clients = Clients::new("k".into());
         let (tx1, _rx1) = unbounded_channel();
         let (tx2, _rx2) = unbounded_channel();
-        clients.register("w-1", tx1, "0.0.0");
-        clients.register("phone-1", tx2, "0.0.0");
+        clients.register("w-1", tx1, "0.0.0", "");
+        clients.register("phone-1", tx2, "0.0.0", "");
         assert!(!clients.phone_may_write("phone-1", "nothing"), "an unknown id");
         clients.spawn("w-1", "chat").unwrap();
         clients.label("chat", "triage:d:\\a");
@@ -760,8 +760,8 @@ mod tests {
         let clients = Clients::new("k".into());
         let (tx1, _rx1) = unbounded_channel();
         let (tx2, mut rx2) = unbounded_channel();
-        clients.register("w-1", tx1, "0.0.0");
-        clients.register("phone-1", tx2, "0.0.0");
+        clients.register("w-1", tx1, "0.0.0", "");
+        clients.register("phone-1", tx2, "0.0.0", "");
         texts(&mut rx2);
         clients.spawn("w-1", "t-1").unwrap();
         clients.label("t-1", "project-terminal:d:\\a");
@@ -785,8 +785,8 @@ mod tests {
         let clients = Clients::new("k".into());
         let (tx1, _rx1) = unbounded_channel();
         let (tx2, _rx2) = unbounded_channel();
-        clients.register("w-1", tx1, "0.0.0");
-        clients.register("w-2", tx2, "0.0.0");
+        clients.register("w-1", tx1, "0.0.0", "");
+        clients.register("w-2", tx2, "0.0.0", "");
         assert!(clients.driver_state("w-1", false), "no driver yet: the first report takes the lease");
         assert!(!clients.driver_state("w-2", false), "a live driver keeps the lease");
         assert!(clients.driver_state("w-2", true), "a key or a click takes the lease");
@@ -800,16 +800,16 @@ mod tests {
         let (tx1, _rx1) = unbounded_channel();
         let (tx2, _rx2) = unbounded_channel();
         let (tx3, _rx3) = unbounded_channel();
-        let serial1 = clients.register("w-1", tx1, "0.0.0");
-        let serial2 = clients.register("w-2", tx2, "0.0.0");
-        clients.register("w-3", tx3, "0.0.0");
+        let serial1 = clients.register("w-1", tx1, "0.0.0", "");
+        let serial2 = clients.register("w-2", tx2, "0.0.0", "");
+        clients.register("w-3", tx3, "0.0.0", "");
         assert!(clients.driver_state("w-1", true));
         clients.unregister("w-2", serial2);
         assert!(!clients.driver_state("w-3", false), "another window left: w-1 still drives");
         assert!(clients.driver_state("w-1", false));
         // A new connection of the driver keeps the lease.
         let (tx1b, _rx1b) = unbounded_channel();
-        let serial1b = clients.register("w-1", tx1b, "0.0.0");
+        let serial1b = clients.register("w-1", tx1b, "0.0.0", "");
         clients.unregister("w-1", serial1);
         assert!(!clients.driver_state("w-3", false), "the old connection of w-1 ended, w-1 is still here");
         clients.unregister("w-1", serial1b);
@@ -821,8 +821,8 @@ mod tests {
         let clients = Clients::new("k".into());
         let (tx1, _rx1) = unbounded_channel();
         let (tx2, _rx2) = unbounded_channel();
-        clients.register("w-1", tx1, "0.0.0");
-        clients.register("w-2", tx2, "0.0.0");
+        clients.register("w-1", tx1, "0.0.0", "");
+        clients.register("w-2", tx2, "0.0.0", "");
         let start = Instant::now();
         assert!(clients.driver_state_at("w-1", true, start));
         let soon = start + DRIVER_STALE - Duration::from_secs(1);
@@ -838,8 +838,8 @@ mod tests {
         let clients = Clients::new("k".into());
         let (tx1, _rx1) = unbounded_channel();
         let (tx2, _rx2) = unbounded_channel();
-        let serial1 = clients.register("w-1", tx1, "0.0.0");
-        clients.register("w-2", tx2, "0.0.0");
+        let serial1 = clients.register("w-1", tx1, "0.0.0", "");
+        clients.register("w-2", tx2, "0.0.0", "");
         let start = Instant::now();
         assert_eq!(clients.live_windows_at(start), ids(&["w-1", "w-2"]), "a hello counts as a report");
         let soon = start + WINDOW_SILENT - Duration::from_secs(2);

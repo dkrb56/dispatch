@@ -2,7 +2,8 @@
 //!
 //! A text frame is a JSON object with a field `type`:
 //! - `hello` from the window: `protocol`, `app`, `window`, `key`. The host answers `hello` with
-//!   `protocol`, `app` and `terminals` (the terminals of this window that still run).
+//!   `protocol`, `app`, `terminals` (the terminals of this window that still run) and `name` (the
+//!   name of the computer, empty when it is not known; the phone page shows it next to a project).
 //! - `call` from the window: `id`, `command`, `args` (the object that the page gives to `invoke`).
 //! - `reply` from the host: `id`, then `value` or `error`.
 //! - `event` from the host: `event`, `payload` (`pty-output` and `pty-exit`, as in the app).
@@ -54,8 +55,8 @@ pub fn valid_window(window: &str) -> bool {
     (1..=64).contains(&window.len()) && window.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
-pub fn hello(app: &str, terminals: &[String]) -> String {
-    json!({ "type": "hello", "protocol": PROTOCOL, "app": app, "terminals": terminals }).to_string()
+pub fn hello(app: &str, terminals: &[String], name: &str) -> String {
+    json!({ "type": "hello", "protocol": PROTOCOL, "app": app, "terminals": terminals, "name": name }).to_string()
 }
 
 pub fn reply_value(id: u32, value: Value) -> String {
@@ -122,6 +123,17 @@ mod tests {
         assert_eq!(split_binary(&frame).unwrap(), (0x0102_0304, &b"bytes"[..]));
         assert_eq!(split_binary(&binary(9, b"")).unwrap(), (9, &b""[..]));
         assert!(split_binary(&[1, 2]).is_err());
+    }
+
+    #[test]
+    fn the_hello_reply_names_the_computer() {
+        let hello: Value = serde_json::from_str(&super::hello("0.1.52", &["t-1".to_string()], "ComputerB")).unwrap();
+        assert_eq!(hello["type"], "hello");
+        assert_eq!(hello["app"], "0.1.52");
+        assert_eq!(hello["terminals"], json!(["t-1"]));
+        assert_eq!(hello["name"], "ComputerB");
+        let unknown: Value = serde_json::from_str(&super::hello("0.1.52", &[], "")).unwrap();
+        assert_eq!(unknown["name"], "", "no name: the phone shows the address");
     }
 
     #[test]

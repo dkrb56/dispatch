@@ -99,6 +99,16 @@ fn pairing_key(dir: &Path) -> Result<String, String> {
     Ok(key)
 }
 
+/// The name of this computer for the phone page: `COMPUTERNAME` on Windows, else `HOSTNAME`, else empty.
+fn computer_name() -> String {
+    ["COMPUTERNAME", "HOSTNAME"]
+        .iter()
+        .filter_map(|name| std::env::var(name).ok())
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+        .unwrap_or_default()
+}
+
 fn fail(text: &str) -> ! {
     eprintln!("dispatch-host: {text}");
     std::process::exit(1)
@@ -157,7 +167,7 @@ fn main() {
         .enable_all()
         .build()
         .unwrap_or_else(|e| fail(&format!("no runtime: {e}")));
-    let host = Arc::new(Host { core, clients, version: version.clone(), data_dir: data_dir.clone(), unlocks: unlock::Unlocks::new() });
+    let host = Arc::new(Host { core, clients, version: version.clone(), name: computer_name(), data_dir: data_dir.clone(), unlocks: unlock::Unlocks::new() });
     let handle = runtime.handle().clone();
     let late_host = host.clone();
     let late_dir = data_dir.clone();

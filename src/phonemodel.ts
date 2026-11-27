@@ -278,7 +278,11 @@ export interface PhoneLost {
 /** One project card. */
 export interface PhoneCard {
   root: string;
+  host: string;
+  key: string;
   name: string;
+  /** The folder name, with ` · <computer name>` after it when the page has more than one computer. */
+  label: string;
   count: { text: string; kind: string };
   /** False until the first reply of `task_list` for this project. */
   loaded: boolean;
@@ -290,9 +294,17 @@ export interface PhoneCard {
   tickets: string;
 }
 
-/** A project with its last reply. */
+/** A project with its last reply, on one computer of the page (ticket the-phone-page-shows-the-projects-of). */
 export interface PhoneProject {
   root: string;
+  /** The id of its computer (`PhoneHost.id`). */
+  host: string;
+  /** The name of its computer, or its address when the host gives no name. */
+  hostName: string;
+  /** The project key (`phoneProjectKey`): the choices, the cards and the screens use it. */
+  key: string;
+  /** The workers of its computer; the card keeps those in its folder. */
+  workers: readonly PhoneWorker[];
   list: PhoneTaskList | null;
   error: string;
 }
@@ -316,11 +328,6 @@ export function keyFromAddress(search: string, hash: string): string | null {
   return found ? found[0].toLowerCase() : null;
 }
 
-/** The address that holds the key after the first load; Add to Home Screen saves this one. */
-export function keyAddress(key: string): string {
-  return `/?key=${key}`;
-}
-
 /** Only Safari on an iPhone reports `false` here; other browsers report nothing and get no hint. */
 export function homeScreenHint(standalone: boolean | undefined, dismissed: boolean): boolean {
   return standalone === false && !dismissed;
@@ -331,6 +338,11 @@ export function oldKeyText(standalone: boolean | undefined): string {
   return standalone === true
     ? "This key does not work any more. On the computer open Options, tab Phone, and scan the new code. Add the page to the Home Screen again and delete this icon."
     : "This key does not work any more. On the computer open Options, tab Phone, and scan the new code.";
+}
+
+/** What the page says when an added computer refuses its key: the row of that computer shows it. */
+export function addedKeyText(name: string): string {
+  return `The key of ${name} does not work any more. On ${name} open Options, tab Phone, copy the link, then tap Projects, Add computer and paste it.`;
 }
 
 /** The errors of the PIN gate of the host (`src-tauri/src/host/phone.rs`), word for word. */
@@ -364,6 +376,110 @@ export function keyFromText(text: string): string | null {
   return KEY.exec(text)?.[0].toLowerCase() ?? null;
 }
 
+/**
+ * A computer of the phone page (ticket the-phone-page-shows-the-projects-of): the host the page came
+ * from, or a host the user added in Projects. `id` is the address in lower case; `name` is what the
+ * host said in its hello, empty before that and for an older host.
+ */
+export interface PhoneHost {
+  id: string;
+  /** `<address>:<port>`, as the socket uses it. */
+  address: string;
+  key: string;
+  name: string;
+}
+
+/** The stored computers of the phone: the host the page came from and the added ones. */
+export const HOSTS_STORE = "dispatch-phone-hosts";
+/** The query value of the address that holds the added computers. */
+const HOSTS_QUERY = "hosts";
+const ADDRESS = /^[0-9a-z.\-[\]:]+:\d{1,5}$/i;
+
+function phoneHost(address: string, key: string, name = ""): PhoneHost | null {
+  const clean = address.trim();
+  const valid = /^[0-9a-f]{64}$/i.test(key.trim());
+  if (!ADDRESS.test(clean) || !valid) return null;
+  return { id: clean.toLowerCase(), address: clean, key: key.trim().toLowerCase(), name };
+}
+
+/** The computers in a list, each id once: the first one wins. */
+function oneEach(hosts: readonly PhoneHost[]): PhoneHost[] {
+  const seen = new Set<string>();
+  return hosts.filter((host) => !seen.has(host.id) && Boolean(seen.add(host.id)));
+}
+
+/** The added computers in the query of the address: `hosts=<address>:<port>|<key>,…`. */
+export function hostsFromAddress(search: string): PhoneHost[] {
+  const value = new URLSearchParams(search).get(HOSTS_QUERY) ?? "";
+  const hosts: PhoneHost[] = [];
+  for (const item of value.split(",")) {
+    const bar = item.lastIndexOf("|");
+    const host = bar > 0 ? phoneHost(item.slice(0, bar), item.slice(bar + 1)) : null;
+    if (host) hosts.push(host);
+  }
+  return oneEach(hosts);
+}
+
+/**
+ * The address that holds the key after the first load; Add to Home Screen saves this one. With added
+ * computers it holds them too, so an icon added later keeps them (user decision 1).
+ */
+export function keyAddress(key: string | null, others: readonly PhoneHost[] = []): string {
+  const query = new URLSearchParams();
+  if (key) query.set("key", key);
+  if (others.length > 0) query.set(HOSTS_QUERY, others.map((host) => `${host.address}|${host.key}`).join(","));
+  const text = query.toString();
+  return text ? `/?${text}` : "/";
+}
+
+/**
+ * The computer in a pasted text (user decision 4): the link of the Phone tab gives its address and
+ * key; a bare key belongs to the computer the page came from (`here`). Null without a valid key.
+ */
+export function hostFromText(text: string, here: string): PhoneHost | null {
+  const key = keyFromText(text);
+  if (!key) return null;
+  const link = /^\s*https?:\/\/([^/?#\s]+)/i.exec(text)?.[1];
+  return phoneHost(link ?? here, key);
+}
+
+/** The stored computers from a text; a broken text gives none. */
+export function hostsFromText(text: string | null | undefined): PhoneHost[] {
+  try {
+    const value: unknown = JSON.parse(text ?? "");
+    if (!Array.isArray(value)) return [];
+    const hosts: PhoneHost[] = [];
+    for (const one of value) {
+      if (!one || typeof one !== "object") continue;
+      const { address, key, name } = one as Record<string, unknown>;
+      const host = typeof address === "string" && typeof key === "string" ? phoneHost(address, key, typeof name === "string" ? name : "") : null;
+      if (host) hosts.push(host);
+    }
+    return oneEach(hosts);
+  } catch {
+    return [];
+  }
+}
+
+/** The computers as the text to store. */
+export function hostsToText(hosts: readonly PhoneHost[]): string {
+  return JSON.stringify(oneEach(hosts).map(({ address, key, name }) => ({ address, key, name })));
+}
+
+/**
+ * The computers of the page at its start: the host it came from (`here`) with the key of the address,
+ * else its stored key, else the key of an older page (`oldKey`); then the added computers of the
+ * address, then the stored ones. A computer in both keeps the key of the address, as a new scan wins.
+ */
+export function startHosts(here: string, addressKey: string | null, fromAddress: readonly PhoneHost[], stored: readonly PhoneHost[], oldKey: string | null): { key: string | null; others: PhoneHost[] } {
+  const id = here.toLowerCase();
+  const key = addressKey ?? stored.find((host) => host.id === id)?.key ?? oldKey;
+  const names = new Map(stored.map((host) => [host.id, host.name]));
+  const others = oneEach([...fromAddress, ...stored])
+    .filter((host) => host.id !== id)
+    .map((host) => ({ ...host, name: host.name || names.get(host.id) || "" }));
+  return { key, others };
+}
 /** A folder as a key: lower case, without slashes at its end. */
 export function pathKey(path: string | null | undefined): string {
   return (path ?? "").replace(/[\\/]+$/, "").toLowerCase();
@@ -372,6 +488,33 @@ export function pathKey(path: string | null | undefined): string {
 export function folderName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts.length > 0 ? parts[parts.length - 1] : path;
+}
+
+/**
+ * The key of a project on a computer: the path key on the computer the page came from (`here`), so
+ * the choices of an older page still hold, else `<computer id>|<path key>`, as `projectKey` of
+ * src/hosts.ts does for a desktop window.
+ */
+export function phoneProjectKey(host: string, root: string, here: string): string {
+  const path = pathKey(root);
+  return host.toLowerCase() === here.toLowerCase() ? path : `${host.toLowerCase()}|${path}`;
+}
+
+/** A stored project key in its normal form: a key without `|` is a folder of the computer the page came from. */
+export function normalKey(key: string): string {
+  const bar = key.indexOf("|");
+  return bar > 0 ? `${key.slice(0, bar).toLowerCase()}|${pathKey(key.slice(bar + 1))}` : pathKey(key);
+}
+
+/** The computer of a project key; `here` for a key without one. */
+export function keyHost(key: string, here: string): string {
+  const bar = key.indexOf("|");
+  return bar > 0 ? key.slice(0, bar) : here.toLowerCase();
+}
+
+/** The name of a project: the folder name, with ` · <computer name>` after it when the page has more than one computer (user decision 2). */
+export function phoneLabel(root: string, hostName: string, many: boolean): string {
+  return many && hostName ? `${folderName(root)} · ${hostName}` : folderName(root);
 }
 
 /** How the phone shows a project: the cards of today, or the seven columns of the tickets board. */
@@ -385,7 +528,8 @@ export const OPEN_FIRST: readonly string[] = ["waiting", "in-progress"];
 
 /**
  * The choices of the phone: the projects with a folded card and the projects it hides, each as a
- * `pathKey`; the layout; and the open columns of the board, one choice for every project (user decision 3).
+ * project key (`phoneProjectKey`: the computer and the folder); the layout; and the open columns of
+ * the board, one choice for every project (user decision 3).
  */
 export interface PhoneChoices {
   folded: string[];
@@ -420,16 +564,26 @@ export function toggleColumn(view: PhoneChoices, status: string): PhoneChoices {
   return { ...view, open: view.open.includes(status) ? view.open.filter((one) => one !== status) : [...view.open, status] };
 }
 
-/** One root added to a list of the view, or taken out when it is in the list. The view itself stays as it is. */
-export function toggleRoot(view: PhoneChoices, list: "folded" | "hidden", root: string): PhoneChoices {
-  const key = pathKey(root);
+/**
+ * One project added to a list of the view, or taken out when it is in the list. `project` is a project
+ * key (`phoneProjectKey`); a folder alone is a folder of the computer the page came from. The view itself stays as it is.
+ */
+export function toggleRoot(view: PhoneChoices, list: "folded" | "hidden", project: string): PhoneChoices {
+  const key = normalKey(project);
   const now = view[list];
-  return { ...view, [list]: now.includes(key) ? now.filter((one) => one !== key) : [...now, key] };
+  return { ...view, [list]: now.some((one) => normalKey(one) === key) ? now.filter((one) => normalKey(one) !== key) : [...now, key] };
 }
 
-/** The roots that show on the phone: those that are not hidden, in their order. */
-export function shownRoots(roots: readonly string[], view: Pick<PhoneChoices, "hidden">): string[] {
-  return roots.filter((root) => !view.hidden.includes(pathKey(root)));
+/** The projects that show on the phone: those that are not hidden, in their order. `key` gives the project key of each; a folder alone by default. */
+export function shownRoots<T>(roots: readonly T[], view: Pick<PhoneChoices, "hidden">, key: (root: T) => string = (root) => pathKey(String(root))): T[] {
+  const hidden = new Set(view.hidden.map(normalKey));
+  return roots.filter((root) => !hidden.has(normalKey(key(root))));
+}
+
+/** The project is in a list of the view (`folded` or `hidden`). */
+export function inChoice(view: PhoneChoices, list: "folded" | "hidden", project: string): boolean {
+  const key = normalKey(project);
+  return view[list].some((one) => normalKey(one) === key);
 }
 
 /** A worker belongs to a project when its folder is the project folder or lies below it. */
@@ -743,9 +897,12 @@ function projectCount(tasks: readonly PhoneTask[], mine: readonly PhoneWorker[],
   });
 }
 
-/** The plain data of each card, in the order of `projects`. */
-export function phoneCards(projects: readonly PhoneProject[], workers: readonly PhoneWorker[], tools: PhoneTools, sent: ReadonlySet<string> = new Set()): PhoneCard[] {
-  return projects.map(({ root, list, error }) => {
+/**
+ * The plain data of each card, in the order of `projects`. Each project takes the workers of its own
+ * computer; `many` is true when the page has more than one computer, and the label then names it.
+ */
+export function phoneCards(projects: readonly PhoneProject[], tools: PhoneTools, sent: ReadonlySet<string> = new Set(), many = false): PhoneCard[] {
+  return projects.map(({ root, host, hostName, key, workers, list, error }) => {
     const mine = workers.filter((worker) => workerInProject(worker, root));
     const tasks = phoneTasks(mine, list?.tasks ?? []);
     const merging = list?.merging;
@@ -762,7 +919,10 @@ export function phoneCards(projects: readonly PhoneProject[], workers: readonly 
     const row = (task: PhoneTask): PhoneRow => taskRow(task, merging, tools, sent);
     return {
       root,
+      host,
+      key,
       name: folderName(root),
+      label: phoneLabel(root, hostName, many),
       count: projectCount(tasks, mine, list, tools),
       loaded: list !== null,
       error,
@@ -803,7 +963,11 @@ export interface PhoneColumn {
 /** The board of one project. */
 export interface PhoneBoard {
   root: string;
+  host: string;
+  key: string;
   name: string;
+  /** As `PhoneCard.label`. */
+  label: string;
   count: { text: string; kind: string };
   loaded: boolean;
   error: string;
@@ -827,18 +991,18 @@ export function inProgressPlace(task: PhoneTask | null, ticket: Pick<PhoneTicket
 
 /**
  * The board of each project, in the order of `projects`: the seven columns with their tickets in the
- * board order. `open` lists the open columns; `showAll` the keys `<root>\n<status>` of the columns
- * whose Show all the user tapped.
+ * board order. `open` lists the open columns; `showAll` the keys `<project key>\n<status>` of the columns
+ * whose Show all the user tapped. `many` as in `phoneCards`.
  */
 export function phoneBoards(
   projects: readonly PhoneProject[],
-  workers: readonly PhoneWorker[],
   tools: PhoneTools,
   open: readonly string[],
   showAll: ReadonlySet<string> = new Set(),
   sent: ReadonlySet<string> = new Set(),
+  many = false,
 ): PhoneBoard[] {
-  return projects.map(({ root, list, error }) => {
+  return projects.map(({ root, host, hostName, key, workers, list, error }) => {
     const mine = workers.filter((worker) => workerInProject(worker, root));
     const tasks = phoneTasks(mine, list?.tasks ?? []);
     const merging = list?.merging;
@@ -860,7 +1024,7 @@ export function phoneBoards(
     };
     const columns = tools.columns.map(({ status, name }): PhoneColumn => {
       const all = tools.columnTickets(tickets, status, view, status === "in-progress" || status === "planning" || status === "waiting" ? place : undefined);
-      const { shown, hidden } = tools.columnCards(all, status, showAll.has(showAllKey(root, status)));
+      const { shown, hidden } = tools.columnCards(all, status, showAll.has(showAllKey(key, status)));
       return {
         status,
         name,
@@ -873,13 +1037,13 @@ export function phoneBoards(
         hidden,
       };
     });
-    return { root, name: folderName(root), count: projectCount(tasks, mine, list, tools), loaded: list !== null, error, columns, all: tickets };
+    return { root, host, key, name: folderName(root), label: phoneLabel(root, hostName, many), count: projectCount(tasks, mine, list, tools), loaded: list !== null, error, columns, all: tickets };
   });
 }
 
-/** The key of a column whose Show all the user tapped. */
-export function showAllKey(root: string, status: string): string {
-  return `${pathKey(root)}\n${status}`;
+/** The key of a column whose Show all the user tapped; `project` is a project key, a folder alone on the computer of the page. */
+export function showAllKey(project: string, status: string): string {
+  return `${normalKey(project)}\n${status}`;
 }
 
 /**
@@ -964,10 +1128,11 @@ export function screenRow(rows: readonly PhoneRow[], mark: string): PhoneRow | n
 
 /**
  * The projects of the New ticket screen (user decision 2): the shown roots, and the one that is picked
- * at first: the project of the last ticket when it still shows, else the first one, else null.
+ * at first: the project of the last ticket when it still shows, else the first one, else null. `last`
+ * and `key` give project keys; a folder alone by default.
  */
-export function ticketProjects(shown: readonly string[], last: string | null): { roots: string[]; picked: string | null } {
-  const kept = last !== null ? shown.find((root) => pathKey(root) === pathKey(last)) : undefined;
+export function ticketProjects<T>(shown: readonly T[], last: string | null, key: (root: T) => string = (root) => pathKey(String(root))): { roots: T[]; picked: T | null } {
+  const kept = last !== null ? shown.find((root) => normalKey(key(root)) === normalKey(last)) : undefined;
   return { roots: [...shown], picked: kept ?? shown[0] ?? null };
 }
 
