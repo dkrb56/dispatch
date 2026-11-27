@@ -6443,7 +6443,9 @@ function otherCheckout(tasks: Task[], except?: string): WaitFacts["checkout"] {
 }
 
 function waitFacts(task: Task): WaitFacts {
-  const tasks = task.project ? projectTaskList(task.project) : taskList(workerList, taskInfos);
+  // The list without its sort: the sort ranks each task by `taskStatus`, which asks `replyReason` and so
+  // this function for a task with a waiting reply; a sorted list here never ends (Maximum call stack size exceeded).
+  const tasks = task.project ? projectTaskList(task.project, false) : taskList(workerList, taskInfos, undefined, false);
   const leased = startHolder(taskHost(task), taskCwd(task));
   const merging = task.project ? task.project.merging : mergingTask;
   // A paused project queues an Approve click (ticket pause-tasks, user decision 3).
