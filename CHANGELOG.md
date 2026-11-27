@@ -2,6 +2,10 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.2.0 (2026-11-27)
+- An answer that waits for a busy project no longer stops the window: Setup, Actions, New ticket, the merges and the queue work again.
+- A bin on each ticket that does not run deletes it after a second click, with its parts; a delete line in the tickets file, and the id stays taken.
+
 ## 0.1.101 (2026-11-27)
 - The gate refusal parser accepts the missing session log sentence and the card shows it.
 - The step Task files also waits for a running worker with a bare ticket id that has task files.
