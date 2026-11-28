@@ -73,6 +73,9 @@ const TASKS_BRANCH_MARK: &str = "# Dispatch: the task files live on the branch d
 /// The message of the commit that takes the task files off a branch of the user when Apply moves
 /// them to `TASKS_BRANCH` (user decision 2: at Apply, not at the first read).
 const TASKS_MOVE_MESSAGE: &str = "Dispatch: the task files move to the branch dispatch/tasks";
+/// The message of the commit that joins the remote copy of `TASKS_BRANCH` into the local branch
+/// (ticket the-task-branch-of-two-computers-joins): both tips are its parents.
+const TASKS_JOIN_MESSAGE: &str = "Dispatch: the task files of another computer joined";
 /// The local settings of Claude Code in the project, relative to its top folder, as git takes a
 /// path. They hold the allow rules and the folders of the user of this computer, so each computer
 /// keeps its own and git ignores the file (ticket second-computer, user decision 3).
@@ -8212,16 +8215,19 @@ fn read_tasks(project: &Project) -> Result<(TaskList, bool), String> {
     // identity) is logged, and the next task read tries again. A task branch holds the commit too
     // (ticket merge-issue): the read after the switch back commits on the base.
     let work_live = tasks.iter().any(|task| matches!(task.state.as_str(), "approved" | "working") && task.report.is_none() && !task.elsewhere);
+    // A join of the task files of another computer (ticket the-task-branch-of-two-computers-joins)
+    // wrote files that this read did not list: `moved` makes `task_list` read again.
+    let mut moved = false;
     if !work_live {
-        if let Err(error) = keep_tasks_committed(&project) {
-            eprintln!("task files not committed: {error}");
+        match commit_and_join_tasks(project) {
+            Ok((_, joined)) => moved = joined,
+            Err(error) => eprintln!("task files not committed: {error}"),
         }
     }
     // Task branches: the branch of each task, and the way back to the base after a work run. Only
     // the task branch that is checked out can switch back; a merge in progress keeps the checkout.
     // A switch back or a report taken from a branch sets `moved`: `task_list` reads again.
     let merging = project.merging();
-    let mut moved = false;
     // A task that lost its branch file gets it again from its branch (ticket
     // local-only-deletes-task-files, user decision 2); the file then counts below.
     if project.in_git {
@@ -9230,30 +9236,48 @@ fn tasks_message(paths: &[&str], notes: usize) -> String {
 /// decision 2), the commit lands on the current branch as before. Else the task files go onto the
 /// branch `dispatch/tasks` through an index of their own (`commit_tasks_branch`), and with "Project
 /// notes in git" on, a changed note still goes into a small commit on the current branch (user decision 4).
+/// After that commit, a newer remote copy of the branch that a pull brought is joined into it and
+/// its files go onto the disk (`join_tasks_branch`, ticket the-task-branch-of-two-computers-joins).
 fn keep_tasks_committed(project: &Project) -> Result<usize, String> {
+    commit_and_join_tasks(project).map(|(count, _)| count)
+}
+
+/// The body of `keep_tasks_committed`: the commit of the task files, then the join of the remote copy
+/// of `dispatch/tasks`, then the notes commit, under the same guards. Gives the number of committed
+/// files and whether the join wrote or removed a file of the disk (the task read reads again then).
+/// The disk commit comes first, so a file that the join writes never covers an uncommitted local
+/// change. A failure of the join is logged here and does not hold the notes commit.
+fn commit_and_join_tasks(project: &Project) -> Result<(usize, bool), String> {
     if !project.in_git || project.options().ignore_tasks {
-        return Ok(0);
+        return Ok((0, false));
     }
     // A zero-filled `HEAD` (ticket damaged-task-files-no-commit-and-a): no git command works, so
     // no try and no error line at each read. The task card names the file.
     if head_damaged(project) {
-        return Ok(0);
+        return Ok((0, false));
     }
     // `git add --all` would stage a conflicted task file with its markers as resolved (ticket
     // board-in-progress, the commit "Dispatch: 86 task files" of Starminer).
     if unfinished_git(project) {
-        return Ok(0);
+        return Ok((0, false));
     }
     if current_branch(project).is_some_and(|branch| branch.starts_with("task/")) {
-        return Ok(0);
+        return Ok((0, false));
     }
     // The tracked files come from the index file, with no git start (`gitfiles`).
     if project.git_sets().tasks_tracked() {
-        return commit_in_checkout(project, true);
+        return Ok((commit_in_checkout(project, true)?, false));
     }
     let tasks = commit_tasks_branch(project)?;
+    let joined = match join_tasks_branch(project) {
+        Ok(joined) => joined,
+        Err(error) => {
+            eprintln!("task files of the other computer not joined: {error}");
+            false
+        }
+    };
     let notes = if project.options().notes_in_git { commit_in_checkout(project, false)? } else { 0 };
-    Ok(tasks + notes)
+    Ok((tasks + notes, joined))
 }
 
 /// The commit on the current branch, through the index of the checkout: the task files of `.dispatch`
@@ -9369,6 +9393,11 @@ fn tasks_disk_files(project: &Project, excludes: &[String]) -> Vec<DiskFile> {
 type TasksLook = (Option<String>, Vec<DiskFile>);
 static TASKS_LOOKS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, TasksLook>>> = std::sync::OnceLock::new();
 
+/// The pair (local tip, remote hash) of `dispatch/tasks` that the last join step saw and settled, per
+/// project root (ticket the-task-branch-of-two-computers-joins): the next look with the same pair
+/// starts no git, so an idle read with a remote copy that is behind or already joined stays quiet.
+static TASKS_JOINS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (String, String)>>> = std::sync::OnceLock::new();
+
 /// Commits the task files of the disk on the branch `dispatch/tasks` (ticket
 /// dispatch-commits-the-task-files-on-its), with no checkout and no touch of the index of the user:
 /// the index file `dispatch-tasks.index` in the common git folder reads the tip of the branch (its
@@ -9432,6 +9461,154 @@ fn commit_tasks_branch(project: &Project) -> Result<usize, String> {
     Ok(changed.len())
 }
 
+/// Joins the remote copy of `dispatch/tasks` (`remote_tasks_branch`) into the local branch (ticket
+/// the-task-branch-of-two-computers-joins), with no checkout and no fetch: the pull of the user brings
+/// the remote branch. Nothing happens without both branches, with equal tips, with a pair that the
+/// last call settled (`TASKS_JOINS`), or when the remote copy is behind. A local branch that the
+/// remote copy holds takes its hash (user decision 1, no commit). Else `merge-tree --write-tree`
+/// builds the joined tree, the local tip first: the union rule of `.dispatch/.gitattributes` on the
+/// disk joins the ticket lines (merge-ort reads the attributes of the worktree), and each conflicted
+/// path takes the version of the local tip through the index file `dispatch-tasks.index` (absent
+/// there: it goes). The commit has the local and the remote tip as parents; `update-ref` takes the
+/// old tip, so a branch that moved meanwhile is not overwritten. The paths that the join changed
+/// against the old local tip are written to the disk through the index (`checkout-index -f -u`) or
+/// removed from it (user decision 2: a deletion of the other computer holds here too). Gives whether
+/// a file of the disk was written or removed.
+fn join_tasks_branch(project: &Project) -> Result<bool, String> {
+    if !project.in_git || project.options().ignore_tasks {
+        return Ok(false);
+    }
+    let Some(repo) = project.repo() else { return Ok(false) };
+    let Some(local) = branch_hash(project, TASKS_BRANCH) else { return Ok(false) };
+    let Some(remote) = remote_tasks_branch(project) else { return Ok(false) };
+    if local == remote {
+        return Ok(false);
+    }
+    let root = &project.root;
+    let joins = TASKS_JOINS.get_or_init(Default::default);
+    let pair = (local.clone(), remote.clone());
+    if joins.lock().ok().is_some_and(|map| map.get(root) == Some(&pair)) {
+        return Ok(false);
+    }
+    let remember = |local: &str, remote: &str| {
+        if let Ok(mut map) = joins.lock() {
+            map.insert(root.clone(), (local.to_string(), remote.to_string()));
+        }
+    };
+    // The remote copy is behind or equal: nothing to take.
+    if git(root, &["merge-base", "--is-ancestor", &remote, &local]).is_some() {
+        remember(&local, &remote);
+        return Ok(false);
+    }
+    let index = repo.common_dir.join("dispatch-tasks.index");
+    let in_index = |args: &[&str]| run_git_index(root, Some(&index), args);
+    let new = if git(root, &["merge-base", "--is-ancestor", &local, &remote]).is_some() {
+        remote.clone()
+    } else {
+        // The union rule reaches merge-ort from the file on the disk; a project that lost the file
+        // gets the line back, and the next disk commit takes it.
+        join_tickets(project)?;
+        let tree = joined_tasks_tree(project, &index, &local, &remote)?;
+        run_git(root, &["commit-tree", &tree, "-p", &local, "-p", &remote, "-m", TASKS_JOIN_MESSAGE])?.trim().to_string()
+    };
+    let reference = format!("refs/heads/{TASKS_BRANCH}");
+    run_git(root, &["update-ref", &reference, &new, &local])?;
+    remember(&new, &remote);
+    // The files for the disk: `<letter>\0<path>\0` per changed path; no rename detection, so the
+    // letters are A, M, T and D. The branch holds only the task folder; another path is not touched.
+    let listed = run_git(root, &["diff-tree", "-r", "-z", "--name-status", &local, &new])?;
+    let mut parts = listed.split('\0');
+    let mut removed: Vec<&str> = Vec::new();
+    let mut written: Vec<&str> = Vec::new();
+    let prefix = format!("{TASKS_DIR}/");
+    while let (Some(status), Some(path)) = (parts.next(), parts.next()) {
+        if !path.starts_with(&prefix) {
+            continue;
+        }
+        if status.starts_with('D') {
+            removed.push(path);
+        } else {
+            written.push(path);
+        }
+    }
+    for path in &removed {
+        if let Err(error) = fs::remove_file(root.join(path)) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                return Err(format!("{path} not removed: {error}"));
+            }
+        }
+    }
+    if !written.is_empty() {
+        in_index(&["read-tree", &new])?;
+        // Groups of paths: the command line of Windows is limited. `-u` keeps the stat data in the
+        // index for the next `add -A`.
+        for group in written.chunks(100) {
+            let mut args = vec!["checkout-index", "-f", "-u", "--"];
+            args.extend(group);
+            in_index(&args)?;
+        }
+    }
+    Ok(!removed.is_empty() || !written.is_empty())
+}
+
+/// The tree of the join of `remote` into `local` for `join_tasks_branch`: `merge-tree --write-tree
+/// --name-only --no-messages` gives the tree in its first line and the conflicted paths after it, and
+/// exits with 1 when a conflict exists (`run_git` would take that as a failure, so the command runs
+/// here). Each conflicted path takes the entry of the local tip in the index file `index`
+/// (`update-index --cacheinfo`), or goes when the local tip lacks it; `write-tree` gives the result.
+fn joined_tasks_tree(project: &Project, index: &Path, local: &str, remote: &str) -> Result<String, String> {
+    let root = &project.root;
+    // `core.quotePath=false`: a path with a special character is not quoted.
+    let args = ["-c", "core.quotePath=false", "merge-tree", "--write-tree", "--name-only", "--no-messages", local, remote];
+    #[cfg(test)]
+    gitfiles::count_start(false, &args);
+    let mut command = gitfiles::git_program().command();
+    command.arg("-C").arg(root).args(args).stdin(Stdio::null());
+    let output = command.no_window().output().map_err(|e| format!("git did not start: {e}"))?;
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    if !matches!(output.status.code(), Some(0 | 1)) {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(format!("git merge-tree failed: {}", if stderr.is_empty() { text.trim().to_string() } else { stderr }));
+    }
+    let mut lines = text.lines().map(str::trim).filter(|line| !line.is_empty());
+    let Some(tree) = lines.next() else { return Err("git merge-tree gave no tree".to_string()) };
+    let mut conflicted: Vec<&str> = lines.collect();
+    conflicted.sort_unstable();
+    conflicted.dedup();
+    if conflicted.is_empty() {
+        return Ok(tree.to_string());
+    }
+    let in_index = |args: &[&str]| run_git_index(root, Some(index), args);
+    in_index(&["read-tree", tree])?;
+    // `<mode> blob <hash>\t<path>\0` per conflicted path that the local tip holds.
+    let mut list = vec!["ls-tree", "-r", "-z", local, "--"];
+    list.extend(&conflicted);
+    let listed = run_git(root, &list)?;
+    let mut keep: Vec<String> = Vec::new();
+    let mut held: Vec<&str> = Vec::new();
+    for entry in listed.split('\0').filter(|entry| !entry.is_empty()) {
+        let Some((info, path)) = entry.split_once('\t') else { continue };
+        let mut info = info.split_whitespace();
+        let (Some(mode), Some(_), Some(hash)) = (info.next(), info.next(), info.next()) else { continue };
+        keep.push(format!("{mode},{hash},{path}"));
+        held.push(path);
+    }
+    if !keep.is_empty() {
+        let mut args = vec!["update-index"];
+        for entry in &keep {
+            args.extend(["--cacheinfo", entry.as_str()]);
+        }
+        in_index(&args)?;
+    }
+    let gone: Vec<&str> = conflicted.iter().copied().filter(|path| !held.contains(path)).collect();
+    if !gone.is_empty() {
+        let mut args = vec!["update-index", "--force-remove", "--"];
+        args.extend(&gone);
+        in_index(&args)?;
+    }
+    Ok(in_index(&["write-tree"])?.trim().to_string())
+}
+
 /// The hash of the branch `dispatch/tasks` of a remote (`refs/remotes/<remote>/dispatch/tasks`), the
 /// first remote in name order; none without one. From the files of git (the loose refs and
 /// `packed-refs`), so an idle read starts no git; with refs in the reftable format the question goes
@@ -9470,7 +9647,8 @@ fn remote_tasks_branch(project: &Project) -> Option<String> {
 /// (`checkout-index -a -f -u`: the files land at their paths under `.dispatch`, over a file that
 /// Apply wrote before, and the index keeps their stat data). Also after the pull that deleted the
 /// tracked copies on the second computer, once the first one moved the files. With "Task files local
-/// only" on, or with a local branch, nothing happens. Gives whether files were written.
+/// only" on, or with a local branch, nothing happens. Gives whether files were written. With a local
+/// branch, a newer remote copy is the work of `join_tasks_branch` after the disk commit.
 fn restore_tasks_branch(project: &Project) -> Result<bool, String> {
     if !project.in_git || project.options().ignore_tasks || branch_hash(project, TASKS_BRANCH).is_some() {
         return Ok(false);
@@ -13695,6 +13873,157 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
         assert_eq!(keep_tasks_committed(&clone), Ok(0));
         assert_eq!(git(&clone.root, &["rev-parse", "HEAD"]), head, "no new commit");
         assert_eq!(git(&clone.root, &["status", "--porcelain", "--untracked-files=all"]), "");
+        clean(&project);
+    }
+
+    /// The scratch project as the remote of two clones `one` and `two` (ticket
+    /// the-task-branch-of-two-computers-joins): it has a ticket and a brief on its branch dispatch/tasks,
+    /// and each clone took the branch and its files at its first read.
+    fn remote_and_two_clones(name: &str) -> (Project, Project, Project) {
+        let project = git_scratch(name);
+        apply(&project, &[0]).unwrap();
+        crate::core::tickets::open_in_progress(&project, "t-0", "Zero", "Zero").unwrap();
+        write_file(&project.briefs().join("t-0.md"), "# t-0: zero\n").unwrap();
+        task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        run_git(&project.root, &["add", "--all"]).unwrap();
+        run_git(&project.root, &["commit", "-q", "-m", "setup"]).unwrap();
+        let one = clone_of(&project, "one");
+        let two = clone_of(&project, "two");
+        task_list(one.root.to_string_lossy().into_owned()).unwrap();
+        task_list(two.root.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(git_out(&one, &["rev-parse", TASKS_BRANCH]), git_out(&two, &["rev-parse", TASKS_BRANCH]));
+        (project, one, two)
+    }
+
+    /// A ticket of a clone with its brief, its state and a done report, and the read that commits them
+    /// on the dispatch/tasks of the clone.
+    fn own_task(clone: &Project, id: &str) {
+        crate::core::tickets::open_in_progress(clone, id, id, id).unwrap();
+        write_file(&clone.briefs().join(format!("{id}.md")), &format!("# {id}\n")).unwrap();
+        write_file(&clone.reports.join(format!("{id}.state")), "working\n").unwrap();
+        write_report(clone, id);
+        task_list(clone.root.to_string_lossy().into_owned()).unwrap();
+        let tree = git_out(clone, &["ls-tree", "-r", "--name-only", TASKS_BRANCH]);
+        assert!(tree.lines().any(|line| line == format!("{TASKS_DIR}/{id}.md")), "the report of {id} is not on the branch:\n{tree}");
+    }
+
+    /// `one` pushes its dispatch/tasks to the remote and `two` pulls, as the user does by hand; Dispatch
+    /// fetches nothing. The pull moves `origin/dispatch/tasks` of `two` and leaves its checkout.
+    fn push_and_pull(one: &Project, two: &Project) {
+        let head = git_out(two, &["rev-parse", "HEAD"]);
+        run_git(&one.root, &["push", "-q", "origin", TASKS_BRANCH]).unwrap();
+        run_git(&two.root, &["pull", "-q"]).unwrap();
+        assert_eq!(git_out(two, &["rev-parse", &format!("origin/{TASKS_BRANCH}")]), git_out(one, &["rev-parse", TASKS_BRANCH]));
+        assert_eq!(git_out(two, &["rev-parse", "HEAD"]), head, "the pull moved the checkout");
+    }
+
+    /// The paths of the branch dispatch/tasks of a project.
+    fn tasks_tree(project: &Project) -> Vec<String> {
+        git_out(project, &["ls-tree", "-r", "--name-only", TASKS_BRANCH]).lines().map(str::to_string).collect()
+    }
+
+    #[test]
+    fn second_computer_two_clones_of_one_remote_join_their_task_branches() {
+        let (project, one, two) = remote_and_two_clones("second-computer-join");
+        own_task(&one, "t-one");
+        own_task(&two, "t-two");
+        let head = git_out(&two, &["rev-parse", "HEAD"]);
+        let before = git_out(&two, &["rev-parse", TASKS_BRANCH]);
+        push_and_pull(&one, &two);
+        let remote = git_out(&two, &["rev-parse", &format!("origin/{TASKS_BRANCH}")]);
+        assert_ne!(before, remote);
+        // The next read of `two` joins the branch of `one` and lists its task.
+        let list = task_list(two.root.to_string_lossy().into_owned()).unwrap();
+        let names: Vec<&str> = list.tasks.iter().map(|task| task.name.as_str()).collect();
+        assert!(names.contains(&"t-one") && names.contains(&"t-two"), "{names:?}");
+        assert_eq!(list.tickets.len(), 3, "the tickets of both clones and of the remote");
+        assert_eq!(git_out(&two, &["log", "-1", "--format=%P", TASKS_BRANCH]), format!("{before} {remote}"), "the join commit has both tips as parents");
+        assert_eq!(git_out(&two, &["log", "-1", "--format=%s", TASKS_BRANCH]), TASKS_JOIN_MESSAGE);
+        let tree = tasks_tree(&two);
+        for id in ["t-one", "t-two"] {
+            assert!(two.reports.join(format!("{id}.md")).is_file(), "the report of {id} is not on the disk of two");
+            assert!(tree.contains(&format!("{TASKS_DIR}/{id}.md")), "the report of {id} is not on the branch of two:\n{tree:?}");
+        }
+        let tickets = read(&two.tickets_file());
+        assert!(tickets.contains("\"t-one\"") && tickets.contains("\"t-two\"") && tickets.contains("\"t-0\""), "the union of the ticket lines:\n{tickets}");
+        assert_eq!(git_out(&two, &["rev-parse", "HEAD"]), head, "the checkout of two moved");
+        assert_eq!(git_out(&two, &["status", "--porcelain", "--untracked-files=all"]), "");
+        // Nothing to commit after the join, and the join of the next read starts no git.
+        assert_eq!(keep_tasks_committed(&two), Ok(0));
+        let (count, all, _) = git_starts(|| keep_tasks_committed(&two));
+        assert_eq!(count, Ok(0));
+        assert_eq!(all, 0, "{all} git starts after the join");
+        // The remote copy is behind or equal now: a read makes no new commit.
+        let log = git_out(&two, &["log", "--format=%h", TASKS_BRANCH]);
+        task_list(two.root.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(git_out(&two, &["log", "--format=%h", TASKS_BRANCH]), log);
+        clean(&project);
+    }
+
+    #[test]
+    fn second_computer_a_file_that_changed_on_both_sides_keeps_the_local_version() {
+        let (project, one, two) = remote_and_two_clones("second-computer-both");
+        write_file(&one.briefs().join("t-both.md"), "# t-both: the words of one\n").unwrap();
+        write_file(&one.briefs().join("t-only-one.md"), "# t-only-one: only one wrote it\n").unwrap();
+        task_list(one.root.to_string_lossy().into_owned()).unwrap();
+        write_file(&two.briefs().join("t-both.md"), "# t-both: the words of two\n").unwrap();
+        task_list(two.root.to_string_lossy().into_owned()).unwrap();
+        push_and_pull(&one, &two);
+        task_list(two.root.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(git_out(&two, &["log", "-1", "--format=%P", TASKS_BRANCH]).split_whitespace().count(), 2, "a join commit");
+        assert_eq!(read(&two.briefs().join("t-both.md")), "# t-both: the words of two\n", "the disk keeps the local version");
+        assert_eq!(git_out(&two, &["show", &format!("{TASKS_BRANCH}:{TASKS_DIR}/briefs/t-both.md")]), "# t-both: the words of two", "the branch keeps the local version");
+        assert_eq!(read(&two.briefs().join("t-only-one.md")), "# t-only-one: only one wrote it\n", "the file of one came to the disk");
+        assert_eq!(git_out(&two, &["status", "--porcelain", "--untracked-files=all"]), "");
+        assert_eq!(keep_tasks_committed(&two), Ok(0), "the disk equals the joined branch");
+        clean(&project);
+    }
+
+    #[test]
+    fn second_computer_a_file_that_only_the_other_computer_deleted_goes_too() {
+        let (project, one, two) = remote_and_two_clones("second-computer-delete");
+        let brief = format!("{TASKS_DIR}/briefs/t-0.md");
+        fs::remove_file(one.briefs().join("t-0.md")).unwrap();
+        task_list(one.root.to_string_lossy().into_owned()).unwrap();
+        assert!(!tasks_tree(&one).contains(&brief), "the deletion is not on the branch of one");
+        // `two` has work of its own, so the join is a real one.
+        own_task(&two, "t-two");
+        push_and_pull(&one, &two);
+        assert!(two.briefs().join("t-0.md").is_file());
+        task_list(two.root.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(git_out(&two, &["log", "-1", "--format=%P", TASKS_BRANCH]).split_whitespace().count(), 2, "a join commit");
+        assert!(!two.briefs().join("t-0.md").exists(), "the deleted file stayed on the disk of two");
+        assert!(!tasks_tree(&two).contains(&brief), "the deleted file stayed on the branch of two");
+        assert!(two.reports.join("t-two.md").is_file());
+        assert_eq!(keep_tasks_committed(&two), Ok(0), "the disk equals the joined branch");
+        clean(&project);
+    }
+
+    #[test]
+    fn second_computer_without_work_of_its_own_takes_the_state_of_the_other() {
+        let (project, one, two) = remote_and_two_clones("second-computer-forward");
+        own_task(&one, "t-one");
+        push_and_pull(&one, &two);
+        let remote = git_out(&two, &["rev-parse", &format!("origin/{TASKS_BRANCH}")]);
+        let list = task_list(two.root.to_string_lossy().into_owned()).unwrap();
+        assert!(list.tasks.iter().any(|task| task.name == "t-one"), "{:?}", list.tasks.iter().map(|task| &task.name).collect::<Vec<_>>());
+        // User decision 1: no extra commit; the branch takes the state of the other computer.
+        assert_eq!(git_out(&two, &["rev-parse", TASKS_BRANCH]), remote);
+        assert_eq!(git_out(&two, &["log", "-1", "--format=%P", TASKS_BRANCH]).split_whitespace().count(), 1);
+        assert_eq!(read(&two.reports.join("t-one.md")), read(&one.reports.join("t-one.md")), "the report of one is not on the disk of two");
+        assert!(read(&two.tickets_file()).contains("\"t-one\""));
+        assert_eq!(git_out(&two, &["status", "--porcelain", "--untracked-files=all"]), "");
+        assert_eq!(keep_tasks_committed(&two), Ok(0));
+        // The remote copy is behind once this computer commits: the read joins nothing and starts no
+        // git for the join after the first look.
+        own_task(&two, "t-two");
+        assert_eq!(git_out(&two, &["log", "-1", "--format=%P", TASKS_BRANCH]), remote);
+        let log = git_out(&two, &["log", "--format=%h", TASKS_BRANCH]);
+        assert_eq!(keep_tasks_committed(&two), Ok(0));
+        let (count, all, _) = git_starts(|| keep_tasks_committed(&two));
+        assert_eq!(count, Ok(0));
+        assert_eq!(all, 0, "{all} git starts with a remote copy that is behind");
+        assert_eq!(git_out(&two, &["log", "--format=%h", TASKS_BRANCH]), log);
         clean(&project);
     }
 
