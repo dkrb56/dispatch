@@ -9218,6 +9218,8 @@ fn tasks_message(paths: &[&str], notes: usize) -> String {
 /// notes in git" on, a changed note still goes into a small commit on the current branch (user decision 4).
 /// After that commit, a newer remote copy of the branch that a pull brought is joined into it and
 /// its files go onto the disk (`join_tasks_branch`, ticket the-task-branch-of-two-computers-joins).
+/// When the commit or the join moved the branch, it goes to the remote with a copy of it, in the
+/// background and never with force (`start_tasks_push`, ticket dispatch-pushes-the-task-branch).
 fn keep_tasks_committed(project: &Project) -> Result<usize, String> {
     commit_and_join_tasks(project).map(|(count, _)| count)
 }
@@ -9248,6 +9250,7 @@ fn commit_and_join_tasks(project: &Project) -> Result<(usize, bool), String> {
     if project.git_sets().tasks_tracked() {
         return Ok((commit_in_checkout(project, true)?, false));
     }
+    let before = branch_hash(project, TASKS_BRANCH);
     let tasks = commit_tasks_branch(project)?;
     let joined = match join_tasks_branch(project) {
         Ok(joined) => joined,
@@ -9256,6 +9259,17 @@ fn commit_and_join_tasks(project: &Project) -> Result<(usize, bool), String> {
             false
         }
     };
+    // The push (ticket dispatch-pushes-the-task-branch): only when this call moved the tip, so an
+    // idle read starts no git, and only to a remote with a copy that differs (a fast-forward of the
+    // join to the remote copy needs no push). The tests push inline: a thread would race with their
+    // pushes by hand; `start_tasks_push` has a test of its own.
+    let after = branch_hash(project, TASKS_BRANCH);
+    if after.is_some() && after != before && remote_tasks_branch(project).is_some_and(|copy| Some(copy) != after) {
+        #[cfg(test)]
+        log_tasks_push(push_tasks_branch(project));
+        #[cfg(not(test))]
+        start_tasks_push(project);
+    }
     let notes = if project.options().notes_in_git { commit_in_checkout(project, false)? } else { 0 };
     Ok((tasks + notes, joined))
 }
@@ -9531,6 +9545,128 @@ fn join_tasks_branch(project: &Project) -> Result<bool, String> {
     Ok(!removed.is_empty() || !written.is_empty())
 }
 
+/// The time limit of one push of `dispatch/tasks` (`push_tasks_branch`), in seconds: a network that
+/// hangs or a sign-in that waits ends after it, and the next commit on the branch tries again.
+const TASKS_PUSH_LIMIT: u64 = 60;
+
+/// Pushes the branch `dispatch/tasks` to the remote that has a copy of it (`remote_tasks_copy`;
+/// ticket dispatch-pushes-the-task-branch). Never with force: a refused push changes no ref, and the
+/// next commit on the branch tries again (after the pull of the user, the join commit). No push and
+/// `Ok(None)` with "Task files local only" on, outside git, without the local branch, without a remote
+/// copy (the user did not push the branch once), or when the remote copy equals the local tip. No
+/// prompt for a password (`GIT_TERMINAL_PROMPT=0`, `GCM_INTERACTIVE=never`), the hooks of the user
+/// run (user decision 2), and after `TASKS_PUSH_LIMIT` the push ends. Gives the name of the remote
+/// after a push, or the error text of git. A successful push also moves the remote-tracking ref, so
+/// the next join step sees equal tips and starts no git.
+fn push_tasks_branch(project: &Project) -> Result<Option<String>, String> {
+    if !project.in_git || project.options().ignore_tasks {
+        return Ok(None);
+    }
+    let Some(local) = branch_hash(project, TASKS_BRANCH) else { return Ok(None) };
+    let Some((remote, copy)) = remote_tasks_copy(project) else { return Ok(None) };
+    if local == copy {
+        return Ok(None);
+    }
+    let reference = format!("refs/heads/{TASKS_BRANCH}");
+    // No `+` and no `--force`: the remote takes only a fast-forward.
+    let refspec = format!("{reference}:{reference}");
+    let args = ["push", "-q", remote.as_str(), refspec.as_str()];
+    #[cfg(test)]
+    gitfiles::count_start(false, &args);
+    let mut command = gitfiles::git_program().command();
+    command
+        .arg("-C")
+        .arg(&project.root)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "never")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let mut child = command.no_window().spawn().map_err(|e| format!("git did not start: {e}"))?;
+    // The error text is read on a thread of its own, so a full pipe does not hold git.
+    let mut pipe = child.stderr.take();
+    let reading = std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(pipe) = pipe.as_mut() {
+            let _ = std::io::Read::read_to_string(pipe, &mut text);
+        }
+        text
+    });
+    let began = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if began.elapsed() >= std::time::Duration::from_secs(TASKS_PUSH_LIMIT) => {
+                crate::core::rules_check::end_tree(child.id());
+                let _ = child.wait();
+                return Err(format!("git push to {remote} took longer than {TASKS_PUSH_LIMIT} s and was ended"));
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(error) => return Err(format!("git push to {remote}: {error}")),
+        }
+    };
+    if status.success() {
+        return Ok(Some(remote));
+    }
+    // A helper that git started can keep the pipe open: the text waits 5 s at most.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !reading.is_finished() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let text = if reading.is_finished() { reading.join().unwrap_or_default() } else { String::new() };
+    let text = text.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>().join("; ");
+    Err(format!("git push to {remote} failed: {}", if text.is_empty() { format!("exit {}", status.code().unwrap_or(-1)) } else { text }))
+}
+
+/// The log line of a push of `dispatch/tasks` that failed; a push that happened or was not needed
+/// writes none.
+fn log_tasks_push(result: Result<Option<String>, String>) {
+    if let Err(error) = result {
+        eprintln!("task branch {TASKS_BRANCH} not pushed: {error}");
+    }
+}
+
+/// The pushes of `start_tasks_push` that run, per project root, each with the flag "again": a request
+/// while the push runs sets it, and the thread pushes once more after the push. No entry: no push runs.
+static TASKS_PUSHES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, bool>>> = std::sync::OnceLock::new();
+
+/// Starts `push_tasks_branch` on a thread of its own (user decision 1: the board does not wait for
+/// the push), at most one per project: with a push running, the request sets its flag "again".
+fn start_tasks_push(project: &Project) {
+    let pushes = TASKS_PUSHES.get_or_init(Default::default);
+    let root = project.root.clone();
+    {
+        let Ok(mut map) = pushes.lock() else { return };
+        if let Some(again) = map.get_mut(&root) {
+            *again = true;
+            return;
+        }
+        map.insert(root.clone(), false);
+    }
+    let name = format!("push {TASKS_BRANCH}");
+    let thread_root = root.clone();
+    let spawned = std::thread::Builder::new().name(name).spawn(move || loop {
+        match Project::find(&thread_root.to_string_lossy()) {
+            Ok(project) => log_tasks_push(push_tasks_branch(&project)),
+            Err(error) => log_tasks_push(Err(error)),
+        }
+        let Ok(mut map) = pushes.lock() else { return };
+        if map.get(&thread_root) == Some(&true) {
+            map.insert(thread_root.clone(), false);
+            continue;
+        }
+        map.remove(&thread_root);
+        return;
+    });
+    if let Err(error) = spawned {
+        log_tasks_push(Err(format!("no thread for the push: {error}")));
+        if let Ok(mut map) = pushes.lock() {
+            map.remove(&root);
+        }
+    }
+}
+
 /// The tree of the join of `remote` into `local` for `join_tasks_branch`: `merge-tree --write-tree
 /// --name-only --no-messages` gives the tree in its first line and the conflicted paths after it, and
 /// exits with 1 when a conflict exists (`run_git` would take that as a failure, so the command runs
@@ -9590,15 +9726,26 @@ fn joined_tasks_tree(project: &Project, index: &Path, local: &str, remote: &str)
 }
 
 /// The hash of the branch `dispatch/tasks` of a remote (`refs/remotes/<remote>/dispatch/tasks`), the
-/// first remote in name order; none without one. From the files of git (the loose refs and
-/// `packed-refs`), so an idle read starts no git; with refs in the reftable format the question goes
-/// to `for-each-ref`, whose pattern finds the branch of any remote.
+/// first remote in name order; none without one. See `remote_tasks_copy`.
 fn remote_tasks_branch(project: &Project) -> Option<String> {
+    remote_tasks_copy(project).map(|(_, hash)| hash)
+}
+
+/// The name of the remote with a copy of `dispatch/tasks` and the hash of that copy, the first remote
+/// in name order; none without one. From the files of git (the loose refs and `packed-refs`), so an
+/// idle read starts no git; with refs in the reftable format the question goes to `for-each-ref`,
+/// whose pattern finds the branch of any remote. The push of `push_tasks_branch` goes to that remote.
+fn remote_tasks_copy(project: &Project) -> Option<(String, String)> {
     let repo = project.repo()?;
+    let suffix = format!("/{TASKS_BRANCH}");
     if !repo.refs_readable() {
         let pattern = format!("refs/remotes/*/{TASKS_BRANCH}");
-        return git(&project.root, &["for-each-ref", "--format=%(objectname)", &pattern])
-            .and_then(|text| text.lines().map(str::trim).find(|line| !line.is_empty()).map(str::to_string));
+        let text = git(&project.root, &["for-each-ref", "--format=%(refname) %(objectname)", &pattern])?;
+        return text.lines().find_map(|line| {
+            let (name, hash) = line.trim().rsplit_once(' ')?;
+            let remote = name.strip_prefix("refs/remotes/")?.strip_suffix(&suffix)?;
+            Some((remote.to_string(), hash.to_string()))
+        });
     }
     let remotes = repo.common_dir.join("refs").join("remotes");
     let mut names: Vec<String> = fs::read_dir(&remotes)
@@ -9609,7 +9756,6 @@ fn remote_tasks_branch(project: &Project) -> Option<String> {
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
     let packed = fs::read_to_string(repo.common_dir.join("packed-refs")).unwrap_or_default();
-    let suffix = format!("/{TASKS_BRANCH}");
     for line in packed.lines().filter(|line| !line.starts_with('#') && !line.starts_with('^')) {
         let Some((_, name)) = line.trim_end().split_once(' ') else { continue };
         if let Some(remote) = name.strip_prefix("refs/remotes/").and_then(|rest| rest.strip_suffix(&suffix)) {
@@ -9618,7 +9764,7 @@ fn remote_tasks_branch(project: &Project) -> Option<String> {
     }
     names.sort();
     names.dedup();
-    names.iter().find_map(|remote| repo.ref_hash(&format!("refs/remotes/{remote}/{TASKS_BRANCH}")))
+    names.iter().find_map(|remote| repo.ref_hash(&format!("refs/remotes/{remote}/{TASKS_BRANCH}")).map(|hash| (remote.clone(), hash)))
 }
 
 /// The branch `dispatch/tasks` in a clone (ticket dispatch-commits-the-task-files-on-its): without a
@@ -14004,6 +14150,143 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
         assert_eq!(count, Ok(0));
         assert_eq!(all, 0, "{all} git starts with a remote copy that is behind");
         assert_eq!(git_out(&two, &["log", "--format=%h", TASKS_BRANCH]), log);
+        clean(&project);
+    }
+
+    /// A scratch project with its task files on dispatch/tasks (Apply and the first read) and its setup
+    /// committed, and a bare repository next to it as its remote `origin` with the branch of the user
+    /// pushed (ticket dispatch-pushes-the-task-branch). With `by_hand`, the user pushed dispatch/tasks
+    /// once. Gives the project and the folder of the bare repository.
+    fn tasks_branch_push_project(name: &str, by_hand: bool) -> (Project, PathBuf) {
+        let project = git_scratch(name);
+        apply(&project, &[0]).unwrap();
+        task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        git_out(&project, &["add", "--all"]);
+        git_out(&project, &["commit", "-q", "-m", "setup"]);
+        assert!(branch_hash(&project, TASKS_BRANCH).is_some(), "the first read made no dispatch/tasks");
+        let bare = project.root.parent().unwrap().join("remote.git");
+        run_git(project.root.parent().unwrap(), &["init", "-q", "--bare", &bare.to_string_lossy()]).unwrap();
+        git_out(&project, &["remote", "add", "origin", &bare.to_string_lossy()]);
+        git_out(&project, &["push", "-q", "-u", "origin", "HEAD"]);
+        if by_hand {
+            git_out(&project, &["push", "-q", "origin", TASKS_BRANCH]);
+        }
+        (project, bare)
+    }
+
+    /// The tip of dispatch/tasks in the bare remote, none without the branch.
+    fn bare_tasks_tip(bare: &Path) -> Option<String> {
+        run_git(bare, &["rev-parse", "--verify", "-q", &format!("refs/heads/{TASKS_BRANCH}")]).ok().map(|hash| hash.trim().to_string())
+    }
+
+    #[test]
+    fn tasks_branch_push_after_a_commit_once_the_user_pushed_it() {
+        let (project, bare) = tasks_branch_push_project("tasks-push", true);
+        let before = git_out(&project, &["rev-parse", TASKS_BRANCH]);
+        assert_eq!(bare_tasks_tip(&bare).as_deref(), Some(before.as_str()));
+        write_report(&project, "t-1");
+        task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        let local = git_out(&project, &["rev-parse", TASKS_BRANCH]);
+        assert_ne!(local, before, "the read made no commit on dispatch/tasks");
+        assert_eq!(git_out(&project, &["rev-parse", &format!("origin/{TASKS_BRANCH}")]), local);
+        assert_eq!(bare_tasks_tip(&bare), Some(local.clone()));
+        // An idle read after the push starts no git: the tip did not move, and the remote copy equals it.
+        let (count, all, _) = git_starts(|| keep_tasks_committed(&project));
+        assert_eq!(count, Ok(0));
+        assert_eq!(all, 0, "{all} git starts after the push");
+        assert_eq!(push_tasks_branch(&project), Ok(None), "a push with equal tips");
+        clean(&project);
+    }
+
+    #[test]
+    fn tasks_branch_push_without_a_remote_copy_does_not_happen() {
+        let (project, bare) = tasks_branch_push_project("tasks-push-none", false);
+        write_report(&project, "t-1");
+        task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        assert!(git_out(&project, &["log", "--format=%s", TASKS_BRANCH]).contains("t-1"), "the read made no commit on dispatch/tasks");
+        assert_eq!(bare_tasks_tip(&bare), None, "Dispatch pushed a branch that the user never pushed");
+        assert_eq!(push_tasks_branch(&project), Ok(None));
+        assert_eq!(bare_tasks_tip(&bare), None);
+        clean(&project);
+    }
+
+    #[test]
+    fn tasks_branch_push_refused_is_never_forced_and_the_join_pushes() {
+        let (project, bare) = tasks_branch_push_project("tasks-push-refused", true);
+        // The second computer: a clone of the bare remote, which takes dispatch/tasks at its first read
+        // and pushes its own commit.
+        let target = project.root.parent().unwrap().join("other");
+        run_git(project.root.parent().unwrap(), &["clone", "-q", &bare.to_string_lossy(), &target.to_string_lossy()]).unwrap();
+        for args in [&["config", "user.name", "Dispatch test"][..], &["config", "user.email", "test@example.invalid"], &["config", "commit.gpgsign", "false"]] {
+            run_git(&target, args).unwrap();
+        }
+        let other = Project::find(&target.to_string_lossy()).unwrap();
+        task_list(other.root.to_string_lossy().into_owned()).unwrap();
+        write_report(&other, "t-other");
+        task_list(other.root.to_string_lossy().into_owned()).unwrap();
+        let theirs = git_out(&other, &["rev-parse", TASKS_BRANCH]);
+        assert_eq!(bare_tasks_tip(&bare), Some(theirs.clone()), "the second computer did not push");
+        // This computer commits without the newer copy: the remote refuses, and nothing is forced.
+        write_report(&project, "t-mine");
+        task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        let mine = git_out(&project, &["rev-parse", TASKS_BRANCH]);
+        let error = push_tasks_branch(&project).unwrap_err();
+        assert!(error.contains("rejected") || error.contains("fetch first") || error.contains("non-fast-forward"), "{error}");
+        assert_eq!(bare_tasks_tip(&bare), Some(theirs.clone()), "the push overwrote the remote copy");
+        assert_eq!(git_out(&project, &["rev-parse", TASKS_BRANCH]), mine);
+        // After the pull of the user, the join commit of the next read goes to the remote.
+        git_out(&project, &["fetch", "-q", "origin"]);
+        task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        let joined = git_out(&project, &["rev-parse", TASKS_BRANCH]);
+        assert_eq!(git_out(&project, &["log", "-1", "--format=%P", TASKS_BRANCH]), format!("{mine} {theirs}"), "no join commit");
+        assert_eq!(bare_tasks_tip(&bare), Some(joined.clone()));
+        assert_eq!(git_out(&project, &["rev-parse", &format!("origin/{TASKS_BRANCH}")]), joined);
+        clean(&project);
+    }
+
+    #[test]
+    fn tasks_branch_push_offline_waits_for_the_next_commit() {
+        let (project, bare) = tasks_branch_push_project("tasks-push-offline", true);
+        let missing = project.root.parent().unwrap().join("no-such-remote.git");
+        git_out(&project, &["remote", "set-url", "origin", &missing.to_string_lossy()]);
+        let before = git_out(&project, &["rev-parse", TASKS_BRANCH]);
+        write_report(&project, "t-1");
+        assert!(task_list(project.root.to_string_lossy().into_owned()).is_ok(), "a failed push failed the read");
+        let local = git_out(&project, &["rev-parse", TASKS_BRANCH]);
+        assert_ne!(local, before, "the read made no commit");
+        assert!(push_tasks_branch(&project).is_err(), "a push to a missing remote");
+        assert_eq!(git_out(&project, &["rev-parse", TASKS_BRANCH]), local, "the local branch lost its commit");
+        assert_eq!(bare_tasks_tip(&bare), Some(before));
+        // Online again: the next commit goes out with the one before.
+        git_out(&project, &["remote", "set-url", "origin", &bare.to_string_lossy()]);
+        write_report(&project, "t-2");
+        task_list(project.root.to_string_lossy().into_owned()).unwrap();
+        let next = git_out(&project, &["rev-parse", TASKS_BRANCH]);
+        assert_ne!(next, local);
+        assert_eq!(bare_tasks_tip(&bare), Some(next));
+        clean(&project);
+    }
+
+    #[test]
+    fn tasks_branch_push_starter_runs_in_the_background_and_again() {
+        let (project, bare) = tasks_branch_push_project("tasks-push-thread", true);
+        let running = || TASKS_PUSHES.get().and_then(|map| map.lock().ok().map(|map| map.contains_key(&project.root))).unwrap_or(false);
+        write_report(&project, "t-1");
+        assert!(commit_tasks_branch(&project).unwrap() > 0);
+        start_tasks_push(&project);
+        // A second commit while the first push may still run: its request sets "again", or starts a
+        // new push when the first one ended.
+        write_report(&project, "t-2");
+        assert!(commit_tasks_branch(&project).unwrap() > 0);
+        start_tasks_push(&project);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(TASKS_PUSH_LIMIT * 2 + 10);
+        while running() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(!running(), "the push did not end");
+        let local = git_out(&project, &["rev-parse", TASKS_BRANCH]);
+        assert_eq!(bare_tasks_tip(&bare), Some(local.clone()));
+        assert_eq!(git_out(&project, &["rev-parse", &format!("origin/{TASKS_BRANCH}")]), local);
         clean(&project);
     }
 

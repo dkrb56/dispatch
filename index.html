@@ -628,7 +628,7 @@
         <h3>Continue on a second computer</h3>
         <p class="tldr">Push on one computer, pull on the other, click Apply once, and go on. The other computer can use another Claude account.</p>
         <ol>
-          <li>On the first computer, keep Task files local only off. Turn Project notes in git on when the notes of Claude shall travel too. Push the project and the branch of the task files: <code>git push origin dispatch/tasks</code>.</li>
+          <li>On the first computer, keep Task files local only off. Turn Project notes in git on when the notes of Claude shall travel too. Push the project, and push the branch of the task files once by hand: <code>git push origin dispatch/tasks</code>. After that, Dispatch pushes that branch itself after each change.</li>
           <li>On the second computer, clone the project. Open the folder in Dispatch.</li>
           <li>Click <b>Apply</b> once. <span class="does">It writes the allow rules of this computer. It changes no file that git shares, so Commit to git is not necessary.</span></li>
           <li>Go on. <span class="does">The first look of Dispatch takes the tickets, plans and reports from the branch <code>dispatch/tasks</code> of the clone into <code>.dispatch</code>. You can approve a plan and start new tasks.</span></li>
@@ -640,7 +640,7 @@
             <li>A task that ran on the other computer says "ran on another computer · no worker here" on its card. It does not block other tasks or the commits of the task files.</li>
             <li>When such a task has a plan, <b>Approve</b> starts its work run again on this computer, from the brief and the plan. <b>Reject</b> starts a new plan run on this computer; it reads the brief, the old plan and your reason. A plan run that did not finish: ask triage to start it again.</li>
             <li>An answer to a question of a worker works only on the computer where the worker ran.</li>
-            <li>A pull brings the commits of the other computer, and the next look of Dispatch joins them into the branch <code>dispatch/tasks</code> and writes the new files into <code>.dispatch</code>. The tickets of both computers are kept; a file that both computers changed keeps the version of this computer. Until Dispatch pushes the branch itself (the next part of this change), push it by hand after your work: <code>git push origin dispatch/tasks</code>.</li>
+            <li>A pull brings the commits of the other computer, and the next look of Dispatch joins them into the branch <code>dispatch/tasks</code> and writes the new files into <code>.dispatch</code>. The tickets of both computers are kept; a file that both computers changed keeps the version of this computer. Dispatch pushes the branch after each change to the remote that has it, never with force, in the background. A failed push (offline, refused) waits for the next change.</li>
             <li>The models in the Workers bar are one choice for the project; the level of a ticket and the choice at Approve come before them. When the other account cannot use a model, the run fails with the message of Claude. Then choose another model in the Workers bar there.</li>
             <li>Finish on one computer and push before you continue on the other. A pull on the other computer after the move of the task files deletes the tracked copies there; the next look of Dispatch writes them again from <code>dispatch/tasks</code>.</li>
             <li>With Task files local only on, the second computer gets the setup, but no tickets, briefs, plans, reports or logs.</li>
