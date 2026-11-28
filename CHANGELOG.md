@@ -2,6 +2,12 @@
 
 What each update of Dispatch brought, in plain words. The newest version comes first. After an update, Dispatch shows the entries since the version you had before; **?** → **What's new** shows them all. The versions before 0.1.46 are in the git history of the repository.
 
+## 0.2.1 (2026-11-28)
+- Dispatch commits the task files on its own branch dispatch/tasks through an index of its own, with no checkout, so the user's branches get no Dispatch commits; Apply moves the tracked task files off the current and the other local branches in one commit per branch and writes the ignore pair of the branch; a clone takes the branch and its files from the remote copy at its first read; the notes still go onto the user's branch; local only keeps working.
+- After the disk commit, a task read joins the newer remote copy of dispatch/tasks into the local branch without a checkout (merge-tree; the union rule keeps the ticket lines of both computers, a file that changed on both sides keeps the local version, a deletion of the other computer holds here too, a branch without own work takes the remote state without a commit) and writes the files of the other computer into .dispatch; a pair that was settled starts no git on an idle read; help text and README.
+- Tasks whose plans name the same file work at the same time; the worker script and the window no longer hold a start or a reply for the same files; when a branch in a work folder cannot take the newer base without a conflict, the prompt tells the work run to merge the base itself, join both sides, commit the merge on its task branch and ask only when the sides disagree.
+- After a commit or a join on dispatch/tasks, Dispatch pushes the branch to the remote that already has a copy of it, never with force, in the background with a time limit of 60 s; no push before the user pushed the branch once; a failed push (offline, refused) writes a log line and the next commit tries again; help text and README.
+
 ## 0.2.0 (2026-11-27)
 - An answer that waits for a busy project no longer stops the window: Setup, Actions, New ticket, the merges and the queue work again.
 - A bin on each ticket that does not run deletes it after a second click, with its parts; a delete line in the tickets file, and the id stays taken.
