@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { answerFolderNote, type AnswerFolderFacts, chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type QueuedFacts, sameFiles, sameFilesRefusal, StartLeases, folderUse, folderUseLabel,ticketFolder, type TicketFolderFacts, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts, type WorkRun } from "../src/workstart.ts";
+import { answerFolderNote, type AnswerFolderFacts, chooseNightMerge, chooseQueued, chooseStart, mergeRefusal, nightPlan, projectBusy, type QueuedFacts, StartLeases, folderUse, folderUseLabel,ticketFolder, type TicketFolderFacts, type MergeCandidate, type MergeFacts, type NightPlanFacts, type StartCandidate, type StartFacts, type WorkRun } from "../src/workstart.ts";
 
 const MAIN = readFileSync(new URL("../src/main.ts", import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
@@ -489,9 +489,10 @@ test("main.ts: an Approve click and a queued approval that a merge refuses wait 
 });
 
 // Ticket the-page-lets-more-than-one-work-run: with N work folders up to N work runs run at the same
-// time, a task whose plan names a file of a running task waits, a merge runs beside work runs, and a
-// start or a reply that the worker script refuses for a folder or for the same files waits in the queue.
-const run = (task: string, files: string[] = []): WorkRun => ({ task, files });
+// time, a merge runs beside work runs, and a start or a reply that the worker script refuses for a
+// folder waits in the queue. Tasks on the same files run at the same time (ticket
+// two-tasks-on-the-same-files-run-together).
+const run = (task: string): WorkRun => ({ task });
 
 test("slots and runs: one run leaves a project with two work folders free, two runs make it busy", () => {
   assert.equal(projectBusy({ merging: null, runs: [run("t-1")], leased: null, slots: 2 }), false);
@@ -538,39 +539,15 @@ test("slots and runs: the poll starts one task per poll until every work folder 
   assert.deepEqual(started, ["ignore-tasks", "question-card-text", "typing-sent-by-line"], "a run ended: the next approval starts");
 });
 
-test("sameFiles: the rule of the worker script: same path, a folder path both ways, no case, never .dispatch", () => {
-  assert.deepEqual(sameFiles(["src/main.ts", "src/a.ts"], ["src/main.ts"]), ["src/main.ts"]);
-  assert.deepEqual(sameFiles(["SRC/Main.ts"], ["src/main.ts"]), ["SRC/Main.ts"], "without case, the own path as written");
-  assert.deepEqual(sameFiles(["src/core/x.rs"], ["src/core/"]), ["src/core/x.rs"], "under a folder path of the other plan");
-  assert.deepEqual(sameFiles(["src/core/"], ["src/core/x.rs"]), ["src/core/"], "a folder path of this plan");
-  assert.deepEqual(sameFiles(["src/core.rs"], ["src/core/"]), [], "a folder path needs the /");
-  assert.deepEqual(sameFiles([".dispatch/plans/t-1.md", "src/a.ts"], [".dispatch/plans/t-1.md", ".dispatch/"]), []);
-  assert.deepEqual(sameFiles([".Dispatch/x.md"], [".dispatch/x.md"]), [], ".dispatch without case too");
-  assert.deepEqual(sameFiles([], ["src/a.ts"]), []);
-  assert.deepEqual(sameFiles(["src/a.ts"], []), []);
-});
-
-test("same files: a candidate whose plan names a file of a running work run is skipped, and the next one starts", () => {
-  const base: StartFacts = { merging: null, runs: [run("t-run", ["src/main.ts", "src/core/"])], slots: 3, leased: null, queued: null, auto: true, night: false, tasks: [] };
-  const a = { ...candidate("a"), files: ["src/main.ts"] };
-  const b = { ...candidate("b"), files: ["src/other.ts"] };
-  assert.deepEqual(chooseStart({ ...base, tasks: [a, b] }), { task: "b", kind: "auto" });
-  assert.deepEqual(chooseStart({ ...base, tasks: [{ ...a, files: ["SRC/MAIN.TS"] }, b] }), { task: "b", kind: "auto" }, "another case clashes");
-  assert.deepEqual(chooseStart({ ...base, tasks: [{ ...a, files: ["src/core/pipeline.rs"] }, b] }), { task: "b", kind: "auto" }, "a file under a folder path clashes");
-  assert.deepEqual(chooseStart({ ...base, tasks: [{ ...a, files: [".dispatch/plans/t-run.md"] }, b] }), { task: "a", kind: "auto" }, ".dispatch does not clash");
-  assert.deepEqual(chooseStart({ ...base, tasks: [{ ...a, files: undefined }, b] }), { task: "a", kind: "auto" }, "a plan without files clashes with nothing");
-  assert.equal(chooseStart({ ...base, tasks: [a] }), null, "alone it waits");
-  assert.deepEqual(chooseStart({ ...base, runs: [], tasks: [a] }), { task: "a", kind: "auto" }, "the run ended: it starts");
-  assert.deepEqual(chooseStart({ ...base, runs: [run("a", ["src/main.ts"])], tasks: [a] }), { task: "a", kind: "auto" }, "its own run is no clash");
-});
-
-test("same files: the queued approval keeps its place; nothing starts before it (user decision 1)", () => {
-  const base: StartFacts = { merging: null, runs: [run("t-run", ["src/main.ts"])], slots: 2, leased: null, queued: "a", auto: true, night: true, tasks: [] };
-  const a = { ...candidate("a"), files: ["src/main.ts"] };
-  const b = { ...candidate("b"), files: ["src/other.ts"] };
-  assert.equal(chooseStart({ ...base, tasks: [a, b] }), null, "the first in line waits, and the next one does not start before it");
-  assert.deepEqual(chooseStart({ ...base, tasks: [{ ...a, files: ["src/free.ts"] }, b] }), { task: "a", kind: "queued" });
-  assert.deepEqual(chooseStart({ ...base, runs: [], tasks: [a, b] }), { task: "a", kind: "queued" }, "the run ended: the queued one starts first");
+test("same files: a start and a reply go while a run of another task with the same plan files runs", () => {
+  // t-run, a, b and c all change src/main.ts; the window no longer knows or asks the files of a plan.
+  const base: StartFacts = { merging: null, runs: [run("t-run")], slots: 3, leased: null, queued: null, auto: true, night: false, tasks: [] };
+  assert.deepEqual(chooseStart({ ...base, tasks: [candidate("a"), candidate("b")] }), { task: "a", kind: "auto" }, "the first ready plan starts");
+  assert.deepEqual(chooseStart({ ...base, queued: "b", tasks: [candidate("a"), candidate("b")] }), { task: "b", kind: "queued" }, "the queued approval starts");
+  assert.deepEqual(chooseStart({ ...base, runs: [run("t-run"), run("a")], tasks: [candidate("b")] }), { task: "b", kind: "auto" }, "a third folder is free");
+  const free: QueuedFacts = { merging: null, runs: [run("t-run")], slots: 2, leased: null, checkout: null, approval: null, replies: [] };
+  assert.equal(chooseQueued({ ...free, replies: [{ task: "c", at: 1, folder: null }] }), "c", "the reply goes");
+  assert.equal(chooseQueued({ ...free, approval: { task: "a", at: 0 }, replies: [{ task: "c", at: 1 }] }), null, "an approval clicked before it starts first");
 });
 
 test("a merge during work runs: with two work folders and one run auto-merge and night mode merge", () => {
@@ -596,28 +573,19 @@ test("a merge during work runs: with two work folders and one run auto-merge and
   assert.equal(chooseNightMerge(autoDay([waiting("a", { tried: true }), waiting("b", { reportTime: 200 })], { ...free, merging })), "b");
 });
 
-test("chooseQueued with several work folders: a reply waits for the folder of its session and for the same files", () => {
-  const free: QueuedFacts = { merging: null, runs: [run("t-run", ["src/main.ts"])], slots: 2, leased: null, checkout: null, approval: null, replies: [] };
+test("chooseQueued with several work folders: a reply waits for the folder of its session", () => {
+  const free: QueuedFacts = { merging: null, runs: [run("t-run")], slots: 2, leased: null, checkout: null, approval: null, replies: [] };
   assert.equal(chooseQueued({ ...free, replies: [{ task: "a", at: 1, folder: null }] }), "a", "a run in another folder does not hold it");
   assert.equal(chooseQueued({ ...free, runs: [run("t-1"), run("t-2")], replies: [{ task: "a", at: 1, folder: null }] }), "a", "the folder of its session is free: it needs no other folder");
   assert.equal(chooseQueued({ ...free, replies: [{ task: "a", at: 1, folder: "t-run" }] }), null, "another task uses the folder of its session");
-  assert.equal(chooseQueued({ ...free, replies: [{ task: "a", at: 1, files: ["src/Main.ts"] }] }), null, "the same files");
-  assert.equal(chooseQueued({ ...free, replies: [{ task: "a", at: 1, folder: "t-run" }, { task: "b", at: 2, files: ["src/b.ts"] }] }), "b", "the next reply goes");
-  assert.equal(chooseQueued({ ...free, approval: { task: "c", at: 0, files: ["src/main.ts"] }, replies: [{ task: "b", at: 2 }] }), "b", "an earlier approval that waits for the same files does not hold it");
-  assert.equal(chooseQueued({ ...free, approval: { task: "c", at: 0, files: ["src/c.ts"] }, replies: [{ task: "b", at: 2 }] }), null, "an earlier approval that can start goes first");
+  assert.equal(chooseQueued({ ...free, replies: [{ task: "a", at: 1, folder: "t-run" }, { task: "b", at: 2 }] }), "b", "the next reply goes");
+  assert.equal(chooseQueued({ ...free, approval: { task: "c", at: 0 }, replies: [{ task: "b", at: 2 }] }), null, "an earlier approval that can start goes first");
   for (const busy of [{ merging: "m" }, { leased: "l" }, { paused: true }, { checkout: "t-other" }]) {
     assert.equal(chooseQueued({ ...free, ...busy, replies: [{ task: "a", at: 1 }] }), null, JSON.stringify(busy));
   }
-  // One work folder: the rule of today, the run holds every reply, and folder and files change nothing.
+  // One work folder: the rule of today, the run holds every reply, and the folder changes nothing.
   assert.equal(chooseQueued({ ...free, slots: 1, replies: [{ task: "a", at: 1 }] }), null);
-  assert.equal(chooseQueued({ ...free, slots: 1, runs: [], replies: [{ task: "a", at: 1, folder: "t-run", files: ["src/main.ts"] }] }), "a");
-});
-
-test("sameFilesRefusal: the task and the files from the refusal of the worker script, else null", () => {
-  assert.deepEqual(sameFilesRefusal("refused: the task t-1 works on the same files (src/main.ts, src/core/); this work run starts when it has ended\n"), { task: "t-1", files: ["src/main.ts", "src/core/"] });
-  assert.deepEqual(sameFilesRefusal("refused: the task fix-login works on the same files (docs/a (old).md); this work run starts when it has ended"), { task: "fix-login", files: ["docs/a (old).md"] });
-  assert.equal(sameFilesRefusal("refused: all 2 work folders of this project are in use (tasks t-1, t-2); the run starts when one is free"), null);
-  assert.equal(sameFilesRefusal(""), null);
+  assert.equal(chooseQueued({ ...free, slots: 1, runs: [], replies: [{ task: "a", at: 1, folder: "t-run" }] }), "a");
 });
 
 test("nightPlan with several work folders: it names the tasks that use them, after a merge and before a run", () => {
@@ -635,15 +603,15 @@ const body = (name: string) => {
   return MAIN.slice(start, MAIN.indexOf("\n}\n", start));
 };
 
-test("main.ts: the poll counts the runs against the work folders and holds a task on the same files", () => {
+test("main.ts: the poll counts the runs against the work folders and holds no task for the same files", () => {
   const poll = body("approvePlans");
   assert.match(poll, /const busy = \{ merging: project\.merging, \.\.\.runFacts\(project, tasks\), leased: startHolder\(project\.host, project\.cwd\), paused: project\.paused \};/);
   assert.match(poll, /startFullRun\(project, projectBusy\(busy\) \|\| busy\.runs\.length > 0\);/, "the full run waits until no work run runs (user decision 2)");
-  assert.match(poll, /files: task\.info\?\.planFiles \?\? \[\],\n\s*\}\)\),/, "the files of a candidate");
-  assert.match(poll, /files: task\?\.info\?\.planFiles \?\? \[\], folder: task \? replyHolder\(task, busy\.runs\) : null/, "the files and the folder of a reply");
+  assert.doesNotMatch(poll, /planFiles/, "no candidate and no reply carries the files of its plan");
+  assert.match(poll, /return \{ task: name, at: reply\.at, folder: task \? replyHolder\(task, busy\.runs\) : null \};/, "the folder of a reply");
   assert.match(poll, /busy: busyTasks\.has\(task\.name\) \|\| startRefused\(task\),/);
   const facts = body("runFacts");
-  assert.match(facts, /workRuns\(tasks\)\.map\(\(task\) => \(\{ task: task\.name, files: task\.info\?\.planFiles \?\? \[\] \}\)\)/);
+  assert.match(facts, /workRuns\(tasks\)\.map\(\(task\) => \(\{ task: task\.name \}\)\)/);
   assert.match(facts, /slots: slotsOf\(project\)/);
   assert.match(body("slotsOf"), /project\?\.workFolders \? Math\.max\(1, project\.workFolderCount\) : 1/);
   assert.match(MAIN, /workFolderCount: reply\.workFolderCount \?\? 1,\n\s*workFolderUsers: reply\.workFolderUsers \?\? \[\],/);
@@ -653,10 +621,9 @@ test("main.ts: the poll counts the runs against the work folders and holds a tas
   assert.ok(body("sessionFolder").includes(String.raw`/[\\/]\.dispatch[\\/]work[\\/](\d+)[\\/]?$/i`), "the number of the work folder in the folder of the session");
 });
 
-test("main.ts: a start or a reply that the script refuses for a folder or for the same files goes back into the queue", () => {
+test("main.ts: a start or a reply that the script refuses for a folder goes back into the queue", () => {
   const refusal = body("folderOrFilesRefusal");
-  assert.match(refusal, /sameFilesRefusal\(error\)/);
-  assert.match(refusal, /folderRefusal\(error\)/);
+  assert.match(refusal, /folderRefusal\(actionErrors\.get\(task\.name\) \?\? ""\)/);
   assert.match(refusal, /folderWaits\.set\(/);
   assert.match(refusal, /actionErrors\.delete\(task\.name\)/);
   const poll = body("approvePlans");
@@ -673,21 +640,22 @@ test("main.ts: a start or a reply that the script refuses for a folder or for th
   assert.match(click, /approveWait\(task\)\.replace\(/, "the triage line names the wait");
   assert.match(body("sendQueuedReply"), /\.includes\(OTHER_BRANCH\) \|\| folderOrFilesRefusal\(task\)/);
   const reply = body("replyOrQueue");
-  assert.match(reply, /otherCheckout\(tasks, task\.name\) \|\| replyFolderHolder\(task\) \|\| sameFilesHolder\(task, runs\)/);
+  assert.match(reply, /otherCheckout\(tasks, task\.name\) \|\| replyFolderHolder\(task\)\) \{/);
   assert.match(reply, /\.includes\(OTHER_BRANCH\) && !folderOrFilesRefusal\(task\)/);
   assert.match(body("queueReply"), /while the project was not free for the reply/);
   assert.match(body("taskStatus"), /"answered · goes out when the project is free for it"/);
 });
 
-test("main.ts: the card with several work folders names all folders, the same files and the folder of the session", () => {
+test("main.ts: the card with several work folders names all folders and the folder of the session", () => {
   const facts = body("waitFacts");
   assert.match(facts, /if \(!task\.project \|\| slotsOf\(task\.project\) < 2\) \{/, "one work folder keeps the rule of today");
   assert.match(facts, /editing: leased && leased !== task\.name \? leased : null,/, "several: only the start in flight holds every start");
   assert.match(facts, /folders: holders\.length > 1 \? holders : null,/);
-  assert.match(facts, /sameFiles: sameFilesHolder\(task, runs\),/);
+  assert.doesNotMatch(MAIN, /sameFiles/, "no card waits for the same files");
   assert.match(facts, /sessionFolder: replyFolderHolder\(task\),/);
   const night = body("nightPlanOf");
   assert.match(night, /projectTaskList\(project, false\)/, "the unsorted list: the sorted one calls nightPlanOf");
+  assert.match(night, /const editing = several \? null : /, "several: no running task holds the plan by its files");
   assert.match(night, /folders: several \? folderHolders\(task, runs\) : \[\],/);
   assert.match(night, /running: editing && editing !== task\.name \? editing : null,/);
   assert.match(body("folderHolders"), /projectTaskList\(project, false\)/);

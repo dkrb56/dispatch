@@ -202,7 +202,7 @@ test("the work folder: the reason comes after a merge and before the work run, a
 });
 
 // Ticket the-page-lets-more-than-one-work-run: with several work folders a task waits for a free
-// folder or for a running task on the same files, and an answer waits for the folder of its session.
+// folder, and an answer waits for the folder of its session.
 test("several work folders: all in use names the tasks, after a merge and before one folder and the work run", () => {
   assert.deepEqual(waitReason({ editing: null, dirty: [], folders: ["t-1", "t-2"] }), {
     short: "Waits for a work folder: t-1 and t-2 use them.",
@@ -216,23 +216,6 @@ test("several work folders: all in use names the tasks, after a merge and before
     assert.equal(waitReason({ editing: "t-1", dirty: [], folders })?.short, "Waits for the work run of t-1.", String(folders));
     assert.equal(waitReason({ editing: null, dirty: [], folders }), null, String(folders));
   }
-});
-
-test("several work folders: a running task on the same files names the task and the files", () => {
-  const sameFiles = { task: "t-1", files: ["src/main.ts", "src/workstart.ts"] };
-  assert.deepEqual(waitReason({ editing: null, dirty: [], sameFiles }), {
-    short: "Waits for t-1, which works on the same files.",
-    full: "Its work run starts when the work run of t-1 ends. Both plans change these files:\nsrc/main.ts\nsrc/workstart.ts",
-  });
-  assert.equal(waitReason({ editing: null, dirty: [], sameFiles, folder: "t-2" })?.short, "Waits for the work folder, which t-2 uses.", "the folder comes first");
-  assert.equal(waitReason({ editing: "t-3", dirty: [" M a.ts"], sameFiles })?.short, "Waits for t-1, which works on the same files.", "before the start in flight and the changed files");
-  const many = Array.from({ length: 7 }, (_, n) => `src/f${n}.ts`);
-  assert.match(waitReason({ editing: null, dirty: [], sameFiles: { task: "t-1", files: many } })?.full ?? "", /src\/f4\.ts\n…$/, "five files, then …");
-  assert.equal(waitReason({ editing: null, dirty: [], sameFiles: null }), null);
-  assert.deepEqual(answerWait({ editing: null, dirty: [], sameFiles }), {
-    short: "Your answers wait for t-1, which works on the same files.",
-    full: "Your answers go to the worker when the work run of t-1 ends. Both plans change these files:\nsrc/main.ts\nsrc/workstart.ts",
-  });
 });
 
 test("several work folders: an answer waits for the folder of its session and names its number and its task", () => {
@@ -257,8 +240,6 @@ test("several work folders: every short line has 12 words at most, also with fou
   const cases = [
     waitReason({ editing: null, dirty: [], folders: four }),
     answerWait({ editing: null, dirty: [], folders: four }),
-    waitReason({ editing: null, dirty: [], sameFiles: { task: long, files: ["a.ts"] } }),
-    answerWait({ editing: null, dirty: [], sameFiles: { task: long, files: ["a.ts"] } }),
     answerWait({ editing: null, dirty: [], sessionFolder: { number: 4, task: long } }),
   ];
   for (const reason of cases) {
@@ -309,7 +290,6 @@ test("answerWait: the reasons keep the order of the holds of the queue (ticket q
     merging: "t-merge",
     fullRun: true,
     sessionFolder: { number: 1, task: "t-folder" },
-    sameFiles: { task: "t-files", files: ["a.ts"] },
     checkout: { task: "t-out", branch: "task/t-out", base: "main", note: "" },
     approval: "t-approved",
   };
@@ -317,9 +297,9 @@ test("answerWait: the reasons keep the order of the holds of the queue (ticket q
   assert.match(answerWait({ ...all, paused: false })?.short ?? "", /merge of t-merge/);
   assert.match(answerWait({ ...all, paused: false, merging: null })?.short ?? "", /full run of all checks/, "the full run holds the queue before the reply is chosen");
   assert.match(answerWait({ ...all, paused: false, merging: null, fullRun: false })?.short ?? "", /work folder 1, which t-folder/);
-  assert.match(answerWait({ ...all, paused: false, merging: null, fullRun: false, sessionFolder: null })?.short ?? "", /t-files, which works on the same files/);
-  assert.match(answerWait({ ...all, paused: false, merging: null, fullRun: false, sessionFolder: null, sameFiles: null, editing: null })?.short ?? "", /checkout on the branch of t-out/);
-  assert.match(answerWait({ ...all, paused: false, merging: null, fullRun: false, sessionFolder: null, sameFiles: null, editing: null, checkout: null })?.short ?? "", /approved plan of t-approved starts first/, "the earlier approval comes last, as in chooseQueued");
+  assert.match(answerWait({ ...all, paused: false, merging: null, fullRun: false, sessionFolder: null })?.short ?? "", /work run of t-run/);
+  assert.match(answerWait({ ...all, paused: false, merging: null, fullRun: false, sessionFolder: null, editing: null })?.short ?? "", /checkout on the branch of t-out/);
+  assert.match(answerWait({ ...all, paused: false, merging: null, fullRun: false, sessionFolder: null, editing: null, checkout: null })?.short ?? "", /approved plan of t-approved starts first/, "the earlier approval comes last, as in chooseQueued");
   const long = "a-long-ticket-name-with-many-parts";
   for (const reason of [
     answerWait({ editing: null, dirty: [], approval: long }),
@@ -347,7 +327,8 @@ test("the Help and the README explain more than one work folder (ticket setup-pi
   assert.ok(help.includes("1 to 4"));
   assert.ok(help.includes("a task beyond that number waits"));
   assert.ok(help.includes("An answer goes to the folder where its task works"));
-  assert.ok(help.includes("Two tasks whose plans name the same file never work at the same time"));
+  assert.ok(help.includes("Two tasks that change the same file work at the same time."));
+  assert.ok(!HTML.includes("Two tasks whose plans name the same file never work at the same time"));
   assert.ok(help.includes("a folder above it stays and serves its task"));
   assert.ok(!HTML.includes("One task uses the side folder at a time."));
   assert.ok(!HTML.includes("A second task waits until the side folder is free."));

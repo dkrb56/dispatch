@@ -27,8 +27,6 @@ export interface WaitFacts {
    * the-page-lets-more-than-one-work-run), or null.
    */
   folders?: readonly string[] | null;
-  /** The running task whose plan names files of the plan of this task, with those files, or null. */
-  sameFiles?: { task: string; files: readonly string[] } | null;
   /** For an answer: the work folder where the session of this task runs and the other task that uses it now, or null. */
   sessionFolder?: { number: number; task: string } | null;
   /** The scheduled full run of every check runs in the project now (ticket scheduled-full-run-of-all-checks). */
@@ -48,11 +46,6 @@ function joinNames(names: readonly string[]): string {
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 }
 
-/** The files one per line, the first five and then `…`. */
-function fileLines(files: readonly string[]): string {
-  return `${files.slice(0, 5).join("\n")}${files.length > 5 ? "\n…" : ""}`;
-}
-
 /** The reason in two lengths. */
 export interface WaitReason {
   /** One line for the task row, 12 words at most. */
@@ -65,8 +58,7 @@ export interface WaitReason {
  * The reason, or null when nothing holds the work run back. A pause comes first (Resume is the one
  * click that frees the queue), then a merge (it holds the main checkout and runs its gate there),
  * then all work folders in use (ticket the-page-lets-more-than-one-work-run), then the work folder that
- * another task uses (ticket work-run-in-the-work-folder), then a running task on the same files, then
- * the running work run.
+ * another task uses (ticket work-run-in-the-work-folder), then the running work run.
  */
 export function waitReason(facts: WaitFacts): WaitReason | null {
   if (facts.paused) {
@@ -92,13 +84,6 @@ export function waitReason(facts: WaitFacts): WaitReason | null {
     return {
       short: `Waits for the work folder, which ${facts.folder} uses.`,
       full: `Its work run starts when the work run of ${facts.folder} ends and the work folder is free.`,
-    };
-  }
-  if (facts.sameFiles) {
-    const { task, files } = facts.sameFiles;
-    return {
-      short: `Waits for ${task}, which works on the same files.`,
-      full: `Its work run starts when the work run of ${task} ends. Both plans change these files:\n${fileLines(files)}`,
     };
   }
   if (facts.editing) {
@@ -128,7 +113,7 @@ export function waitReason(facts: WaitFacts): WaitReason | null {
  * Why a reply of the user to a worker waits in the queue (ticket an-answer-waits-in-the-queue-while):
  * answers, a Confirm of a check result or a Continue that came while the checkout was on the branch of
  * another task. The order of the holds of `approvePlans` and `chooseQueued` (pause, merge, full run of
- * the checks, work folders, same files, work run, checkout, an approval clicked earlier), with texts
+ * the checks, work folders, work run, checkout, an approval clicked earlier), with texts
  * about the reply; the folder of the session of the task comes first of the folders. The Continue
  * that Dispatch sends by itself (`autoContinue`) gets texts about Continue. Uncommitted changes hold
  * no reply. Null when nothing holds it: it goes out at the next poll.
@@ -174,13 +159,6 @@ export function answerWait(facts: WaitFacts): WaitReason | null {
     return {
       short: `${waits} for the work folder, which ${facts.folder} uses.`,
       full: `${goes} when the work run of ${facts.folder} ends and the work folder is free.`,
-    };
-  }
-  if (facts.sameFiles) {
-    const { task, files } = facts.sameFiles;
-    return {
-      short: `${waits} for ${task}, which works on the same files.`,
-      full: `${goes} when the work run of ${task} ends. Both plans change these files:\n${fileLines(files)}`,
     };
   }
   if (facts.editing) {

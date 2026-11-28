@@ -285,7 +285,7 @@ fn work_folders_rule_of(reports: &str, count: u8) -> String {
         return work_folders_rule(reports);
     }
     format!(
-        "- Work folder is on in this project with {count} work folders: a work run works in one of the work folders `{reports}/work/1` to `{reports}/work/{count}`, git worktrees of the project that Dispatch makes once and keeps. Approve, a reply, a resume and the Run checks button of a task check out its branch `{BRANCH_PREFIX}<ticket-id>` in a work folder and run there, in place of the switch of the main checkout that the line of Task branches names; one task per work folder at a time, so up to {count} tasks are in their work run at the same time, and another task waits until a folder is free. A reply, a resume and Run checks go into the work folder where the session of the task runs and wait while another task uses it; a folder above the number stays and serves the task whose session runs there. A work run also waits while a task in another work folder has a plan whose Files to change name a file of its own plan. A build or test output folder that the project rules share between runs keeps its name in work folder 1 and gets the suffix `-<n>` in work folder `<n>`, so two runs never write into one; the prompt of a work run names the number of its folder. The project folder stays on the base branch, and Dispatch never switches it. The worker writes its report and every other task file by their full paths in `{reports}` of the project folder; the work folders have no copy of them. A change that a run left uncommitted in a work folder is committed on its branch as `<ticket-id> WIP (Dispatch: files of the work run)` before the folder is used again. An uncommitted change of the user in the project folder holds no Approve and no reply. The Merge button and auto-merge build the merge commit in a free work folder, run the picked checks and the gate command there, and move the base in one step (`git merge --ff-only` in the project folder, or `git update-ref` when the project folder is on another branch); a change of the user in a file of the merge stops that step and changes nothing, the project folder never has an open merge, merges run one at a time, and a merge waits up to a minute for a free work folder.
+        "- Work folder is on in this project with {count} work folders: a work run works in one of the work folders `{reports}/work/1` to `{reports}/work/{count}`, git worktrees of the project that Dispatch makes once and keeps. Approve, a reply, a resume and the Run checks button of a task check out its branch `{BRANCH_PREFIX}<ticket-id>` in a work folder and run there, in place of the switch of the main checkout that the line of Task branches names; one task per work folder at a time, so up to {count} tasks are in their work run at the same time, and another task waits until a folder is free. A reply, a resume and Run checks go into the work folder where the session of the task runs and wait while another task uses it; a folder above the number stays and serves the task whose session runs there. Tasks whose plans name the same file work at the same time; when a task branch cannot take the newer commits of the base without a conflict, the prompt of the work run says so, and the work run merges the base into its branch itself, commits the merge there and asks the user only when the conflict needs a choice of the user. A build or test output folder that the project rules share between runs keeps its name in work folder 1 and gets the suffix `-<n>` in work folder `<n>`, so two runs never write into one; the prompt of a work run names the number of its folder. The project folder stays on the base branch, and Dispatch never switches it. The worker writes its report and every other task file by their full paths in `{reports}` of the project folder; the work folders have no copy of them. A change that a run left uncommitted in a work folder is committed on its branch as `<ticket-id> WIP (Dispatch: files of the work run)` before the folder is used again. An uncommitted change of the user in the project folder holds no Approve and no reply. The Merge button and auto-merge build the merge commit in a free work folder, run the picked checks and the gate command there, and move the base in one step (`git merge --ff-only` in the project folder, or `git update-ref` when the project folder is on another branch); a change of the user in a file of the merge stops that step and changes nothing, the project folder never has an open merge, merges run one at a time, and a merge waits up to a minute for a free work folder.
 "
     )
 }
@@ -828,7 +828,7 @@ impl Project {
         self.reports.join(format!("{ticket}.approved"))
     }
 
-    /// A reply that the worker script refused while a work folder, the same files or the branch of
+    /// A reply that the worker script refused while a work folder or the branch of
     /// another task were busy (ticket keep-a-reply-that-the-worker-script): JSON with `text`, `at`
     /// and `report`. Dispatch sends it when the project is free; the task read drops a stale one.
     fn reply_file(&self, ticket: &str) -> PathBuf {
@@ -1727,10 +1727,10 @@ With workFolderCount 2 to 4 in options.json, the work folders are work\1 to work
 and its own set-up log work\<n>-setup.log, and up to <n> tasks are in their work run at the same time. Approve and merge take
 the free folder that has the task branch checked out, else the one whose record names the task, else the lowest free one;
 a reply, a resume and check <ticket-id> go into the folder where the session of the work run runs, also above the number.
-A work run is refused while a task in another folder has a plan that names a file of its plan. The refusals:
+Tasks whose plans name the same file work at the same time. The refusals:
 "all <n> work folders of this project are in use (tasks a, b); the run starts when one is free" (the merge: "...; the merge
-starts when one is free"), "the work folder <k> of this project, where the session of this task runs, is in use (task x);
-the run starts when it is free", and "the task x works on the same files (a, b); this work run starts when it has ended".
+starts when one is free") and "the work folder <k> of this project, where the session of this task runs, is in use (task x);
+the run starts when it is free".
 With one folder the texts name "the work folder of this project", as before. A folder above the number stays on the disk.
 #>
 param(
@@ -2532,23 +2532,6 @@ function Pick-Folder($Holders, [int]$Count) {
   0
 }
 
-# The paths of the plan of this task that the plan of $Ticket names too (ticket
-# up-to-4-work-folders-more-than-one-task, user decision 2): the same path, or a path under a folder
-# path of the other plan, without case; a path under .dispatch never counts.
-function Same-Files([string]$Ticket) {
-  $theirs = @(Plan-Files $Ticket | ForEach-Object { $_.ToLowerInvariant() } | Where-Object { -not $_.StartsWith('.dispatch/') })
-  if ($theirs.Count -eq 0) { return @() }
-  foreach ($path in @(Plan-Files $Id)) {
-    $mine = $path.ToLowerInvariant()
-    if ($mine.StartsWith('.dispatch/')) { continue }
-    $hit = $false
-    foreach ($other in $theirs) {
-      if ($mine -eq $other -or ($other.EndsWith('/') -and $mine.StartsWith($other)) -or ($mine.EndsWith('/') -and $other.StartsWith($mine))) { $hit = $true }
-    }
-    if ($hit) { $path }
-  }
-}
-
 # The job id of the newest worker named "<ticket> [work]", or - (for the record).
 function Work-Job {
   $workers = @()
@@ -2576,8 +2559,8 @@ function Work-Job {
 # The folder (ticket up-to-4-work-folders-more-than-one-task): a work run with a session ($Worker:
 # reply, resume) and a check run go into the folder where the session of the work run runs, also
 # above the number of work folders, and wait while it is held (user decision 1); approve, a merge and
-# a session without such a folder take Pick-Folder. A work run also waits while a task in another
-# folder has a plan that names a file of this plan (user decision 2). $script:FolderNo is the folder then.
+# a session without such a folder take Pick-Folder. Tasks whose plans name the same file work at the
+# same time (ticket two-tasks-on-the-same-files-run-together). $script:FolderNo is the folder then.
 function Enter-WorkFolder([string]$Use, $Worker) {
   $count = Folder-Count
   # The pick and the claim happen under one lock (ticket bug-two-tasks-got-the-same-work-folder): the
@@ -2617,13 +2600,6 @@ function Enter-WorkFolder([string]$Use, $Worker) {
         if ($count -eq 1) { Refuse-Wait "the work folder of this project is in use (task $(Record-Holder 1)); the $what starts when it is free" }
         $names = @($holders | Where-Object { $_.N -le $count -and $_.Holder } | ForEach-Object { $_.Holder } | Select-Object -Unique)
         Refuse-Wait "all $count work folders of this project are in use (tasks $($names -join ', ')); the $what starts when one is free"
-      }
-    }
-    if ($Use -eq 'work') {
-      foreach ($entry in $holders) {
-        if (-not $entry.Holder -or $entry.Holder -eq $Id) { continue }
-        $same = @(Same-Files $entry.Holder)
-        if ($same.Count -gt 0) { Refuse-Wait "the task $($entry.Holder) works on the same files ($($same -join ', ')); this work run starts when it has ended" }
       }
     }
     $script:FolderNo = $number
@@ -2701,6 +2677,11 @@ function Enter-WorkFolder([string]$Use, $Worker) {
       if ($why) {
         $why = (($why -replace '"', "'") -replace "`r?`n", ' ').Trim().TrimEnd('.')
         $note = " Dispatch could not bring the newer commits of $($info.base) into this branch: $why."
+        # A conflict in a file (ticket two-tasks-on-the-same-files-run-together): the work run joins
+        # the base itself. Other reasons (merge-tree failed, the branch could not move) keep the note only.
+        if ($why.StartsWith('these files changed on both sides:')) {
+          $note += " This one merge is allowed, although the folder sentence says merge nothing: in the work folder, on the task branch, run git merge --no-ff $($info.base). Join each conflict so that the intent of both sides stays, and check that no file keeps a conflict marker. A path under .dispatch takes the version of $($info.base). Commit the merge on the task branch, and name the joined files in the report. When the two sides want different results for the same thing, run git merge --abort first, then ask the user under ## Questions."
+        }
       }
     }
     if ($sync -or (Head-Branch $folder) -ne $info.branch) {
@@ -3382,7 +3363,7 @@ function Tree-Status {
 # The paths of the section "Files to change" of the plan of the task (ticket leftover-files-block-tasks):
 # each path in backticks, and the first word of a list item when it is no backtick span. A path has a
 # / or a dot and no space; a trailing ,:;.) goes. The Rust rule plan_files is the same. $Ticket, when
-# given, reads the plan of that task (the rule of the same files of Enter-WorkFolder).
+# given, reads the plan of that task.
 function Plan-Files([string]$Ticket = $Id) {
   $file = Join-Path $Reports "plans\$Ticket.md"
   if (-not (Test-Path -LiteralPath $file)) { return @() }
@@ -4712,7 +4693,7 @@ fn work_folders_step(project: &Project, on: bool) -> Step {
             target,
             done: project.ignores(WORK_IGNORE),
             detail: format!(
-                "The work run of a task works in one of the {count} work folders {reports}/work/1 to {reports}/work/{count}, git worktrees of the project that Dispatch makes when a task first needs one and keeps. Up to {count} tasks are in their work run at the same time, one per folder; a further task waits until a folder is free. Each folder holds its own build output, so each costs disk space and one first build. {setup} Approve, a reply, a resume and Run checks check out the task branch in a folder; a reply, a resume and Run checks go into the folder where the session of the task runs and wait for it. A task whose plan names a file of the plan of a task in another folder waits until that task has ended. The project folder stays on the base. The record {reports}/work/<n>.record names the task that uses folder <n>. A folder above the number stays on the disk and still serves the task whose session runs there. Apply adds the line {WORK_IGNORE} to {reports}/.gitignore. The section in CLAUDE.md says so. Merge builds the merge commit in a free folder, runs the checks and the gate there, and moves the base in one step; one merge at a time. A task that started before the switch keeps its branch: Dispatch switches the project folder back to the base when its run has ended, an answer to its worker starts a new worker in a work folder that reads the brief, the plan and the report, and its Merge works as for a new task."
+                "The work run of a task works in one of the {count} work folders {reports}/work/1 to {reports}/work/{count}, git worktrees of the project that Dispatch makes when a task first needs one and keeps. Up to {count} tasks are in their work run at the same time, one per folder; a further task waits until a folder is free. Each folder holds its own build output, so each costs disk space and one first build. {setup} Approve, a reply, a resume and Run checks check out the task branch in a folder; a reply, a resume and Run checks go into the folder where the session of the task runs and wait for it. Tasks whose plans name the same file work at the same time; the later one joins the changes of the base itself. The project folder stays on the base. The record {reports}/work/<n>.record names the task that uses folder <n>. A folder above the number stays on the disk and still serves the task whose session runs there. Apply adds the line {WORK_IGNORE} to {reports}/.gitignore. The section in CLAUDE.md says so. Merge builds the merge commit in a free folder, runs the checks and the gate there, and moves the base in one step; one merge at a time. A task that started before the switch keeps its branch: Dispatch switches the project folder back to the base when its run has ended, an answer to its worker starts a new worker in a work folder that reads the brief, the plan and the report, and its Merge works as for a new task."
             ),
             rules: None,
             blocked: None,
@@ -6823,8 +6804,7 @@ pub struct TaskInfo {
     /// list of the project when the script of the project is not the one of this version: that
     /// script refuses on any change.
     leftovers: Vec<String>,
-    /// The paths of the section "Files to change" of the plan (`plan_files`), for the rule that two
-    /// tasks whose plans name the same file do not work at the same time (ticket
+    /// The paths of the section "Files to change" of the plan (`plan_files`, ticket
     /// up-to-4-work-folders-more-than-one-task). Empty without a plan.
     #[serde(rename = "planFiles")]
     plan_files: Vec<String>,
@@ -16061,57 +16041,89 @@ if (args[0] === 'agents' && fs.existsSync(__dirname + '/agents.json')) {
             clean(&project);
         }
 
-        /// User decision 2: while a task works whose plan names a file of the plan of another task (the
-        /// same path, or a path under its folder, without case; `.dispatch` never counts), the other
-        /// task waits, at Approve and with an answer, also with a free work folder.
+        /// Ticket two-tasks-on-the-same-files-run-together: while t-1 works, t-2, whose plan names the
+        /// same file, starts in folder 2. The base then changes the same line as t-2: the reply of t-2
+        /// leaves its branch as it was and tells the work run to merge the base itself. The work run
+        /// joins both sides and commits the merge; the next reply has no note, and the merge of t-2
+        /// brings both sides to the base.
         #[test]
-        fn tasks_whose_plans_name_the_same_file_do_not_work_at_the_same_time() {
-            let (project, fake, _base) = work_project("work-same-files");
+        fn tasks_on_the_same_file_work_at_the_same_time_and_the_later_joins_the_base() {
+            let (project, fake, base) = work_project("work-same-files");
             set_work_folder_count(&project, 2);
             let (one, two) = (project.work_folder_at(1), project.work_folder_at(2));
+            write_file(&project.root.join("shared.txt"), "the first line
+").unwrap();
+            git_out(&project, &["add", "--", "shared.txt"]);
+            git_out(&project, &["commit", "-q", "-m", "the shared file"]);
             plan_only(&project, &fake, "t-1");
-            write_file(&project.plans().join("t-1.md"), "# t-1: plan\n\n## Files to change\n- `Content/Maps/`: the maps.\n- `README.md`: the readme.\n- `.dispatch/notes.md`: a task file.\n").unwrap();
+            write_file(&project.plans().join("t-1.md"), "# t-1: plan
+
+## Files to change
+- `shared.txt`: the shared file.
+").unwrap();
             let (code, out) = run_script(&project, &fake, "done", &["approve", "t-1"]);
             assert_eq!(code, 0, "{out}");
             assert_eq!(folder_branch(&one), "task/t-1");
+
+            // While t-1 works, t-2 on the same file starts in folder 2.
             plan_only(&project, &fake, "t-2");
-            write_file(&project.plans().join("t-2.md"), "# t-2: plan\n\n## Files to change\n- `content/maps/Level.umap`: the level.\n- `src/other.ts`: other.\n").unwrap();
-            plan_only(&project, &fake, "t-3");
-            write_file(&project.plans().join("t-3.md"), "# t-3: plan\n\n## Files to change\n- `src/third.ts`: third.\n- `.dispatch/notes.md`: a task file.\n").unwrap();
-            let list = task_list(project.root.to_string_lossy().into_owned()).unwrap();
-            let files = |name: &str| list.tasks.iter().find(|task| task.name == name).unwrap().plan_files.clone();
-            assert_eq!(files("t-2"), vec!["content/maps/Level.umap".to_string(), "src/other.ts".to_string()]);
-            assert_eq!(serde_json::to_value(&list).unwrap()["tasks"].as_array().unwrap().iter().find(|task| task["name"] == "t-1").unwrap()["planFiles"], json!(["Content/Maps/", "README.md", ".dispatch/notes.md"]));
+            write_file(&project.plans().join("t-2.md"), "# t-2: plan
 
-            // While t-1 works, t-2 waits although folder 2 is free; nothing changes.
+## Files to change
+- `shared.txt`: the shared file.
+").unwrap();
             let (code, out) = run_script_env(&project, &fake, "working", &["approve", "t-2"], &[("FAKE_NAME", "t-1 [work]")]);
-            assert_eq!(code, 2, "{out}");
-            assert!(out.contains("the task t-1 works on the same files (content/maps/Level.umap); this work run starts when it has ended"), "{out}");
-            assert_eq!(read(&project.reports.join("t-2.state")).trim(), "planning");
-            assert!(git(&project.root, &["rev-parse", "--verify", "--quiet", "refs/heads/task/t-2"]).is_none());
-            assert!(!two.exists());
-            // A task with other files starts in folder 2: a path under .dispatch is no same file.
-            let (code, out) = run_script_env(&project, &fake, "working", &["approve", "t-3"], &[("FAKE_NAME", "t-1 [work]")]);
             assert_eq!(code, 0, "{out}");
-            assert_eq!(folder_branch(&two), "task/t-3");
+            assert_eq!(folder_branch(&two), "task/t-2");
+            assert_eq!(folder_branch(&one), "task/t-1");
 
-            // The runs have ended: t-2 starts, in folder 1, and ends with a question.
+            // t-2 changes the line; the base gets another change of the same line.
+            write_file(&two.join("shared.txt"), "the line of t-2
+").unwrap();
+            run_git(&two, &["add", "--", "shared.txt"]).unwrap();
+            run_git(&two, &["commit", "-q", "-m", "t-2 the shared line"]).unwrap();
+            write_file(&project.root.join("shared.txt"), "the line of the base
+").unwrap();
+            git_out(&project, &["add", "--", "shared.txt"]);
+            git_out(&project, &["commit", "-q", "-m", "the change of t-1 on the base"]);
+            let tip = git_out(&project, &["rev-parse", "task/t-2"]);
+
+            // The reply keeps the branch and tells the work run to join the base itself.
+            let two_text = two.to_string_lossy().into_owned();
+            let (code, out) = run_script_env(&project, &fake, "done", &["reply", "t-2", "Answer to question 1: This way"], &[("FAKE_NAME", "t-2 [work]"), ("FAKE_CWD", two_text.as_str())]);
+            assert_eq!(code, 0, "{out}");
+            assert_eq!(git_out(&project, &["rev-parse", "task/t-2"]), tip, "the clash moved the branch");
+            assert_eq!(folder_branch(&two), "task/t-2");
+            let text = &last_call(&fake)[0];
+            assert!(text.starts_with("Answer to question 1: This way Dispatch could not bring the newer commits of "), "{text}");
+            assert!(text.contains(&format!(" Dispatch could not bring the newer commits of {base} into this branch: these files changed on both sides: shared.txt.")), "{text}");
+            assert!(text.contains(&format!("This one merge is allowed, although the folder sentence says merge nothing: in the work folder, on the task branch, run git merge --no-ff {base}.")), "{text}");
+            assert!(text.contains("When the two sides want different results for the same thing, run git merge --abort first, then ask the user under ## Questions."), "{text}");
+
+            // The work run joins both sides and commits the merge on its task branch.
+            assert!(run_git(&two, &["merge", "--no-ff", &base]).is_err(), "the merge had no conflict");
+            write_file(&two.join("shared.txt"), "the line of the base
+the line of t-2
+").unwrap();
+            run_git(&two, &["add", "--", "shared.txt"]).unwrap();
+            run_git(&two, &["commit", "-q", "--no-edit"]).unwrap();
+
+            // The next reply has nothing to join.
+            let (code, out) = run_script_env(&project, &fake, "done", &["reply", "t-2", "Answer to question 2: That way"], &[("FAKE_NAME", "t-2 [work]"), ("FAKE_CWD", two_text.as_str())]);
+            assert_eq!(code, 0, "{out}");
+            let text = &last_call(&fake)[0];
+            assert!(!text.contains("could not bring the newer commits"), "{text}");
+
+            // The merge brings both sides to the base, without a conflict marker.
+            write_report(&project, "t-2");
             write_file(&project.reports.join("fake-name.txt"), "t-2").unwrap();
-            let (code, out) = run_script(&project, &fake, "done", &["approve", "t-2"]);
+            let (code, out) = run_script(&project, &fake, "done", &["merge", "t-2"]);
             assert_eq!(code, 0, "{out}");
-            assert_eq!(folder_branch(&one), "task/t-2");
-            // Now t-1 works again, in folder 2: the answer to t-2 waits, though its own folder is free.
-            write_folder_record(&project, 2, "t-1", "work", std::process::id());
-            let one_text = one.to_string_lossy().into_owned();
-            let (code, out) = run_script_env(&project, &fake, "done", &["reply", "t-2", "Answer to question 1: This way"], &[("FAKE_NAME", "t-2 [work]"), ("FAKE_CWD", one_text.as_str())]);
-            assert_eq!(code, 2, "{out}");
-            assert!(out.contains("the task t-1 works on the same files (content/maps/Level.umap); this work run starts when it has ended"), "{out}");
-            // The run of t-1 has ended: the answer goes on in folder 1.
-            write_folder_record(&project, 2, "t-1", "work", NO_PROCESS);
-            fs::remove_file(fake.join("cwd.txt")).unwrap();
-            let (code, out) = run_script_env(&project, &fake, "done", &["reply", "t-2", "Answer to question 1: This way"], &[("FAKE_NAME", "t-2 [work]"), ("FAKE_CWD", one_text.as_str())]);
-            assert_eq!(code, 0, "{out}");
-            assert!(same_folder(&read(&fake.join("cwd.txt")), &one), "{}", read(&fake.join("cwd.txt")));
+            let merged = git_out(&project, &["show", &format!("{base}:shared.txt")]);
+            assert_eq!(merged, "the line of the base
+the line of t-2");
+            assert!(!merged.contains("<<<<<<<") && !merged.contains(">>>>>>>"), "{merged}");
+            assert_no_merge_left(&project);
             clean(&project);
         }
 
